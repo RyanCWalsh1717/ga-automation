@@ -111,20 +111,29 @@ def _parse_pnc_corporate(text: str, result: Dict[str, Any]) -> None:
     # Extract balance summary
     for i, line in enumerate(lines):
         if 'Balance Summary' in line:
-            # Next lines contain beginning/ending balances
-            for j in range(i + 1, min(i + 5, len(lines))):
+            # Search more lines ahead for balances (expanded from 5 to 10)
+            for j in range(i + 1, min(i + 10, len(lines))):
                 if 'Beginning' in lines[j]:
-                    match = re.search(r'([\d,]+\.?\d*)', lines[j])
+                    match = re.search(r'\$?\s*([\d,]+(?:\.\d{2})?)', lines[j])
                     if match:
                         result['beginning_balance'] = float(
                             match.group(1).replace(',', '')
                         )
                 if 'Ending' in lines[j]:
-                    match = re.search(r'([\d,]+\.?\d*)', lines[j])
+                    match = re.search(r'\$?\s*([\d,]+(?:\.\d{2})?)', lines[j])
                     if match:
                         result['ending_balance'] = float(
                             match.group(1).replace(',', '')
                         )
+
+    # Fallback: scan entire text for ending balance if not found in Balance Summary
+    if result['ending_balance'] is None:
+        for line in lines:
+            if 'Ending' in line and 'balance' in line.lower():
+                match = re.search(r'\$?\s*([\d,]+\.\d{2})', line)
+                if match:
+                    result['ending_balance'] = float(match.group(1).replace(',', ''))
+                    break
 
     # Extract deposits
     _extract_pnc_deposits(text, result)
@@ -200,7 +209,7 @@ def _extract_pnc_checks(text: str, result: Dict[str, Any]) -> None:
             # Find all check entries in the line (3-column grid)
             # Pattern: mm/dd check_num amount reference_num
             matches = re.findall(
-                r'(\d{2}/\d{2})\s+(\d{3,5})\s+([\d,]+\.\d{2})\s+(\d+)',
+                r'(\d{2}/\d{2})\s+(\d{3,5})\s+([\d,]+(?:\.\d{2})?)\s+(\d+)',
                 line,
             )
             for m in matches:
