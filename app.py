@@ -1,5 +1,5 @@
 """
-GA Automation â Monthly Report Pipeline
+GA Automation — Monthly Report Pipeline
 ========================================
 A Streamlit web app for the Greatland Realty Partners CRE accounting pipeline.
 Processes Yardi, Nexus, bank, and loan exports to produce monthly reports for Singerman.
@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
-# ââ Setup paths âââââââââââââââââââââââââââââââââââââââââââââ
+# ── Setup paths ──────────────────────────────────────────────
 pipeline_dir = Path(__file__).parent / "pipeline"
 if str(pipeline_dir) not in sys.path:
     sys.path.insert(0, str(pipeline_dir))
@@ -23,14 +23,14 @@ from engine import run_pipeline, EngineResult
 from report_generator import generate_report, generate_exception_report
 
 
-# ââ Page configuration âââââââââââââââââââââââââââââââââââââââ
+# ── Page configuration ───────────────────────────────────────
 st.set_page_config(
     page_title="GA Automation",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ââ Custom CSS for styling âââââââââââââââââââââââââââââââââââ
+# ── Custom CSS for styling ───────────────────────────────────
 st.markdown("""
 <style>
     :root {
@@ -98,7 +98,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ââ Session state initialization âââââââââââââââââââââââââââââ
+# ── Session state initialization ─────────────────────────────
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = {}
 
@@ -115,14 +115,14 @@ if "temp_dir" not in st.session_state:
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
 
 
-# ââ Header âââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Header ───────────────────────────────────────────────────
 st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
-st.markdown("### GA Automation â Monthly Report Pipeline")
+st.markdown("### GA Automation — Monthly Report Pipeline")
 st.markdown("**Revolution Labs | 1050 Waltham**")
 st.divider()
 
 
-# ââ Sidebar: File uploads ââââââââââââââââââââââââââââââââââââ
+# ── Sidebar: File uploads ────────────────────────────────────
 st.sidebar.markdown("## File Uploads")
 
 file_config = {
@@ -156,7 +156,7 @@ for key, (label, file_type, required) in file_config.items():
 
     with col2:
         if key in st.session_state.uploaded_files:
-            st.markdown("â")
+            st.markdown("✅")
 
 # Display file count
 uploaded_count = len(st.session_state.uploaded_files)
@@ -167,24 +167,24 @@ gl_uploaded = "gl" in st.session_state.uploaded_files
 st.sidebar.divider()
 
 if not gl_uploaded:
-    st.sidebar.warning("â ï¸ GL Detail file is required to run the pipeline.")
+    st.sidebar.warning("⚠️ GL Detail file is required to run the pipeline.")
 
 
-# ââ Main content âââââââââââââââââââââââââââââââââââââââââââââ
+# ── Main content ─────────────────────────────────────────────
 
 # Process button
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
 
 with col_btn1:
     run_button = st.button(
-        "ð Run Pipeline",
+        "🚀 Run Pipeline",
         disabled=not gl_uploaded,
         use_container_width=True,
         key="run_pipeline_btn",
     )
 
 with col_btn2:
-    if st.button("ð Reset", use_container_width=True):
+    if st.button("🔄 Reset", use_container_width=True):
         st.session_state.processing_complete = False
         st.session_state.engine_result = None
         st.session_state.output_files = {}
@@ -196,91 +196,7 @@ with col_btn2:
 st.divider()
 
 
-# ââ Processing âââââââââââââââââââââââââââââââââte.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
-
-
-# ââ Header âââââââââââââââââââââââââââââââââââââââââââââââââââ
-st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
-st.markdown("### GA Automation â Monthly Report Pipeline")
-st.markdown("**Revolution Labs | 1050 Waltham**")
-st.divider()
-
-
-# ââ Sidebar: File uploads ââââââââââââââââââââââââââââââââââââ
-st.sidebar.markdown("## File Uploads")
-
-file_config = {
-    "gl": ("Yardi GL Detail (.xlsx)", "*.xlsx", True),
-    "income_statement": ("Yardi Income Statement (.xlsx)", "*.xlsx", False),
-    "budget_comparison": ("Yardi Budget Comparison (.xlsx)", "*.xlsx", False),
-    "rent_roll": ("Yardi Rent Roll (.xlsx)", "*.xlsx", False),
-    "nexus_accrual": ("Nexus Accrual Detail (.xls)", "*.xls", False),
-    "pnc_bank": ("PNC Bank Statement (.pdf)", "*.pdf", False),
-    "loan": ("Berkadia Loan Statement (.xlsx)", "*.xlsx", False),
-    "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
-    "monthly_report": ("Monthly Report Template (.xlsx)", "*.xlsx", False),
-}
-
-for key, (label, file_type, required) in file_config.items():
-    col1, col2 = st.sidebar.columns([5, 1])
-
-    with col1:
-        uploaded_file = st.file_uploader(
-            label,
-            type=file_type.replace("*.", ""),
-            key=f"uploader_{key}",
-        )
-
-        if uploaded_file is not None:
-            # Save to temp directory
-            temp_file = os.path.join(st.session_state.temp_dir, uploaded_file.name)
-            with open(temp_file, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            st.session_state.uploaded_files[key] = temp_file
-
-    with col2:
-        if key in st.session_state.uploaded_files:
-            st.markdown("â")
-
-# Display file count
-uploaded_count = len(st.session_state.uploaded_files)
-st.sidebar.markdown(f"**Files uploaded: {uploaded_count} / {len(file_config)}**")
-
-# Check if GL file (required) is uploaded
-gl_uploaded = "gl" in st.session_state.uploaded_files
-st.sidebar.divider()
-
-if not gl_uploaded:
-    st.sidebar.warning("â ï¸ GL Detail file is required to run the pipeline.")
-
-
-# ââ Main content âââââââââââââââââââââââââââââââââââââââââââââ
-
-# Process button
-col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
-
-with col_btn1:
-    run_button = st.button(
-        "ð Run Pipeline",
-        disabled=not gl_uploaded,
-        use_container_width=True,
-        key="run_pipeline_btn",
-    )
-
-with col_btn2:
-    if st.button("ð Reset", use_container_width=True):
-        st.session_state.processing_complete = False
-        st.session_state.engine_result = None
-        st.session_state.output_files = {}
-        st.session_state.uploaded_files = {}
-        shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
-        st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
-        st.rerun()
-
-st.divider()
-
-
-# ââ Processing ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Processing ───────────────────────────────────────────────
 if run_button:
     with st.spinner("Processing pipeline..."):
         try:
@@ -318,18 +234,18 @@ if run_button:
             st.session_state.output_files["exception_report"] = exception_path
 
             progress_bar.progress(100)
-            status_text.text("â Pipeline complete!")
+            status_text.text("✓ Pipeline complete!")
             st.session_state.processing_complete = True
 
             # Brief success message
-            st.success("Pipeline processing complete!", icon="â")
+            st.success("Pipeline processing complete!", icon="✅")
 
         except Exception as e:
-            st.error(f"Pipeline error: {str(e)}", icon="â")
+            st.error(f"Pipeline error: {str(e)}", icon="❌")
             st.session_state.processing_complete = False
 
 
-# ââ Results dashboard ââââââââââââââââââââââââââââââââââââââââ
+# ── Results dashboard ────────────────────────────────────────
 if st.session_state.processing_complete and st.session_state.engine_result:
     result = st.session_state.engine_result
 
@@ -340,13 +256,13 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     status = result.status
     if status == "CLEAN":
         status_color = "#2ecc71"
-        status_text = "â CLEAN"
+        status_text = "✅ CLEAN"
     elif status == "WARNINGS":
         status_color = "#f39c12"
-        status_text = "â ï¸ WARNINGS"
+        status_text = "⚠️ WARNINGS"
     else:  # ERRORS
         status_color = "#e74c3c"
-        status_text = "â ERRORS"
+        status_text = "❌ ERRORS"
 
     st.markdown(f"""
     <div style="background-color: {status_color}20; border-left: 5px solid {status_color}; padding: 15px; border-radius: 5px; margin: 15px 0;">
@@ -399,7 +315,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     for parser_name, parsed_data in result.parsed.items():
         parser_data.append({
             "Parser": parser_name.replace("_", " ").title(),
-            "Status": "â Success",
+            "Status": "✅ Success",
         })
 
     if parser_data:
@@ -455,7 +371,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                 "Description": match.description,
                 "GL Amount": match.amount_a,
                 "Bank Amount": match.amount_b,
-                "Matched": "â" if match.matched else "â ï¸",
+                "Matched": "✅" if match.matched else "⚠️",
                 "Variance": abs(match.variance),
             })
 
@@ -468,7 +384,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                 "GL Amount": st.column_config.NumberColumn(format="$%,.2f"),
                 "Bank Amount": st.column_config.NumberColumn(format="$%,.2f"),
                 "Matched": st.column_config.TextColumn(),
-               "Variance": st.column_config.NumberColumn(format="$%,.2f"),
+                "Variance": st.column_config.NumberColumn(format="$%,.2f"),
             }
         )
         st.divider()
@@ -504,32 +420,32 @@ if st.session_state.processing_complete and st.session_state.engine_result:
         for i, exc in enumerate(result.exceptions):
             severity_class = f"exception-{exc.severity}"
             severity_badge = {
-                "error": "ð´ ERROR",
-                "warning": "ð¡ WARNING",
-                "info": "ðµ INFO",
-            }.get(exc.severity, "â¹ï¸ INFO")
+                "error": "🔴 ERROR",
+                "warning": "🟡 WARNING",
+                "info": "🔵 INFO",
+            }.get(exc.severity, "ℹ️ INFO")
 
-            with st.expander(f"{severity_badge} â\n {exc.description}"):
+            with st.expander(f"{severity_badge} — {exc.description}"):
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    st.write(f"**Category:*  {exc.category}")
-                    st.write(f"**Source:*  {exc.source}")
+                    st.write(f"**Category:** {exc.category}")
+                    st.write(f"**Source:** {exc.source}")
 
                 with col2:
                     if exc.details:
-                        st.write("**Details:*")
+                        st.write("**Details:**")
                         for key, val in exc.details.items():
                             st.write(f"- {key}: {val}")
     else:
-        st.success("No exceptions found! Pipeline validation passed.", icon="â")
+        st.success("No exceptions found! Pipeline validation passed.", icon="✅")
 
     st.divider()
 
     # Download section
     st.markdown("### Download Results")
 
-    col1, col2 = st.columns(2
+    col1, col2 = st.columns(2)
 
     with col1:
         if "monthly_report" in st.session_state.output_files:
@@ -537,7 +453,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             if os.path.exists(report_path):
                 with open(report_path, "rb") as f:
                     st.download_button(
-                        label="ð Download Monthly Report",
+                        label="📊 Download Monthly Report",
                         data=f.read(),
                         file_name=f"GA_Monthly_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -550,7 +466,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             if os.path.exists(exception_path):
                 with open(exception_path, "rb") as f:
                     st.download_button(
-                        label="ð Download Validation Report",
+                        label="📋 Download Validation Report",
                         data=f.read(),
                         file_name=f"GA_Exceptions_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -558,21 +474,21 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                     )
 
 
-# ââ Info section (when no processing yet) ââââââââââââââââââââââââââ
+# ── Info section (when no processing yet) ─────────────────────
 if not st.session_state.processing_complete:
     st.info("""
-    **Instructions:h** 
+    **Instructions:**
     1. Upload at least the **Yardi GL Detail** file (required)
     2. Upload any additional data files you have available
     3. Click **Run Pipeline** to process and generate reports
     4. Results and downloadable reports will appear below
-    """, icon="â¹ï¸")
+    """, icon="ℹ️")
 
 
-	# ââ Cleanup on session end ââââââââââââââââââââââââââââââââââââ
+# ── Cleanup on session end ───────────────────────────────────
 def cleanup_on_exit():
     """Clean up temporary files."""
-    if st.session_state.temp_dir and os.path.exists(st.session_state.temp_dir)
+    if st.session_state.temp_dir and os.path.exists(st.session_state.temp_dir):
         shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
 
 
