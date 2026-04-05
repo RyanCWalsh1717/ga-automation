@@ -130,3 +130,164 @@ def validate(filepath: str) -> Tuple[bool, List[str]]:
             issues.append("Expected at least 3 header columns")
 
     return len(issues) == 0, issues
+
+
+def _extract_metadata(ws) -> Dict:
+    """Extract metadata from title rows (rows 1-2)."""
+    metadata = {}
+
+    # Row 1: Title
+    title = ws.cell(1, 1).value
+    if title:
+        metadata['report_title'] = str(title).strip()
+
+    # Row 2: Property and AsOf date
+    prop_line = ws.cell(2, 1).value
+    if prop_line:
+        prop_str = str(prop_line)
+        metadata['report_details'] = prop_str
+
+        # Try to extract property code and date
+        if "Property:" in prop_str:
+            parts = prop_str.split("As of Date:")
+            if len(parts) > 1:
+                prop_part = parts[0].split("Property:")[1].strip()
+                metadata['property'] = prop_part.split()[0] if prop_part else None
+
+                date_part = parts[1].strip().split()[0] if len(parts) > 1 else None
+                if date_part:
+                    metadata['as_of_date'] = date_part
+
+    return metadata
+
+
+def _extract_headers(ws, row: int) -> List[str]:
+    """Extract and clean headers from a specific row."""
+    headers = []
+    for cell in ws[row]:
+        value = cell.value
+        if value:
+            # Clean up whitespace and newlines
+            clean_value = str(value).replace('\n', ' ').strip()
+            headers.append(clean_value)
+        else:
+            headers.append(None)
+    return headers
+
+
+def _build_unit_record(headers: List[str], row_values: List, metadata: Dict) -> Optional[Dict]:
+    """Build a complete unit record from header and value rows."""
+    if not row_values or all(v is None for v in row_values):
+        return None
+
+    record = {}
+
+    # Build the record with available values
+    for i, header in enumerate(headers):
+        if header and i < len(row_values):
+            value = row_values[i]
+            # Use normalized key names
+            key = _normalize_header_name(header)
+            record[key] = _normalize_value(value)
+
+    # Add metadata
+    record.update(metadata)
+
+    return record if any(v is not None for v in record.values()) else None
+
+
+def _extract_rent_step_data(headers: List[str], row_values: List) -> Optional[Dict]:
+    """Extract rent step information from a continuation row."""
+    rent_step_data = {}
+
+    # Look for rent step columns in the row
+    for i, header in enumerate(headers):
+        if header and i < len(row_values):
+            value = row_values[i]
+            if value is not None:
+                key = _normalize_header_name(header)
+                rent_step_data[key] = _normalize_value(value)
+
+    return rent_step_data if rent_step_data else None
+
+
+def _normalize_header_name(header: str) -> str:
+    """Convert header name to normalized snake_case key."""
+    if not header:
+        return ""
+
+    # Remove special characters and convert to lowercase with underscores
+    header = header.strip().lower()
+    header = header.replace(' ', '_').replace('/', '_').replace('-', '_')
+    # Remove duplicate underscores
+    while '__' in header:
+        header = header.replace('__', '_')
+    return header.strip('_')
+
+
+def _normalize_value(value):
+    """Normalize values for consistent output."""
+    if value is None:
+        return None
+
+    # Convert datetime to ISO format string
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    # Handle numeric values
+    if isinstance(value, (int, float)):
+        return value
+
+    # Handle strings - strip whitespace
+    if isinstance(value, str):
+        return value.strip()
+
+    return value
+
+
+def _normalize_numeric(value):
+    """Normalize numeric values, handling None and strings."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return value
+
+    if isinstance(value, str):
+        try:
+            if '.' not in value:
+                return int(value)
+            return float(value)
+        except (ValueError, AttributeError):
+            return None
+
+    return value
+
+
+if __name__ == "__main__":
+    import sys
+    import json
+
+    if len(sys.argv) < 2:
+        print("Usage: python yardi_rent_roll.py <filepath>")
+        sys.exit(1)
+
+    filepath = sys.argv[1]
+
+    # Validate
+    is_valid, issues = validate(filepath)
+    if not is_valid:
+        print(f"Validation errors:")
+        for issue in issues:
+            print(f"  - {issue}")
+        sys.exit(1)
+
+    # Parse
+    data = parse(filepath)
+    print(f"Successfully parsed {len(data)} rent roll records")
+    print(f"\nSample records (first 2 entries):")
+    for i, record in enumerate(data[:2]):
+        print(f"\nRecord {i+1}:")
+        # Print a subset of keys to avoid overwhelming output
+        sample = {k: v for k, v in list(record.items())[:10]}
+        print(json.dumps(sample, indent=2, default=str))
