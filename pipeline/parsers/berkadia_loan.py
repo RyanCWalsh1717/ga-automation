@@ -256,18 +256,17 @@ if __name__ == "__main__":
     loans = parse(filepath)
 
     # Print summary
-    print(f{\nÂ}==80})
+    print(f"\n{'='*80}")
     print(f"Berkadia Loan Statement Parser - {filepath.split('/')[-1]}")
-    print(f{\.==80})
-    print()
+    print(f"{'='*80}\n")
 
     for idx, loan in enumerate(loans, 1):
         principal = loan.get('principal_balance') or 0
         tax_escrow = loan.get('tax_escrow_balance') or 0
         ins_escrow = loan.get('insurance_escrow_balance') or 0
         reserve = loan.get('reserve_balance') or 0
-        total_due = loan.get('total_payment_due') or d
-        
+        total_due = loan.get('total_payment_due') or 0
+
         print(f"Loan {idx}:")
         print(f"  Property: {loan.get('property_name')}")
         print(f"  Loan #: {loan.get('loan_number')}")
