@@ -1,5 +1,5 @@
 """
-GA Automation — Monthly Report Pipeline
+GA Automation â Monthly Report Pipeline
 ========================================
 A Streamlit web app for the Greatland Realty Partners CRE accounting pipeline.
 Processes Yardi, Nexus, bank, and loan exports to produce monthly reports for Singerman.
@@ -14,23 +14,26 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
-# ── Setup paths ──────────────────────────────────────────────
+# ââ Setup paths ââââââââââââââââââââââââââââââââââââââââââââââ
 pipeline_dir = Path(__file__).parent / "pipeline"
 if str(pipeline_dir) not in sys.path:
     sys.path.insert(0, str(pipeline_dir))
 
 from engine import run_pipeline, EngineResult
 from report_generator import generate_report, generate_exception_report
+from workpaper_generator import generate_workpapers
+from accrual_entry_generator import build_accrual_entries, generate_yardi_je_import
+from variance_comments import generate_variance_comments
 
 
-# ── Page configuration ───────────────────────────────────────
+# ââ Page configuration âââââââââââââââââââââââââââââââââââââââ
 st.set_page_config(
     page_title="GA Automation",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS for styling ───────────────────────────────────
+# ââ Custom CSS for styling âââââââââââââââââââââââââââââââââââ
 st.markdown("""
 <style>
     :root {
@@ -98,7 +101,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Session state initialization ─────────────────────────────
+# ââ Session state initialization âââââââââââââââââââââââââââââ
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = {}
 
@@ -115,14 +118,14 @@ if "temp_dir" not in st.session_state:
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
 
 
-# ── Header ───────────────────────────────────────────────────
+# ââ Header âââââââââââââââââââââââââââââââââââââââââââââââââââ
 st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
-st.markdown("### GA Automation — Monthly Report Pipeline")
+st.markdown("### GA Automation â Monthly Report Pipeline")
 st.markdown("**Revolution Labs | 1050 Waltham**")
 st.divider()
 
 
-# ── Sidebar: File uploads ────────────────────────────────────
+# ââ Sidebar: File uploads ââââââââââââââââââââââââââââââââââââ
 st.sidebar.markdown("## File Uploads")
 
 file_config = {
@@ -156,7 +159,7 @@ for key, (label, file_type, required) in file_config.items():
 
     with col2:
         if key in st.session_state.uploaded_files:
-            st.markdown("✅")
+            st.markdown("â")
 
 # Display file count
 uploaded_count = len(st.session_state.uploaded_files)
@@ -167,24 +170,24 @@ gl_uploaded = "gl" in st.session_state.uploaded_files
 st.sidebar.divider()
 
 if not gl_uploaded:
-    st.sidebar.warning("⚠️ GL Detail file is required to run the pipeline.")
+    st.sidebar.warning("â ï¸ GL Detail file is required to run the pipeline.")
 
 
-# ── Main content ─────────────────────────────────────────────
+# ââ Main content âââââââââââââââââââââââââââââââââââââââââââââ
 
 # Process button
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
 
 with col_btn1:
     run_button = st.button(
-        "🚀 Run Pipeline",
+        "ð Run Pipeline",
         disabled=not gl_uploaded,
         use_container_width=True,
         key="run_pipeline_btn",
     )
 
 with col_btn2:
-    if st.button("🔄 Reset", use_container_width=True):
+    if st.button("ð Reset", use_container_width=True):
         st.session_state.processing_complete = False
         st.session_state.engine_result = None
         st.session_state.output_files = {}
@@ -196,7 +199,7 @@ with col_btn2:
 st.divider()
 
 
-# ── Processing ───────────────────────────────────────────────
+# ââ Processing âââââââââââââââââââââââââââââââââââââââââââââââ
 if run_button:
     with st.spinner("Processing pipeline..."):
         try:
@@ -225,27 +228,75 @@ if run_button:
             generate_report(engine_result, report_path)
             st.session_state.output_files["monthly_report"] = report_path
 
-            # Step 3: Generate exception report
-            status_text.text("Step 3/3: Generating validation report...")
-            progress_bar.progress(85)
+            # Step 3: Generate workpapers
+            status_text.text("Step 3/4: Generating workpapers...")
+            progress_bar.progress(70)
+
+            workpaper_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
+            generate_workpapers(engine_result, workpaper_path)
+            st.session_state.output_files["workpapers"] = workpaper_path
+
+            # Step 4: Generate accrual JE import
+            status_text.text("Step 4/5: Generating accrual entries...")
+            progress_bar.progress(80)
+
+            nexus_data = engine_result.parsed.get('nexus_accrual')
+            gl_parsed = engine_result.parsed.get('gl')
+            bc_parsed = engine_result.parsed.get('budget_comparison')
+
+            je_lines = build_accrual_entries(
+                nexus_data or [],
+                period=engine_result.period or '',
+                property_name=engine_result.property_name or '',
+                gl_data=gl_parsed,
+                budget_data=bc_parsed,
+            )
+            if je_lines:
+                    je_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.xlsx")
+                    generate_yardi_je_import(
+                        je_lines, je_path,
+                        period=engine_result.period or '',
+                        property_name=engine_result.property_name or '',
+                    )
+                    st.session_state.output_files["accrual_je"] = je_path
+
+            # Step 5: Generate variance comments
+            status_text.text("Step 5/6: Generating variance comments...")
+            progress_bar.progress(88)
+
+            api_key = None
+            try:
+                api_key = st.secrets.get("ANTHROPIC_API_KEY")
+            except Exception:
+                pass  # No secrets configured
+
+            if engine_result.budget_variances:
+                var_comments = generate_variance_comments(engine_result, api_key=api_key)
+                st.session_state.output_files["variance_comments"] = var_comments
+            else:
+                st.session_state.output_files["variance_comments"] = []
+
+            # Step 6: Generate exception report
+            status_text.text("Step 6/6: Generating validation report...")
+            progress_bar.progress(95)
 
             exception_path = os.path.join(st.session_state.temp_dir, "GA_Exceptions_Report.xlsx")
             generate_exception_report(engine_result, exception_path)
             st.session_state.output_files["exception_report"] = exception_path
 
             progress_bar.progress(100)
-            status_text.text("✓ Pipeline complete!")
+            status_text.text("â Pipeline complete!")
             st.session_state.processing_complete = True
 
             # Brief success message
-            st.success("Pipeline processing complete!", icon="✅")
+            st.success("Pipeline processing complete!", icon="â")
 
         except Exception as e:
-            st.error(f"Pipeline error: {str(e)}", icon="❌")
+            st.error(f"Pipeline error: {str(e)}", icon="â")
             st.session_state.processing_complete = False
 
 
-# ── Results dashboard ────────────────────────────────────────
+# ââ Results dashboard ââââââââââââââââââââââââââââââââââââââââ
 if st.session_state.processing_complete and st.session_state.engine_result:
     result = st.session_state.engine_result
 
@@ -256,13 +307,13 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     status = result.status
     if status == "CLEAN":
         status_color = "#2ecc71"
-        status_text = "✅ CLEAN"
+        status_text = "â CLEAN"
     elif status == "WARNINGS":
         status_color = "#f39c12"
-        status_text = "⚠️ WARNINGS"
+        status_text = "â ï¸ WARNINGS"
     else:  # ERRORS
         status_color = "#e74c3c"
-        status_text = "❌ ERRORS"
+        status_text = "â ERRORS"
 
     st.markdown(f"""
     <div style="background-color: {status_color}20; border-left: 5px solid {status_color}; padding: 15px; border-radius: 5px; margin: 15px 0;">
@@ -315,7 +366,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     for parser_name, parsed_data in result.parsed.items():
         parser_data.append({
             "Parser": parser_name.replace("_", " ").title(),
-            "Status": "✅ Success",
+            "Status": "â Success",
         })
 
     if parser_data:
@@ -331,19 +382,31 @@ if st.session_state.processing_complete and st.session_state.engine_result:
 
     st.divider()
 
-    # Budget variances
+    # Budget variances with comments
     if result.budget_variances:
         st.markdown("### Budget Variances (Flagged)")
 
+        # Get variance comments if generated
+        var_comments = st.session_state.output_files.get("variance_comments", [])
+        comments_map = {vc['account_code']: vc.get('comment', '') for vc in var_comments} if var_comments else {}
+        comment_method = var_comments[0].get('method', 'data-driven') if var_comments else 'none'
+
+        if comment_method == 'api':
+            st.caption("Variance comments generated via Claude API")
+        elif comment_method == 'data-driven':
+            st.caption("Variance comments generated from GL transaction detail (configure ANTHROPIC_API_KEY in Streamlit secrets for narrative comments)")
+
         variance_data = []
         for var in result.budget_variances:
+            code = var.get("account_code", "")
             variance_data.append({
-                "Account Code": var.get("account_code", ""),
+                "Account Code": code,
                 "Account Name": var.get("account_name", ""),
                 "Actual": var.get("ptd_actual", 0),
                 "Budget": var.get("ptd_budget", 0),
                 "Variance": var.get("variance", 0),
                 "Variance %": f"{var.get('variance_pct', 0):.1f}%",
+                "Comment": comments_map.get(code, ''),
             })
 
         st.dataframe(
@@ -351,12 +414,13 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Account Code": st.column_config.TextColumn(),
-                "Account Name": st.column_config.TextColumn(),
+                "Account Code": st.column_config.TextColumn(width="small"),
+                "Account Name": st.column_config.TextColumn(width="medium"),
                 "Actual": st.column_config.NumberColumn(format="$%,.2f"),
                 "Budget": st.column_config.NumberColumn(format="$%,.2f"),
                 "Variance": st.column_config.NumberColumn(format="$%,.2f"),
-                "Variance %": st.column_config.TextColumn(),
+                "Variance %": st.column_config.TextColumn(width="small"),
+                "Comment": st.column_config.TextColumn(width="large"),
             }
         )
         st.divider()
@@ -371,7 +435,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                 "Description": match.description,
                 "GL Amount": match.amount_a,
                 "Bank Amount": match.amount_b,
-                "Matched": "✅" if match.matched else "⚠️",
+                "Matched": "â" if match.matched else "â ï¸",
                 "Variance": abs(match.variance),
             })
 
@@ -420,12 +484,12 @@ if st.session_state.processing_complete and st.session_state.engine_result:
         for i, exc in enumerate(result.exceptions):
             severity_class = f"exception-{exc.severity}"
             severity_badge = {
-                "error": "🔴 ERROR",
-                "warning": "🟡 WARNING",
-                "info": "🔵 INFO",
-            }.get(exc.severity, "ℹ️ INFO")
+                "error": "ð´ ERROR",
+                "warning": "ð¡ WARNING",
+                "info": "ðµ INFO",
+            }.get(exc.severity, "â¹ï¸ INFO")
 
-            with st.expander(f"{severity_badge} — {exc.description}"):
+            with st.expander(f"{severity_badge} â {exc.description}"):
                 col1, col2 = st.columns(2)
 
                 with col1:
@@ -438,7 +502,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                         for key, val in exc.details.items():
                             st.write(f"- {key}: {val}")
     else:
-        st.success("No exceptions found! Pipeline validation passed.", icon="✅")
+        st.success("No exceptions found! Pipeline validation passed.", icon="â")
 
     st.divider()
 
@@ -453,7 +517,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             if os.path.exists(report_path):
                 with open(report_path, "rb") as f:
                     st.download_button(
-                        label="📊 Download Monthly Report",
+                        label="ð Download Monthly Report",
                         data=f.read(),
                         file_name=f"GA_Monthly_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -461,12 +525,40 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                     )
 
     with col2:
+        if "workpapers" in st.session_state.output_files:
+            wp_path = st.session_state.output_files["workpapers"]
+            if os.path.exists(wp_path):
+                with open(wp_path, "rb") as f:
+                    st.download_button(
+                        label="ð Download Workpapers",
+                        data=f.read(),
+                        file_name=f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        if "accrual_je" in st.session_state.output_files:
+            je_path = st.session_state.output_files["accrual_je"]
+            if os.path.exists(je_path):
+                with open(je_path, "rb") as f:
+                    st.download_button(
+                        label="ð Download Accrual JE Import",
+                        data=f.read(),
+                        file_name=f"GA_Accrual_JE_Import_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+    with col4:
         if "exception_report" in st.session_state.output_files:
             exception_path = st.session_state.output_files["exception_report"]
             if os.path.exists(exception_path):
                 with open(exception_path, "rb") as f:
                     st.download_button(
-                        label="📋 Download Validation Report",
+                        label="ð Download Validation Report",
                         data=f.read(),
                         file_name=f"GA_Exceptions_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -474,7 +566,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                     )
 
 
-# ── Info section (when no processing yet) ─────────────────────
+# ââ Info section (when no processing yet) âââââââââââââââââââââ
 if not st.session_state.processing_complete:
     st.info("""
     **Instructions:**
@@ -482,10 +574,10 @@ if not st.session_state.processing_complete:
     2. Upload any additional data files you have available
     3. Click **Run Pipeline** to process and generate reports
     4. Results and downloadable reports will appear below
-    """, icon="ℹ️")
+    """, icon="â¹ï¸")
 
 
-# ── Cleanup on session end ───────────────────────────────────
+# ââ Cleanup on session end âââââââââââââââââââââââââââââââââââ
 def cleanup_on_exit():
     """Clean up temporary files."""
     if st.session_state.temp_dir and os.path.exists(st.session_state.temp_dir):
