@@ -71,10 +71,10 @@ def parse(filepath: str) -> List[Dict]:
         if account_code is None:
             continue
 
-        # Build record
+        # Build record — force code/name to str (Excel may return floats)
         record = {
-            'account_code': _normalize_value(account_code),
-            'account_name': _normalize_value(account_name),
+            'account_code': str(_normalize_value(account_code) or '').strip(),
+            'account_name': str(_normalize_value(account_name) or '').strip(),
         }
 
         # Extract numeric values from remaining columns
