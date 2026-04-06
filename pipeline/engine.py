@@ -399,7 +399,7 @@ def check_budget_variances(is_result, budget_result, threshold_pct=10.0) -> Tupl
             except ValueError:
                 var_pct = 0
 
-        if abs(var_pct) >= threshold_pct and abs(variance) >= 500:
+        if abs(var_pct) >= threshold_pct and abs(variance) >= 2500:
             variances.append({
                 "account_code": code,
                 "account_name": name,
