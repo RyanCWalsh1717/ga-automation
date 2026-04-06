@@ -96,8 +96,8 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
                 amount = _parse_amount(row[10]) if len(row) > 10 else 0.0
 
                 record = {
-                    'vendor': current_vendor,
-                    'property': property_val,
+                    'vendor': str(current_vendor),
+                    'property': str(property_val),
                     'received_date': received_date,
                     'invoice_number': str(row[4]) if len(row) > 4 else '',
                     'invoice_date': invoice_date,
