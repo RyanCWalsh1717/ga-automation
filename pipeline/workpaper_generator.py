@@ -2,10 +2,10 @@
 Workpaper Generator for GA Automation Pipeline
 ================================================
 Produces institutional-grade workpapers for month-end close:
-  1. Bank Reconciliation â GL to bank tie-out with outstanding items
-  2. Debt Service Schedule â P&I breakout, escrow recon, payment detail
-  3. Rent Roll Tie-Out â Lease-level billed vs collected vs GL revenue
-  4. Accrual Schedule â Invoice aging, vendor detail, accrued vs paid
+  1. Bank Reconciliation — GL to bank tie-out with outstanding items
+  2. Debt Service Schedule — P&I breakout, escrow recon, payment detail
+  3. Rent Roll Tie-Out — Lease-level billed vs collected vs GL revenue
+  4. Accrual Schedule — Invoice aging, vendor detail, accrued vs paid
 
 Each tab is formatted as a standalone workpaper suitable for
 inclusion in a Singerman close binder.
@@ -23,7 +23,7 @@ from accrual_entry_generator import (
 )
 
 
-# ââ Styling ââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Styling ──────────────────────────────────────────────────
 
 DARK_BLUE = '1F4E78'
 MED_BLUE = '2E75B6'
@@ -119,7 +119,7 @@ def _auto_width(ws, max_cols, min_width=10, max_width=50):
         ws.column_dimensions[letter].width = min(best, max_width)
 
 
-# ââ 1. BANK RECONCILIATION ââââââââââââââââââââââââââââââââââ
+# ── 1. BANK RECONCILIATION ──────────────────────────────────
 
 def _write_bank_recon_workpaper(wb, engine_result):
     """
@@ -164,7 +164,7 @@ def _write_bank_recon_workpaper(wb, engine_result):
         bank_ach = bank_data.get('ach_debits', [])
         bank_wires = bank_data.get('wire_transfers', [])
 
-    # ââ Build outstanding checks list ââ
+    # ── Build outstanding checks list ──
     # GL check transactions = control starts with K- or P- (check payments)
     # that are NOT matched to bank cleared checks by amount
     gl_check_txns = []
@@ -189,16 +189,16 @@ def _write_bank_recon_workpaper(wb, engine_result):
     for txn in gl_check_txns:
         key = f"{txn.credit:.2f}"
         if key in bank_check_amounts and bank_check_amounts[key]:
-            # Matched â this check cleared
+            # Matched — this check cleared
             matched_chk = bank_check_amounts[key].pop(0)
             cleared_gl_checks.append((txn, matched_chk))
         else:
-            # Outstanding â in GL but not on bank statement
+            # Outstanding — in GL but not on bank statement
             outstanding_checks.append(txn)
 
     total_outstanding = sum(t.credit for t in outstanding_checks)
 
-    # ââ Deposits in transit ââ
+    # ── Deposits in transit ──
     # GL debit entries to cash that don't match bank deposits
     gl_deposit_txns = []
     if gl_cash and hasattr(gl_cash, 'transactions'):
@@ -224,9 +224,9 @@ def _write_bank_recon_workpaper(wb, engine_result):
 
     total_dit = sum(t.debit for t in deposits_in_transit)
 
-    # ââ Write workpaper ââ
+    # ── Write workpaper ──
     row = 1
-    _title_row(ws, row, f'Bank Reconciliation â {prop}')
+    _title_row(ws, row, f'Bank Reconciliation — {prop}')
     row += 1
     _subtitle_row(ws, row, f'Period: {period}  |  GL Account: 111100 Cash-Operating  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     row += 2
@@ -382,7 +382,7 @@ def _write_bank_recon_workpaper(wb, engine_result):
     ws.sheet_properties.tabColor = '2E75B6'
 
 
-# ââ 2. DEBT SERVICE SCHEDULE ââââââââââââââââââââââââââââââââ
+# ── 2. DEBT SERVICE SCHEDULE ────────────────────────────────
 
 def _write_debt_service_workpaper(wb, engine_result):
     """
@@ -408,7 +408,7 @@ def _write_debt_service_workpaper(wb, engine_result):
         loans = loan_data.get('loans', [])
 
     row = 1
-    _title_row(ws, row, f'Debt Service Schedule â {prop}', cols=10)
+    _title_row(ws, row, f'Debt Service Schedule — {prop}', cols=10)
     row += 1
     _subtitle_row(ws, row, f'Period: {period}  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}', cols=10)
     row += 2
@@ -545,7 +545,7 @@ def _write_debt_service_workpaper(wb, engine_result):
                 break
 
     tieout = [
-        ('GL Interest Expense (801110) â PTD', gl_interest),
+        ('GL Interest Expense (801110) — PTD', gl_interest),
         ('Loan Statement Interest Paid YTD', loan_interest),
         ('Note: GL is period-to-date; loan statement is year-to-date', None),
         ('', None),
@@ -571,7 +571,7 @@ def _write_debt_service_workpaper(wb, engine_result):
     ws.sheet_properties.tabColor = '548235'
 
 
-# ââ 3. RENT ROLL TIE-OUT ââââââââââââââââââââââââââââââââââââ
+# ── 3. RENT ROLL TIE-OUT ────────────────────────────────────
 
 def _write_rent_roll_workpaper(wb, engine_result):
     """
@@ -589,7 +589,7 @@ def _write_rent_roll_workpaper(wb, engine_result):
     prop = engine_result.property_name or 'N/A'
 
     row = 1
-    _title_row(ws, row, f'Rent Roll Tie-Out â {prop}', cols=10)
+    _title_row(ws, row, f'Rent Roll Tie-Out — {prop}', cols=10)
     row += 1
     _subtitle_row(ws, row, f'Period: {period}  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}', cols=10)
     row += 2
@@ -728,7 +728,7 @@ def _write_rent_roll_workpaper(wb, engine_result):
     ws.sheet_properties.tabColor = 'BF8F00'
 
 
-# ââ 4. ACCRUAL SCHEDULE âââââââââââââââââââââââââââââââââââââ
+# ── 4. ACCRUAL SCHEDULE ─────────────────────────────────────
 
 def _write_accrual_workpaper(wb, engine_result):
     """
@@ -748,7 +748,7 @@ def _write_accrual_workpaper(wb, engine_result):
     invoices = nexus_data if isinstance(nexus_data, list) else []
 
     row = 1
-    _title_row(ws, row, f'Accrual Schedule â {prop}', cols=10)
+    _title_row(ws, row, f'Accrual Schedule — {prop}', cols=10)
     row += 1
     _subtitle_row(ws, row, f'Period: {period}  |  Source: Nexus Accrual Detail  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}', cols=10)
     row += 2
@@ -770,14 +770,14 @@ def _write_accrual_workpaper(wb, engine_result):
     aging_buckets = {'0-30': 0, '31-60': 0, '61-90': 0, '90+': 0}
 
     for i, inv in enumerate(invoices):
-        vendor = inv.get('vendor', '') if isinstance(inv, dict) else getattr(inv, 'vendor', '')
-        inv_num = inv.get('invoice_number', '') if isinstance(inv, dict) else getattr(inv, 'invoice_number', '')
+        vendor = str(inv.get('vendor', '') if isinstance(inv, dict) else getattr(inv, 'vendor', '') or '')
+        inv_num = str(inv.get('invoice_number', '') if isinstance(inv, dict) else getattr(inv, 'invoice_number', '') or '')
         inv_date = inv.get('invoice_date', '') if isinstance(inv, dict) else getattr(inv, 'invoice_date', '')
         recv_date = inv.get('received_date', '') if isinstance(inv, dict) else getattr(inv, 'received_date', '')
-        gl_acct = inv.get('gl_account', '') if isinstance(inv, dict) else getattr(inv, 'gl_account', '')
-        gl_cat = inv.get('gl_category', '') if isinstance(inv, dict) else getattr(inv, 'gl_category', '')
-        desc = inv.get('line_description', '') if isinstance(inv, dict) else getattr(inv, 'line_description', '')
-        status = inv.get('invoice_status', '') if isinstance(inv, dict) else getattr(inv, 'invoice_status', '')
+        gl_acct = str(inv.get('gl_account', '') if isinstance(inv, dict) else getattr(inv, 'gl_account', '') or '')
+        gl_cat = str(inv.get('gl_category', '') if isinstance(inv, dict) else getattr(inv, 'gl_category', '') or '')
+        desc = str(inv.get('line_description', '') if isinstance(inv, dict) else getattr(inv, 'line_description', '') or '')
+        status = str(inv.get('invoice_status', '') if isinstance(inv, dict) else getattr(inv, 'invoice_status', '') or '')
         amount = inv.get('amount', 0) if isinstance(inv, dict) else getattr(inv, 'amount', 0)
         amount = amount or 0
 
@@ -912,7 +912,7 @@ def _write_accrual_workpaper(wb, engine_result):
     ws.sheet_properties.tabColor = 'C00000'
 
 
-# ââ Main entry point âââââââââââââââââââââââââââââââââââââââââ
+# ── Main entry point ─────────────────────────────────────────
 
 def generate_workpapers(engine_result, output_path: str) -> str:
     """
