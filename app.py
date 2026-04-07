@@ -22,6 +22,7 @@ if str(pipeline_dir) not in sys.path:
 from engine import run_pipeline, EngineResult
 from report_generator import generate_report, generate_exception_report
 from workpaper_generator import generate_workpapers
+import traceback
 from accrual_entry_generator import build_accrual_entries, generate_yardi_je_import
 from variance_comments import generate_variance_comments
 
@@ -292,7 +293,9 @@ if run_button:
             st.success("Pipeline processing complete!", icon="✅")
 
         except Exception as e:
+            tb = traceback.format_exc()
             st.error(f"Pipeline error: {str(e)}", icon="❌")
+            st.code(tb, language="python")
             st.session_state.processing_complete = False
 
 
@@ -310,7 +313,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
         status_text = "✅ CLEAN"
     elif status == "WARNINGS":
         status_color = "#f39c12"
-        status_text = "⚠️ WARNINGS"
+        status_text = "➠️ WARNINGS"
     else:  # ERRORS
         status_color = "#e74c3c"
         status_text = "❌ ERRORS"
@@ -525,64 +528,4 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                     )
 
     with col2:
-        if "workpapers" in st.session_state.output_files:
-            wp_path = st.session_state.output_files["workpapers"]
-            if os.path.exists(wp_path):
-                with open(wp_path, "rb") as f:
-                    st.download_button(
-                        label="📑 Download Workpapers",
-                        data=f.read(),
-                        file_name=f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-    col3, col4 = st.columns(2)
-
-    with col3:
-        if "accrual_je" in st.session_state.output_files:
-            je_path = st.session_state.output_files["accrual_je"]
-            if os.path.exists(je_path):
-                with open(je_path, "rb") as f:
-                    st.download_button(
-                        label="📝 Download Accrual JE Import",
-                        data=f.read(),
-                        file_name=f"GA_Accrual_JE_Import_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-    with col4:
-        if "exception_report" in st.session_state.output_files:
-            exception_path = st.session_state.output_files["exception_report"]
-            if os.path.exists(exception_path):
-                with open(exception_path, "rb") as f:
-                    st.download_button(
-                        label="📋 Download Validation Report",
-                        data=f.read(),
-                        file_name=f"GA_Exceptions_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-
-# ── Info section (when no processing yet) ─────────────────────
-if not st.session_state.processing_complete:
-    st.info("""
-    **Instructions:**
-    1. Upload at least the **Yardi GL Detail** file (required)
-    2. Upload any additional data files you have available
-    3. Click **Run Pipeline** to process and generate reports
-    4. Results and downloadable reports will appear below
-    """, icon="ℹ️")
-
-
-# ── Cleanup on session end ───────────────────────────────────
-def cleanup_on_exit():
-    """Clean up temporary files."""
-    if st.session_state.temp_dir and os.path.exists(st.session_state.temp_dir):
-        shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
-
-
-import atexit
-atexit.register(cleanup_on_exit)
+        if "workpapers" in st.ses
