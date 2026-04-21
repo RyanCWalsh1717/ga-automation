@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(pip *)",
+      "Bash(git *)",
+      "Bash(ls *)",
+      "Bash(which *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Read(./.env)"
+    ]
+  }
+}

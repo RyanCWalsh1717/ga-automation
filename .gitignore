@@ -8,3 +8,4 @@ __pycache__/
 *.docx
 !requirements.txt
 .env
+.claude/settings.local.json
