@@ -25,6 +25,8 @@ from workpaper_generator import generate_workpapers
 import traceback
 from accrual_entry_generator import build_accrual_entries, generate_yardi_je_import
 from variance_comments import generate_variance_comments
+from qc_engine import run_qc, generate_qc_workbook
+from management_fee import calculate as calculate_mgmt_fee, accrued_fee_from_bc
 
 
 # ── Page configuration ───────────────────────────────────────
@@ -131,6 +133,7 @@ st.sidebar.markdown("## File Uploads")
 
 file_config = {
     "gl": ("Yardi GL Detail (.xlsx)", "*.xlsx", True),
+    "trial_balance": ("Yardi Trial Balance (.xlsx)", "*.xlsx", False),
     "income_statement": ("Yardi Income Statement (.xlsx)", "*.xlsx", False),
     "budget_comparison": ("Yardi Budget Comparison (.xlsx)", "*.xlsx", False),
     "rent_roll": ("Yardi Rent Roll (.xlsx)", "*.xlsx", False),
@@ -172,6 +175,19 @@ st.sidebar.divider()
 
 if not gl_uploaded:
     st.sidebar.warning("⚠️ GL Detail file is required to run the pipeline.")
+
+# ── QC Settings ─────────────────────────────────────────────────
+st.sidebar.markdown("## QC Settings")
+cash_received_override = st.sidebar.number_input(
+    "Cash Received Override ($)",
+    min_value=0.0,
+    value=0.0,
+    step=1000.0,
+    format="%.2f",
+    help="Override auto-detected cash received for management fee calc. Leave 0 to auto-detect from GL.",
+)
+cash_received_override = cash_received_override if cash_received_override > 0 else None
+st.sidebar.divider()
 
 
 # ── Main content ─────────────────────────────────────────────
@@ -261,9 +277,71 @@ if run_button:
                     )
                     st.session_state.output_files["accrual_je"] = je_path
 
-            # Step 5: Generate variance comments
-            status_text.text("Step 5/6: Generating variance comments...")
+            # Step 5: Management fee calculation
+            status_text.text("Step 5/7: Calculating management fee...")
+            progress_bar.progress(82)
+
+            try:
+                from parsers.yardi_trial_balance import parse as parse_tb
+                tb_result = None
+                if "trial_balance" in st.session_state.uploaded_files:
+                    tb_result = parse_tb(st.session_state.uploaded_files["trial_balance"])
+                st.session_state.output_files["tb_result"] = tb_result
+            except Exception:
+                tb_result = None
+                st.session_state.output_files["tb_result"] = None
+
+            gl_data_for_fee = engine_result.parsed.get('gl')
+            fee_result = calculate_mgmt_fee(
+                gl_parsed=gl_data_for_fee,
+                budget_rows=bc_parsed or [],
+                manual_override=cash_received_override,
+            )
+            st.session_state.output_files["fee_result"] = fee_result
+
+            # Step 6: Run QC engine
+            status_text.text("Step 6/7: Running QC checks...")
             progress_bar.progress(88)
+
+            try:
+                from parsers.kardin_budget import parse as parse_kardin
+                kardin_records = []
+                if "kardin_budget" in st.session_state.uploaded_files:
+                    kardin_records = parse_kardin(st.session_state.uploaded_files["kardin_budget"])
+            except Exception:
+                kardin_records = []
+
+            # Derive period_month from engine_result period string
+            _period_month = 1
+            try:
+                import re as _re
+                _m = _re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', engine_result.period or '')
+                _month_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+                if _m:
+                    _period_month = _month_map.get(_m.group(1), 1)
+            except Exception:
+                pass
+
+            qc_report = run_qc(
+                budget_rows=bc_parsed or [],
+                tb_result=tb_result,
+                gl_parsed=gl_data_for_fee,
+                kardin_records=kardin_records,
+                accrual_entries=je_lines if je_lines else [],
+                period=engine_result.period or '',
+                property_name=engine_result.property_name or 'Revolution Labs Owner, LLC',
+                period_month=_period_month,
+                cash_received=fee_result.cash_received if fee_result.cash_received > 0 else None,
+            )
+            st.session_state.output_files["qc_report"] = qc_report
+
+            qc_path = os.path.join(st.session_state.temp_dir, "GA_QC_Workbook.xlsx")
+            generate_qc_workbook(qc_report, qc_path)
+            st.session_state.output_files["qc_workbook"] = qc_path
+
+            # Step 7: Generate variance comments
+            status_text.text("Step 7/7: Generating variance comments...")
+            progress_bar.progress(92)
 
             api_key = None
             try:
@@ -277,9 +355,9 @@ if run_button:
             else:
                 st.session_state.output_files["variance_comments"] = []
 
-            # Step 6: Generate exception report
-            status_text.text("Step 6/6: Generating validation report...")
-            progress_bar.progress(95)
+            # Step 8: Generate exception report
+            status_text.text("Step 7/7: Generating validation report...")
+            progress_bar.progress(96)
 
             exception_path = os.path.join(st.session_state.temp_dir, "GA_Exceptions_Report.xlsx")
             generate_exception_report(engine_result, exception_path)
@@ -323,6 +401,62 @@ if st.session_state.processing_complete and st.session_state.engine_result:
         <h3 style="color: {status_color}; margin: 0;">{status_text}</h3>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── QC Summary Panel ──────────────────────────────────────────
+    qc_report = st.session_state.output_files.get("qc_report")
+    if qc_report:
+        st.markdown("### QC Checks")
+        qc_overall = qc_report.overall_status
+        qc_color = {'PASS': '#2ecc71', 'FLAG': '#f39c12', 'FAIL': '#e74c3c'}.get(qc_overall, '#95a5a6')
+        qc_icon = {'PASS': '✅', 'FLAG': '⚠️', 'FAIL': '❌'}.get(qc_overall, 'ℹ️')
+        st.markdown(f"""
+        <div style="background:{qc_color}20;border-left:5px solid {qc_color};padding:10px 15px;border-radius:5px;margin:10px 0 5px;">
+            <strong style="color:{qc_color};">{qc_icon} QC Overall: {qc_overall}</strong>
+            &nbsp;&nbsp;&nbsp;{sum(1 for c in qc_report.checks if c.status=='PASS')} PASS &nbsp;
+            {sum(1 for c in qc_report.checks if c.status=='FLAG')} FLAG &nbsp;
+            {sum(1 for c in qc_report.checks if c.status=='FAIL')} FAIL
+        </div>
+        """, unsafe_allow_html=True)
+
+        qc_rows = []
+        for chk in qc_report.checks:
+            chk_icon = {'PASS': '✅', 'FLAG': '⚠️', 'FAIL': '❌'}.get(chk.status, '')
+            qc_rows.append({
+                "Check": chk.check_id.replace('CHECK_', '') + ' — ' + chk.check_name,
+                "Status": f"{chk_icon} {chk.status}",
+                "Findings": chk.flag_count,
+                "Summary": chk.summary,
+            })
+        st.dataframe(qc_rows, use_container_width=True, hide_index=True,
+                     column_config={
+                         "Check": st.column_config.TextColumn(width="medium"),
+                         "Status": st.column_config.TextColumn(width="small"),
+                         "Findings": st.column_config.NumberColumn(width="small"),
+                         "Summary": st.column_config.TextColumn(width="large"),
+                     })
+        st.divider()
+
+    # ── Management Fee Panel ───────────────────────────────────────
+    fee_result = st.session_state.output_files.get("fee_result")
+    if fee_result and fee_result.cash_received > 0:
+        st.markdown("### Management Fee")
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        with col_f1:
+            st.metric("Cash Received", f"${fee_result.cash_received:,.0f}",
+                      help=f"Source: {fee_result.cash_source}")
+        with col_f2:
+            st.metric(f"JLL Fee ({fee_result.jll_rate:.2%})", f"${fee_result.jll_fee:,.0f}")
+        with col_f3:
+            st.metric(f"GRP Fee ({fee_result.grp_rate:.2%})", f"${fee_result.grp_fee:,.0f}")
+        with col_f4:
+            st.metric(f"Total ({fee_result.total_rate:.2%})", f"${fee_result.total_fee:,.0f}")
+        bc_parsed_for_fee = engine_result.parsed.get('budget_comparison') or []
+        accrued = accrued_fee_from_bc(bc_parsed_for_fee)
+        if accrued > 0:
+            diff = accrued - fee_result.total_fee
+            diff_str = f"${abs(diff):,.0f} {'over' if diff > 0 else 'under'} calculated"
+            st.caption(f"BC accrued (637130): ${accrued:,.2f} — {diff_str}")
+        st.divider()
 
     # Summary metrics
     st.markdown("### Summary Metrics")
@@ -564,6 +698,21 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                         label="📋 Download Validation Report",
                         data=f.read(),
                         file_name=f"GA_Exceptions_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+    col5, col6 = st.columns(2)
+
+    with col5:
+        if "qc_workbook" in st.session_state.output_files:
+            qc_path = st.session_state.output_files["qc_workbook"]
+            if os.path.exists(qc_path):
+                with open(qc_path, "rb") as f:
+                    st.download_button(
+                        label="🔍 Download QC Workbook",
+                        data=f.read(),
+                        file_name=f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )

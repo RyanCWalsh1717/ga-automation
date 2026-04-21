@@ -217,18 +217,20 @@ def parse_metadata(ws) -> GLMetadata:
     )
 
 
-def parse_gl(filepath: str) -> GLParseResult:
+def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
     """
     Parse a Yardi GL Detail export file.
 
     Args:
-        filepath: Path to the .xlsx file
+        filepath:   Path to the .xlsx file
+        sheet_name: Optional sheet name to parse (e.g. 'GL - MTD').
+                    Defaults to the active (first) sheet.
 
     Returns:
         GLParseResult with all accounts, transactions, and validation info
     """
     wb = openpyxl.load_workbook(filepath, data_only=True)
-    ws = wb.active
+    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
 
     # --- Extract metadata ---
     metadata = parse_metadata(ws)

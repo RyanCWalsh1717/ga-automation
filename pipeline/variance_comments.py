@@ -1,436 +1,939 @@
 """
-Variance Comment Generator for GA Automation Pipeline
-======================================================
-Generates narrative explanations for material budget variances using:
-  1. GL transaction detail behind each flagged variance (data layer)
-  2. Claude API call for polished narrative (optional, requires API key)
+Variance Comment Generator — GRP Standards
+==========================================
+Applies Greatland Realty Partners' 3-tier variance threshold and generates
+narrative commentary conforming to the Variance Commentary Standards document.
 
-Falls back to data-driven drafts if the API key is not configured or
-the API call fails.
+Tier 1  ≥$5,000 OR ≥5% of budget (AND ≥$2,500 absolute)  → Full 1–2 sentence comment
+Tier 2  $2,500–$4,999 AND <5%                             → Flag phrase only
+Tier 3  <$2,500 absolute                                  → No action required
+
+Output is written directly into the budget comparison Excel file:
+  Column L = MTD Variance Notes  (Tahoma 10, wrap_text, vertical top)
+  Column M = YTD Variance Notes
+
+Never comments on Total / Subtotal / Section Header / NOI / Net Income rows.
 """
 
-import os
 import json
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Font
 
 
-# ── Data-driven draft generation ─────────────────────────────
+# ── Thresholds ────────────────────────────────────────────────
+TIER1_ABS = 5_000.0   # ≥ $5,000 absolute  OR
+TIER1_PCT = 0.05      # ≥ 5 % of budget    (and abs ≥ $2,500 floor)
+TIER2_MIN = 2_500.0   # $2,500 floor — below this: Tier 3 (no action)
 
-def _build_variance_context(variance: dict, gl_data, budget_data=None,
-                             kardin_data=None) -> dict:
+MONTH_MAP = {
+    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4,
+    'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8,
+    'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+}
+
+# ── Account-specific behavioral context (Rev Labs) ───────────
+ACCOUNT_CONTEXT: Dict[str, str] = {
+    '440100': (
+        'Recovery-Operating Expense is a CAM billback to tenants. '
+        'A structural variance occurs if the budget included non-recoverable items '
+        '(e.g., management fees not permitted under the lease). '
+        'Flag as ongoing and recommend a budget revision if so.'
+    ),
+    '613110': (
+        'Utilities-Electricity: compare to Kardin monthly estimate by sub-meter. '
+        'Large variances may relate to tenant sub-metering reimbursements — '
+        'check accounts 613115 and 440500 for offsetting billback activity.'
+    ),
+    '613210': (
+        'Utilities-Gas is a seasonal account: high in Jan–Mar and Nov–Dec, '
+        'low in summer. Kardin has three meter lines: 49789-85790 HVAC (main driver), '
+        '49789-42240 STYGEN, and 49789-20610 EMGEN. State which meter is driving the variance.'
+    ),
+    '613310': (
+        'Utilities-Water/Sewer: Newton municipality bills semi-annually. '
+        'Large accrual variances against the flat monthly budget are timing differences. '
+        'State the billing period covered by the accrual and confirm '
+        'full-year cost is within annual budget.'
+    ),
+    '617110': (
+        'HVAC Contract Services: semi-annual preventive maintenance invoices '
+        '(spring Q2 / fall Q4) create favorable MTD/YTD variance until invoiced. '
+        'Name the specific contractors outstanding and the expected quarters for posting.'
+    ),
+    '617120': (
+        'HVAC Repairs: variable account. Compare actual to prior-year run rate '
+        'and remaining annual budget. Name the specific system or repair event.'
+    ),
+    '635110': (
+        'Snow & Ice Removal: highly weather-dependent. '
+        'Name the vendor (Landscape America if applicable), '
+        'reference specific storm events visible in GL, '
+        'state remaining annual budget and risk of full-year overage.'
+    ),
+    '637130': (
+        'Admin-Management Fees: verify the accrual matches the calculated fee '
+        '(cash received × applicable rate). Flag discrepancy for Finance review '
+        'if accrual does not tie to the calculation.'
+    ),
+    '637290': (
+        'Admin-Telephone: watch for duplicate PCard charges (two charges per property '
+        'per month). Flag for Finance review if duplicates are detected rather than '
+        'writing a normalized comment.'
+    ),
+    '639110': (
+        'Insurance-Property: monthly amortization of prepaid premium. '
+        'If charges exceed budget, note the policy period being amortized '
+        'and expected monthly run rate going forward.'
+    ),
+    '639120': (
+        'Insurance-General Liability: if $0 actual, GL/auto insurance amortization '
+        'is likely being coded to 639110 instead. Flag the account mapping issue '
+        'for Finance rather than treating as a favorable variance.'
+    ),
+    '801110': (
+        'Interest Expense: compare actual mortgage payment to the GRP amortization '
+        'schedule budget. If a scheduled step-down does not match the actual payment, '
+        'flag for Finance to reconcile the amortization schedule.'
+    ),
+}
+
+# ── Rows that must never receive comments ────────────────────
+_SKIP_NAMES = {
+    'INCOME', 'REVENUE', 'TOTAL REVENUE', 'RENTAL REVENUE', 'TOTAL RENTAL REVENUE',
+    'BASE RENT', 'TOTAL BASE RENT', 'RECOVERY INCOME', 'TOTAL RECOVERY INCOME',
+    'OTHER TENANT INCOME', 'TOTAL OTHER TENANT INCOME',
+    'TENANT SERVICE REVENUE', 'TOTAL TENANT SERVICE REVENUE',
+    'OTHER INCOME', 'TOTAL OTHER INCOME',
+    'OPERATING EXPENSES - RECOVERABLE', 'TOTAL OPERATING EXPENSES - RECOVERABLE',
+    'OPERATING EXPENSES - NON RECOVERABLE', 'TOTAL OPERATING EXPENSES - NON RECOVERABLE',
+    'TOTAL EXPENSES', 'NET OPERATING INCOME', 'NET INCOME',
+    'INTEREST EXPENSE', 'CLEANING / JANITORIAL', 'UTILITIES',
+    'GENERAL REPAIRS & MAINTENANCE', 'HVAC MAINTENANCE',
+    'SECURITY / FIRE / LIFE SAFETY', 'LANDSCAPING',
+    'PARKING & SNOW REMOVAL', 'ADMINISTRATIVE', 'INSURANCE', 'REAL ESTATE TAXES',
+}
+
+
+# ══════════════════════════════════════════════════════════════
+# 1. TIER CLASSIFICATION
+# ══════════════════════════════════════════════════════════════
+
+def classify_tier(actual: float, budget: float) -> Tuple[str, float, float]:
     """
-    Build rich context for a single variance by pulling GL transactions
-    behind the flagged account, plus budget and analytical context.
-
-    Args:
-        variance: Dict with account_code, account_name, ptd_actual, ptd_budget,
-                  variance, variance_pct
-        gl_data: Parsed GL data with accounts and transactions
-        budget_data: Optional budget comparison data (Yardi)
-        kardin_data: Optional Kardin annual budget data
+    Apply GRP 3-tier threshold logic.
 
     Returns:
-        Dict with variance info + supporting GL transaction detail + analytical context
+        (tier, abs_variance, pct_variance)
+        tier: 'tier_1' | 'tier_2' | 'tier_3'
     """
-    acct_code = str(variance.get('account_code', '') or '')
-    context = {
-        'account_code': acct_code,
-        'account_name': str(variance.get('account_name', '') or ''),
-        'ptd_actual': variance.get('ptd_actual', 0),
-        'ptd_budget': variance.get('ptd_budget', 0),
-        'variance_amount': variance.get('variance', 0),
-        'variance_pct': variance.get('variance_pct', 0),
-        'direction': 'over budget' if variance.get('variance', 0) > 0 else 'under budget',
-        'transactions': [],
-        'vendor_summary': {},
-        'transaction_count': 0,
-        # Analytical enrichments
-        'noi_impact': '',
-        'likely_one_time_amount': 0,
-        'likely_recurring_amount': 0,
-        'annual_budget': None,
-        'ytd_actual': None,
-        'ytd_budget': None,
-        'annual_run_rate': None,
-        'budget_seasonality': None,
+    abs_var = actual - budget
+    abs_var_dollar = abs(abs_var)
+    pct_var = (abs_var / abs(budget) * 100) if budget and budget != 0 else 0.0
+
+    if abs_var_dollar < TIER2_MIN:
+        return 'tier_3', abs_var, pct_var
+
+    if abs_var_dollar >= TIER1_ABS or abs(pct_var) >= (TIER1_PCT * 100):
+        return 'tier_1', abs_var, pct_var
+
+    return 'tier_2', abs_var, pct_var
+
+
+def _is_skip_row(account_code: Any, account_name: Any) -> bool:
+    """Return True if this row should never receive a comment."""
+    code = str(account_code or '').strip()
+    name = str(account_name or '').strip().upper()
+
+    if not code:
+        return True
+    if code.endswith('000') or code.endswith('999'):
+        return True
+    if name in _SKIP_NAMES:
+        return True
+    if any(kw in name for kw in ('TOTAL', 'SUBTOTAL', 'NET OPERATING', 'NET INCOME')):
+        return True
+    return False
+
+
+# ══════════════════════════════════════════════════════════════
+# 2. KARDIN ENRICHMENT
+# ══════════════════════════════════════════════════════════════
+
+def build_kardin_enrichment(kardin_records: List[dict], account_code: str,
+                             period_month: int) -> dict:
+    """
+    Aggregate all Kardin sub-lines for an account into enrichment context.
+
+    Returns dict with:
+      descriptions       — list of budget line descriptions (vendor/contract intent)
+      month_budget       — total Kardin budget for the reporting month
+      annual_budget      — sum of MTotal across all sub-lines
+      monthly_pattern    — {1..12: amount} summed across sub-lines
+      is_seasonal        — True if variance across months is high (σ/mean > 0.5)
+      low_months         — list of month numbers where budget < 50% of monthly avg
+      high_months        — list of month numbers where budget > 150% of monthly avg
+      seasonality_note   — human-readable summary of seasonal pattern
+    """
+    code = str(account_code).strip()
+    rows = [r for r in kardin_records if str(r.get('account_code', '')).strip() == code]
+
+    if not rows:
+        return {}
+
+    # Collect descriptions (skip generic linked descriptions)
+    descs = []
+    for r in rows:
+        d = str(r.get('description', '')).strip()
+        if d and 'Linked to' not in d and d not in descs:
+            descs.append(d)
+
+    # Sum monthly amounts
+    monthly: Dict[int, float] = {}
+    annual_total = 0.0
+    for m in range(1, 13):
+        key = f'M{m}'
+        val = sum(float(r.get(key, 0) or 0) for r in rows)
+        monthly[m] = val
+        annual_total += val
+
+    month_budget = monthly.get(period_month, 0.0)
+
+    # Seasonality: compare monthly values
+    nonzero = [v for v in monthly.values() if v != 0]
+    is_seasonal = False
+    low_months: List[int] = []
+    high_months: List[int] = []
+    seasonality_note = ''
+
+    if len(nonzero) >= 3:
+        avg = sum(nonzero) / len(nonzero)
+        if avg > 0:
+            deviations = [abs(v - avg) / avg for v in nonzero]
+            is_seasonal = (sum(deviations) / len(deviations)) > 0.40
+
+            if is_seasonal:
+                low_months = [m for m in range(1, 13)
+                              if monthly[m] < avg * 0.50 and monthly[m] >= 0]
+                high_months = [m for m in range(1, 13) if monthly[m] > avg * 1.50]
+
+                if high_months:
+                    hi_names = [_month_name(m) for m in high_months]
+                    lo_names = [_month_name(m) for m in low_months] if low_months else ['other months']
+                    seasonality_note = (
+                        f"Budget is concentrated in {', '.join(hi_names)} "
+                        f"with lower spend in {', '.join(lo_names)}."
+                    )
+
+    return {
+        'descriptions': descs,
+        'month_budget': month_budget,
+        'annual_budget': annual_total,
+        'monthly_pattern': monthly,
+        'is_seasonal': is_seasonal,
+        'low_months': low_months,
+        'high_months': high_months,
+        'seasonality_note': seasonality_note,
     }
 
-    # ── NOI impact classification ──
-    first_digit = acct_code[0] if acct_code else '0'
-    if first_digit == '4':
-        # Revenue account: over budget = favorable, under = unfavorable
-        context['noi_impact'] = 'favorable' if variance.get('variance', 0) > 0 else 'unfavorable'
-    elif first_digit in ('5', '6', '7', '8'):
-        # Expense account: over budget = unfavorable, under = favorable
-        context['noi_impact'] = 'unfavorable' if variance.get('variance', 0) > 0 else 'favorable'
 
-    # ── Pull GL transactions for this account ──
-    prior_month_avg = 0
-    if gl_data and hasattr(gl_data, 'accounts'):
-        for acct in gl_data.accounts:
-            if acct.account_code == acct_code:
-                context['gl_beginning_balance'] = acct.beginning_balance
-                context['gl_ending_balance'] = acct.ending_balance
-                context['gl_net_change'] = acct.net_change
-                context['gl_total_debits'] = acct.total_debits
-                context['gl_total_credits'] = acct.total_credits
-
-                # Estimate prior-month average from beginning balance
-                period_str = getattr(gl_data.metadata, 'period', '') if hasattr(gl_data, 'metadata') else ''
-                month_num = 1
-                if '-' in period_str:
-                    month_map = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
-                                 'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12}
-                    month_num = month_map.get(period_str.split('-')[0], 1)
-                prior_months = month_num - 1
-                if prior_months > 0 and abs(acct.beginning_balance) > 0:
-                    prior_month_avg = abs(acct.beginning_balance) / prior_months
-
-                if hasattr(acct, 'transactions'):
-                    one_time_total = 0
-                    recurring_total = 0
-
-                    for txn in acct.transactions:
-                        net = txn.debit - txn.credit
-                        txn_dict = {
-                            'date': txn.date.strftime('%m/%d/%Y') if txn.date else '',
-                            'description': txn.description or '',
-                            'control': txn.control or '',
-                            'reference': txn.reference or '',
-                            'debit': txn.debit,
-                            'credit': txn.credit,
-                            'net': net,
-                            'likely_one_time': False,
-                        }
-
-                        # Classify: a single large transaction (> 50% of total variance)
-                        # from a vendor not seen in prior months is likely one-time
-                        if abs(net) > abs(variance.get('variance', 0)) * 0.5:
-                            txn_dict['likely_one_time'] = True
-                            one_time_total += abs(net)
-                        else:
-                            recurring_total += abs(net)
-
-                        context['transactions'].append(txn_dict)
-
-                        # Build vendor/payee summary from description
-                        desc = (txn.description or '').strip()
-                        if desc:
-                            vendor_key = desc[:40]
-                            if vendor_key not in context['vendor_summary']:
-                                context['vendor_summary'][vendor_key] = {
-                                    'total': 0, 'count': 0,
-                                }
-                            context['vendor_summary'][vendor_key]['total'] += net
-                            context['vendor_summary'][vendor_key]['count'] += 1
-
-                    context['transaction_count'] = len(acct.transactions)
-                    context['likely_one_time_amount'] = one_time_total
-                    context['likely_recurring_amount'] = recurring_total
-                break
-
-    # ── Budget comparison context (Yardi YTD) ──
-    if budget_data:
-        items = budget_data if isinstance(budget_data, list) else getattr(budget_data, 'line_items', [])
-        for item in items:
-            item_code = str(item.get('account_code', '') if isinstance(item, dict) else getattr(item, 'account_code', '')).strip()
-            if item_code == acct_code:
-                if isinstance(item, dict):
-                    context['ytd_actual'] = item.get('ytd_actual')
-                    context['ytd_budget'] = item.get('ytd_budget')
-                    annual = item.get('annual')
-                else:
-                    context['ytd_actual'] = getattr(item, 'ytd_actual', None)
-                    context['ytd_budget'] = getattr(item, 'ytd_budget', None)
-                    annual = getattr(item, 'annual', None)
-
-                if annual and isinstance(annual, (int, float)) and annual != 0:
-                    context['annual_budget'] = annual
-                    monthly_avg = abs(annual) / 12
-                    ptd_budget = abs(variance.get('ptd_budget', 0))
-                    if monthly_avg > 0:
-                        ratio = ptd_budget / monthly_avg
-                        if ratio < 0.5:
-                            context['budget_seasonality'] = 'low-budget month'
-                        elif ratio > 1.5:
-                            context['budget_seasonality'] = 'high-budget month'
-                        else:
-                            context['budget_seasonality'] = 'uniform'
-                break
-
-    # ── Kardin annual budget context (monthly detail) ──
-    if kardin_data and isinstance(kardin_data, list):
-        for item in kardin_data:
-            k_code = str(item.get('account_code', '')).strip()
-            if k_code == acct_code:
-                m_total = item.get('m_total', 0) or 0
-                context['annual_budget'] = context.get('annual_budget') or m_total
-                # Calculate annual run rate from current period
-                ptd = variance.get('ptd_actual', 0) or 0
-                if ptd != 0:
-                    context['annual_run_rate'] = ptd * 12
-                break
-
-    return context
+def _month_name(m: int) -> str:
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    return months[m - 1] if 1 <= m <= 12 else str(m)
 
 
-def generate_data_driven_comment(context: dict) -> str:
+# ══════════════════════════════════════════════════════════════
+# 3. GL TRANSACTION CONTEXT
+# ══════════════════════════════════════════════════════════════
+
+def build_gl_context(gl_parsed, account_code: str) -> dict:
     """
-    Generate a factual, data-driven variance comment from GL detail.
-    No API call — uses enriched context for analytical framing.
+    Pull transaction-level detail from parsed GL for a specific account.
+
+    Returns dict with:
+      transactions    — list of {date, description, debit, credit, net, remarks}
+      vendor_summary  — {vendor_key: {total, count}} sorted by abs(total)
+      net_activity    — total net debit/credit for the period
+      has_reversals   — True if any transaction description contains ':Reversal'
     """
-    acct = context['account_name']
-    var_amt = context['variance_amount']
-    var_pct = context['variance_pct']
-    direction = context['direction']
-    txn_count = context['transaction_count']
-    noi_impact = context.get('noi_impact', '')
+    code = str(account_code).strip()
+    result = {
+        'transactions': [],
+        'vendor_summary': {},
+        'net_activity': 0.0,
+        'has_reversals': False,
+    }
 
-    # Lead with the variance and NOI impact
-    impact_note = f" ({noi_impact} to NOI)" if noi_impact else ""
-    comment = f"{acct} is ${abs(var_amt):,.0f} ({abs(var_pct):.0f}%) {direction}{impact_note}."
+    if not gl_parsed:
+        return result
 
-    if txn_count == 0:
-        comment += " No GL transactions found for this period."
-        return comment
+    # Support both object-style (with .accounts) and dict-style parsed data
+    accounts_list = None
+    if hasattr(gl_parsed, 'accounts'):
+        accounts_list = gl_parsed.accounts
+    elif isinstance(gl_parsed, dict):
+        accounts_list = gl_parsed.get('accounts', [])
+    elif isinstance(gl_parsed, list):
+        accounts_list = gl_parsed
 
-    comment += f" {txn_count} transaction(s) in the period."
+    if not accounts_list:
+        return result
 
-    # One-time vs recurring analysis
-    one_time = context.get('likely_one_time_amount', 0)
-    recurring = context.get('likely_recurring_amount', 0)
-    if one_time > 0 and one_time > recurring:
-        comment += f" Driven primarily by one-time item(s) (${one_time:,.0f})."
-        # If excluding one-time items changes the picture, say so
-        net_excl = abs(var_amt) - one_time
-        if net_excl < abs(var_amt) * 0.5:
-            comment += f" Excluding these, account is approximately on budget."
+    for acct in accounts_list:
+        acct_code = str(getattr(acct, 'account_code', '') or
+                        (acct.get('account_code', '') if isinstance(acct, dict) else '')).strip()
+        if acct_code != code:
+            continue
 
-    # Top drivers by amount
-    vendors = context.get('vendor_summary', {})
-    if vendors:
-        sorted_vendors = sorted(vendors.items(), key=lambda x: abs(x[1]['total']), reverse=True)
-        top = sorted_vendors[:3]
-        drivers = []
-        for desc, info in top:
-            drivers.append(f"{desc} (${abs(info['total']):,.0f}, {info['count']} txn)")
-        comment += " Key drivers: " + "; ".join(drivers) + "."
+        txns_raw = (getattr(acct, 'transactions', None) or
+                    (acct.get('transactions', []) if isinstance(acct, dict) else []))
 
-    # Seasonality / annual budget context
-    seasonality = context.get('budget_seasonality')
-    annual = context.get('annual_budget')
-    if seasonality == 'low-budget month' and annual:
-        comment += f" Note: this is a low-budget month relative to ${abs(annual):,.0f} annual budget."
-    elif seasonality == 'high-budget month' and annual:
-        comment += f" Note: this is a high-budget month relative to ${abs(annual):,.0f} annual budget."
+        net_total = 0.0
+        for txn in txns_raw:
+            if isinstance(txn, dict):
+                debit = float(txn.get('debit', 0) or 0)
+                credit = float(txn.get('credit', 0) or 0)
+                desc = str(txn.get('description', '') or '')
+                date_val = txn.get('date', '')
+                remarks = str(txn.get('remarks', '') or '')
+            else:
+                debit = float(getattr(txn, 'debit', 0) or 0)
+                credit = float(getattr(txn, 'credit', 0) or 0)
+                desc = str(getattr(txn, 'description', '') or '')
+                date_val = getattr(txn, 'date', '')
+                remarks = str(getattr(txn, 'remarks', '') or '')
 
-    # YTD context if available
-    ytd_actual = context.get('ytd_actual')
-    ytd_budget = context.get('ytd_budget')
-    if ytd_actual is not None and ytd_budget is not None and ytd_budget != 0:
-        ytd_var_pct = ((ytd_actual - ytd_budget) / abs(ytd_budget)) * 100
-        if abs(ytd_var_pct) < 5:
-            comment += " YTD is tracking close to budget."
-        elif abs(ytd_var_pct) < abs(var_pct):
-            comment += f" YTD variance ({ytd_var_pct:+.0f}%) is smaller than PTD — likely timing."
+            net = debit - credit
+            net_total += net
+
+            is_reversal = ':Reversal' in desc or ':Reversal' in remarks
+            if is_reversal:
+                result['has_reversals'] = True
+
+            # Format date
+            date_str = ''
+            if date_val:
+                try:
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime('%m/%d/%Y')
+                    else:
+                        date_str = str(date_val)[:10]
+                except Exception:
+                    date_str = str(date_val)
+
+            t = {
+                'date': date_str,
+                'description': desc,
+                'debit': debit,
+                'credit': credit,
+                'net': net,
+                'remarks': remarks,
+                'is_reversal': is_reversal,
+            }
+            result['transactions'].append(t)
+
+            # Vendor summary — strip Yardi internal codes like (v0000073) (t0000011)
+            import re as _re
+            clean_desc = _re.sub(r'\s*\([vt]\d+\)\s*', '', desc).strip()
+            vendor_key = (clean_desc or desc)[:50].strip() or '(no description)'
+            vs = result['vendor_summary']
+            if vendor_key not in vs:
+                vs[vendor_key] = {'total': 0.0, 'count': 0}
+            vs[vendor_key]['total'] += net
+            vs[vendor_key]['count'] += 1
+
+        result['net_activity'] = net_total
+        break
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════
+# 4. API PROMPT — GRP STANDARD
+# ══════════════════════════════════════════════════════════════
+
+_SYSTEM_PROMPT = """\
+You are a CRE finance analyst at Greatland Realty Partners (GRP) writing monthly \
+variance commentary for the Revolution Labs property (275 Grove Street, Newton MA). \
+The audience is GRP management and the institutional investor Singerman Real Estate.
+
+COMMENTARY STANDARDS — follow exactly:
+
+FORMAT: [Line item] was [$amount / %] [favorable/unfavorable] due to [specific cause]. \
+[Timing context or forward-looking statement.]
+
+REQUIRED ELEMENTS IN EVERY TIER 1 COMMENT:
+1. CAUSE — Name the specific vendor, event, contract, or accrual. Never use a category.
+2. MAGNITUDE — Reference dollar or % variance. Do not restate the cell value.
+3. TIMING/NATURE — State whether one-time, recurring, timing/accrual difference, or deferred.
+4. OUTLOOK — For ongoing variances, state whether it will continue, resolve, or need a budget revision.
+
+LENGTH: 1 sentence preferred. 2 sentences maximum.
+
+TIER 2 ACCOUNTS: Write a short flag phrase only (e.g., "Timing — invoices expected Q2").
+
+NEVER:
+- Comment on Total, Subtotal, NOI, or Net Income rows.
+- Restate numbers already visible in the table.
+- Use categories instead of specific causes ("costs increased" is not a cause).
+- Copy prior-period comments unchanged.
+- Leave favorable (under-budget) variances unexplained.
+- Speculate beyond what GL data shows. If unclear, write: "Cause requires Finance review."
+
+DIRECTION CONVENTION:
+- Revenue account over budget = favorable to NOI
+- Expense account over budget = unfavorable to NOI
+- Revenue account under budget = unfavorable to NOI
+- Expense account under budget = favorable to NOI
+"""
+
+
+def _build_api_prompt(accounts_data: List[dict], period: str, property_name: str) -> str:
+    """Build the user-turn prompt with all variance data for the API call."""
+    lines = [
+        f"Property: {property_name}",
+        f"Period: {period}",
+        "",
+        "Generate MTD and YTD variance comments for the accounts listed below.",
+        "For each account, return a JSON object with keys:",
+        '  "account_code", "mtd_comment", "ytd_comment"',
+        "",
+        "Rules:",
+        "- Tier 1 accounts: write a full 1–2 sentence comment per the standards.",
+        "- Tier 2 accounts: write a short flag phrase only (5–10 words).",
+        "- If MTD and YTD tell the same story, the comments may be similar but must",
+        "  each stand alone (different readers may see only one column).",
+        "- If YTD variance is smaller % than MTD, note it as a timing difference.",
+        "",
+        "Return ONLY a JSON array. No markdown fences. No extra text.",
+        "",
+    ]
+
+    for a in accounts_data:
+        code = a['account_code']
+        name = a['account_name']
+        mtd_tier = a.get('mtd_tier', 'tier_3')
+        ytd_tier = a.get('ytd_tier', 'tier_3')
+
+        lines.append(f"--- ACCOUNT {code}: {name} ---")
+        lines.append(f"MTD Tier: {mtd_tier.upper()}")
+        lines.append(
+            f"MTD Actual: ${a.get('mtd_actual', 0):,.2f}  "
+            f"Budget: ${a.get('mtd_budget', 0):,.2f}  "
+            f"Variance: ${a.get('mtd_var', 0):+,.2f}  "
+            f"({a.get('mtd_pct', 0):+.1f}%)  "
+            f"[{a.get('mtd_noi', '')}]"
+        )
+        lines.append(f"YTD Tier: {ytd_tier.upper()}")
+        lines.append(
+            f"YTD Actual: ${a.get('ytd_actual', 0):,.2f}  "
+            f"Budget: ${a.get('ytd_budget', 0):,.2f}  "
+            f"Variance: ${a.get('ytd_var', 0):+,.2f}  "
+            f"({a.get('ytd_pct', 0):+.1f}%)"
+        )
+
+        annual = a.get('annual_budget')
+        if annual:
+            lines.append(f"Annual Budget: ${annual:,.2f}")
+
+        # Kardin context
+        kardin = a.get('kardin', {})
+        if kardin.get('descriptions'):
+            lines.append("Budget intent (from Kardin):")
+            for d in kardin['descriptions'][:5]:
+                m_key = f"M{a.get('period_month', 1)}"
+                # Try to find the matching monthly amount
+                lines.append(f"  · {d}")
+        if kardin.get('seasonality_note'):
+            lines.append(f"Seasonality: {kardin['seasonality_note']}")
+
+        # Account-specific behavioral context
+        behavior = ACCOUNT_CONTEXT.get(code)
+        if behavior:
+            lines.append(f"Known behavior: {behavior}")
+
+        # GL transactions (top 12 by absolute net)
+        gl = a.get('gl', {})
+        txns = gl.get('transactions', [])
+        if txns:
+            sorted_txns = sorted(txns, key=lambda t: abs(t['net']), reverse=True)
+            lines.append(f"GL transactions ({len(txns)} total, top shown):")
+            for t in sorted_txns[:12]:
+                rev_flag = " [REVERSAL]" if t.get('is_reversal') else ''
+                lines.append(
+                    f"  {t['date']}  {t['description'][:55]}  "
+                    f"${t['net']:+,.2f}{rev_flag}"
+                )
+            if gl.get('has_reversals'):
+                lines.append("  ^ Contains accrual reversals — treat as timing, not true spend.")
+        else:
+            lines.append("GL transactions: none found for this period.")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. DATA-DRIVEN FALLBACK COMMENT
+# ══════════════════════════════════════════════════════════════
+
+def _data_driven_comment(account_name: str, var_dollar: float, var_pct: float,
+                          tier: str, gl: dict, kardin: dict,
+                          is_revenue: bool, period: str) -> str:
+    """
+    Generate a structured comment without the API.
+    Follows GRP format as closely as possible from available data.
+    """
+    direction = 'favorable' if (
+        (is_revenue and var_dollar > 0) or (not is_revenue and var_dollar < 0)
+    ) else 'unfavorable'
+    abs_var = abs(var_dollar)
+    abs_pct = abs(var_pct)
+
+    if tier == 'tier_2':
+        if kardin.get('is_seasonal'):
+            return f"Timing — {kardin.get('seasonality_note', 'seasonal account')}"
+        return f'Timing — see GL detail for support.'
+
+    # ── Determine primary cause from GL ──
+    # Separate reversal entries from real spend
+    txns = gl.get('transactions', [])
+    reversal_net = sum(abs(t['net']) for t in txns if t.get('is_reversal'))
+    real_net = sum(abs(t['net']) for t in txns if not t.get('is_reversal'))
+    total_gross = reversal_net + real_net
+
+    # Reversals are "pure timing" only if they dominate gross activity
+    # and real spend is small relative to the variance
+    pure_timing = (
+        gl.get('has_reversals')
+        and total_gross > 0
+        and (reversal_net / total_gross) > 0.70
+        and real_net < abs_var * 0.40
+    )
+
+    # Top non-reversal vendor
+    top_vendor = None
+    non_reversal_vendors = sorted(
+        [(k, v) for k, v in gl.get('vendor_summary', {}).items()
+         if ':Reversal' not in k and 'Accrual' not in k[:10]],
+        key=lambda x: abs(x[1]['total']),
+        reverse=True,
+    )
+    if non_reversal_vendors:
+        top_vendor = non_reversal_vendors[0][0][:50]
+
+    # Fall back to Kardin descriptions if no GL vendor
+    kardin_desc = kardin.get('descriptions', [''])[0][:50] if kardin.get('descriptions') else None
+
+    if pure_timing:
+        cause = 'accrual reversal / re-accrual timing'
+    elif top_vendor:
+        cause = f"activity via {top_vendor}"
+    elif kardin_desc:
+        cause = f"charges related to {kardin_desc}"
+    else:
+        cause = 'cause requires Finance review — see GL detail'
+
+    comment = (
+        f"{account_name} was ${abs_var:,.0f} ({abs_pct:.0f}%) {direction} "
+        f"due to {cause}."
+    )
+
+    # Timing / outlook suffix
+    if pure_timing:
+        comment += " Prior-month accrual reversal and re-accrual; review GL for net new spend."
+    elif gl.get('has_reversals') and not pure_timing:
+        comment += " Contains accrual reversals — net variance reflects actual spend above/(below) budget."
+    elif kardin.get('is_seasonal') and kardin.get('seasonality_note'):
+        comment += f" {kardin['seasonality_note']}"
+
+    annual = kardin.get('annual_budget')
+    if annual and annual != 0 and not pure_timing:
+        comment += f" Annual budget: ${abs(annual):,.0f}."
 
     return comment
 
 
-# ── Claude API narrative generation ──────────────────────────
+# ══════════════════════════════════════════════════════════════
+# 6. NOI DIRECTION HELPER
+# ══════════════════════════════════════════════════════════════
 
-def _build_api_prompt(contexts: List[dict], period: str, property_name: str) -> str:
-    """Build the prompt for Claude API to generate variance narratives."""
-
-    variance_details = []
-    for ctx in contexts:
-        detail = f"""
-Account: {ctx['account_code']} — {ctx['account_name']}
-  Actual: ${ctx['ptd_actual']:,.2f}  |  Budget: ${ctx['ptd_budget']:,.2f}
-  Variance: ${ctx['variance_amount']:+,.2f} ({ctx['variance_pct']:+.1f}%)
-  NOI Impact: {ctx.get('noi_impact', 'n/a')}"""
-
-        # Add YTD context if available
-        ytd_a = ctx.get('ytd_actual')
-        ytd_b = ctx.get('ytd_budget')
-        if ytd_a is not None and ytd_b is not None:
-            detail += f"\n  YTD Actual: ${ytd_a:,.2f}  |  YTD Budget: ${ytd_b:,.2f}"
-
-        annual = ctx.get('annual_budget')
-        if annual:
-            detail += f"\n  Annual Budget: ${annual:,.2f}"
-
-        seasonality = ctx.get('budget_seasonality')
-        if seasonality:
-            detail += f"  (this is a {seasonality})"
-
-        one_time = ctx.get('likely_one_time_amount', 0)
-        if one_time > 0:
-            detail += f"\n  Likely one-time items: ${one_time:,.2f}"
-
-        detail += f"\n  GL Transactions ({ctx['transaction_count']}):"
-
-        for txn in ctx['transactions'][:10]:
-            net = txn['net']
-            one_time_flag = " [likely one-time]" if txn.get('likely_one_time') else ""
-            detail += f"\n    {txn['date']}  {txn['description'][:50]}  Control: {txn['control']}  ${net:+,.2f}{one_time_flag}"
-
-        if ctx['transaction_count'] > 10:
-            detail += f"\n    ... and {ctx['transaction_count'] - 10} more transactions"
-
-        variance_details.append(detail)
-
-    prompt = f"""You are a CRE accounting analyst writing variance commentary for a monthly close package.
-Property: {property_name}
-Period: {period}
-
-Generate a concise 1-2 sentence narrative explanation for each material budget variance below.
-Focus on the WHY — what drove the variance based on the GL transaction detail provided.
-Use professional accounting language suitable for an institutional investor review.
-
-Key guidelines:
-- Distinguish one-time items (marked [likely one-time]) from recurring expenses
-- If excluding one-time items brings the account close to budget, say so
-- Note whether the variance is favorable or unfavorable to NOI
-- If YTD is tracking closer to budget than PTD, note it as a likely timing difference
-- Do NOT speculate beyond what the data shows. If the cause is unclear,
-  say "requires further investigation" or "timing difference pending verification."
-
-Format your response as a JSON array of objects with keys "account_code" and "comment".
-
-Variances to explain:
-{"".join(variance_details)}
-"""
-    return prompt
+def _noi_direction(account_code: str, variance: float) -> str:
+    """Return 'favorable' or 'unfavorable' relative to NOI."""
+    code = str(account_code or '').strip()
+    first = code[0] if code else '0'
+    is_revenue = first == '4'
+    if is_revenue:
+        return 'favorable' if variance > 0 else 'unfavorable'
+    return 'unfavorable' if variance > 0 else 'favorable'
 
 
-def generate_api_comments(contexts: List[dict], period: str = '',
-                           property_name: str = '',
-                           api_key: str = None) -> Dict[str, str]:
+def _is_revenue(account_code: str) -> bool:
+    code = str(account_code or '').strip()
+    return code.startswith('4')
+
+
+# ══════════════════════════════════════════════════════════════
+# 7. MAIN ENTRY POINT — GRP VARIANCE COMMENTS
+# ══════════════════════════════════════════════════════════════
+
+def generate_variance_comments_grp(
+    budget_rows: List[dict],
+    gl_parsed,
+    kardin_records: List[dict],
+    period: str = '',
+    property_name: str = 'Revolution Labs Owner, LLC',
+    api_key: Optional[str] = None,
+) -> Dict[str, dict]:
     """
-    Call Claude API to generate narrative variance comments.
+    Generate MTD and YTD variance comments for all budget comparison rows
+    that meet GRP's tier thresholds.
 
     Args:
-        contexts: List of variance context dicts from _build_variance_context()
-        period: Accounting period
-        property_name: Property name
-        api_key: Anthropic API key
+        budget_rows:     Parsed budget comparison rows (from yardi_budget_comparison parser).
+                         Each row must have: account_code, account_name,
+                         ptd_actual, ptd_budget, ytd_actual, ytd_budget,
+                         annual (optional), ptd_variance, ptd_variance_pct,
+                         ytd_variance, ytd_variance_pct.
+        gl_parsed:       Parsed GL data (from yardi_gl parser).
+        kardin_records:  Parsed Kardin budget records (from kardin_budget parser).
+        period:          Period string (e.g. "Apr 2026").
+        property_name:   Property display name.
+        api_key:         Anthropic API key. If omitted, uses data-driven fallback.
 
     Returns:
-        Dict mapping account_code -> narrative comment string.
-        Falls back to data-driven comments on any failure.
+        Dict keyed by account_code:
+          {
+            'account_name': str,
+            'mtd_tier': 'tier_1' | 'tier_2' | 'tier_3',
+            'ytd_tier': 'tier_1' | 'tier_2' | 'tier_3',
+            'mtd_comment': str,
+            'ytd_comment': str,
+            'mtd_actual': float,  'mtd_budget': float,
+            'ytd_actual': float,  'ytd_budget': float,
+          }
     """
-    if not api_key:
-        # Fallback to data-driven
-        return {ctx['account_code']: generate_data_driven_comment(ctx) for ctx in contexts}
+    # Determine reporting month from period string (e.g. "Apr 2026" → 4)
+    period_month = 1
+    if period:
+        for name, num in MONTH_MAP.items():
+            if name in period:
+                period_month = num
+                break
 
+    # ── Pass 1: classify tiers and build enrichment context ──
+    accounts_data: List[dict] = []
+    all_results: Dict[str, dict] = {}
+
+    for row in budget_rows:
+        code = str(row.get('account_code', '') or '').strip()
+        name = str(row.get('account_name', '') or '').strip()
+
+        if _is_skip_row(code, name):
+            continue
+
+        mtd_actual = float(row.get('ptd_actual', 0) or 0)
+        mtd_budget = float(row.get('ptd_budget', 0) or 0)
+        ytd_actual = float(row.get('ytd_actual', 0) or 0)
+        ytd_budget = float(row.get('ytd_budget', 0) or 0)
+        annual = row.get('annual')
+        annual = float(annual) if annual else None
+
+        mtd_tier, mtd_var, mtd_pct = classify_tier(mtd_actual, mtd_budget)
+        ytd_tier, ytd_var, ytd_pct = classify_tier(ytd_actual, ytd_budget)
+
+        # Only process accounts where at least one period is Tier 1 or Tier 2
+        if mtd_tier == 'tier_3' and ytd_tier == 'tier_3':
+            all_results[code] = {
+                'account_name': name,
+                'mtd_tier': 'tier_3', 'ytd_tier': 'tier_3',
+                'mtd_comment': '', 'ytd_comment': '',
+                'mtd_actual': mtd_actual, 'mtd_budget': mtd_budget,
+                'ytd_actual': ytd_actual, 'ytd_budget': ytd_budget,
+            }
+            continue
+
+        # Build enrichment context
+        kardin = build_kardin_enrichment(kardin_records, code, period_month)
+        gl = build_gl_context(gl_parsed, code)
+
+        entry = {
+            'account_code': code,
+            'account_name': name,
+            'period_month': period_month,
+            'mtd_tier': mtd_tier,
+            'ytd_tier': ytd_tier,
+            'mtd_actual': mtd_actual,
+            'mtd_budget': mtd_budget,
+            'mtd_var': mtd_var,
+            'mtd_pct': mtd_pct,
+            'mtd_noi': _noi_direction(code, mtd_var),
+            'ytd_actual': ytd_actual,
+            'ytd_budget': ytd_budget,
+            'ytd_var': ytd_var,
+            'ytd_pct': ytd_pct,
+            'annual_budget': annual or kardin.get('annual_budget'),
+            'kardin': kardin,
+            'gl': gl,
+            'is_revenue': _is_revenue(code),
+        }
+        accounts_data.append(entry)
+
+    if not accounts_data:
+        return all_results
+
+    # ── Pass 2: generate comments ─────────────────────────────
+    if api_key:
+        comments_map = _call_api(accounts_data, period, property_name, api_key)
+    else:
+        comments_map = _generate_data_driven(accounts_data, period)
+
+    # ── Pass 3: assemble final results ────────────────────────
+    for entry in accounts_data:
+        code = entry['account_code']
+        api_result = comments_map.get(code, {})
+
+        all_results[code] = {
+            'account_name': entry['account_name'],
+            'mtd_tier': entry['mtd_tier'],
+            'ytd_tier': entry['ytd_tier'],
+            'mtd_comment': api_result.get('mtd_comment', ''),
+            'ytd_comment': api_result.get('ytd_comment', ''),
+            'mtd_actual': entry['mtd_actual'],
+            'mtd_budget': entry['mtd_budget'],
+            'ytd_actual': entry['ytd_actual'],
+            'ytd_budget': entry['ytd_budget'],
+        }
+
+    return all_results
+
+
+def _call_api(accounts_data: List[dict], period: str,
+              property_name: str, api_key: str) -> Dict[str, dict]:
+    """Call Claude API and parse JSON response."""
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
-        prompt = _build_api_prompt(contexts, period, property_name)
+        prompt = _build_api_prompt(accounts_data, period, property_name)
 
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
+            model='claude-sonnet-4-6',
+            max_tokens=4096,
+            system=_SYSTEM_PROMPT,
+            messages=[{'role': 'user', 'content': prompt}],
         )
 
-        # Parse response
-        response_text = message.content[0].text
+        raw = message.content[0].text.strip()
 
-        # Extract JSON from response (handle markdown code blocks)
-        json_text = response_text
-        if '```json' in json_text:
-            json_text = json_text.split('```json')[1].split('```')[0]
-        elif '```' in json_text:
-            json_text = json_text.split('```')[1].split('```')[0]
+        # Strip markdown fences if present
+        if raw.startswith('```'):
+            raw = raw.split('\n', 1)[1] if '\n' in raw else raw[3:]
+            if raw.endswith('```'):
+                raw = raw[:-3]
+            raw = raw.strip()
 
-        comments_list = json.loads(json_text.strip())
-
-        result = {}
-        for item in comments_list:
-            code = item.get('account_code', '')
-            comment = item.get('comment', '')
-            if code and comment:
-                result[code] = comment
-
-        # Fill in any missing accounts with data-driven fallback
-        for ctx in contexts:
-            if ctx['account_code'] not in result:
-                result[ctx['account_code']] = generate_data_driven_comment(ctx)
-
-        return result
+        items = json.loads(raw)
+        return {
+            item['account_code']: {
+                'mtd_comment': item.get('mtd_comment', ''),
+                'ytd_comment': item.get('ytd_comment', ''),
+            }
+            for item in items
+            if 'account_code' in item
+        }
 
     except ImportError:
-        # anthropic package not installed — fall back
-        return {ctx['account_code']: generate_data_driven_comment(ctx) for ctx in contexts}
-    except Exception as e:
-        # Any API error — fall back with note
-        result = {}
-        for ctx in contexts:
-            comment = generate_data_driven_comment(ctx)
-            result[ctx['account_code']] = f"[API unavailable] {comment}"
-        return result
+        pass  # fall through to data-driven
+    except Exception:
+        pass  # fall through to data-driven
+
+    return _generate_data_driven(accounts_data, period)
 
 
-# ── Main entry point ─────────────────────────────────────────
+def _generate_data_driven(accounts_data: List[dict],
+                           period: str) -> Dict[str, dict]:
+    """Data-driven fallback — no API call."""
+    result: Dict[str, dict] = {}
+    for entry in accounts_data:
+        code = entry['account_code']
+        name = entry['account_name']
+        rev = entry['is_revenue']
 
-def generate_variance_comments(engine_result, api_key: str = None) -> List[dict]:
+        mtd_comment = ''
+        if entry['mtd_tier'] != 'tier_3':
+            mtd_comment = _data_driven_comment(
+                name, entry['mtd_var'], entry['mtd_pct'],
+                entry['mtd_tier'], entry['gl'], entry['kardin'],
+                rev, period,
+            )
+
+        ytd_comment = ''
+        if entry['ytd_tier'] != 'tier_3':
+            ytd_comment = _data_driven_comment(
+                name, entry['ytd_var'], entry['ytd_pct'],
+                entry['ytd_tier'], entry['gl'], entry['kardin'],
+                rev, period,
+            )
+
+        result[code] = {
+            'mtd_comment': mtd_comment,
+            'ytd_comment': ytd_comment,
+        }
+    return result
+
+
+# ══════════════════════════════════════════════════════════════
+# 8. EXCEL WRITE-BACK
+# ══════════════════════════════════════════════════════════════
+
+def write_comments_to_budget_comparison(
+    input_path: str,
+    output_path: str,
+    comments: Dict[str, dict],
+    mtd_col: int = 12,   # Excel column L (1-indexed)
+    ytd_col: int = 13,   # Excel column M (1-indexed)
+    data_start_row: int = 6,
+    account_col: int = 1,  # Excel column A
+) -> None:
     """
-    Generate variance comments for all material budget variances.
+    Write variance comments into the budget comparison Excel file.
 
     Args:
-        engine_result: EngineResult from pipeline run
-        api_key: Optional Anthropic API key for narrative generation
+        input_path:      Path to the source budget comparison .xlsx
+        output_path:     Path to write the annotated output file
+        comments:        Dict from generate_variance_comments_grp()
+        mtd_col:         Excel column number for MTD notes (default 12 = col L)
+        ytd_col:         Excel column number for YTD notes (default 13 = col M)
+        data_start_row:  First data row (default 6, after 5 header rows)
+        account_col:     Column containing account codes (default 1 = col A)
+    """
+    _comment_font = Font(name='Tahoma', size=10)
+    _comment_align = Alignment(wrap_text=True, vertical='top')
 
-    Returns:
-        List of dicts with keys: account_code, account_name, variance_amount,
-        variance_pct, comment, method ('api' or 'data-driven')
+    wb = load_workbook(input_path)
+    ws = wb.active
+
+    for row_num in range(data_start_row, ws.max_row + 1):
+        code_cell = ws.cell(row=row_num, column=account_col)
+        code = str(code_cell.value or '').strip()
+
+        if not code or code not in comments:
+            continue
+
+        entry = comments[code]
+
+        mtd_text = entry.get('mtd_comment', '')
+        ytd_text = entry.get('ytd_comment', '')
+
+        # Skip Tier 3 (empty strings already handle this, but be explicit)
+        mtd_tier = entry.get('mtd_tier', 'tier_3')
+        ytd_tier = entry.get('ytd_tier', 'tier_3')
+
+        if mtd_text or mtd_tier in ('tier_1', 'tier_2'):
+            cell = ws.cell(row=row_num, column=mtd_col)
+            cell.value = mtd_text
+            cell.font = _comment_font
+            cell.alignment = _comment_align
+
+        if ytd_text or ytd_tier in ('tier_1', 'tier_2'):
+            cell = ws.cell(row=row_num, column=ytd_col)
+            cell.value = ytd_text
+            cell.font = _comment_font
+            cell.alignment = _comment_align
+
+    wb.save(output_path)
+
+
+# ══════════════════════════════════════════════════════════════
+# 9. BACKWARDS-COMPATIBLE WRAPPER (existing pipeline interface)
+# ══════════════════════════════════════════════════════════════
+
+def generate_variance_comments(engine_result, api_key: Optional[str] = None) -> List[dict]:
+    """
+    Backwards-compatible wrapper for the existing pipeline.
+
+    Returns list of dicts with keys:
+      account_code, account_name, ptd_actual, ptd_budget,
+      variance_amount, variance_pct, comment, method
     """
     gl_data = engine_result.parsed.get('gl')
     budget_data = engine_result.parsed.get('budget_comparison')
-    kardin_data = engine_result.parsed.get('kardin_budget')
-    variances = engine_result.budget_variances or []
+    kardin_data = engine_result.parsed.get('kardin_budget') or []
+    period = getattr(engine_result, 'period', '') or ''
+    prop = getattr(engine_result, 'property_name', 'Revolution Labs Owner, LLC') or ''
 
-    if not variances:
-        return []
+    # Normalize budget_data to list of dicts
+    budget_rows: List[dict] = []
+    if budget_data:
+        if isinstance(budget_data, list):
+            budget_rows = budget_data
+        elif hasattr(budget_data, 'line_items'):
+            budget_rows = [
+                {
+                    'account_code': getattr(item, 'account_code', ''),
+                    'account_name': getattr(item, 'account_name', ''),
+                    'ptd_actual': getattr(item, 'ptd_actual', 0),
+                    'ptd_budget': getattr(item, 'ptd_budget', 0),
+                    'ytd_actual': getattr(item, 'ytd_actual', 0),
+                    'ytd_budget': getattr(item, 'ytd_budget', 0),
+                    'annual': getattr(item, 'annual', None),
+                    'ptd_variance': getattr(item, 'ptd_variance', 0),
+                    'ptd_variance_pct': getattr(item, 'ptd_variance_pct', 0),
+                    'ytd_variance': getattr(item, 'ytd_variance', 0),
+                    'ytd_variance_pct': getattr(item, 'ytd_variance_pct', 0),
+                }
+                for item in budget_data.line_items
+            ]
 
-    # Build context for each variance (with enriched analytical data)
-    contexts = []
-    for var in variances:
-        ctx = _build_variance_context(var, gl_data, budget_data, kardin_data)
-        contexts.append(ctx)
+    if not budget_rows:
+        # Fall back to engine_result.budget_variances if no budget comparison
+        budget_rows = [
+            {
+                'account_code': v.get('account_code', ''),
+                'account_name': v.get('account_name', ''),
+                'ptd_actual': v.get('ptd_actual', 0),
+                'ptd_budget': v.get('ptd_budget', 0),
+                'ytd_actual': v.get('ytd_actual', 0),
+                'ytd_budget': v.get('ytd_budget', 0),
+                'annual': v.get('annual'),
+            }
+            for v in (engine_result.budget_variances or [])
+        ]
 
-    # Generate comments
-    method = 'data-driven'
-    if api_key:
-        comments_map = generate_api_comments(
-            contexts,
-            period=engine_result.period or '',
-            property_name=engine_result.property_name or '',
-            api_key=api_key,
-        )
-        # Check if API was actually used (no "[API unavailable]" prefix)
-        sample = next(iter(comments_map.values()), '')
-        if not sample.startswith('[API unavailable]'):
-            method = 'api'
-    else:
-        comments_map = {ctx['account_code']: generate_data_driven_comment(ctx) for ctx in contexts}
+    comments_map = generate_variance_comments_grp(
+        budget_rows=budget_rows,
+        gl_parsed=gl_data,
+        kardin_records=kardin_data,
+        period=period,
+        property_name=prop,
+        api_key=api_key,
+    )
 
-    # Build output
+    method = 'api' if api_key else 'data-driven'
+
     results = []
-    for var in variances:
-        code = var.get('account_code', '')
+    for code, entry in comments_map.items():
+        if entry.get('mtd_tier') == 'tier_3' and entry.get('ytd_tier') == 'tier_3':
+            continue
         results.append({
             'account_code': code,
-            'account_name': var.get('account_name', ''),
-            'ptd_actual': var.get('ptd_actual', 0),
-            'ptd_budget': var.get('ptd_budget', 0),
-            'variance_amount': var.get('variance', 0),
-            'variance_pct': var.get('variance_pct', 0),
-            'comment': comments_map.get(code, ''),
+            'account_name': entry['account_name'],
+            'ptd_actual': entry['mtd_actual'],
+            'ptd_budget': entry['mtd_budget'],
+            'variance_amount': entry['mtd_actual'] - entry['mtd_budget'],
+            'variance_pct': (
+                (entry['mtd_actual'] - entry['mtd_budget']) / abs(entry['mtd_budget']) * 100
+                if entry['mtd_budget'] else 0
+            ),
+            'comment': entry.get('mtd_comment', ''),
+            'ytd_comment': entry.get('ytd_comment', ''),
+            'mtd_tier': entry.get('mtd_tier', 'tier_3'),
+            'ytd_tier': entry.get('ytd_tier', 'tier_3'),
             'method': method,
         })
 
