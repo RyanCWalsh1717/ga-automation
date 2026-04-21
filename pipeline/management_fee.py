@@ -214,6 +214,61 @@ def calculate(
     )
 
 
+def build_management_fee_je(
+    fee_result: ManagementFeeResult,
+    period: str = '',
+    property_code: str = 'revlabpm',
+    ap_account: str = '201000',        # Accrued liabilities — management fees
+    ap_account_name: str = 'Accrued Liabilities',
+    je_number: str = 'MGT-001',
+) -> list[dict]:
+    """
+    Build the two-line journal entry for the management fee accrual.
+
+    Debit  637130  Admin-Management Fees     (total fee)
+    Credit 201000  Accrued Liabilities       (total fee)
+
+    Returns a list of dicts matching the format expected by
+    generate_yardi_je_import() in accrual_entry_generator.py.
+    """
+    if fee_result.cash_received <= 0:
+        return []
+
+    desc = fee_result.accrual_description()
+    total = fee_result.total_fee
+
+    return [
+        {
+            'je_number': je_number,
+            'line': 1,
+            'date': period,
+            'account_code': _MGMT_FEE_CODE,
+            'account_name': 'Admin-Management Fees',
+            'description': desc,
+            'reference': 'MGMT-FEE',
+            'debit': round(total, 2),
+            'credit': 0.0,
+            'vendor': 'Management Fee Accrual',
+            'invoice_number': '',
+            'source': 'management_fee',
+        },
+        {
+            'je_number': je_number,
+            'line': 2,
+            'date': period,
+            'account_code': ap_account,
+            'account_name': ap_account_name,
+            'description': desc,
+            'reference': 'MGMT-FEE',
+            'debit': 0.0,
+            'credit': round(total, 2),
+            'vendor': 'Management Fee Accrual',
+            'invoice_number': '',
+            'source': 'management_fee',
+        },
+    ]
+
+
 def accrued_fee_from_bc(budget_rows: list[dict]) -> float:
     """
     Read the management fee that was actually accrued in the Budget Comparison.

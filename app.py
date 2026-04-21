@@ -257,9 +257,9 @@ if run_button:
             generate_workpapers(engine_result, workpaper_path)
             st.session_state.output_files["workpapers"] = workpaper_path
 
-            # Step 4: Generate accrual JE import
-            status_text.text("Step 4/5: Generating accrual entries...")
-            progress_bar.progress(80)
+            # Step 4: Build accrual entries (file written after mgmt fee is injected)
+            status_text.text("Step 4/7: Building accrual entries...")
+            progress_bar.progress(78)
 
             nexus_data = engine_result.parsed.get('nexus_accrual')
             gl_parsed = engine_result.parsed.get('gl')
@@ -272,16 +272,8 @@ if run_button:
                 gl_data=gl_parsed,
                 budget_data=bc_parsed,
             )
-            if je_lines:
-                    je_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.xlsx")
-                    generate_yardi_je_import(
-                        je_lines, je_path,
-                        period=engine_result.period or '',
-                        property_name=engine_result.property_name or '',
-                    )
-                    st.session_state.output_files["accrual_je"] = je_path
 
-            # Step 5: Management fee calculation
+            # Step 5: Management fee calculation — inject JE before writing file
             status_text.text("Step 5/7: Calculating management fee...")
             progress_bar.progress(82)
 
@@ -302,6 +294,24 @@ if run_button:
                 manual_override=cash_received_override,
             )
             st.session_state.output_files["fee_result"] = fee_result
+
+            # Inject management fee JE into accrual entries, then write file
+            from management_fee import build_management_fee_je
+            fee_je = build_management_fee_je(
+                fee_result,
+                period=engine_result.period or '',
+                property_code=engine_result.property_name or 'revlabpm',
+                je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
+            )
+            all_je_lines = je_lines + fee_je
+            if all_je_lines:
+                je_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.xlsx")
+                generate_yardi_je_import(
+                    all_je_lines, je_path,
+                    period=engine_result.period or '',
+                    property_name=engine_result.property_name or '',
+                )
+                st.session_state.output_files["accrual_je"] = je_path
 
             # Step 6: Run QC engine
             status_text.text("Step 6/7: Running QC checks...")
