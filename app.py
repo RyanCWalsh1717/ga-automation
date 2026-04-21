@@ -24,7 +24,11 @@ from report_generator import generate_report, generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
 from accrual_entry_generator import build_accrual_entries, generate_yardi_je_import
-from variance_comments import generate_variance_comments
+from variance_comments import (
+    generate_variance_comments,
+    generate_variance_comments_grp,
+    write_comments_to_budget_comparison,
+)
 from qc_engine import run_qc, generate_qc_workbook
 from management_fee import calculate as calculate_mgmt_fee, accrued_fee_from_bc
 
@@ -339,7 +343,7 @@ if run_button:
             generate_qc_workbook(qc_report, qc_path)
             st.session_state.output_files["qc_workbook"] = qc_path
 
-            # Step 7: Generate variance comments
+            # Step 7: Generate variance comments + annotated BC
             status_text.text("Step 7/7: Generating variance comments...")
             progress_bar.progress(92)
 
@@ -349,9 +353,52 @@ if run_button:
             except Exception:
                 pass  # No secrets configured
 
-            if engine_result.budget_variances:
-                var_comments = generate_variance_comments(engine_result, api_key=api_key)
+            # Call grp variant directly — returns Dict keyed by account code,
+            # which we need for the BC write-back AND the dashboard display
+            _gl_for_vc   = engine_result.parsed.get('gl')
+            _bc_for_vc   = bc_parsed or []
+            _kard_for_vc = engine_result.parsed.get('kardin_budget') or []
+            _period_str  = engine_result.period or ''
+            _prop_str    = engine_result.property_name or 'Revolution Labs Owner, LLC'
+
+            if _bc_for_vc:
+                comments_map = generate_variance_comments_grp(
+                    budget_rows=_bc_for_vc,
+                    gl_parsed=_gl_for_vc,
+                    kardin_records=_kard_for_vc,
+                    period=_period_str,
+                    property_name=_prop_str,
+                    api_key=api_key,
+                )
+                # Store list format for dashboard (backwards-compatible)
+                method = 'api' if api_key else 'data-driven'
+                var_comments = [
+                    {
+                        'account_code': code,
+                        'account_name': entry['account_name'],
+                        'comment': entry.get('mtd_comment', ''),
+                        'ytd_comment': entry.get('ytd_comment', ''),
+                        'mtd_tier': entry.get('mtd_tier', 'tier_3'),
+                        'ytd_tier': entry.get('ytd_tier', 'tier_3'),
+                        'method': method,
+                    }
+                    for code, entry in comments_map.items()
+                    if entry.get('mtd_tier') != 'tier_3' or entry.get('ytd_tier') != 'tier_3'
+                ]
                 st.session_state.output_files["variance_comments"] = var_comments
+
+                # Write annotated BC (GRP internal — comments in cols L/M)
+                _bc_file = st.session_state.uploaded_files.get("budget_comparison")
+                if _bc_file and os.path.exists(_bc_file):
+                    _annotated_bc_path = os.path.join(
+                        st.session_state.temp_dir, "GA_Budget_Comparison_Internal.xlsx"
+                    )
+                    write_comments_to_budget_comparison(
+                        input_path=_bc_file,
+                        output_path=_annotated_bc_path,
+                        comments=comments_map,
+                    )
+                    st.session_state.output_files["annotated_bc"] = _annotated_bc_path
             else:
                 st.session_state.output_files["variance_comments"] = []
 
@@ -715,6 +762,20 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                         file_name=f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
+                    )
+
+    with col6:
+        if "annotated_bc" in st.session_state.output_files:
+            ann_bc_path = st.session_state.output_files["annotated_bc"]
+            if os.path.exists(ann_bc_path):
+                with open(ann_bc_path, "rb") as f:
+                    st.download_button(
+                        label="💬 Download Budget Comparison (Internal + Comments)",
+                        data=f.read(),
+                        file_name=f"GA_Budget_Comparison_Internal_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        help="GRP internal use only — contains Claude variance comments in columns L/M",
                     )
 
 
