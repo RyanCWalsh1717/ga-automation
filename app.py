@@ -29,6 +29,7 @@ from accrual_entry_generator import (
     build_prepaid_release_je,
 )
 import prepaid_ledger
+import bs_workpaper_generator
 from variance_comments import (
     generate_variance_comments,
     generate_variance_comments_grp,
@@ -412,6 +413,21 @@ if run_button:
                     property_name=engine_result.property_name or '',
                 )
                 st.session_state.output_files["accrual_je"] = je_path
+
+            # Step 5b: Generate BS Workpaper (if TB uploaded)
+            if tb_result and engine_result.parsed.get('gl'):
+                try:
+                    bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_BS_Workpaper.xlsx")
+                    bs_workpaper_generator.generate(
+                        gl_result=engine_result.parsed.get('gl'),
+                        tb_result=tb_result,
+                        output_path=bs_wp_path,
+                        period=engine_result.period or '',
+                        property_name=engine_result.property_name or 'Revolution Labs',
+                    )
+                    st.session_state.output_files["bs_workpaper"] = bs_wp_path
+                except Exception as _e:
+                    st.warning(f"BS Workpaper generation skipped: {_e}")
 
             # Step 6: Run QC engine
             status_text.text("Step 6/7: Running QC checks...")
@@ -990,6 +1006,22 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         help="Upload this file next month as the Prepaid Ledger to continue amortization tracking",
+                    )
+
+    col_bs1, col_bs2 = st.columns(2)
+
+    with col_bs1:
+        if "bs_workpaper" in st.session_state.output_files:
+            bs_path = st.session_state.output_files["bs_workpaper"]
+            if os.path.exists(bs_path):
+                with open(bs_path, "rb") as f:
+                    st.download_button(
+                        label="📒 Download BS Reconciliation Workpaper",
+                        data=f.read(),
+                        file_name=f"GA_BS_Workpaper_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        help="Balance sheet reconciliation: one tab per BS account with GL vs TB tie-out",
                     )
 
     col5, col6 = st.columns(2)
