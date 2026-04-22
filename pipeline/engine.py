@@ -1270,7 +1270,17 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
     loan_data = None
     if "loan" in files and files["loan"]:
         try:
-            loan_data = parse_loan(files["loan"])
+            loan_files = files["loan"]
+            if isinstance(loan_files, str):
+                loan_files = [loan_files]
+            combined_loans = []
+            for lf in loan_files:
+                parsed = parse_loan(lf)
+                if isinstance(parsed, list):
+                    combined_loans.extend(parsed)
+                elif parsed:
+                    combined_loans.append(parsed)
+            loan_data = combined_loans
             result.parsed["loan"] = loan_data
         except Exception as e:
             result.add_exception("error", "parse", "berkadia", f"Loan parse failed: {e}")

@@ -143,7 +143,7 @@ file_config = {
     "rent_roll": ("Yardi Rent Roll (.xlsx)", "*.xlsx", False),
     "nexus_accrual": ("Nexus Accrual Detail (.xls)", "*.xls", False),
     "pnc_bank": ("PNC Bank Statement (.pdf)", "*.pdf", False),
-    "loan": ("Berkadia Loan Statement (.xlsx)", "*.xlsx", False),
+    "loan": ("Berkadia Loan PDFs (.pdf)", "*.pdf", False),
     "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
     "monthly_report": ("Monthly Report Template (.xlsx)", "*.xlsx", False),
 }
@@ -152,18 +152,34 @@ for key, (label, file_type, required) in file_config.items():
     col1, col2 = st.sidebar.columns([5, 1])
 
     with col1:
-        uploaded_file = st.file_uploader(
-            label,
-            type=file_type.replace("*.", ""),
-            key=f"uploader_{key}",
-        )
+        if key == "loan":
+            uploaded_files_multi = st.file_uploader(
+                label,
+                type="pdf",
+                accept_multiple_files=True,
+                key="uploader_loan",
+            )
+            if uploaded_files_multi:
+                paths = []
+                for uf in uploaded_files_multi:
+                    temp_file = os.path.join(st.session_state.temp_dir, uf.name)
+                    with open(temp_file, "wb") as f:
+                        f.write(uf.getbuffer())
+                    paths.append(temp_file)
+                st.session_state.uploaded_files["loan"] = paths
+        else:
+            uploaded_file = st.file_uploader(
+                label,
+                type=file_type.replace("*.", ""),
+                key=f"uploader_{key}",
+            )
 
-        if uploaded_file is not None:
-            # Save to temp directory
-            temp_file = os.path.join(st.session_state.temp_dir, uploaded_file.name)
-            with open(temp_file, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            st.session_state.uploaded_files[key] = temp_file
+            if uploaded_file is not None:
+                # Save to temp directory
+                temp_file = os.path.join(st.session_state.temp_dir, uploaded_file.name)
+                with open(temp_file, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                st.session_state.uploaded_files[key] = temp_file
 
     with col2:
         if key in st.session_state.uploaded_files:
