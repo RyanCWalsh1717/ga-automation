@@ -424,6 +424,7 @@ if run_button:
                         output_path=bs_wp_path,
                         period=engine_result.period or '',
                         property_name=engine_result.property_name or 'Revolution Labs',
+                        prepaid_ledger_active=ledger_active or [],
                     )
                     st.session_state.output_files["bs_workpaper"] = bs_wp_path
                 except Exception as _e:

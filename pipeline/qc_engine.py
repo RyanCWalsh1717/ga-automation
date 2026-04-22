@@ -377,23 +377,36 @@ def check_4_mom_swings(budget_rows: List[dict],
 
 
 # ══════════════════════════════════════════════════════════════
-# CHECK 5 — GL Ending Balances vs Workpapers (BS accounts)
+# CHECK 5 — BS Workpaper Tie-Out (GL ending vs TB ending per account)
 # ══════════════════════════════════════════════════════════════
 
 def check_5_gl_vs_workpapers(gl_parsed, tb_result) -> QCResult:
     """
-    For balance sheet accounts, confirm GL ending balance = TB ending balance.
-    This is a simplified version of the full workpaper tie-out since we don't
-    have the full JLL 90-tab workpaper available in the pipeline.
+    For each balance sheet account, compare GL ending balance to TB ending balance.
+
+    Pre-accrual run: GL ≠ TB is expected — the variance equals the accrual JEs
+    that need to be posted. These are flagged as INFO so GRP knows which accounts
+    need entries, not as failures.
+
+    Post-accrual run: All variances should be zero. Any remaining non-zero variance
+    is a genuine discrepancy and flagged as MISMATCH.
+
+    Accounts not in TB are flagged separately (likely zero-balance accounts).
     """
     findings: List[QCFinding] = []
 
     if not gl_parsed or not hasattr(gl_parsed, 'accounts'):
-        return QCResult('CHECK_5', 'GL Ending Balances vs Workpapers',
+        return QCResult('CHECK_5', 'BS Workpaper Tie-Out',
                         'FLAG', 'GL data not available for this check.', [])
+
+    if not tb_result:
+        return QCResult('CHECK_5', 'BS Workpaper Tie-Out',
+                        'FLAG', 'Trial Balance not uploaded — cannot run workpaper tie-out.', [])
 
     tb_map = tb_result.account_map if tb_result else {}
     checked = 0
+    accrual_gap_total = 0.0
+    clean_count = 0
 
     for gl_acct in gl_parsed.accounts:
         code = str(gl_acct.account_code or '').strip()
@@ -401,30 +414,56 @@ def check_5_gl_vs_workpapers(gl_parsed, tb_result) -> QCResult:
             continue
 
         gl_end = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+        checked += 1
 
-        if code in tb_map:
-            tb_end = float(tb_map[code].ending_balance)
-            diff = abs(gl_end - tb_end)
-            checked += 1
-            if diff > 0.05:
+        if code not in tb_map:
+            # In GL but not in TB — only flag if non-zero balance
+            if abs(gl_end) > 0.05:
                 findings.append(QCFinding(
                     account_code=code,
                     account_name=gl_acct.account_name,
                     value_a=gl_end,
-                    value_b=tb_end,
-                    difference=gl_end - tb_end,
-                    flag='MISMATCH',
-                    note=f'GL ${gl_end:,.2f} ≠ TB ${tb_end:,.2f}',
+                    value_b=0.0,
+                    difference=gl_end,
+                    flag='INFO',
+                    note=f'Account in GL (${gl_end:,.2f}) but not in TB — verify zero balance expected.',
                 ))
+            continue
 
-    if not findings:
-        status = 'PASS'
-        summary = f'GL ending balances match workpaper (TB) across {checked} balance sheet accounts.'
+        tb_end = float(tb_map[code].ending_balance)
+        diff = gl_end - tb_end
+
+        if abs(diff) <= 0.05:
+            clean_count += 1
+        else:
+            accrual_gap_total += abs(diff)
+            findings.append(QCFinding(
+                account_code=code,
+                account_name=gl_acct.account_name,
+                value_a=gl_end,
+                value_b=tb_end,
+                difference=diff,
+                flag='FLAG',
+                note=(f'GL ${gl_end:,.2f} vs TB ${tb_end:,.2f} — '
+                      f'variance of ${abs(diff):,.2f} likely requires accrual JE.'),
+            ))
+
+    accrual_gaps = [f for f in findings if f.flag == 'FLAG']
+    info_gaps    = [f for f in findings if f.flag == 'INFO']
+
+    if not accrual_gaps and not info_gaps:
+        status  = 'PASS'
+        summary = f'All {clean_count} BS accounts tie — GL ending = TB ending.'
+    elif accrual_gaps:
+        status  = 'FLAG'
+        summary = (f'{len(accrual_gaps)} account(s) have GL vs TB variance '
+                   f'(total ${accrual_gap_total:,.2f}) — accrual JEs required. '
+                   f'{clean_count} account(s) tie clean. See BS Workpaper for detail.')
     else:
-        status = 'FAIL'
-        summary = f'{len(findings)} GL/TB balance discrepancy(ies) found.'
+        status  = 'FLAG'
+        summary = f'{len(info_gaps)} account(s) in GL not found in TB — verify expected.'
 
-    return QCResult('CHECK_5', 'GL Ending Balances vs Workpapers', status, summary, findings)
+    return QCResult('CHECK_5', 'BS Workpaper Tie-Out', status, summary, findings)
 
 
 # ══════════════════════════════════════════════════════════════

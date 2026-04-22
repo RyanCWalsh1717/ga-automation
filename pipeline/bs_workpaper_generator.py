@@ -76,16 +76,18 @@ def _apply(cell, font=None, fill=None, fmt=None, border=None, align=None):
 # ── Main entry point ─────────────────────────────────────────
 
 def generate_bs_workpaper(gl_result, tb_result, output_path: str,
-                           period: str = '', property_name: str = '') -> str:
+                           period: str = '', property_name: str = '',
+                           prepaid_ledger_active: list = None) -> str:
     """
     Generate the balance sheet reconciliation workpaper.
 
     Args:
-        gl_result:     GLParseResult from parsers.yardi_gl.parse_gl()
-        tb_result:     TBResult from parsers.yardi_trial_balance.parse()
-        output_path:   Where to write the .xlsx file
-        period:        Period label e.g. 'Mar-2026'
-        property_name: Property display name
+        gl_result:            GLParseResult from parsers.yardi_gl.parse_gl()
+        tb_result:            TBResult from parsers.yardi_trial_balance.parse()
+        output_path:          Where to write the .xlsx file
+        period:               Period label e.g. 'Mar-2026'
+        property_name:        Property display name
+        prepaid_ledger_active: Active prepaid items from prepaid_ledger.py (optional)
 
     Returns:
         output_path
@@ -108,6 +110,10 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     _write_tb_tab(wb, tb_result, period, property_name)
     for acct in bs_accounts:
         _write_account_tab(wb, acct, tb_map.get(acct.account_code), period, property_name)
+
+    # ── Prepaid amortization schedule tab (if ledger data available) ──
+    if prepaid_ledger_active:
+        _write_prepaid_schedule_tab(wb, prepaid_ledger_active, period, property_name)
 
     # Remove default sheet
     if 'Sheet' in wb.sheetnames:
@@ -536,9 +542,111 @@ def _write_tieout(ws, row, gl_acct, tb_acct):
         ws.cell(row=row, column=8, value='').border = DOUBLE_BTM
 
 
+# ── Prepaid amortization schedule tab ────────────────────────
+
+def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_name: str):
+    """
+    Adds a 'Prepaid Schedule' tab showing the full amortization rollforward
+    for all active prepaid items. Tied to accounts 135xxx.
+    """
+    COLOR_PREPAID = 'ED7D31'   # orange tab — matches prepaid ledger convention
+
+    ws = wb.create_sheet('Prepaid Schedule')
+    ws.sheet_properties.tabColor = COLOR_PREPAID
+
+    row = 1
+    c = ws.cell(row=row, column=1,
+                value=f'{property_name or "Revolution Labs"} — Prepaid Expense Schedule')
+    c.font = _font(bold=True, size=13, color='FFFFFF')
+    c.fill = _fill(COLOR_PREPAID)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+    row += 1
+
+    c = ws.cell(row=row, column=1,
+                value=f'Period: {period}  |  Active items as of close  |  Account 130000 — Prepaid Expenses')
+    c.font = _font(italic=True, color='FFFFFF')
+    c.fill = _fill(COLOR_PREPAID)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+    row += 2
+
+    headers = ['Vendor', 'Invoice #', 'GL Account', 'Total Amount',
+               'Monthly Amount', 'Total Months', 'Months Done', 'Months Left', 'Service End']
+    widths  = [30, 18, 12, 16, 16, 13, 13, 12, 14]
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(row=row, column=ci, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+               align=Alignment(horizontal='center', wrap_text=True))
+        ws.column_dimensions[get_column_letter(ci)].width = widths[ci - 1]
+    ws.row_dimensions[row].height = 28
+    row += 1
+
+    total_asset = 0.0
+    for i, item in enumerate(active_items):
+        alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+        monthly  = float(item.get('monthly_amount', 0) or 0)
+        rem      = int(item.get('remaining_months', 0) or 0)
+        asset_val = monthly * rem
+        total_asset += asset_val
+
+        svc_end = item.get('service_end', '')
+        if svc_end and hasattr(svc_end, 'strftime'):
+            svc_end = svc_end.strftime('%m/%d/%Y')
+
+        vals = [
+            item.get('vendor', ''),
+            item.get('invoice_number', ''),
+            item.get('gl_account_number', ''),
+            float(item.get('total_amount', 0) or 0),
+            monthly,
+            int(item.get('total_months', 0) or 0),
+            int(item.get('months_amortized', 0) or 0),
+            rem,
+            str(svc_end) if svc_end else '',
+        ]
+        for ci, val in enumerate(vals, 1):
+            c = ws.cell(row=row, column=ci, value=val)
+            c.border = THIN
+            if alt_fill:
+                c.fill = alt_fill
+            if ci in (4, 5):
+                c.number_format = '#,##0.00;(#,##0.00);"-"'
+            if ci == 8:  # months left — color code
+                c.alignment = Alignment(horizontal='center')
+                if rem == 0:
+                    c.font = _font(color='FF0000', bold=True)
+                elif rem == 1:
+                    c.font = _font(color='C55A11', bold=True)
+        row += 1
+
+    # Totals row
+    row += 1
+    ws.cell(row=row, column=1, value='TOTAL PREPAID ASSET (130000)').font = _font(bold=True, color=DARK_BLUE)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+    c_tot = ws.cell(row=row, column=5, value=total_asset)
+    _apply(c_tot, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=DOUBLE_BTM)
+    ws.cell(row=row, column=4).border = DOUBLE_BTM
+    ws.cell(row=row, column=1).border = DOUBLE_BTM
+    ws.cell(row=row, column=2).border = DOUBLE_BTM
+    ws.cell(row=row, column=3).border = DOUBLE_BTM
+
+    row += 2
+    note = ws.cell(row=row, column=1,
+                   value='Total Prepaid Asset = Monthly Amount × Remaining Months per active item. '
+                         'This balance should agree to account 130000 ending balance in the TB.')
+    note.font = _font(italic=True, size=10, color='595959')
+    note.alignment = Alignment(wrap_text=True)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+    ws.row_dimensions[row].height = 28
+
+    ws.freeze_panes = 'A5'
+
+
 # ── Convenience function for app.py ──────────────────────────
 
 def generate(gl_result, tb_result, output_path: str,
-             period: str = '', property_name: str = '') -> str:
+             period: str = '', property_name: str = '',
+             prepaid_ledger_active: list = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
-    return generate_bs_workpaper(gl_result, tb_result, output_path, period, property_name)
+    return generate_bs_workpaper(gl_result, tb_result, output_path, period,
+                                  property_name, prepaid_ledger_active)
