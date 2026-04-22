@@ -23,7 +23,10 @@ from engine import run_pipeline, EngineResult
 from report_generator import generate_report, generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
-from accrual_entry_generator import build_accrual_entries, generate_yardi_je_import
+from accrual_entry_generator import (
+    build_accrual_entries, generate_yardi_je_import,
+    build_prepaid_amortization, write_prepaid_amortization_tab,
+)
 from variance_comments import (
     generate_variance_comments,
     generate_variance_comments_grp,
@@ -285,17 +288,9 @@ if run_button:
             generate_report(engine_result, report_path)
             st.session_state.output_files["monthly_report"] = report_path
 
-            # Step 3: Generate workpapers
-            status_text.text("Step 3/4: Generating workpapers...")
-            progress_bar.progress(70)
-
-            workpaper_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
-            generate_workpapers(engine_result, workpaper_path)
-            st.session_state.output_files["workpapers"] = workpaper_path
-
-            # Step 4: Build accrual entries (file written after mgmt fee is injected)
-            status_text.text("Step 4/7: Building accrual entries...")
-            progress_bar.progress(78)
+            # Step 3: Build accrual entries and prepaid schedule (needed for workpapers)
+            status_text.text("Step 3/7: Building accrual entries...")
+            progress_bar.progress(65)
 
             nexus_data = engine_result.parsed.get('nexus_accrual')
             gl_parsed = engine_result.parsed.get('gl')
@@ -308,6 +303,30 @@ if run_button:
                 gl_data=gl_parsed,
                 budget_data=bc_parsed,
             )
+
+            amort_lines = build_prepaid_amortization(
+                nexus_data or [],
+                close_period=engine_result.period or '',
+            )
+            st.session_state.output_files["prepaid_amortization"] = amort_lines
+
+            # Step 4: Generate workpapers (includes prepaid tab)
+            status_text.text("Step 4/7: Generating workpapers...")
+            progress_bar.progress(72)
+
+            workpaper_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
+            generate_workpapers(engine_result, workpaper_path)
+            # Append prepaid amortization tab to workpapers
+            if amort_lines:
+                from openpyxl import load_workbook as _lw
+                _wb = _lw(workpaper_path)
+                write_prepaid_amortization_tab(
+                    _wb, amort_lines,
+                    period=engine_result.period or '',
+                    property_name=engine_result.property_name or '',
+                )
+                _wb.save(workpaper_path)
+            st.session_state.output_files["workpapers"] = workpaper_path
 
             # Step 5: Management fee calculation — inject JE before writing file
             status_text.text("Step 5/7: Calculating management fee...")
@@ -549,6 +568,79 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             diff = accrued - fee_result.total_fee
             diff_str = f"${abs(diff):,.0f} {'over' if diff > 0 else 'under'} calculated"
             st.caption(f"BC accrued (637130): ${accrued:,.2f} — {diff_str}")
+        st.divider()
+
+    # ── Accruals Panel ─────────────────────────────────────────────
+    nexus_parsed = result.parsed.get('nexus_accrual')
+    if nexus_parsed:
+        pending = [r for r in nexus_parsed if (r.get('invoice_status') or '').lower() == 'pending approval']
+        if pending:
+            st.markdown("### AP Accruals — Pending Approval")
+            col_a1, col_a2, col_a3 = st.columns(3)
+            with col_a1:
+                st.metric("Invoices to Accrue", len(pending))
+            with col_a2:
+                st.metric("Total Accrual Amount", f"${sum(r['amount'] for r in pending):,.2f}")
+            with col_a3:
+                prepaid_count = sum(1 for r in pending if r.get('is_prepaid'))
+                st.metric("Multi-Period (Prepaid) Invoices", prepaid_count)
+
+            accrual_rows = []
+            for r in pending:
+                accrual_rows.append({
+                    "Vendor": r['vendor'],
+                    "Invoice #": r['invoice_number'],
+                    "Invoice Date": str(r['invoice_date']) if r['invoice_date'] else '',
+                    "Description": r['line_description'],
+                    "GL Account": r['gl_account_number'],
+                    "Amount": r['amount'],
+                    "Prepaid": "Yes" if r.get('is_prepaid') else "",
+                })
+            st.dataframe(accrual_rows, use_container_width=True, hide_index=True,
+                         column_config={
+                             "Vendor": st.column_config.TextColumn(width="medium"),
+                             "Invoice #": st.column_config.TextColumn(width="small"),
+                             "Invoice Date": st.column_config.TextColumn(width="small"),
+                             "Description": st.column_config.TextColumn(width="large"),
+                             "GL Account": st.column_config.TextColumn(width="small"),
+                             "Amount": st.column_config.NumberColumn(format="$%,.2f"),
+                             "Prepaid": st.column_config.TextColumn(width="small"),
+                         })
+            st.divider()
+
+    # ── Prepaid Amortization Panel ──────────────────────────────────
+    amort_lines = st.session_state.output_files.get("prepaid_amortization", [])
+    if amort_lines:
+        st.markdown("### Prepaid Expense Amortization")
+        current_lines = [l for l in amort_lines if l.get('is_current_period')]
+        future_lines = [l for l in amort_lines if not l.get('is_current_period')]
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.metric("Current Period Expense", f"${sum(l['monthly_amount'] for l in current_lines):,.2f}")
+        with col_p2:
+            st.metric("Future Periods (Prepaid Asset)", f"${sum(l['monthly_amount'] for l in future_lines):,.2f}")
+
+        amort_rows = []
+        for l in amort_lines:
+            amort_rows.append({
+                "Vendor": l['vendor'],
+                "Invoice #": l['invoice_number'],
+                "Period": l['period_label'],
+                "Month": f"{l['month_index']}/{l['total_months']}",
+                "Monthly Amount": l['monthly_amount'],
+                "GL Account": l['gl_account_number'],
+                "Current Period": "Yes" if l.get('is_current_period') else "",
+            })
+        st.dataframe(amort_rows, use_container_width=True, hide_index=True,
+                     column_config={
+                         "Vendor": st.column_config.TextColumn(width="medium"),
+                         "Invoice #": st.column_config.TextColumn(width="small"),
+                         "Period": st.column_config.TextColumn(width="small"),
+                         "Month": st.column_config.TextColumn(width="small"),
+                         "Monthly Amount": st.column_config.NumberColumn(format="$%,.2f"),
+                         "GL Account": st.column_config.TextColumn(width="small"),
+                         "Current Period": st.column_config.TextColumn(width="small"),
+                     })
         st.divider()
 
     # Summary metrics

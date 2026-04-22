@@ -16,7 +16,8 @@ Each accrual generates a two-line entry:
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Any, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -311,7 +312,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         vendor = str(inv.get('vendor', '') or '')
         inv_num = str(inv.get('invoice_number', '') or '')
         inv_date = inv.get('invoice_date', '')
-        gl_account = str(inv.get('gl_account', '') or '')
+        # Use numeric account number if available (e.g. "637370" not "Admin-Computer/Software (637370)")
+        gl_account = str(inv.get('gl_account_number', '') or inv.get('gl_account', '') or '')
         gl_category = str(inv.get('gl_category', '') or '')
         description = str(inv.get('line_description', '') or '')
         amount = inv.get('amount', 0) or 0
@@ -464,6 +466,198 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             je_num += 1
 
     return je_lines
+
+
+# ── Prepaid amortization schedule ───────────────────────────
+
+PREPAID_ASSET_ACCOUNT = '130000'
+PREPAID_ASSET_NAME = 'Prepaid Expenses'
+
+
+def build_prepaid_amortization(nexus_data: list, close_period: str = '') -> List[Dict[str, Any]]:
+    """
+    Build a prepaid expense amortization schedule from Nexus invoices whose
+    service period spans more than one calendar month.
+
+    For each qualifying invoice, produces one amortization line per month:
+      - current period month  → expense account (normal accrual, not prepaid)
+      - future months         → prepaid asset to be released in later months
+
+    Args:
+        nexus_data: Parsed Nexus records (from nexus_accrual.parse())
+        close_period: Accounting period string e.g. 'Mar-2026'
+
+    Returns:
+        List of dicts:
+          vendor, invoice_number, description, service_start, service_end,
+          total_amount, monthly_amount, amort_month (date), period_label,
+          gl_account_number, gl_account, is_current_period, month_index
+    """
+    lines = []
+
+    # Parse close_period to determine current month
+    close_month = None
+    if close_period:
+        month_map = dict(Jan=1, Feb=2, Mar=3, Apr=4, May=5, Jun=6,
+                         Jul=7, Aug=8, Sep=9, Oct=10, Nov=11, Dec=12)
+        for mn, mv in month_map.items():
+            if mn in close_period:
+                year_m = None
+                import re
+                yr = re.search(r'(\d{4})', close_period)
+                if yr:
+                    year_m = int(yr.group(1))
+                if year_m:
+                    close_month = date(year_m, mv, 1)
+                break
+
+    for inv in nexus_data:
+        if not inv.get('is_prepaid'):
+            continue
+
+        svc_start = inv.get('service_start')
+        svc_end = inv.get('service_end')
+        total_months = inv.get('prepaid_months', 1)
+        if not svc_start or not svc_end or total_months <= 1:
+            continue
+
+        total_amount = inv.get('amount', 0)
+        monthly_amount = round(total_amount / total_months, 2)
+        # Distribute any rounding to first month
+        rounding_adj = round(total_amount - monthly_amount * total_months, 2)
+
+        vendor = inv.get('vendor', '')
+        inv_num = inv.get('invoice_number', '')
+        desc = inv.get('line_description', '')
+        gl_acct_num = inv.get('gl_account_number', inv.get('gl_account', ''))
+        gl_acct = inv.get('gl_account', '')
+
+        current_month_start = date(svc_start.year, svc_start.month, 1)
+        for i in range(total_months):
+            amort_month = current_month_start + relativedelta(months=i)
+            month_amt = monthly_amount + (rounding_adj if i == 0 else 0)
+            period_label = amort_month.strftime('%b-%Y')
+            is_current = (close_month is not None and
+                          amort_month.year == close_month.year and
+                          amort_month.month == close_month.month)
+
+            lines.append({
+                'vendor': vendor,
+                'invoice_number': inv_num,
+                'description': desc,
+                'service_start': svc_start,
+                'service_end': svc_end,
+                'total_amount': total_amount,
+                'monthly_amount': month_amt,
+                'amort_month': amort_month,
+                'period_label': period_label,
+                'gl_account_number': gl_acct_num,
+                'gl_account': gl_acct,
+                'is_current_period': is_current,
+                'month_index': i + 1,
+                'total_months': total_months,
+            })
+
+    return lines
+
+
+def write_prepaid_amortization_tab(wb: Workbook, amort_lines: List[Dict],
+                                   period: str = '', property_name: str = ''):
+    """
+    Add a 'Prepaid Amortization' tab to an existing workbook.
+    Shows one row per invoice per month with current period highlighted.
+    """
+    ws = wb.create_sheet('Prepaid Amortization')
+    AMBER = 'FFF2CC'
+    GREEN_LIGHT = 'E2EFDA'
+
+    row = 1
+    c = ws.cell(row=row, column=1, value=f'Prepaid Expense Amortization Schedule — {property_name}')
+    c.font = Font(name='Calibri', size=14, bold=True, color=DARK_BLUE)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+    row += 1
+
+    c = ws.cell(row=row, column=1,
+                value=f'Period: {period}  |  Invoices with service period > 1 month  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c.font = Font(name='Calibri', size=11, italic=True, color='666666')
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+    row += 2
+
+    # Column headers
+    headers = ['Vendor', 'Invoice #', 'Description', 'GL Account',
+               'Total Amount', 'Service Start', 'Service End', 'Total Months',
+               'Period', 'Monthly Amount']
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(row=row, column=ci, value=h)
+        _apply(c, font=_hdr_font(), fill=_hdr_fill(), border=THIN_BORDER,
+               align=Alignment(horizontal='center', vertical='center', wrap_text=True))
+    row += 1
+
+    # Group lines by invoice, showing all months
+    for line in amort_lines:
+        is_cur = line.get('is_current_period', False)
+        fill_color = AMBER if is_cur else None
+        fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type='solid') if fill_color else None
+
+        vals = [
+            line['vendor'],
+            line['invoice_number'],
+            line['description'],
+            f"{line['gl_account_number']} — {line['gl_account'].split('(')[0].strip()}",
+            line['total_amount'] if line['month_index'] == 1 else '',  # Only show on first row
+            line['service_start'].strftime('%m/%d/%Y') if line['service_start'] else '',
+            line['service_end'].strftime('%m/%d/%Y') if line['service_end'] else '',
+            line['total_months'] if line['month_index'] == 1 else '',
+            line['period_label'] + (' ← CURRENT' if is_cur else ''),
+            line['monthly_amount'],
+        ]
+        for ci, v in enumerate(vals, 1):
+            c = ws.cell(row=row, column=ci, value=v)
+            c.border = THIN_BORDER
+            if fill:
+                c.fill = fill
+            if ci == 5 and v != '':
+                c.number_format = '$#,##0.00'
+            if ci == 10:
+                c.number_format = '$#,##0.00'
+                if is_cur:
+                    c.font = Font(name='Calibri', size=11, bold=True)
+        row += 1
+
+    # Summary: total current period prepaid expense
+    current_total = sum(l['monthly_amount'] for l in amort_lines if l.get('is_current_period'))
+    future_total = sum(l['monthly_amount'] for l in amort_lines if not l.get('is_current_period'))
+    row += 1
+    ws.cell(row=row, column=9, value='Current Period Total').font = Font(name='Calibri', size=11, bold=True)
+    c = ws.cell(row=row, column=10, value=current_total)
+    c.number_format = '$#,##0.00'
+    c.font = Font(name='Calibri', size=11, bold=True)
+    c.border = DOUBLE_BOTTOM
+    row += 1
+    ws.cell(row=row, column=9, value='Future Periods (Prepaid Asset)').font = Font(name='Calibri', size=11, italic=True)
+    c = ws.cell(row=row, column=10, value=future_total)
+    c.number_format = '$#,##0.00'
+    c.font = Font(name='Calibri', size=11, italic=True)
+
+    # Note explaining prepaid accounting
+    row += 2
+    note = (
+        'Note: Current period amounts are expensed via accrual JE (DR expense / CR accrued liabilities). '
+        'Future period amounts are recorded as prepaid assets (DR prepaid / CR cash) upon payment, '
+        'then amortized monthly (DR expense / CR prepaid).'
+    )
+    c = ws.cell(row=row, column=1, value=note)
+    c.font = Font(name='Calibri', size=10, italic=True, color='666666')
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+    c.alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[row].height = 30
+
+    # Column widths
+    widths = [25, 15, 40, 35, 14, 14, 14, 10, 18, 16]
+    for ci, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64 + ci)].width = w
+
+    ws.sheet_properties.tabColor = 'ED7D31'  # Orange for prepaid
 
 
 # ── Generate Yardi JE import file ────────────────────────────

@@ -22,9 +22,11 @@ The parser handles:
 - Date parsing (M/D/YYYY format)
 """
 
+import re
 import xlrd
-from datetime import datetime
-from typing import List, Dict, Tuple, Any
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
+from typing import List, Dict, Tuple, Any, Optional
 
 
 def parse(filepath: str) -> List[Dict[str, Any]]:
@@ -95,17 +97,27 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
                 # Parse amount
                 amount = _parse_amount(row[10]) if len(row) > 10 else 0.0
 
+                gl_account_raw = str(row[8]) if len(row) > 8 else ''
+                line_desc = str(row[6]) if len(row) > 6 else ''
+                svc_start, svc_end = _parse_service_period(line_desc)
+                is_prepaid = _is_prepaid(svc_start, svc_end)
+
                 record = {
                     'vendor': str(current_vendor),
                     'property': str(property_val),
                     'received_date': received_date,
                     'invoice_number': str(row[4]) if len(row) > 4 else '',
                     'invoice_date': invoice_date,
-                    'line_description': str(row[6]) if len(row) > 6 else '',
+                    'line_description': line_desc,
                     'gl_category': str(row[7]) if len(row) > 7 else '',
-                    'gl_account': str(row[8]) if len(row) > 8 else '',
+                    'gl_account': gl_account_raw,
+                    'gl_account_number': _extract_gl_account_number(gl_account_raw),
                     'invoice_status': str(row[9]) if len(row) > 9 else '',
                     'amount': amount,
+                    'service_start': svc_start,
+                    'service_end': svc_end,
+                    'is_prepaid': is_prepaid,
+                    'prepaid_months': _count_months(svc_start, svc_end) if is_prepaid else 1,
                 }
                 records.append(record)
             except Exception:
@@ -159,6 +171,76 @@ def validate(filepath: str) -> Tuple[bool, List[str]]:
         issues.append(f"Sheet name is '{worksheet.name}', expected 'Accrual Detail'")
 
     return len(issues) == 0, issues
+
+
+def _extract_gl_account_number(gl_account_str: str) -> str:
+    """Extract the numeric GL account code from a string like 'Admin-Computer/Software (637370)'.
+    Returns the number in parentheses, or the original string if no parens found."""
+    m = re.search(r'\((\d+)\)\s*$', gl_account_str.strip())
+    if m:
+        return m.group(1)
+    return gl_account_str
+
+
+# Patterns for service period date ranges in descriptions
+_DATE_FULL = r'(\d{2})\.(\d{2})\.(\d{2})'   # MM.DD.YY
+_DATE_MONTH = r'(\d{2})\.(\d{2})'            # MM.YY
+
+_RE_FULL_RANGE = re.compile(rf'{_DATE_FULL}-{_DATE_FULL}')
+_RE_MONTH_RANGE = re.compile(r'(\d{2})\.(\d{2})-(\d{2})\.(\d{2})(?!\d)')
+
+
+def _parse_service_period(description: str) -> Tuple[Optional[date], Optional[date]]:
+    """Parse a service period date range from an invoice line description.
+
+    Handles:
+      MM.DD.YY-MM.DD.YY  (e.g., '02.01.26-01.31.27')
+      MM.YY-MM.YY        (e.g., '03.26-05.26')
+
+    Returns (start_date, end_date) or (None, None) if not found.
+    """
+    # Try full date range first: MM.DD.YY-MM.DD.YY
+    m = _RE_FULL_RANGE.search(description)
+    if m:
+        try:
+            sm, sd, sy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            em, ed, ey = int(m.group(4)), int(m.group(5)), int(m.group(6))
+            start = date(2000 + sy, sm, sd)
+            end = date(2000 + ey, em, ed)
+            return start, end
+        except ValueError:
+            pass
+
+    # Try month-year range: MM.YY-MM.YY
+    m = _RE_MONTH_RANGE.search(description)
+    if m:
+        try:
+            sm, sy = int(m.group(1)), int(m.group(2))
+            em, ey = int(m.group(3)), int(m.group(4))
+            start = date(2000 + sy, sm, 1)
+            # End date = last day of end month
+            next_month = date(2000 + ey, em, 1) + relativedelta(months=1)
+            end = next_month - relativedelta(days=1)
+            return start, end
+        except ValueError:
+            pass
+
+    return None, None
+
+
+def _count_months(start: Optional[date], end: Optional[date]) -> int:
+    """Return the number of calendar months spanned by a service period (inclusive)."""
+    if not start or not end or end <= start:
+        return 1
+    r = relativedelta(end, start)
+    return r.years * 12 + r.months + 1
+
+
+def _is_prepaid(start: Optional[date], end: Optional[date]) -> bool:
+    """Return True if service period spans more than one month (> ~35 days)."""
+    if not start or not end:
+        return False
+    return (end - start).days > 35
 
 
 def _parse_date(value: Any) -> Any:
