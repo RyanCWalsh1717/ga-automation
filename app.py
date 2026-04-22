@@ -307,6 +307,7 @@ if run_button:
                 gl_data=gl_parsed,
                 budget_data=bc_parsed,
             )
+            st.session_state.output_files["je_lines"] = je_lines
 
             # ── Prepaid ledger: load → merge → release JEs → advance ──
             close_period = engine_result.period or ''
@@ -405,6 +406,7 @@ if run_button:
                 je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
             )
             all_je_lines = je_lines + prepaid_release_je + fee_je
+            st.session_state.output_files["all_je_lines"] = all_je_lines
             if all_je_lines:
                 je_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.csv")
                 generate_yardi_je_csv(
@@ -633,42 +635,89 @@ if st.session_state.processing_complete and st.session_state.engine_result:
         st.divider()
 
     # ── Accruals Panel ─────────────────────────────────────────────
-    nexus_parsed = result.parsed.get('nexus_accrual')
-    if nexus_parsed:
-        pending = [r for r in nexus_parsed if (r.get('invoice_status') or '').lower() == 'pending approval']
-        if pending:
-            st.markdown("### AP Accruals — Pending Approval")
-            col_a1, col_a2, col_a3 = st.columns(3)
-            with col_a1:
-                st.metric("Invoices to Accrue", len(pending))
-            with col_a2:
-                st.metric("Total Accrual Amount", f"${sum(r['amount'] for r in pending):,.2f}")
-            with col_a3:
-                prepaid_count = sum(1 for r in pending if r.get('is_prepaid'))
-                st.metric("Multi-Period (Prepaid) Invoices", prepaid_count)
+    all_je_lines = st.session_state.output_files.get("all_je_lines", [])
+    # DR lines only (debit > 0) represent unique accrual entries
+    dr_lines = [l for l in all_je_lines if (l.get('debit') or 0) > 0]
 
-            accrual_rows = []
-            for r in pending:
-                accrual_rows.append({
-                    "Vendor": r['vendor'],
-                    "Invoice #": r['invoice_number'],
-                    "Invoice Date": str(r['invoice_date']) if r['invoice_date'] else '',
-                    "Description": r['line_description'],
-                    "GL Account": r['gl_account_number'],
-                    "Amount": r['amount'],
-                    "Prepaid": "Yes" if r.get('is_prepaid') else "",
-                })
-            st.dataframe(accrual_rows, use_container_width=True, hide_index=True,
-                         column_config={
-                             "Vendor": st.column_config.TextColumn(width="medium"),
-                             "Invoice #": st.column_config.TextColumn(width="small"),
-                             "Invoice Date": st.column_config.TextColumn(width="small"),
-                             "Description": st.column_config.TextColumn(width="large"),
-                             "GL Account": st.column_config.TextColumn(width="small"),
-                             "Amount": st.column_config.NumberColumn(format="$%,.2f"),
-                             "Prepaid": st.column_config.TextColumn(width="small"),
-                         })
-            st.divider()
+    if dr_lines:
+        st.markdown("### Accrual Journal Entries")
+
+        # Source breakdown
+        source_totals = {}
+        for l in dr_lines:
+            src = l.get('source', 'other')
+            source_totals[src] = source_totals.get(src, 0) + (l.get('debit') or 0)
+
+        source_labels = {
+            'nexus':       'Nexus AP',
+            'budget_gap':  'Budget Gap',
+            'historical':  'Historical Pattern',
+            'prepaid_ledger': 'Prepaid Amortization',
+            'management_fee': 'Management Fee',
+            'other':       'Other',
+        }
+
+        cols = st.columns(len(source_totals) + 1)
+        with cols[0]:
+            st.metric("Total JEs", len(set(l.get('je_number','') for l in dr_lines)),
+                      help="Unique journal entries across all sources")
+        for i, (src, total) in enumerate(source_totals.items(), 1):
+            with cols[i]:
+                st.metric(source_labels.get(src, src), f"${total:,.2f}")
+
+        # Detail table — one row per DR line (each = one side of one JE)
+        accrual_rows = []
+        for l in dr_lines:
+            accrual_rows.append({
+                "JE #":        l.get('je_number', ''),
+                "Source":      source_labels.get(l.get('source', ''), l.get('source', '')),
+                "GL Account":  l.get('account_code', ''),
+                "Description": (l.get('description') or '')[:80],
+                "Amount":      l.get('debit') or 0,
+            })
+        st.dataframe(accrual_rows, use_container_width=True, hide_index=True,
+                     column_config={
+                         "JE #":        st.column_config.TextColumn(width="small"),
+                         "Source":      st.column_config.TextColumn(width="small"),
+                         "GL Account":  st.column_config.TextColumn(width="small"),
+                         "Description": st.column_config.TextColumn(width="large"),
+                         "Amount":      st.column_config.NumberColumn(format="$%,.2f"),
+                     })
+
+        # Nexus pending detail (expanded, only if Nexus was uploaded)
+        nexus_parsed = result.parsed.get('nexus_accrual')
+        if nexus_parsed:
+            pending = [r for r in nexus_parsed if (r.get('invoice_status') or '').lower() == 'pending approval']
+            if pending:
+                with st.expander(f"Nexus AP Detail — {len(pending)} pending invoice(s)"):
+                    nexus_rows = []
+                    for r in pending:
+                        nexus_rows.append({
+                            "Vendor":       r['vendor'],
+                            "Invoice #":    r['invoice_number'],
+                            "Invoice Date": str(r['invoice_date']) if r['invoice_date'] else '',
+                            "Description":  r['line_description'],
+                            "GL Account":   r['gl_account_number'],
+                            "Amount":       r['amount'],
+                            "Prepaid":      "Yes" if r.get('is_prepaid') else "",
+                        })
+                    st.dataframe(nexus_rows, use_container_width=True, hide_index=True,
+                                 column_config={
+                                     "Vendor":       st.column_config.TextColumn(width="medium"),
+                                     "Invoice #":    st.column_config.TextColumn(width="small"),
+                                     "Invoice Date": st.column_config.TextColumn(width="small"),
+                                     "Description":  st.column_config.TextColumn(width="large"),
+                                     "GL Account":   st.column_config.TextColumn(width="small"),
+                                     "Amount":       st.column_config.NumberColumn(format="$%,.2f"),
+                                     "Prepaid":      st.column_config.TextColumn(width="small"),
+                                 })
+        st.divider()
+    else:
+        # No accruals generated — still show the panel with a note
+        st.markdown("### Accrual Journal Entries")
+        st.info("No accrual entries generated this period. Upload a Nexus file, Budget Comparison, "
+                "or Prepaid Ledger to enable additional accrual detection layers.", icon="ℹ️")
+        st.divider()
 
     # ── Prepaid Amortization Panel ──────────────────────────────────
     amort_lines = st.session_state.output_files.get("prepaid_amortization", [])
