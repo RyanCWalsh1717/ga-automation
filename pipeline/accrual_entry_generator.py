@@ -60,10 +60,10 @@ def _is_invoice_in_gl(invoice_number: str, gl_lookup: dict) -> bool:
 
 # ── Constants ────────────────────────────────────────────────
 
-AP_ACCRUAL_ACCOUNT = '211200'
-AP_ACCRUAL_NAME = 'Accrued Expenses'
+AP_ACCRUAL_ACCOUNT    = '211200'
+AP_ACCRUAL_NAME       = 'Accrued Expenses'
 PREPAID_ASSET_ACCOUNT = '130000'
-PREPAID_ASSET_NAME = 'Prepaid Expenses'
+PREPAID_ASSET_NAME    = 'Prepaid Expenses'
 
 THIN_BORDER = Border(
     left=Side(style='thin'), right=Side(style='thin'),
@@ -342,39 +342,88 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         if description:
             je_desc += f" — {description[:50]}"
 
-        je_id = f"ACC-{je_num:04d}"
+        # ── Prepaid split: accrue only current-month portion to expense;
+        #    remaining future months go to prepaid asset (130000).
+        #    Month 1 of N: DR expense (1/N) + DR prepaid (N-1/N) / CR 211200 (full)
+        is_prepaid = inv.get('is_prepaid', False)
+        prepaid_months = int(inv.get('prepaid_months', 1) or 1)
 
-        # DR line: Expense account
+        if is_prepaid and prepaid_months > 1:
+            monthly_amt = round(abs(amount) / prepaid_months, 2)
+            rounding_adj = round(abs(amount) - monthly_amt * prepaid_months, 2)
+            current_amt = monthly_amt + rounding_adj          # this period's expense
+            future_amt  = abs(amount) - current_amt           # prepaid asset to book
+        else:
+            current_amt = abs(amount)
+            future_amt  = 0.0
+
+        je_id = f"ACC-{je_num:04d}"
+        acct_name = gl_category or description[:30]
+
+        # DR line: Expense account (current month only)
         je_lines.append({
-            'je_number': je_id,
-            'line': 1,
-            'date': date_str,
-            'account_code': gl_account,
-            'account_name': gl_category or description[:30],
-            'description': je_desc,
-            'reference': inv_num,
-            'debit': abs(amount),
-            'credit': 0,
-            'vendor': vendor,
+            'je_number':      je_id,
+            'line':           1,
+            'date':           date_str,
+            'account_code':   gl_account,
+            'account_name':   acct_name,
+            'description':    je_desc,
+            'reference':      inv_num,
+            'debit':          current_amt,
+            'credit':         0,
+            'vendor':         vendor,
             'invoice_number': inv_num,
         })
 
-        # CR line: AP Accrual (211200)
+        # CR line: AP Accrual (211200) — current month
         je_lines.append({
-            'je_number': je_id,
-            'line': 2,
-            'date': date_str,
-            'account_code': AP_ACCRUAL_ACCOUNT,
-            'account_name': AP_ACCRUAL_NAME,
-            'description': je_desc,
-            'reference': inv_num,
-            'debit': 0,
-            'credit': abs(amount),
-            'vendor': vendor,
+            'je_number':      je_id,
+            'line':           2,
+            'date':           date_str,
+            'account_code':   AP_ACCRUAL_ACCOUNT,
+            'account_name':   AP_ACCRUAL_NAME,
+            'description':    je_desc,
+            'reference':      inv_num,
+            'debit':          0,
+            'credit':         current_amt,
+            'vendor':         vendor,
             'invoice_number': inv_num,
         })
 
         je_num += 1
+
+        # Second JE: book future months to prepaid asset (130000)
+        if future_amt > 0:
+            je_id_ppd = f"ACC-{je_num:04d}"
+            ppd_desc = f"Prepaid booking — {vendor} #{inv_num} ({prepaid_months - 1} future mo)"
+
+            je_lines.append({
+                'je_number':      je_id_ppd,
+                'line':           1,
+                'date':           date_str,
+                'account_code':   PREPAID_ASSET_ACCOUNT,
+                'account_name':   PREPAID_ASSET_NAME,
+                'description':    ppd_desc,
+                'reference':      inv_num,
+                'debit':          future_amt,
+                'credit':         0,
+                'vendor':         vendor,
+                'invoice_number': inv_num,
+            })
+            je_lines.append({
+                'je_number':      je_id_ppd,
+                'line':           2,
+                'date':           date_str,
+                'account_code':   AP_ACCRUAL_ACCOUNT,
+                'account_name':   AP_ACCRUAL_NAME,
+                'description':    ppd_desc,
+                'reference':      inv_num,
+                'debit':          0,
+                'credit':         future_amt,
+                'vendor':         vendor,
+                'invoice_number': inv_num,
+            })
+            je_num += 1
 
     # ── Layer 2: Budget gap accruals ──
     if gl_data and budget_data:
@@ -471,10 +520,6 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
 
 # ── Prepaid amortization schedule ───────────────────────────
-
-PREPAID_ASSET_ACCOUNT = '130000'
-PREPAID_ASSET_NAME = 'Prepaid Expenses'
-
 
 def build_prepaid_amortization(nexus_data: list, close_period: str = '') -> List[Dict[str, Any]]:
     """

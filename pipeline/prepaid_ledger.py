@@ -277,6 +277,11 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
     We only generate prepaid-release JEs for months 2+ (months_amortized >= 1).
     """
     close_date = _period_to_date(close_period)
+    if close_date is None:
+        # Cannot determine which period to amortize — return nothing rather
+        # than silently releasing every active item at once.
+        return []
+
     results = []
 
     for item in active:
@@ -431,11 +436,12 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
             elif col in ('total_months', 'months_amortized', 'remaining_months'):
                 c.number_format = '0'
                 c.alignment = Alignment(horizontal='center')
-            elif col == 'remaining_months' and sheet_name == 'Active':
-                if remaining == 0:
-                    c.font = Font(name='Calibri', color='FF0000', bold=True)
-                elif remaining == 1:
-                    c.font = Font(name='Calibri', color='C55A11', bold=True)
+                # Highlight items nearing completion in the Active sheet
+                if col == 'remaining_months' and sheet_name == 'Active':
+                    if remaining == 0:
+                        c.font = Font(name='Calibri', color='FF0000', bold=True)
+                    elif remaining == 1:
+                        c.font = Font(name='Calibri', color='C55A11', bold=True)
 
     # Totals row (active sheet only)
     if sheet_name == 'Active' and records:
