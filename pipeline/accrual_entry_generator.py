@@ -62,6 +62,8 @@ def _is_invoice_in_gl(invoice_number: str, gl_lookup: dict) -> bool:
 
 AP_ACCRUAL_ACCOUNT = '211200'
 AP_ACCRUAL_NAME = 'Accrued Expenses'
+PREPAID_ASSET_ACCOUNT = '130000'
+PREPAID_ASSET_NAME = 'Prepaid Expenses'
 
 THIN_BORDER = Border(
     left=Side(style='thin'), right=Side(style='thin'),
@@ -658,6 +660,79 @@ def write_prepaid_amortization_tab(wb: Workbook, amort_lines: List[Dict],
         ws.column_dimensions[chr(64 + ci)].width = w
 
     ws.sheet_properties.tabColor = 'ED7D31'  # Orange for prepaid
+
+
+# ── Prepaid release JEs from ledger ─────────────────────────
+
+def build_prepaid_release_je(ledger_amort_lines: List[Dict],
+                              period: str = '',
+                              je_start: int = 1) -> List[Dict]:
+    """
+    Convert prepaid ledger amortization lines (month 2+) into JE line dicts.
+
+    Each entry:
+      DR  [expense account]       monthly_amount   (releasing prepaid to expense)
+      CR  130000 Prepaid Expenses monthly_amount
+
+    Args:
+        ledger_amort_lines: from prepaid_ledger.get_current_amortization()
+        period: close period string
+        je_start: starting JE number (to avoid collisions with Nexus JEs)
+
+    Returns list of JE line dicts compatible with generate_yardi_je_import()
+    """
+    je_lines = []
+    je_num = je_start
+
+    for item in ledger_amort_lines:
+        vendor      = str(item.get('vendor', '') or '')
+        inv_num     = str(item.get('invoice_number', '') or '')
+        desc        = str(item.get('description', '') or '')
+        gl_acct     = str(item.get('gl_account_number', '') or '')
+        amount      = item.get('monthly_amount', 0) or 0
+        period_lbl  = item.get('period_label', period)
+        month_idx   = item.get('month_index', '')
+        total_mo    = item.get('total_months', '')
+
+        if amount == 0:
+            continue
+
+        je_id   = f"PPD-{je_num:04d}"
+        je_desc = f"Prepaid amortization — {vendor} #{inv_num} ({period_lbl}, mo {month_idx}/{total_mo})"
+
+        # DR: Expense account
+        je_lines.append({
+            'je_number':      je_id,
+            'line':           1,
+            'date':           period_lbl,
+            'account_code':   gl_acct,
+            'account_name':   desc[:40],
+            'description':    je_desc,
+            'reference':      inv_num,
+            'debit':          abs(amount),
+            'credit':         0,
+            'vendor':         vendor,
+            'invoice_number': inv_num,
+            'source':         'prepaid_ledger',
+        })
+        # CR: Prepaid asset
+        je_lines.append({
+            'je_number':      je_id,
+            'line':           2,
+            'date':           period_lbl,
+            'account_code':   PREPAID_ASSET_ACCOUNT,
+            'account_name':   PREPAID_ASSET_NAME,
+            'description':    je_desc,
+            'reference':      inv_num,
+            'debit':          0,
+            'credit':         abs(amount),
+            'vendor':         vendor,
+            'invoice_number': inv_num,
+            'source':         'prepaid_ledger',
+        })
+        je_num += 1
+
+    return je_lines
 
 
 # ── Generate Yardi JE import file ────────────────────────────

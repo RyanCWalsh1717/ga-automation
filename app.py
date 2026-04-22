@@ -26,7 +26,9 @@ import traceback
 from accrual_entry_generator import (
     build_accrual_entries, generate_yardi_je_import,
     build_prepaid_amortization, write_prepaid_amortization_tab,
+    build_prepaid_release_je,
 )
+import prepaid_ledger
 from variance_comments import (
     generate_variance_comments,
     generate_variance_comments_grp,
@@ -148,6 +150,7 @@ file_config = {
     "pnc_bank": ("PNC Bank Statement (.pdf)", "*.pdf", False),
     "loan": ("Berkadia Loan PDFs (.pdf)", "*.pdf", False),
     "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
+    "prepaid_ledger": ("Prepaid Ledger (.xlsx) — optional", "*.xlsx", False),
 }
 
 for key, (label, file_type, required) in file_config.items():
@@ -304,11 +307,47 @@ if run_button:
                 budget_data=bc_parsed,
             )
 
+            # ── Prepaid ledger: load → merge → release JEs → advance ──
+            close_period = engine_result.period or ''
+            ledger_path  = st.session_state.uploaded_files.get("prepaid_ledger")
+            ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
+
+            # Add any new prepaid invoices from this month's Nexus export
+            ledger_active, newly_added = prepaid_ledger.merge_nexus(
+                ledger_active, nexus_data or [], close_period
+            )
+
+            # Build the visual amortization schedule (for workpaper/dashboard)
             amort_lines = build_prepaid_amortization(
                 nexus_data or [],
-                close_period=engine_result.period or '',
+                close_period=close_period,
             )
             st.session_state.output_files["prepaid_amortization"] = amort_lines
+            st.session_state.output_files["newly_added_prepaids"] = newly_added
+
+            # Generate prepaid release JEs for months 2+ (from ledger)
+            ledger_release_lines = prepaid_ledger.get_current_amortization(
+                ledger_active, close_period
+            )
+            prepaid_release_je = build_prepaid_release_je(
+                ledger_release_lines,
+                period=close_period,
+                je_start=len(je_lines) // 2 + 1,
+            )
+
+            # Advance the ledger (increment months_amortized, expire completed items)
+            ledger_active, ledger_completed = prepaid_ledger.advance_period(
+                ledger_active, ledger_completed, close_period
+            )
+
+            # Save updated ledger for next month's upload
+            updated_ledger_path = os.path.join(
+                st.session_state.temp_dir, "GA_Prepaid_Ledger_Updated.xlsx"
+            )
+            prepaid_ledger.save(ledger_active, ledger_completed, updated_ledger_path)
+            st.session_state.output_files["prepaid_ledger_updated"] = updated_ledger_path
+            st.session_state.output_files["ledger_active"]    = ledger_active
+            st.session_state.output_files["ledger_completed"] = ledger_completed
 
             # Step 4: Generate workpapers (includes prepaid tab)
             status_text.text("Step 4/7: Generating workpapers...")
@@ -317,12 +356,18 @@ if run_button:
             workpaper_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
             generate_workpapers(engine_result, workpaper_path)
             # Append prepaid amortization tab to workpapers
-            if amort_lines:
+            if amort_lines or ledger_release_lines:
                 from openpyxl import load_workbook as _lw
                 _wb = _lw(workpaper_path)
+                all_amort = amort_lines + [
+                    {**l, 'is_current_period': True, 'month_index': l.get('month_index', 1),
+                     'total_months': l.get('total_months', 1), 'service_start': None,
+                     'service_end': None, 'total_amount': l.get('monthly_amount', 0)}
+                    for l in ledger_release_lines
+                ]
                 write_prepaid_amortization_tab(
-                    _wb, amort_lines,
-                    period=engine_result.period or '',
+                    _wb, all_amort,
+                    period=close_period,
                     property_name=engine_result.property_name or '',
                 )
                 _wb.save(workpaper_path)
@@ -358,7 +403,7 @@ if run_button:
                 property_code=engine_result.property_name or 'revlabpm',
                 je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
             )
-            all_je_lines = je_lines + fee_je
+            all_je_lines = je_lines + prepaid_release_je + fee_je
             if all_je_lines:
                 je_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.xlsx")
                 generate_yardi_je_import(
@@ -643,6 +688,50 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                      })
         st.divider()
 
+    # ── Prepaid Ledger Status Panel ────────────────────────────────
+    ledger_active    = st.session_state.output_files.get("ledger_active", [])
+    ledger_completed = st.session_state.output_files.get("ledger_completed", [])
+    newly_added      = st.session_state.output_files.get("newly_added_prepaids", [])
+
+    if ledger_active or ledger_completed or newly_added:
+        st.markdown("### Prepaid Ledger")
+        col_l1, col_l2, col_l3 = st.columns(3)
+        with col_l1:
+            st.metric("Active Prepaid Items", len(ledger_active),
+                      help="Items still being amortized — upload updated ledger next month")
+        with col_l2:
+            st.metric("New This Month", len(newly_added),
+                      help="Invoices added to ledger from this Nexus export")
+        with col_l3:
+            st.metric("Completed This Month", len(ledger_completed),
+                      help="Items that fully amortized as of this close")
+
+        if ledger_active:
+            ledger_rows = []
+            for item in ledger_active:
+                svc_start = item.get('service_start')
+                svc_end   = item.get('service_end')
+                ledger_rows.append({
+                    "Vendor": item.get('vendor', ''),
+                    "Invoice #": item.get('invoice_number', ''),
+                    "GL Account": item.get('gl_account_number', ''),
+                    "Monthly Amt": item.get('monthly_amount', 0),
+                    "Months Left": int(item.get('remaining_months', 0) or 0),
+                    "Service End": str(svc_end) if svc_end else '',
+                    "First Added": item.get('first_added_period', ''),
+                })
+            st.dataframe(ledger_rows, use_container_width=True, hide_index=True,
+                         column_config={
+                             "Vendor": st.column_config.TextColumn(width="medium"),
+                             "Invoice #": st.column_config.TextColumn(width="small"),
+                             "GL Account": st.column_config.TextColumn(width="small"),
+                             "Monthly Amt": st.column_config.NumberColumn(format="$%,.2f"),
+                             "Months Left": st.column_config.NumberColumn(width="small"),
+                             "Service End": st.column_config.TextColumn(width="small"),
+                             "First Added": st.column_config.TextColumn(width="small"),
+                         })
+        st.divider()
+
     # Summary metrics
     st.markdown("### Summary Metrics")
 
@@ -885,6 +974,22 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                         file_name=f"GA_Exceptions_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
+                    )
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        if "prepaid_ledger_updated" in st.session_state.output_files:
+            pl_path = st.session_state.output_files["prepaid_ledger_updated"]
+            if os.path.exists(pl_path):
+                with open(pl_path, "rb") as f:
+                    st.download_button(
+                        label="🗂️ Download Updated Prepaid Ledger",
+                        data=f.read(),
+                        file_name=f"GA_Prepaid_Ledger_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        help="Upload this file next month as the Prepaid Ledger to continue amortization tracking",
                     )
 
     col5, col6 = st.columns(2)
