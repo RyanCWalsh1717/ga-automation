@@ -873,6 +873,88 @@ def generate_yardi_je_import(je_lines: List[Dict], output_path: str,
     return output_path
 
 
+# ── Generate Yardi CSV import (exact Yardi format) ────────────
+
+def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
+                           period: str = '', property_code: str = 'revlabpm') -> str:
+    """
+    Generate a Yardi-compatible journal entry import CSV.
+
+    Format (no headers, comma-delimited):
+      J, batch#, , , date, date, , description, property_code, signed_amount,
+      gl_account, , , , reference, , , Standard Journal Display Type
+
+    Positive amount = Debit, Negative amount = Credit.
+    Each unique je_number gets its own sequential batch number.
+
+    Args:
+        je_lines:      List of JE line dicts from build_accrual_entries()
+        output_path:   Where to write the .csv file
+        period:        Accounting period label (e.g. 'Mar-2026') — used to derive date
+        property_code: Yardi property code (default 'revlabpm')
+
+    Returns:
+        output_path
+    """
+    import csv
+    from datetime import datetime, date
+    from calendar import monthrange
+
+    # Derive period end date from period string (e.g. 'Mar-2026' → 03/31/2026)
+    period_date = ''
+    try:
+        dt = datetime.strptime(period, '%b-%Y')
+        last_day = monthrange(dt.year, dt.month)[1]
+        period_date = date(dt.year, dt.month, last_day).strftime('%m/%d/%Y')
+    except Exception:
+        period_date = datetime.now().strftime('%m/%d/%Y')
+
+    # Assign sequential batch numbers per unique JE
+    batch_map = {}
+    batch_counter = 1
+    for line in je_lines:
+        je_num = line.get('je_number', '')
+        if je_num not in batch_map:
+            batch_map[je_num] = batch_counter
+            batch_counter += 1
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        for line in je_lines:
+            je_num   = line.get('je_number', '')
+            batch    = batch_map.get(je_num, 1)
+            desc     = line.get('description', '')[:60]
+            ref      = line.get('reference', '') or je_num
+            gl_acct  = line.get('account_code', '')
+            debit    = line.get('debit', 0) or 0
+            credit   = line.get('credit', 0) or 0
+            # Signed amount: positive = DR, negative = CR
+            amount   = debit - credit
+
+            writer.writerow([
+                'J',         # col 1: type
+                batch,       # col 2: batch/JE number
+                '',          # col 3: empty
+                '',          # col 4: empty
+                period_date, # col 5: reference date
+                period_date, # col 6: period date
+                '',          # col 7: empty
+                desc,        # col 8: description
+                property_code,  # col 9: property code
+                amount,      # col 10: signed amount
+                gl_acct,     # col 11: GL account
+                '',          # col 12: empty
+                '',          # col 13: empty
+                '',          # col 14: empty
+                ref,         # col 15: reference
+                '',          # col 16: empty
+                '',          # col 17: empty
+                'Standard Journal Display Type',  # col 18
+            ])
+
+    return output_path
+
+
 # ── Add review tab to workpapers ─────────────────────────────
 
 def write_accrual_entries_workpaper_tab(wb: Workbook, je_lines: List[Dict],

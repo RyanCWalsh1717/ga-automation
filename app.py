@@ -24,7 +24,7 @@ from report_generator import generate_report, generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
 from accrual_entry_generator import (
-    build_accrual_entries, generate_yardi_je_import,
+    build_accrual_entries, generate_yardi_je_import, generate_yardi_je_csv,
     build_prepaid_amortization, write_prepaid_amortization_tab,
     build_prepaid_release_je,
 )
@@ -413,6 +413,15 @@ if run_button:
                     property_name=engine_result.property_name or '',
                 )
                 st.session_state.output_files["accrual_je"] = je_path
+
+                # CSV — actual Yardi import format
+                je_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.csv")
+                generate_yardi_je_csv(
+                    all_je_lines, je_csv_path,
+                    period=engine_result.period or '',
+                    property_code='revlabpm',
+                )
+                st.session_state.output_files["accrual_je_csv"] = je_csv_path
 
             # Step 5b: Generate BS Workpaper (if TB uploaded)
             if tb_result and engine_result.parsed.get('gl'):
@@ -980,6 +989,22 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                     )
 
     with col4:
+        if "accrual_je_csv" in st.session_state.output_files:
+            je_csv_path = st.session_state.output_files["accrual_je_csv"]
+            if os.path.exists(je_csv_path):
+                with open(je_csv_path, "rb") as f:
+                    st.download_button(
+                        label="📤 Download Yardi JE Import (.csv)",
+                        data=f.read(),
+                        file_name=f"GA_Accrual_JE_Import_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        help="Yardi-ready CSV — upload directly into Yardi Journal Entry import",
+                    )
+
+    col3b, col4b = st.columns(2)
+
+    with col4b:
         if "exception_report" in st.session_state.output_files:
             exception_path = st.session_state.output_files["exception_report"]
             if os.path.exists(exception_path):
