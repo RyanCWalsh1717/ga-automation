@@ -406,15 +406,6 @@ if run_button:
             )
             all_je_lines = je_lines + prepaid_release_je + fee_je
             if all_je_lines:
-                je_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.xlsx")
-                generate_yardi_je_import(
-                    all_je_lines, je_path,
-                    period=engine_result.period or '',
-                    property_name=engine_result.property_name or '',
-                )
-                st.session_state.output_files["accrual_je"] = je_path
-
-                # CSV — actual Yardi import format
                 je_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.csv")
                 generate_yardi_je_csv(
                     all_je_lines, je_csv_path,
@@ -976,25 +967,12 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     col3, col4 = st.columns(2)
 
     with col3:
-        if "accrual_je" in st.session_state.output_files:
-            je_path = st.session_state.output_files["accrual_je"]
-            if os.path.exists(je_path):
-                with open(je_path, "rb") as f:
-                    st.download_button(
-                        label="📝 Download Accrual JE Import",
-                        data=f.read(),
-                        file_name=f"GA_Accrual_JE_Import_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-    with col4:
         if "accrual_je_csv" in st.session_state.output_files:
             je_csv_path = st.session_state.output_files["accrual_je_csv"]
             if os.path.exists(je_csv_path):
                 with open(je_csv_path, "rb") as f:
                     st.download_button(
-                        label="📤 Download Yardi JE Import (.csv)",
+                        label="📝 Download Accrual JE Import (.csv)",
                         data=f.read(),
                         file_name=f"GA_Accrual_JE_Import_{datetime.now().strftime('%Y%m%d')}.csv",
                         mime="text/csv",
@@ -1002,9 +980,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                         help="Yardi-ready CSV — upload directly into Yardi Journal Entry import",
                     )
 
-    col3b, col4b = st.columns(2)
-
-    with col4b:
+    with col4:
         if "exception_report" in st.session_state.output_files:
             exception_path = st.session_state.output_files["exception_report"]
             if os.path.exists(exception_path):
