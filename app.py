@@ -986,6 +986,37 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     # Download section
     st.markdown("### Download Results")
 
+    # ── Draft Package (zip of all outputs) ───────────────────────
+    import zipfile, io
+    period_label = (engine_result.period or 'Period').replace('-', '_')
+    zip_files = {
+        f"RevLabs_{period_label}_BS_Workpaper.xlsx":       st.session_state.output_files.get("bs_workpaper"),
+        f"RevLabs_{period_label}_Accrual_JE_Import.csv":   st.session_state.output_files.get("accrual_je_csv"),
+        f"RevLabs_{period_label}_QC_Workbook.xlsx":        st.session_state.output_files.get("qc_workbook"),
+        f"RevLabs_{period_label}_Workpapers.xlsx":         st.session_state.output_files.get("workpapers"),
+        f"RevLabs_{period_label}_Prepaid_Ledger.xlsx":     st.session_state.output_files.get("prepaid_ledger_updated"),
+        f"RevLabs_{period_label}_Monthly_Report.xlsx":     st.session_state.output_files.get("monthly_report"),
+        f"RevLabs_{period_label}_BC_Internal.xlsx":        st.session_state.output_files.get("annotated_bc"),
+    }
+    zip_files = {k: v for k, v in zip_files.items() if v and os.path.exists(v)}
+
+    if zip_files:
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for fname, fpath in zip_files.items():
+                zf.write(fpath, fname)
+        zip_buf.seek(0)
+        st.download_button(
+            label=f"📦 Download Draft Package — All Outputs ({len(zip_files)} files)",
+            data=zip_buf,
+            file_name=f"RevLabs_{period_label}_Close_Package_{datetime.now().strftime('%Y%m%d')}.zip",
+            mime="application/zip",
+            use_container_width=True,
+            help="All pipeline outputs in one zip — BS Workpaper, JE Import, QC, Workpapers, Prepaid Ledger",
+        )
+    st.divider()
+    st.markdown("##### Individual Downloads")
+
     col1, col2 = st.columns(2)
 
     with col1:
