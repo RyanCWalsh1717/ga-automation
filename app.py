@@ -145,7 +145,6 @@ file_config = {
     "pnc_bank": ("PNC Bank Statement (.pdf)", "*.pdf", False),
     "loan": ("Berkadia Loan PDFs (.pdf)", "*.pdf", False),
     "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
-    "monthly_report": ("Monthly Report Template (.xlsx)", "*.xlsx", False),
 }
 
 for key, (label, file_type, required) in file_config.items():

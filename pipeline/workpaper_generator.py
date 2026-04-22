@@ -344,14 +344,23 @@ def _write_bank_recon_workpaper(wb, engine_result):
 
         for i, (mtype, m) in enumerate(all_matched):
             alt = i % 2 == 1
-            gl_txn = m['gl_txn']
-            bk = m['bank_item']
-            match_method = m.get('match_type', 'unknown')
 
-            dt = gl_txn.date.strftime('%m/%d/%Y') if gl_txn.date else ''
-            gl_ref = gl_txn.control or gl_txn.description or ''
-            amt = gl_txn.credit if gl_txn.credit > 0 else gl_txn.debit
-            bk_ref = bk.get('check_number', bk.get('reference', bk.get('description', '')))[:30]
+            if 'gl_txn' in m:
+                # Legacy format from _match_checks() (non-Yardi bank recs)
+                gl_txn = m['gl_txn']
+                bk = m['bank_item']
+                match_method = m.get('match_type', 'unknown')
+                dt = gl_txn.date.strftime('%m/%d/%Y') if gl_txn.date else ''
+                gl_ref = gl_txn.control or gl_txn.description or ''
+                amt = gl_txn.credit if gl_txn.credit > 0 else gl_txn.debit
+                bk_ref = bk.get('check_number', bk.get('reference', bk.get('description', '')))[:30]
+            else:
+                # New format from _build_recon_from_yardi_rec() (Yardi Bank Rec PDF)
+                match_method = 'check_number+amount'
+                dt = m.get('gl_date', '')
+                gl_ref = f"Check #{m.get('check_number', '')} — {m.get('vendor', '')}"[:40]
+                amt = m.get('amount', 0.0)
+                bk_ref = m.get('check_number', '')
 
             ws.cell(row=row, column=1, value=mtype)
             _apply(ws.cell(row=row, column=1), _cell(alt))
