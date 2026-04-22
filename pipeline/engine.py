@@ -431,16 +431,318 @@ def match_gl_to_invoices(gl_result, nexus_result) -> Tuple[List[MatchResult], Li
     return matches, exceptions
 
 
-def match_gl_to_bank(gl_result, bank_result) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
+# ── Yardi Bank Rec direct import ──────────────────────────────────────────────
+
+class _OutstandingCheckItem:
+    """Lightweight object mimicking a GL transaction for the workpaper generator.
+
+    The workpaper generator accesses .date, .control, .description,
+    .reference, and .credit on each outstanding check item.
     """
-    Reconcile GL cash account to bank statement using multi-factor matching.
+    __slots__ = ('date', 'control', 'description', 'reference', 'credit')
 
-    Check matching uses 3 passes:
-      Pass 1: GL control P-{num} matched to bank check_number + amount
-      Pass 2: Amount + date proximity (within 30 days)
-      Pass 3: Amount-only fallback
+    def __init__(self, date_obj, control, description, reference, credit):
+        self.date = date_obj
+        self.control = control
+        self.description = description
+        self.reference = reference
+        self.credit = credit
 
-    ACH and deposit matching use amount + date proximity.
+
+def _build_recon_from_yardi_rec(
+    gl_result,
+    bank_result: dict,
+    prior_period_outstanding: float = 0.0,
+) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
+    """
+    GRP's independent bank reconciliation — no JLL involvement.
+
+    The Yardi Bank Rec PDF contains both the raw PNC bank statement (pages 4-5)
+    and the Yardi GL detail for account 111100 (pages 6-9).  This function uses
+    ONLY those two sources to build the reconciliation from scratch.
+
+    Steps:
+      1. Parse all GL 111100 credits from the bank rec PDF GL section
+      2. Group GL credits by check number (reference field) and sum per check
+      3. Match each check against PNC cleared checks by check# + total amount
+      4. Unmatched GL checks = outstanding (GRP's derived list)
+      5. PNC checks not in current-period GL = prior-period clears (info only)
+      6. Amount mismatches = flagged as errors for GRP to resolve
+      7. Remaining reconciling difference = prior-period outstanding not yet
+         entered; GRP enters that amount via the app sidebar to close the rec
+
+    Someone at GRP reviews the workpaper output and signs off.
+    No dependency on any pre-computed reconciliation from any prior processor.
+    """
+    from datetime import datetime
+    matches = []
+    exceptions = []
+
+    from datetime import datetime
+    matches = []
+    exceptions = []
+
+    # ── Step 1: Key balances from the bank PDF ────────────────────────────────
+    bank_end   = bank_result.get('bank_statement_balance') or bank_result.get('ending_balance') or 0.0
+    bank_begin = bank_result.get('beginning_balance') or 0.0
+
+    # GL ending balance from the main Yardi GL file (111100 account)
+    gl_cash_acct = None
+    if hasattr(gl_result, 'accounts'):
+        for acct in gl_result.accounts:
+            if acct.account_code == '111100':
+                gl_cash_acct = acct
+                break
+
+    gl_end   = gl_cash_acct.ending_balance   if gl_cash_acct else 0.0
+    gl_begin = gl_cash_acct.beginning_balance if gl_cash_acct else 0.0
+
+    # ── Step 2: Group GL AP checks by check number, net credits minus debits ────
+    # The GL in the bank rec PDF may have multiple lines per check number:
+    #   - Credit lines: the check payment (one line per invoice)
+    #   - Debit lines: same-check reversals/offsets (e.g. "Less JLL Portion")
+    # Net each check to get the actual check face amount.
+    gl_txns = bank_result.get('gl_transactions', [])
+    gl_checks: Dict[str, dict] = {}
+    for t in gl_txns:
+        if not t.get('is_check') or not t.get('reference'):
+            continue
+        credit = t.get('credit', 0)
+        debit  = t.get('debit',  0)
+        if credit <= 0 and debit <= 0:
+            continue
+        ref = t['reference']
+        if ref not in gl_checks:
+            gl_checks[ref] = {
+                'total':  0.0,
+                'date':   t['date'],
+                'vendor': t['vendor'],
+            }
+        gl_checks[ref]['total'] += credit - debit  # net: credits reduce cash, debits add back
+
+    # ── Step 3: Match PNC cleared checks against Yardi GL ────────────────────
+    bank_checks: List[dict] = bank_result.get('checks', [])
+    pnc_cleared: Dict[str, dict] = {ck['check_number']: ck for ck in bank_checks}
+
+    matched_checks:  List[dict] = []   # GL check that cleared in PNC
+    amount_errors:   List[dict] = []   # amount in GL ≠ amount in bank
+    outstanding:     List[dict] = []   # GL check not cleared in PNC this period
+    prior_clears:    List[dict] = []   # PNC check not in current-period GL
+
+    for check_num, gl_data in gl_checks.items():
+        if check_num in pnc_cleared:
+            pnc_amt = pnc_cleared[check_num]['amount']
+            gl_amt  = gl_data['total']
+            if abs(pnc_amt - gl_amt) < 0.02:
+                matched_checks.append({
+                    'check_number': check_num,
+                    'amount':       gl_amt,
+                    'vendor':       gl_data['vendor'],
+                    'gl_date':      gl_data['date'],
+                })
+            else:
+                # Cleared in bank but amount doesn't match GL — flag for GRP
+                amount_errors.append({
+                    'check_number': check_num,
+                    'gl_amount':    gl_amt,
+                    'bank_amount':  pnc_amt,
+                    'difference':   pnc_amt - gl_amt,
+                    'vendor':       gl_data['vendor'],
+                })
+        else:
+            # GL check not cleared yet — GRP's outstanding check
+            outstanding.append({
+                'date':         gl_data['date'],
+                'check_number': check_num,
+                'payee':        gl_data['vendor'],
+                'amount':       gl_data['total'],
+            })
+
+    # PNC checks not in current-period GL → prior-period outstanding checks
+    # that cleared this cycle.  These are INFO — normal and expected.
+    for pnc_ck in bank_checks:
+        if pnc_ck['check_number'] not in gl_checks:
+            prior_clears.append(pnc_ck)
+
+    # ── Step 4: Add prior-period outstanding amount to the rec ────────────────
+    # Prior-period checks that are still outstanding (issued before this GL
+    # period and not yet cleared) aren't visible in the current-period GL.
+    # GRP enters this amount via the app sidebar if the rec doesn't close.
+    # It appears as a synthetic outstanding item on the workpaper.
+    total_current_outstanding = sum(c['amount'] for c in outstanding)
+    total_outstanding = total_current_outstanding + prior_period_outstanding
+
+    # ── Step 5: Convert outstanding list to workpaper-compatible objects ──────
+    outstanding_items: List[_OutstandingCheckItem] = []
+    for ck in outstanding:
+        dt = None
+        for fmt in ('%m/%d/%Y', '%m/%d/%y'):
+            try:
+                dt = datetime.strptime(ck['date'], fmt).date()
+                break
+            except (ValueError, TypeError):
+                continue
+        outstanding_items.append(_OutstandingCheckItem(
+            date_obj    = dt,
+            control     = ck['check_number'],
+            description = ck['payee'],
+            reference   = ck['check_number'],
+            credit      = ck['amount'],
+        ))
+
+    # Add prior-period outstanding as a single line item if entered
+    if prior_period_outstanding > 0:
+        outstanding_items.append(_OutstandingCheckItem(
+            date_obj    = None,
+            control     = 'PRIOR',
+            description = 'Prior-period outstanding checks (GRP confirmed)',
+            reference   = 'PRIOR',
+            credit      = prior_period_outstanding,
+        ))
+
+    # ── Step 6: Reconciliation math ───────────────────────────────────────────
+    adjusted_bank = bank_end - total_outstanding
+    recon_diff    = gl_end - adjusted_bank
+
+    recon = BankReconDetail(
+        gl_ending               = gl_end,
+        gl_beginning            = gl_begin,
+        bank_ending             = bank_end,
+        bank_beginning          = bank_begin,
+        matched_checks          = matched_checks,
+        matched_ach             = [],
+        matched_deposits        = [],
+        outstanding_checks      = outstanding_items,
+        deposits_in_transit     = [],
+        unmatched_bank_checks   = prior_clears,
+        unmatched_bank_ach      = [],
+        unmatched_bank_deposits = [],
+        total_outstanding_checks= total_outstanding,
+        total_deposits_in_transit=0.0,
+        adjusted_bank_balance   = adjusted_bank,
+        reconciling_difference  = recon_diff,
+    )
+
+    # ── Step 7: Exceptions ────────────────────────────────────────────────────
+    for d in amount_errors:
+        exceptions.append(Exception_(
+            severity='error', category='match',
+            source='grp_bank_recon',
+            description=(
+                f'Check #{d["check_number"]} — {d["vendor"]}: '
+                f'GL total ${d["gl_amount"]:,.2f} vs PNC ${d["bank_amount"]:,.2f} '
+                f'(diff ${d["difference"]:+,.2f})'
+            ),
+            details=d,
+        ))
+
+    for pnc_ck in prior_clears:
+        exceptions.append(Exception_(
+            severity='info', category='match',
+            source='grp_bank_recon',
+            description=(
+                f'PNC check #{pnc_ck["check_number"]} (${pnc_ck["amount"]:,.2f}) '
+                f'cleared this cycle but is not in the current-period GL — '
+                f'prior-period outstanding check, expected'
+            ),
+            details=pnc_ck,
+        ))
+
+    if abs(recon_diff) > 0.02:
+        # recon_diff = GL - adjusted_bank
+        # Negative: bank > GL → prior-period checks still outstanding (add to outstanding)
+        # Positive: GL > bank → unlikely; could be undeposited receipts or data error
+        if recon_diff < 0:
+            hint = (
+                f'  Enter ${abs(recon_diff):,.2f} as "Prior Period Outstanding" in the sidebar to close.'
+            )
+        else:
+            hint = (
+                f'  GL exceeds adjusted bank by ${recon_diff:,.2f}. '
+                f'Check for unrecorded deposits in transit or GL entries missing from bank.'
+            )
+        exceptions.append(Exception_(
+            severity='warning', category='balance',
+            source='grp_bank_recon',
+            description=(
+                f'Reconciling difference ${recon_diff:,.2f} — '
+                f'GL ${gl_end:,.2f} vs adjusted bank ${adjusted_bank:,.2f}.{hint}'
+            ),
+        ))
+
+    # ── MatchResult entries for the dashboard ────────────────────────────────
+    matches.append(MatchResult(
+        source_a='GL', source_b='Bank',
+        key='Ending Balance',
+        amount_a=gl_end, amount_b=bank_end,
+        matched=abs(gl_end - bank_end) < 0.02,
+        variance=abs(gl_end - bank_end),
+        description='Yardi GL 111100 ending balance vs. PNC bank statement ending balance',
+        details={'gl_begin': gl_begin, 'bank_begin': bank_begin},
+    ))
+
+    matches.append(MatchResult(
+        source_a='GL', source_b='Bank',
+        key='Checks Matched',
+        amount_a=sum(c['amount'] for c in matched_checks),
+        amount_b=sum(c['amount'] for c in matched_checks),
+        matched=True, variance=0,
+        description=(
+            f'{len(matched_checks)} checks matched GL↔PNC; '
+            f'{len(outstanding)} outstanding (current period); '
+            f'{len(prior_clears)} prior-period clears; '
+            f'{len(amount_errors)} amount error(s)'
+        ),
+    ))
+
+    matches.append(MatchResult(
+        source_a='GL', source_b='Bank',
+        key='Outstanding Checks',
+        amount_a=total_outstanding, amount_b=0,
+        matched=True, variance=0,
+        description=(
+            f'{len(outstanding_items)} item(s) totaling ${total_outstanding:,.2f} '
+            f'({len(outstanding)} current-period GL + '
+            f'${prior_period_outstanding:,.2f} prior-period)'
+        ),
+    ))
+
+    matches.append(MatchResult(
+        source_a='GL', source_b='Bank',
+        key='Reconciling Difference',
+        amount_a=gl_end, amount_b=adjusted_bank,
+        matched=abs(recon_diff) < 0.02,
+        variance=abs(recon_diff),
+        description=(
+            f'Adjusted bank: ${adjusted_bank:,.2f} | '
+            f'Difference: ${recon_diff:,.2f} '
+            f'{"✅ CLEAR" if abs(recon_diff) < 0.02 else "⚠️ NEEDS RESOLUTION"}'
+        ),
+    ))
+
+    return matches, exceptions, recon
+
+
+def match_gl_to_bank(
+    gl_result,
+    bank_result,
+    prior_period_outstanding: float = 0.0,
+) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
+    """
+    GRP's independent bank reconciliation.
+
+    When the bank PDF is a Yardi Bank Rec Report (bank_type == 'YardiBankRec'),
+    GRP performs the full reconciliation by matching the raw PNC bank statement
+    (embedded in pages 4-5) against the Yardi GL detail (pages 6-9).
+    No pre-computed reconciliation from any prior processor is used.
+
+    prior_period_outstanding: dollar amount of outstanding checks from prior
+    periods that are not in the current-period GL.  GRP enters this via the
+    app sidebar if there is a reconciling difference after the current-period
+    match.  Once entered, the rec closes and GRP signs off.
+
+    For raw bank statements (PNC, BofA, KeyBank without the Yardi wrapper),
+    3-pass check matching is used as before.
 
     Returns the MatchResult list (for dashboard), exceptions, and a
     BankReconDetail (for the workpaper generator).
@@ -450,6 +752,13 @@ def match_gl_to_bank(gl_result, bank_result) -> Tuple[List[MatchResult], List[Ex
 
     if bank_result is None:
         return matches, exceptions, None
+
+    # ── Yardi Bank Rec PDF: GRP does its own independent matching ─────────────
+    if isinstance(bank_result, dict) and bank_result.get('bank_type') == 'YardiBankRec':
+        return _build_recon_from_yardi_rec(
+            gl_result, bank_result,
+            prior_period_outstanding=prior_period_outstanding,
+        )
 
     # Get GL cash account (111100)
     gl_cash_acct = None
@@ -863,7 +1172,7 @@ def cross_validate_is_to_gl(is_result, gl_result) -> List[Exception_]:
 
 # ── Main orchestrator ────────────────────────────────────────
 
-def run_pipeline(files: dict) -> EngineResult:
+def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineResult:
     """
     Run the full pipeline against a set of input files.
 
@@ -1000,7 +1309,9 @@ def run_pipeline(files: dict) -> EngineResult:
 
     # ── Step 5: Match GL to bank ─────────────────────────────
     if gl and bank_data:
-        gl_bank_matches, gl_bank_exc, bank_recon = match_gl_to_bank(gl, bank_data)
+        gl_bank_matches, gl_bank_exc, bank_recon = match_gl_to_bank(
+            gl, bank_data, prior_period_outstanding=prior_period_outstanding
+        )
         result.gl_bank_matches = gl_bank_matches
         result.bank_recon_detail = bank_recon
         result.exceptions.extend(gl_bank_exc)

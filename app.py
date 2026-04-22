@@ -180,6 +180,24 @@ st.sidebar.divider()
 if not gl_uploaded:
     st.sidebar.warning("⚠️ GL Detail file is required to run the pipeline.")
 
+# ── Bank Rec Settings ────────────────────────────────────────────
+st.sidebar.markdown("## Bank Rec")
+prior_period_outstanding = st.sidebar.number_input(
+    "Prior Period Outstanding Checks ($)",
+    min_value=0.0,
+    value=0.0,
+    step=100.0,
+    format="%.2f",
+    help=(
+        "Outstanding checks from prior periods not visible in the current GL. "
+        "Leave 0 on first run — if a reconciling difference appears, enter "
+        "that amount here to close the rec. GRP confirms these are legitimate "
+        "uncleared checks from a prior month."
+    ),
+)
+prior_period_outstanding = prior_period_outstanding if prior_period_outstanding > 0 else 0.0
+st.sidebar.divider()
+
 # ── QC Settings ─────────────────────────────────────────────────
 st.sidebar.markdown("## QC Settings")
 cash_received_override = st.sidebar.number_input(
@@ -238,7 +256,10 @@ if run_button:
             status_text.text("Step 1/3: Parsing files...")
             progress_bar.progress(20)
 
-            engine_result = run_pipeline(files_dict)
+            engine_result = run_pipeline(
+                files_dict,
+                prior_period_outstanding=prior_period_outstanding,
+            )
             st.session_state.engine_result = engine_result
 
             # Step 2: Generate main report

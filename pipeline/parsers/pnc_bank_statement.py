@@ -25,7 +25,13 @@ import re
 
 def parse(filepath: str) -> Dict[str, Any]:
     """
-    Parse PNC bank statement PDF.
+    Parse PNC bank statement PDF (or Yardi Bank Reconciliation Report).
+
+    When the PDF is a Yardi Bank Rec Report (detected by "Bank Reconciliation Report"
+    on page 1), parsing is delegated to yardi_bank_rec.parse() which handles the
+    combined Yardi rec + PNC statement + GL detail format.
+
+    For raw PNC / BofA / KeyBank statements, the original parsing logic is used.
 
     Args:
         filepath: Path to the PDF file
@@ -33,6 +39,32 @@ def parse(filepath: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing extracted statement data
     """
+    # ── Detect Yardi Bank Rec format first ────────────────────────────────────
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            first_page_text = pdf.pages[0].extract_text() if pdf.pages else ''
+    except Exception:
+        first_page_text = ''
+
+    if 'Bank Reconciliation Report' in first_page_text:
+        # Delegate to the dedicated Yardi bank rec parser
+        try:
+            from parsers.yardi_bank_rec import parse as _yardi_parse
+        except ImportError:
+            try:
+                from yardi_bank_rec import parse as _yardi_parse
+            except ImportError:
+                import importlib.util, os
+                _spec = importlib.util.spec_from_file_location(
+                    'yardi_bank_rec',
+                    os.path.join(os.path.dirname(__file__), 'yardi_bank_rec.py'),
+                )
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _yardi_parse = _mod.parse
+        return _yardi_parse(filepath)
+
+    # ── Raw bank statement path ───────────────────────────────────────────────
     result = {
         'account_number': None,
         'statement_period': {},
@@ -51,14 +83,12 @@ def parse(filepath: str) -> Dict[str, Any]:
     }
 
     with pdfplumber.open(filepath) as pdf:
-        # Concatenate all pages for the same bank statement
         all_text = ""
         bank_type = None
         for page in pdf.pages:
             text = page.extract_text() or ""
             all_text += text + "\n"
 
-            # Detect bank type from first page
             if bank_type is None:
                 if 'PNC' in text and 'Corporate Business Account' in text:
                     bank_type = 'PNC'
