@@ -1222,8 +1222,11 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             gl = parse_gl(files["gl"])
             result.parsed["gl"] = gl
-            result.period = gl.metadata.period
-            result.property_name = gl.metadata.property_name
+            # Normalize period: "Mar 2026" → "Mar-2026"
+            raw_period = gl.metadata.period or ''
+            result.period = raw_period.replace(' ', '-') if raw_period else ''
+            # Fallback property name if GL header is blank
+            result.property_name = gl.metadata.property_name or 'Revolution Labs'
         except Exception as e:
             result.add_exception("error", "parse", "yardi_gl", f"GL parse failed: {e}")
 
