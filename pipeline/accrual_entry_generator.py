@@ -118,6 +118,16 @@ _PAYROLL_NAME_KW  = ('pay/wages', 'pay wages', 'payroll')
 # Transaction description fragments that confirm a payroll entry
 _PAYROLL_DESC_KW  = ('payroll', 'eng payroll', 'admin payroll', 'pay/wages')
 
+# GL accounts that are billed semi-annually (every ~6 months).
+# For these accounts we divide the observed invoice amount (or the reversed
+# prior-accrual in beginning_balance) by 6 to derive the monthly accrual.
+# Water/sewer billing at large commercial properties is typically semi-annual.
+_SEMI_ANNUAL_ACCOUNTS: set = {
+    '613310',  # Utilities-Water/Sewer
+    '613320',  # Utilities-Water (if split)
+    '613330',  # Utilities-Sewer (if split)
+}
+
 
 def _parse_date_range(text: str):
     """
@@ -309,7 +319,68 @@ def detect_invoice_proration_accruals(
                 'period_days':    period_days,
                 'invoice_total':  round(total_amount, 2),
             })
-            continue   # Don't also run payroll check for this account
+            continue   # Don't also run payroll/semi-annual checks for this account
+
+        # ── SEMI-ANNUAL BILLING PRORATION ─────────────────────────────────────
+        # Certain utilities (water/sewer) are billed only twice a year.  The
+        # invoice rarely falls in the current period, so there is no billing
+        # date range to parse.  Instead we derive a monthly accrual by dividing
+        # the best available invoice proxy by 6:
+        #
+        #   Priority 1 — current-period transaction without a date range:
+        #     If a lump-sum was posted this period (no date range in the
+        #     description), treat it as the semi-annual invoice → divide by 6.
+        #     The remaining 5/6 has been accrued in prior months; only 1/6
+        #     belongs to this period.
+        #
+        #   Priority 2 — beginning_balance reversal:
+        #     When a prior-period accrual is reversed at the start of the year,
+        #     the absolute value of the credit (negative) beginning_balance
+        #     approximates the size of the semi-annual invoice.  Divide by 6
+        #     for the monthly amount.
+        #
+        #   If neither source is available the account falls through to the
+        #   budget-gap layer.
+        if code in _SEMI_ANNUAL_ACCOUNTS:
+            # Check for current-period lump sums (no date range found earlier)
+            period_debits = [
+                (txn.debit or 0) - (txn.credit or 0)
+                for txn in acct.transactions
+                if ((txn.debit or 0) - (txn.credit or 0)) > 0
+            ]
+            total_period = sum(period_debits)
+
+            semi_annual_amount: float = 0.0
+            basis_note: str = ''
+
+            if total_period >= materiality * 6:
+                # A substantial lump-sum is in this period — divide by 6
+                semi_annual_amount = total_period
+                basis_note = f'current-period invoice ${total_period:,.0f}'
+            elif abs(acct.beginning_balance) >= materiality * 6:
+                # Use the reversed prior accrual as a proxy for the semi-annual bill
+                semi_annual_amount = abs(acct.beginning_balance)
+                basis_note = f'prior accrual reversal ${semi_annual_amount:,.0f} (estimate)'
+
+            if semi_annual_amount > 0:
+                monthly_accrual = semi_annual_amount / 6
+                if monthly_accrual >= materiality:
+                    candidates.append({
+                        'account_code':   code,
+                        'account_name':   acct.account_name,
+                        'accrual_amount': round(monthly_accrual, 2),
+                        'source':         'invoice_proration',
+                        'description': (
+                            f'Semi-annual accrual — {acct.account_name}: '
+                            f'{basis_note} / 6 months = '
+                            f'${monthly_accrual:,.2f}/month'
+                        ),
+                        'daily_rate':     round(monthly_accrual / 30, 4),
+                        'uncovered_days': 30,
+                        'period_days':    180,
+                        'invoice_total':  round(semi_annual_amount, 2),
+                    })
+            continue   # Don't run payroll check on water/sewer
 
         # ── PAYROLL PRORATION ─────────────────────────────────────────────────
         # Only applicable to accounts whose name suggests payroll.
