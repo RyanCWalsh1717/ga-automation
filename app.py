@@ -151,68 +151,138 @@ st.divider()
 # ── Sidebar: File uploads ────────────────────────────────────
 st.sidebar.markdown("## File Uploads")
 
-file_config = {
-    "gl": ("Yardi GL Detail (.xlsx)", "*.xlsx", True),
-    "trial_balance": ("Yardi Trial Balance (.xlsx)", "*.xlsx", False),
-    "income_statement": ("Yardi Income Statement (.xlsx)", "*.xlsx", False),
-    "budget_comparison": ("Yardi Budget Comparison (.xlsx)", "*.xlsx", False),
-    "rent_roll": ("Yardi Rent Roll (.xlsx)", "*.xlsx", False),
-    "nexus_accrual": ("Nexus Accrual Detail (.xls)", "*.xls", False),
-    "pnc_bank": ("PNC Bank Statement (.pdf)", "*.pdf", False),
-    "loan": ("Berkadia Loan PDFs (.pdf)", "*.pdf", False),
-    "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
-    "prepaid_ledger": ("Prepaid Ledger (.xlsx) — optional", "*.xlsx", False),
-    "bank_rec": ("Yardi Bank Rec PDF — Operating (.pdf)", "*.pdf", False),
-    "daca_bank": ("DACA Bank Statement — KeyBank x5132 (.pdf)", "*.pdf", False),
+# ── File config ───────────────────────────────────────────────
+# key: (label, file_type, required, group, help_text)
+# group: "core" | "bank" | "ref"
+FILE_GROUPS = {
+    "core": "📄 Core Close Files",
+    "bank": "🏦 Bank Statements",
+    "ref":  "📎 Reference",
 }
 
-for key, (label, file_type, required) in file_config.items():
-    col1, col2 = st.sidebar.columns([5, 1])
+FILE_CONFIG = {
+    # ── Core ──────────────────────────────────────────────────
+    "gl": (
+        "Yardi GL Detail (.xlsx)", "xlsx", True, "core",
+        "REQUIRED — source of truth for all accounts and transactions.",
+    ),
+    "trial_balance": (
+        "Yardi Trial Balance (.xlsx)", "xlsx", False, "core",
+        "Enables GL↔TB tie-out validation on every BS account and QC Check 5. "
+        "Without it: BS workpaper generates but all TB columns show 'N/A'.",
+    ),
+    "budget_comparison": (
+        "Yardi Budget Comparison (.xlsx)", "xlsx", False, "core",
+        "Enables budget gap accrual detection (Layer 2) and variance commentary. "
+        "Without it: only Nexus and historical accruals generated; no variance comments.",
+    ),
+    "kardin_budget": (
+        "Kardin 2026 Budget (.xlsx)", "xlsx", False, "core",
+        "Enables QC YTD budget vs Kardin cross-check. "
+        "Without it: QC budget check skipped silently.",
+    ),
+    "nexus_accrual": (
+        "Nexus Accrual Detail (.xls)", "xls", False, "core",
+        "Enables AP accrual detection (Layer 1 — pending invoices). "
+        "Without it: only budget gap and historical accruals are generated.",
+    ),
+    # ── Bank ──────────────────────────────────────────────────
+    "bank_rec": (
+        "Yardi Bank Rec PDF — Operating (.pdf)", "pdf", False, "bank",
+        "Enables Operating bank rec tab in the BS workpaper (PNC x3993 vs GL 111100 "
+        "with outstanding check detail). Without it: no bank rec tab in workpaper.",
+    ),
+    "daca_bank": (
+        "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
+        "Enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
+        "Without it: no DACA tab in workpaper.",
+    ),
+    "pnc_bank": (
+        "PNC Bank Statement — raw (.pdf)", "pdf", False, "bank",
+        "Enables GL-to-bank transaction matching in the engine. "
+        "Without it: transaction-level matching skipped (bank rec workpaper tab is unaffected "
+        "— that uses the Yardi Bank Rec PDF above).",
+    ),
+    # ── Reference ─────────────────────────────────────────────
+    "loan": (
+        "Berkadia Loan Statements (.pdf)", "pdf", False, "ref",
+        "Enables debt service workpaper tab and principal balance tracking. "
+        "Without it: debt service section not generated.",
+    ),
+    "prepaid_ledger": (
+        "Prepaid Ledger — prior month (.xlsx)", "xlsx", False, "ref",
+        "Carry-forward from prior month for prepaid amortization tracking. "
+        "Without it: ledger starts fresh — existing multi-period items won't be carried forward.",
+    ),
+}
 
-    with col1:
-        if key == "loan":
-            uploaded_files_multi = st.file_uploader(
-                label,
-                type="pdf",
-                accept_multiple_files=True,
-                key="uploader_loan",
-            )
-            if uploaded_files_multi:
-                paths = []
-                for uf in uploaded_files_multi:
-                    temp_file = os.path.join(st.session_state.temp_dir, uf.name)
-                    with open(temp_file, "wb") as f:
-                        f.write(uf.getbuffer())
-                    paths.append(temp_file)
-                st.session_state.uploaded_files["loan"] = paths
-        else:
-            uploaded_file = st.file_uploader(
-                label,
-                type=file_type.replace("*.", ""),
-                key=f"uploader_{key}",
-            )
+# Preserve file_config alias for downstream code that reads len(file_config)
+file_config = FILE_CONFIG
 
-            if uploaded_file is not None:
-                # Save to temp directory
-                temp_file = os.path.join(st.session_state.temp_dir, uploaded_file.name)
-                with open(temp_file, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                st.session_state.uploaded_files[key] = temp_file
+def _save_upload(uf, key: str):
+    """Save an uploaded file to temp dir and register in session state."""
+    temp_file = os.path.join(st.session_state.temp_dir, uf.name)
+    with open(temp_file, "wb") as f:
+        f.write(uf.getbuffer())
+    st.session_state.uploaded_files[key] = temp_file
 
-    with col2:
-        if key in st.session_state.uploaded_files:
-            st.markdown("✅")
+# Render each group
+for group_key, group_label in FILE_GROUPS.items():
+    st.sidebar.markdown(f"**{group_label}**")
+    for key, (label, file_type, required, grp, help_text) in FILE_CONFIG.items():
+        if grp != group_key:
+            continue
 
-# Display file count
-uploaded_count = len(st.session_state.uploaded_files)
-st.sidebar.markdown(f"**Files uploaded: {uploaded_count} / {len(file_config)}**")
+        col1, col2 = st.sidebar.columns([5, 1])
+        with col1:
+            if key == "loan":
+                multi = st.file_uploader(
+                    label, type="pdf", accept_multiple_files=True,
+                    key="uploader_loan", help=help_text,
+                )
+                if multi:
+                    paths = []
+                    for uf in multi:
+                        temp_file = os.path.join(st.session_state.temp_dir, uf.name)
+                        with open(temp_file, "wb") as f:
+                            f.write(uf.getbuffer())
+                        paths.append(temp_file)
+                    st.session_state.uploaded_files["loan"] = paths
+            else:
+                uf = st.file_uploader(
+                    label, type=file_type,
+                    key=f"uploader_{key}", help=help_text,
+                )
+                if uf is not None:
+                    _save_upload(uf, key)
+        with col2:
+            if key in st.session_state.uploaded_files:
+                st.markdown("✅")
 
-# Check if GL file (required) is uploaded
-gl_uploaded = "gl" in st.session_state.uploaded_files
+    st.sidebar.markdown("")  # spacing between groups
+
+# ── Missing-output warnings ───────────────────────────────────
+uploaded_keys = set(st.session_state.uploaded_files.keys())
+missing_impact = []
+if "trial_balance"    not in uploaded_keys: missing_impact.append("No BS tie-out validation")
+if "budget_comparison" not in uploaded_keys: missing_impact.append("No budget gap accruals or variance comments")
+if "bank_rec"         not in uploaded_keys: missing_impact.append("No Operating bank rec tab")
+if "daca_bank"        not in uploaded_keys: missing_impact.append("No DACA bank rec tab")
+if "loan"             not in uploaded_keys: missing_impact.append("No debt service tab")
+
+uploaded_count = len(uploaded_keys)
+gl_uploaded = "gl" in uploaded_keys
+
+if missing_impact:
+    with st.sidebar.expander(f"⚠️ {len(missing_impact)} output(s) won't generate", expanded=False):
+        for m in missing_impact:
+            st.caption(f"• {m}")
+
+st.sidebar.markdown(f"**{uploaded_count} file(s) uploaded**")
 st.sidebar.divider()
 
 if not gl_uploaded:
-    st.sidebar.warning("⚠️ GL Detail file is required to run the pipeline.")
+    st.sidebar.warning("⚠️ GL Detail is required to run.")
 
 # ── Bank Rec Settings ────────────────────────────────────────────
 st.sidebar.markdown("## Bank Rec")
