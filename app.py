@@ -130,6 +130,9 @@ if "output_files" not in st.session_state:
 if "temp_dir" not in st.session_state:
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
 
+if "n_manual_rows" not in st.session_state:
+    st.session_state.n_manual_rows = 0
+
 if "manual_je_df" not in st.session_state:
     import pandas as pd
     st.session_state.manual_je_df = pd.DataFrame({
@@ -318,13 +321,12 @@ st.sidebar.divider()
 # ── Manual Accrual Overrides ─────────────────────────────────────
 st.sidebar.markdown("## Manual Accruals")
 st.sidebar.caption(
-    "For accounts with irregular or semi-annual billing where the invoice "
-    "amount is known but can't be auto-calculated from the GL (e.g., "
-    "water/sewer billed twice a year on a non-calendar cycle). "
-    "Enter the **monthly** accrual amount for each applicable account."
+    "For services completed where the invoice isn't in Nexus or Yardi yet — "
+    "HVAC calls, one-off repairs, reimbursable payroll, semi-annual billing, etc. "
+    "Entries here are processed first and suppress automated layers for the same account."
 )
 
-# Water/sewer — semi-annual billing
+# Water/sewer — semi-annual billing (permanent fixture, own named field)
 water_sewer_invoice = st.sidebar.number_input(
     "Water/Sewer — semi-annual invoice ($)",
     min_value=0.0,
@@ -333,12 +335,57 @@ water_sewer_invoice = st.sidebar.number_input(
     format="%.2f",
     help=(
         "Enter the full semi-annual invoice amount (e.g. $99,814.50). "
-        "The system will divide by 6 and accrue the monthly portion. "
+        "The system divides by 6 and accrues the monthly portion. "
         "Leave 0 to fall back to the budget-gap estimate."
     ),
 )
 
-# Build the manual_accruals list from sidebar inputs
+# One-off manual entries (dynamic rows)
+st.sidebar.markdown("**One-off accruals**")
+st.sidebar.caption("Known invoices not yet in Nexus or Yardi (HVAC, repairs, reimbursables, etc.)")
+
+_btn_col1, _btn_col2 = st.sidebar.columns([1, 1])
+with _btn_col1:
+    if st.button("＋ Add entry", key="add_manual_row", use_container_width=True):
+        st.session_state.n_manual_rows += 1
+with _btn_col2:
+    if st.button("✕ Clear all", key="clear_manual_rows", use_container_width=True,
+                 disabled=st.session_state.n_manual_rows == 0):
+        st.session_state.n_manual_rows = 0
+
+_one_off_rows = []
+for _i in range(st.session_state.n_manual_rows):
+    st.sidebar.markdown(f"*Entry {_i + 1}*")
+    _acct = st.sidebar.text_input(
+        "GL Account #",
+        key=f"man_acct_{_i}",
+        placeholder="e.g. 617120",
+        label_visibility="collapsed",
+    )
+    _amt = st.sidebar.number_input(
+        "Amount ($)",
+        min_value=0.0,
+        value=0.0,
+        step=100.0,
+        format="%.2f",
+        key=f"man_amt_{_i}",
+        label_visibility="collapsed",
+    )
+    _desc = st.sidebar.text_input(
+        "Description",
+        key=f"man_desc_{_i}",
+        placeholder="e.g. HVAC repair — March service call",
+        label_visibility="collapsed",
+    )
+    if _acct.strip() and _amt > 0:
+        _one_off_rows.append({
+            'account_code': _acct.strip(),
+            'account_name': _desc.strip() or _acct.strip(),
+            'amount':       _amt,
+            'description':  _desc.strip() or f'Manual accrual — {_acct.strip()}',
+        })
+
+# Build the combined manual_accruals list
 _manual_accruals_input = []
 if water_sewer_invoice > 0:
     _monthly = round(water_sewer_invoice / 6, 2)
@@ -351,6 +398,13 @@ if water_sewer_invoice > 0:
             f'= ${_monthly:,.2f}/month'
         ),
     })
+_manual_accruals_input.extend(_one_off_rows)
+
+if _manual_accruals_input:
+    st.sidebar.caption(
+        f"✓ {len(_manual_accruals_input)} manual accrual(s) queued — "
+        f"${sum(r['amount'] for r in _manual_accruals_input):,.2f} total"
+    )
 
 st.sidebar.divider()
 
