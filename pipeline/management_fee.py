@@ -8,14 +8,19 @@ the period and the agreed fee rates:
   GRP (replacement): 1.75% of cash received
   Total:             3.00% of cash received
 
-"Cash received" = gross receipts deposited into the operating bank account
-for the period.  The pipeline derives this from one of three sources,
-in priority order:
+"Cash received" = gross tenant receipts deposited into the DACA sweep
+account for the period.  JLL (the current PM) explicitly uses the DACA
+deposit register — not the GL operating cash account — as the management fee
+basis.  For March 2026 this was $1,419,011.29 (the "4 Additions" line on the
+KeyBank x5132 statement).
 
-  1. GL operating cash account (111100) — debit transactions for the period
-     (debit = cash in, in double-entry terms)
-  2. Budget Comparison revenue accounts — PTD Actual of income lines as a proxy
-  3. User-supplied override via the Streamlit sidebar
+The pipeline derives cash received from one of four sources, in priority order:
+
+  1. DACA bank statement additions field — preferred (matches JLL's basis)
+  2. GL operating cash account (111100) — debit transactions for the period
+     (debit = cash in, in double-entry terms) — fallback when no DACA file
+  3. Budget Comparison revenue accounts — PTD Actual of income lines as a proxy
+  4. User-supplied override via the Streamlit sidebar
 
 The result is consumed by:
   - qc_engine.py check_7_misc (to verify the accrued fee vs. expected)
@@ -87,6 +92,24 @@ class ManagementFeeResult:
 
 # ── Cash-received extraction ───────────────────────────────────────────────────
 
+def _cash_from_daca(daca_parsed: dict) -> Optional[float]:
+    """
+    Read gross additions from the DACA bank statement (KeyBank x5132).
+
+    The DACA parser stores the total deposits as ``additions`` — this is the
+    amount JLL uses as the management fee basis (tenant rent receipts swept
+    daily from the DACA account into the operating account).
+
+    Returns None if the DACA statement was not parsed or additions is missing.
+    """
+    if not daca_parsed or not isinstance(daca_parsed, dict):
+        return None
+    val = daca_parsed.get('additions')
+    if val is None or val <= 0:
+        return None
+    return float(val)
+
+
 def _cash_from_gl(gl_parsed) -> Optional[float]:
     """
     Sum debit transactions in the operating cash account (111100).
@@ -153,6 +176,7 @@ def calculate(
     gl_parsed=None,
     budget_rows: list[dict] = None,
     manual_override: float = None,
+    daca_parsed: dict = None,
     jll_rate: float = JLL_RATE,
     grp_rate: float = GRP_RATE,
 ) -> ManagementFeeResult:
@@ -161,13 +185,16 @@ def calculate(
 
     Priority:
       1. manual_override (if provided and > 0)
-      2. GL operating cash account debit total
-      3. Revenue account PTD actuals from budget comparison
+      2. DACA bank statement additions — preferred basis, matches JLL's method
+         (tenant rent receipts = gross deposits into KeyBank x5132)
+      3. GL operating cash account debit total — fallback when no DACA file
+      4. Revenue account PTD actuals from budget comparison — last resort proxy
 
     Args:
         gl_parsed:       GLParseResult from yardi_gl.parse_gl()
         budget_rows:     List of BC row dicts from yardi_budget_comparison.parse()
         manual_override: If supplied, skip auto-detection and use this number
+        daca_parsed:     Parsed KeyBank DACA statement dict (from parsers.keybank_daca.parse)
         jll_rate:        JLL management fee rate (default 1.25%)
         grp_rate:        GRP management fee rate (default 1.75%)
 
@@ -185,7 +212,17 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 2. GL cash account
+    # 2. DACA additions — preferred (matches JLL's management fee basis)
+    daca_cash = _cash_from_daca(daca_parsed)
+    if daca_cash is not None:
+        return ManagementFeeResult(
+            cash_received=daca_cash,
+            cash_source='daca_additions',
+            jll_rate=jll_rate,
+            grp_rate=grp_rate,
+        )
+
+    # 3. GL cash account — fallback when DACA statement not uploaded
     gl_cash = _cash_from_gl(gl_parsed)
     if gl_cash is not None:
         return ManagementFeeResult(
@@ -195,7 +232,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 3. Revenue proxy
+    # 4. Revenue proxy
     rev_cash = _cash_from_revenue(budget_rows)
     if rev_cash is not None:
         return ManagementFeeResult(
@@ -205,7 +242,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 4. Nothing available — return $0 with a note
+    # 5. Nothing available — return $0 with a note
     return ManagementFeeResult(
         cash_received=0.0,
         cash_source='not_available',

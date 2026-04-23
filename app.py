@@ -521,11 +521,24 @@ if run_button:
                 tb_result = None
                 st.session_state.output_files["tb_result"] = None
 
+            # Parse DACA statement early — needed as management fee basis
+            # (We parse it here so the fee uses the correct source; Step 5b
+            #  will reuse the result rather than re-parsing.)
+            _daca_file_early = st.session_state.uploaded_files.get("daca_bank")
+            _daca_parsed_early = None
+            if _daca_file_early and os.path.exists(_daca_file_early):
+                try:
+                    from parsers.keybank_daca import parse as parse_daca_early
+                    _daca_parsed_early = parse_daca_early(_daca_file_early)
+                except Exception:
+                    _daca_parsed_early = None
+
             gl_data_for_fee = engine_result.parsed.get('gl')
             fee_result = calculate_mgmt_fee(
                 gl_parsed=gl_data_for_fee,
                 budget_rows=bc_parsed or [],
                 manual_override=cash_received_override,
+                daca_parsed=_daca_parsed_early,
             )
             st.session_state.output_files["fee_result"] = fee_result
 
@@ -608,20 +621,17 @@ if run_button:
                 except Exception as _be:
                     st.warning(f"Yardi Bank Rec PDF parse skipped: {_be}")
 
-            # ── DACA — KeyBank x5132 ───────────────────────────
-            daca_file = st.session_state.uploaded_files.get("daca_bank")
-            if daca_file and os.path.exists(daca_file):
-                try:
-                    from parsers.keybank_daca import parse as parse_daca
-                    daca_bank_data = parse_daca(daca_file)
-                    st.session_state.output_files["daca_bank_data"] = daca_bank_data
-                    if _gl_result:
-                        for _a in (_gl_result.accounts or []):
-                            if _a.account_code == '115100':
-                                daca_gl_balance = _a.ending_balance
-                                break
-                except Exception as _be:
-                    st.warning(f"DACA bank statement parse skipped: {_be}")
+            # ── DACA — KeyBank x5132 (reuse early parse from mgmt fee step) ──
+            # _daca_parsed_early was parsed before the management fee calc
+            # so the fee uses the correct basis (DACA additions).
+            daca_bank_data = _daca_parsed_early  # may be None if not uploaded
+            if daca_bank_data is not None:
+                st.session_state.output_files["daca_bank_data"] = daca_bank_data
+                if _gl_result:
+                    for _a in (_gl_result.accounts or []):
+                        if _a.account_code == '115100':
+                            daca_gl_balance = _a.ending_balance
+                            break
 
             # Store bank rec related values for dashboard
             st.session_state.output_files["bank_rec_data"]   = bank_rec_data
@@ -865,9 +875,10 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             source_totals[src] = source_totals.get(src, 0) + (l.get('debit') or 0)
 
         source_labels = {
-            'nexus':       'Nexus AP',
-            'budget_gap':  'Budget Gap',
-            'historical':  'Historical Pattern',
+            'nexus':              'Nexus AP',
+            'invoice_proration':  'Invoice Proration',
+            'budget_gap':         'Budget Gap',
+            'historical':         'Historical Pattern',
             'prepaid_ledger': 'Prepaid Amortization',
             'management_fee': 'Management Fee',
             'other':       'Other',

@@ -16,7 +16,10 @@ Each accrual generates a two-line entry:
 """
 
 import os
-from datetime import datetime, date
+import re
+import calendar
+from collections import defaultdict
+from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Any, Optional
 from openpyxl import Workbook
@@ -101,7 +104,294 @@ def _subhdr_fill():
     return PatternFill(start_color=LIGHT_BLUE, end_color=LIGHT_BLUE, fill_type='solid')
 
 
-# ── Layer 2: Budget gap detection ────────────────────────────
+# ── Layer 2: Invoice-period proration ────────────────────────
+
+# Billing date range: "01.31.26-03.02.26" or "01.31.26 - 03.02.26"
+_DATE_RANGE_RE = re.compile(
+    r'(\d{2})\.(\d{2})\.(\d{2})\s*-\s*(\d{2})\.(\d{2})\.(\d{2})'
+)
+# Single date: "03.13.26"
+_SINGLE_DATE_RE = re.compile(r'(\d{2})\.(\d{2})\.(\d{2})')
+
+# Account name fragments that indicate a payroll line
+_PAYROLL_NAME_KW  = ('pay/wages', 'pay wages', 'payroll')
+# Transaction description fragments that confirm a payroll entry
+_PAYROLL_DESC_KW  = ('payroll', 'eng payroll', 'admin payroll', 'pay/wages')
+
+
+def _parse_date_range(text: str):
+    """
+    Parse 'MM.DD.YY-MM.DD.YY' billing period from a GL description/remarks string.
+
+    Returns (start: date, end: date) or (None, None) if not found.
+    Years are assumed 20xx (adequate through 2099).
+    """
+    m = _DATE_RANGE_RE.search(text or '')
+    if not m:
+        return None, None
+    try:
+        start = date(2000 + int(m.group(3)),  int(m.group(1)),  int(m.group(2)))
+        end   = date(2000 + int(m.group(6)),  int(m.group(4)),  int(m.group(5)))
+        return (start, end) if end >= start else (None, None)
+    except ValueError:
+        return None, None
+
+
+def _parse_single_date(text: str) -> Optional[date]:
+    """Parse the first 'MM.DD.YY' date in text. Returns None if none found."""
+    m = _SINGLE_DATE_RE.search(text or '')
+    if not m:
+        return None
+    try:
+        return date(2000 + int(m.group(3)), int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+
+
+def _month_end_from_period(period_str: str) -> Optional[date]:
+    """
+    Derive the last calendar day of the reporting month from a period string.
+
+    Handles formats:
+      'Mar-2026'  →  date(2026, 3, 31)
+      'Mar 2026'  →  date(2026, 3, 31)
+    """
+    _MONTH_MAP = {
+        'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4,  'May': 5,  'Jun': 6,
+        'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+    }
+    if not period_str:
+        return None
+    m = re.match(r'([A-Za-z]{3})[\s\-](\d{4})', period_str.strip())
+    if not m:
+        return None
+    month = _MONTH_MAP.get(m.group(1).capitalize())
+    year  = int(m.group(2))
+    if not month:
+        return None
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, last_day)
+
+
+def detect_invoice_proration_accruals(
+    gl_data,
+    period: str = '',
+    month_end: Optional[date] = None,
+    materiality: float = 500.0,
+) -> List[Dict[str, Any]]:
+    """
+    Layer 2 — Invoice-period proration accruals.
+
+    Scans GL transactions for billing date-range references in the remarks /
+    description field (format ``MM.DD.YY-MM.DD.YY``).  For each expense account
+    where the latest invoiced period ends *before* the close of the reporting
+    month, it accrues the uncovered portion at the same daily rate as the most
+    recent invoice.
+
+    Algorithm
+    ---------
+    For each expense account (6xxxxx, 5xxxxx, …):
+
+    **Vendor billing-period accounts** (electricity, gas, security, elevator, …)
+      1. Parse ``(start, end, amount)`` from every transaction with a date range.
+      2. Group by billing end date; identify the *latest* end date.
+      3. For the latest group: compute daily rate = total amount / period days.
+      4. Uncovered days  = calendar month-end  −  latest billing end.
+      5. Accrual = daily rate × uncovered days   (if > materiality threshold).
+
+    **Payroll accounts** (account name contains "Pay/Wages" or "Payroll")
+      1. Identify payroll runs by description keyword.
+      2. Determine pay period length from the gap between consecutive run dates.
+      3. Sum all charges in the latest pay period (regular + OT, etc.).
+      4. Daily rate = period total / pay-period days.
+      5. Accrual = daily rate × days from last run to month-end.
+
+    For multi-vendor accounts (e.g., electricity has both Eversource and
+    Hudson Energy), invoices sharing the same billing end date are *combined*:
+    the daily rate is the sum across all vendors, accurately reflecting the
+    total daily cost of service.
+
+    Args:
+        gl_data:     GLParseResult (from parsers.yardi_gl.parse_gl)
+        period:      Accounting period string, e.g. 'Mar-2026' (used to derive
+                     month-end when ``month_end`` is not supplied explicitly)
+        month_end:   Override: last day of the reporting month.  If None, derived
+                     from ``period`` or from gl_data.metadata.period.
+        materiality: Minimum accrual (default $500) — smaller amounts are skipped.
+
+    Returns:
+        List of candidate dicts::
+
+            account_code, account_name, accrual_amount, source ('invoice_proration'),
+            description, daily_rate, uncovered_days, period_days, invoice_total
+    """
+    candidates: List[Dict[str, Any]] = []
+
+    if not gl_data or not hasattr(gl_data, 'accounts'):
+        return candidates
+
+    # ── Resolve reporting month-end ────────────────────────────────────────────
+    if month_end is None:
+        month_end = _month_end_from_period(period)
+    if month_end is None:
+        # Try GL metadata
+        try:
+            month_end = _month_end_from_period(gl_data.metadata.period)
+        except Exception:
+            pass
+    if month_end is None:
+        return candidates   # can't prorate without knowing when the month ends
+
+    for acct in gl_data.accounts:
+        code = str(acct.account_code).strip()
+        if not code or code[0] not in ('5', '6', '7', '8'):
+            continue
+
+        # ── VENDOR BILLING-PERIOD PRORATION ───────────────────────────────────
+        # Group transactions that carry a billing date range by their end date.
+        by_end: Dict[date, List[tuple]] = defaultdict(list)
+        has_range_txns = False
+
+        for txn in acct.transactions:
+            amt = (txn.debit or 0) - (txn.credit or 0)
+            if amt <= 0:
+                continue
+            start, end = _parse_date_range(txn.remarks or '')
+            if start is None:
+                start, end = _parse_date_range(txn.description or '')
+            if start and end:
+                by_end[end].append((start, end, amt))
+                has_range_txns = True
+
+        if has_range_txns:
+            latest_end = max(by_end.keys())
+            uncovered  = (month_end - latest_end).days
+
+            if uncovered <= 0:
+                # Latest invoice already covers the full month
+                continue
+
+            # Build daily rate from the most recently invoiced period.
+            # Combine all vendors that share this billing end date.
+            group = by_end[latest_end]
+            total_amount = sum(g[2] for g in group)
+            min_start    = min(g[0] for g in group)
+            period_days  = max(1, (latest_end - min_start).days)
+
+            # Sanity cap: don't extrapolate more than 2× the billing period.
+            # This filters short-duration service calls (e.g., 10-day HVAC
+            # repair invoiced in Feb with 47 uncovered March days → wrong)
+            # while allowing 30-day utility cycles to bleed into the next month
+            # by up to 30 extra days (gas billed in Feb covering all of March).
+            if uncovered > period_days * 2.0:
+                continue
+
+            daily_rate   = total_amount / period_days
+            accrual      = daily_rate * uncovered
+
+            if accrual < materiality:
+                continue
+
+            candidates.append({
+                'account_code':   code,
+                'account_name':   acct.account_name,
+                'accrual_amount': round(accrual, 2),
+                'source':         'invoice_proration',
+                'description': (
+                    f'Invoice proration — {acct.account_name}: '
+                    f'last invoice {min_start.strftime("%m/%d/%y")}'
+                    f'-{latest_end.strftime("%m/%d/%y")} '
+                    f'(${total_amount:,.0f}/{period_days}d = '
+                    f'${daily_rate:,.2f}/day x {uncovered} days uncovered)'
+                ),
+                'daily_rate':     round(daily_rate, 4),
+                'uncovered_days': uncovered,
+                'period_days':    period_days,
+                'invoice_total':  round(total_amount, 2),
+            })
+            continue   # Don't also run payroll check for this account
+
+        # ── PAYROLL PRORATION ─────────────────────────────────────────────────
+        # Only applicable to accounts whose name suggests payroll.
+        name_lower = (acct.account_name or '').lower()
+        if not any(kw in name_lower for kw in _PAYROLL_NAME_KW):
+            continue
+
+        # Collect payroll runs: debit entries where description mentions payroll.
+        payroll_runs: List[tuple] = []   # (run_date: date, amount: float)
+        for txn in acct.transactions:
+            amt = (txn.debit or 0) - (txn.credit or 0)
+            if amt <= 0:
+                continue
+            combined = ((txn.remarks or '') + ' ' + (txn.description or '')).lower()
+            if not any(kw in combined for kw in _PAYROLL_DESC_KW):
+                continue
+            run_date = _parse_single_date(txn.remarks or '')
+            if run_date is None:
+                run_date = _parse_single_date(txn.description or '')
+            if run_date is None:
+                # Fall back to the transaction's posted date
+                run_date = txn.date if isinstance(txn.date, date) else None
+            if run_date:
+                payroll_runs.append((run_date, amt))
+
+        if len(payroll_runs) < 2:
+            continue   # Need ≥ 2 runs to infer pay period length
+
+        payroll_runs.sort(key=lambda x: x[0])
+
+        # Pay period length = gap between the two most-recent distinct run dates.
+        # Group by date and sum amounts so we can identify the "main" payroll
+        # runs vs. small off-cycle entries (e.g., a $1,554 mid-cycle run).
+        dates_only = sorted({r[0] for r in payroll_runs})
+        if len(dates_only) < 2:
+            continue
+
+        # Use the last-two-date gap but enforce a 13-day floor.
+        # Off-cycle payroll entries (e.g., a small catch-up run mid-cycle)
+        # can create 7-day gaps between payroll dates that make the detected
+        # period half the true bi-weekly cycle.  13 days is safely below any
+        # bi-weekly (14d) or semi-monthly (13-16d) schedule while filtering out
+        # the 7-day false periods from off-cycle runs.
+        raw_gap = (dates_only[-1] - dates_only[-2]).days
+        pay_period_days = max(13, raw_gap)
+
+        # Latest run date and total amount for that run (regular + OT combined).
+        latest_run_date = dates_only[-1]
+        latest_run_total = sum(amt for rd, amt in payroll_runs if rd == latest_run_date)
+
+        # Days from last run to month-end = uncovered payroll days.
+        uncovered = (month_end - latest_run_date).days
+        if uncovered <= 0:
+            continue
+
+        daily_rate = latest_run_total / pay_period_days
+        accrual    = daily_rate * uncovered
+
+        if accrual < materiality:
+            continue
+
+        candidates.append({
+            'account_code':   code,
+            'account_name':   acct.account_name,
+            'accrual_amount': round(accrual, 2),
+            'source':         'invoice_proration',
+            'description': (
+                f'Payroll accrual — {acct.account_name}: '
+                f'last run {latest_run_date.strftime("%m/%d/%y")} '
+                f'(${latest_run_total:,.2f}/{pay_period_days}d = '
+                f'${daily_rate:,.2f}/day x {uncovered} days uncovered)'
+            ),
+            'daily_rate':     round(daily_rate, 4),
+            'uncovered_days': uncovered,
+            'period_days':    pay_period_days,
+            'invoice_total':  round(latest_run_total, 2),
+        })
+
+    return candidates
+
+
+# ── Layer 3: Budget gap detection ────────────────────────────
 
 def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
     """
@@ -278,24 +568,35 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
 def build_accrual_entries(nexus_data: list, period: str = '',
                           property_name: str = '',
                           status_filter: list = None,
-                          gl_data=None, budget_data=None) -> List[Dict[str, Any]]:
+                          gl_data=None, budget_data=None,
+                          period_month_end: Optional[date] = None,
+                          ) -> List[Dict[str, Any]]:
     """
-    Build accrual journal entry lines from three sources:
-      Layer 1: Nexus pending invoices
-      Layer 2: Budget gap detection (gl_data + budget_data required)
-      Layer 3: Historical recurring detection (gl_data required)
+    Build accrual journal entry lines from four sources:
+      Layer 1: Nexus pending invoices (AP-side, deduped against GL)
+      Layer 2: Invoice-period proration (billing date ranges in GL descriptions)
+      Layer 3: Budget gap detection (accounts with budget but no GL activity)
+      Layer 4: Historical recurring detection (prior-month YTD extrapolation)
+
+    Layer 2 is the highest-fidelity method and takes priority over Layers 3-4.
+    Accounts covered by Layers 1-2 are excluded from Layers 3-4 to avoid
+    double-counting.
 
     Args:
-        nexus_data: List of invoice dicts from Nexus parser
-        period: Accounting period (e.g., 'Feb-2026')
-        property_name: Property name for the JE header
-        status_filter: List of invoice statuses to include.
-                       Default: include all invoices (pending + approved).
+        nexus_data:        List of invoice dicts from Nexus parser
+        period:            Accounting period string (e.g., 'Mar-2026')
+        property_name:     Property name for the JE header
+        status_filter:     Invoice statuses to include (default: all)
+        gl_data:           GLParseResult — required for Layers 2-4
+        budget_data:       BC rows — required for Layer 3 (budget gap)
+        period_month_end:  Override for the last calendar day of the reporting
+                           month (date object).  If None, derived from ``period``
+                           or gl_data.metadata.period automatically.
 
     Returns:
         List of JE line dicts with keys:
           je_number, line, date, account_code, account_name,
-          description, reference, debit, credit, vendor, invoice_number
+          description, reference, debit, credit, vendor, invoice_number, source
     """
     invoices = nexus_data if isinstance(nexus_data, list) else []
 
@@ -425,20 +726,70 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             })
             je_num += 1
 
-    # ── Layer 2: Budget gap accruals ──
+    # ── Resolve reporting month-end (used by Layers 2 and onward) ──
+    _month_end = period_month_end or _month_end_from_period(period)
+    if _month_end is None and gl_data:
+        try:
+            _month_end = _month_end_from_period(gl_data.metadata.period)
+        except Exception:
+            pass
+
+    # Collect accounts already covered by Layer 1 (Nexus)
+    _covered = set(l['account_code'] for l in je_lines if l.get('line') == 1)
+
+    # ── Layer 2: Invoice-period proration ──
+    if gl_data:
+        prorations = detect_invoice_proration_accruals(
+            gl_data, period=period, month_end=_month_end
+        )
+        for pro in prorations:
+            if pro['account_code'] in _covered:
+                continue   # already handled by Nexus
+
+            je_id   = f"IPR-{je_num:04d}"
+            je_desc = pro['description']
+
+            je_lines.append({
+                'je_number':      je_id,
+                'line':           1,
+                'date':           _month_end.strftime('%m/%d/%Y') if _month_end else '',
+                'account_code':   pro['account_code'],
+                'account_name':   pro['account_name'],
+                'description':    je_desc,
+                'reference':      'INV-PRORATION',
+                'debit':          pro['accrual_amount'],
+                'credit':         0,
+                'vendor':         '[Invoice Proration]',
+                'invoice_number': '',
+                'source':         'invoice_proration',
+            })
+            je_lines.append({
+                'je_number':      je_id,
+                'line':           2,
+                'date':           _month_end.strftime('%m/%d/%Y') if _month_end else '',
+                'account_code':   AP_ACCRUAL_ACCOUNT,
+                'account_name':   AP_ACCRUAL_NAME,
+                'description':    je_desc,
+                'reference':      'INV-PRORATION',
+                'debit':          0,
+                'credit':         pro['accrual_amount'],
+                'vendor':         '[Invoice Proration]',
+                'invoice_number': '',
+                'source':         'invoice_proration',
+            })
+            _covered.add(pro['account_code'])
+            je_num += 1
+
+    # ── Layer 3: Budget gap accruals ──
+    # Fallback for accounts with a budget but no GL activity AND no proration data.
     if gl_data and budget_data:
         budget_gaps = detect_budget_gaps(gl_data, budget_data)
-        # Don't duplicate accounts already covered by Nexus
-        nexus_accounts = set()
-        for line in je_lines:
-            if line['line'] == 1:  # DR lines only
-                nexus_accounts.add(line['account_code'])
 
         for gap in budget_gaps:
-            if gap['account_code'] in nexus_accounts:
-                continue
+            if gap['account_code'] in _covered:
+                continue   # already handled by Nexus or proration
 
-            je_id = f"BGA-{je_num:04d}"
+            je_id   = f"BGA-{je_num:04d}"
             je_desc = f"Budget gap accrual — {gap['account_name']}"
 
             je_lines.append({
@@ -469,18 +820,14 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'invoice_number': '',
                 'source': 'budget_gap',
             })
+            _covered.add(gap['account_code'])
             je_num += 1
 
-    # ── Layer 3: Historical recurring accruals ──
+    # ── Layer 4: Historical recurring accruals ──
     if gl_data:
         historicals = detect_historical_recurring(gl_data, budget_data)
-        covered_accounts = set()
-        for line in je_lines:
-            if line['line'] == 1:
-                covered_accounts.add(line['account_code'])
-
         for hist in historicals:
-            if hist['account_code'] in covered_accounts:
+            if hist['account_code'] in _covered:
                 continue
 
             je_id = f"REC-{je_num:04d}"

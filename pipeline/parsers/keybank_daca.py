@@ -36,7 +36,13 @@ def parse(filepath: str) -> Dict[str, Any]:
 
     Returns a dict with at minimum:
         bank_type, account_number, beginning_balance, ending_balance,
-        statement_period, _raw_text (first 3 pages for debugging)
+        additions, subtractions, statement_period,
+        _raw_text (first 3 pages for debugging)
+
+    ``additions`` is the gross total of deposits into the DACA account for the
+    period (labelled "N Additions +X" in KeyBank Corporate Banking statements).
+    This is the correct basis for the management fee calculation: JLL charges
+    the management fee on DACA deposits, not on the GL cash account balance.
     """
     result: Dict[str, Any] = {
         'bank_type':         'KeyBankDACA',
@@ -44,6 +50,8 @@ def parse(filepath: str) -> Dict[str, Any]:
         'statement_period':  {},
         'beginning_balance': None,
         'ending_balance':    None,
+        'additions':         None,   # gross deposits — management fee basis
+        'subtractions':      None,   # gross payments out
         '_parse_error':      None,
         '_raw_text':         '',
     }
@@ -61,6 +69,7 @@ def parse(filepath: str) -> Dict[str, Any]:
         _extract_account_number(full_text, result)
         _extract_period(full_text, result)
         _extract_balances(full_text, result)
+        _extract_additions(full_text, result)
 
     except Exception as exc:
         result['_parse_error'] = str(exc)
@@ -210,6 +219,33 @@ def _extract_balances(text: str, result: Dict[str, Any]) -> None:
                       if _f(a) >= 500]
         if candidates:
             result['ending_balance'] = max(candidates)
+
+
+def _extract_additions(text: str, result: Dict[str, Any]) -> None:
+    """
+    Extract gross additions (deposits) and subtractions (payments) from the
+    KeyBank Corporate Banking balance summary block.
+
+    Format:
+        4 Additions          +1,419,011.29
+        2 Subtractions       -1,418,386.29
+
+    The leading count (N) and sign (+/-) are optional — we match the label.
+    ``additions`` is used as the management fee basis.
+    """
+    add_m = re.search(
+        r'\d+\s+[Aa]dditions\s+\+?([\d,]+\.\d{2})',
+        text,
+    )
+    if add_m:
+        result['additions'] = _f(add_m.group(1))
+
+    sub_m = re.search(
+        r'\d+\s+[Ss]ubtractions\s+-?([\d,]+\.\d{2})',
+        text,
+    )
+    if sub_m:
+        result['subtractions'] = _f(sub_m.group(1))
 
 
 def _f(s: str) -> float:
