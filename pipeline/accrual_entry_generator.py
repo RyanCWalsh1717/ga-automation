@@ -187,6 +187,105 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
     return results
 
 
+# ── Layer 1c: Real Estate Tax amortization ───────────────────
+
+_RETAX_EXPENSE_ACCT = '641110'   # Real Estate Taxes (income statement)
+_RETAX_ESCROW_ACCT  = '115200'   # Restricted Cash - RE Tax Escrow (balance sheet)
+
+def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, Any]]:
+    """
+    Generate the monthly real estate tax expense entry.
+
+    JLL method: Lexington taxes are paid quarterly (due Jan 1, Apr 1, Jul 1,
+    Oct 1).  Each quarter's payment draws from the RE Tax Escrow (115200) and
+    is split evenly across the three months it covers:
+
+        DR 641110  Real Estate Taxes      (1/3 of quarterly payment)
+        CR 115200  RE Tax Escrow          (draws down escrow balance)
+
+    The pre-close GL we receive has the Jan and Feb entries already posted but
+    is missing the March entry — JLL posts it at month-end close.
+
+    Monthly amount derivation:
+        beginning_balance(641110) ÷ (period_month − 1)
+
+    e.g. for March (period_month = 3):
+        $498,750.81 ÷ 2 = $249,375.40/month
+
+    This is more accurate than the budget because it reflects the actual
+    quarterly payment that Berkadia made to the town.
+
+    Returns None if:
+      - 641110 has no beginning balance (no prior-period payments this year)
+      - 641110 already has current-period activity (already posted)
+      - period_month is 1 (January — no prior months to average from; the
+        full quarterly payment posts directly in January)
+    """
+    if not gl_data or not hasattr(gl_data, 'accounts'):
+        return None
+
+    # Parse period month from period string ("Mar-2026" → 3)
+    _MONTH_MAP = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    }
+    period_month = 0
+    for abbr, num in _MONTH_MAP.items():
+        if abbr in (period or '').lower():
+            period_month = num
+            break
+
+    # January: the full quarterly payment is posted directly — no proration needed
+    if period_month <= 1:
+        return None
+
+    # Find 641110 in GL
+    retax_acct = None
+    for acct in gl_data.accounts:
+        if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
+            retax_acct = acct
+            break
+
+    if retax_acct is None:
+        return None
+
+    # Need prior-period history to derive the monthly rate
+    beg_bal = abs(retax_acct.beginning_balance)
+    if beg_bal < 1.0:
+        return None
+
+    # Skip if already posted this period
+    if abs(retax_acct.net_change) > 0.01:
+        return None
+
+    # Derive monthly amount: beginning balance covers months 1 → (period_month − 1)
+    prior_months = period_month - 1
+    monthly_amt  = round(beg_bal / prior_months, 2)
+
+    # Verify escrow account exists and has a balance to draw from
+    escrow_balance = 0.0
+    for acct in gl_data.accounts:
+        if str(acct.account_code).strip() == _RETAX_ESCROW_ACCT:
+            escrow_balance = acct.ending_balance
+            break
+
+    return {
+        'account_code':   _RETAX_EXPENSE_ACCT,
+        'account_name':   'Real Estate Taxes',
+        'amount':         monthly_amt,
+        'credit_account': _RETAX_ESCROW_ACCT,
+        'credit_name':    'Restricted Cash - RE Tax Escrow',
+        'source':         'prepaid_amortization',
+        'confidence':     'high',
+        'description': (
+            f'RE Tax monthly allocation — ${monthly_amt:,.2f}/month '
+            f'(${beg_bal:,.2f} YTD ÷ {prior_months} prior months; '
+            f'escrow balance ${escrow_balance:,.2f})'
+        ),
+    }
+
+
 # ── Layer 2: Invoice-period proration ────────────────────────
 
 # Billing date range: "01.31.26-03.02.26" or "01.31.26 - 03.02.26"
@@ -517,11 +616,12 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
     #
     # Do NOT add these to the budget gap — they are budget-to-actual timing
     # differences only, not missing accruals.
-    _ESCROW_FUNDED = {
-        '641110',   # Real Estate Taxes        (funded from 115200 RE Tax Escrow)
-        '639110',   # Insurance-Property       (funded from 115300 Insurance Escrow)
-        '639120',   # Insurance-General Liab   (funded from 115300 Insurance Escrow)
-    }
+    # Note: 641110, 639110, 639120 are handled by Layer 0b amortization entries
+    # (detect_retax_amortization / detect_insurance_amortization) and are added
+    # to _covered before budget gap runs, so they never reach this layer.
+    # Any future escrow-funded accounts with no dedicated amortization function
+    # can be listed here as a safety net.
+    _ESCROW_FUNDED: set = set()
 
     # Account name keywords that signal irregular / repair-type spend.
     # Accounts matching any of these get LOW confidence.
@@ -873,56 +973,57 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         _manual_accounts.add(acct_code)
         je_num += 1
 
-    # ── Layer 0b: Insurance prepaid amortization ───────────────────────────────
-    # Monthly expense from 135110 Prepaid Insurance → DR 639110/639120 / CR 135110.
-    # Generated whenever 135110 has a balance and the expense accounts haven't
-    # been posted yet (normal in the pre-close GL we receive from JLL).
-    _insurance_accounts: set = set()
+    # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
+    # Entries that draw down a balance sheet asset/escrow rather than creating
+    # a new liability (211200).  Each generates DR expense / CR asset account.
+    #
+    #   Insurance:     DR 639110/639120  /  CR 135110  Prepaid Insurance
+    #   RE Taxes:      DR 641110         /  CR 115200  RE Tax Escrow
+    #
+    # Generated whenever the asset account has a balance and the expense account
+    # has no current-period activity (normal for the pre-close GL from JLL).
+    _amort_accounts: set = set()
+
+    def _post_amort(entry: Dict[str, Any], prefix: str, ref: str, vendor: str) -> None:
+        """Append a DR/CR amortization pair to je_lines and register the account."""
+        nonlocal je_num
+        acct_code = entry['account_code']
+        if acct_code in _manual_accounts:
+            return  # user override takes precedence
+        je_id  = f'{prefix}-{je_num:04d}'
+        amount = entry['amount']
+        desc   = entry['description']
+        je_lines.append({
+            'je_number':      je_id, 'line': 1, 'date': '',
+            'account_code':   acct_code,
+            'account_name':   entry['account_name'],
+            'description':    desc, 'reference': ref,
+            'debit':          round(amount, 2), 'credit': 0,
+            'vendor':         vendor, 'invoice_number': '',
+            'source':         'prepaid_amortization', 'confidence': 'high',
+        })
+        je_lines.append({
+            'je_number':      je_id, 'line': 2, 'date': '',
+            'account_code':   entry['credit_account'],
+            'account_name':   entry['credit_name'],
+            'description':    desc, 'reference': ref,
+            'debit':          0, 'credit': round(amount, 2),
+            'vendor':         vendor, 'invoice_number': '',
+            'source':         'prepaid_amortization', 'confidence': 'high',
+        })
+        _amort_accounts.add(acct_code)
+        je_num += 1
+
+    # Insurance: DR 639110/639120 / CR 135110
     if gl_data and budget_data:
-        ins_entries = detect_insurance_amortization(gl_data, budget_data)
-        for ins in ins_entries:
-            acct_code = ins['account_code']
-            if acct_code in _manual_accounts:
-                continue  # user override takes precedence
+        for ins in detect_insurance_amortization(gl_data, budget_data):
+            _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
 
-            je_id      = f'INS-{je_num:04d}'
-            amount     = ins['amount']
-            cr_acct    = ins['credit_account']
-            cr_name    = ins['credit_name']
-            desc       = ins['description']
-
-            je_lines.append({
-                'je_number':      je_id,
-                'line':           1,
-                'date':           '',
-                'account_code':   acct_code,
-                'account_name':   ins['account_name'],
-                'description':    desc,
-                'reference':      'INS-AMORT',
-                'debit':          round(amount, 2),
-                'credit':         0,
-                'vendor':         '[Insurance Amortization]',
-                'invoice_number': '',
-                'source':         'prepaid_amortization',
-                'confidence':     'high',
-            })
-            je_lines.append({
-                'je_number':      je_id,
-                'line':           2,
-                'date':           '',
-                'account_code':   cr_acct,
-                'account_name':   cr_name,
-                'description':    desc,
-                'reference':      'INS-AMORT',
-                'debit':          0,
-                'credit':         round(amount, 2),
-                'vendor':         '[Insurance Amortization]',
-                'invoice_number': '',
-                'source':         'prepaid_amortization',
-                'confidence':     'high',
-            })
-            _insurance_accounts.add(acct_code)
-            je_num += 1
+    # RE Taxes: DR 641110 / CR 115200
+    if gl_data:
+        retax = detect_retax_amortization(gl_data, period=period)
+        if retax:
+            _post_amort(retax, 'TAX', 'TAX-AMORT', '[RE Tax Amortization]')
 
     for inv in invoices:
         vendor = str(inv.get('vendor', '') or '')
@@ -1047,10 +1148,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         except Exception:
             pass
 
-    # Collect accounts already covered by Layers 0 (manual), 0b (insurance),
+    # Collect accounts already covered by Layers 0 (manual), 0b (amortization),
     # and 1 (Nexus). Seeding _covered here prevents budget gap and historical
     # layers from generating duplicate entries for the same account.
-    _covered = _manual_accounts | _insurance_accounts | set(
+    _covered = _manual_accounts | _amort_accounts | set(
         l['account_code'] for l in je_lines
         if l.get('line') == 1 and l.get('source') == 'nexus'
     )
