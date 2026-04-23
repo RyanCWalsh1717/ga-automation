@@ -118,15 +118,6 @@ _PAYROLL_NAME_KW  = ('pay/wages', 'pay wages', 'payroll')
 # Transaction description fragments that confirm a payroll entry
 _PAYROLL_DESC_KW  = ('payroll', 'eng payroll', 'admin payroll', 'pay/wages')
 
-# GL accounts that are billed semi-annually (every ~6 months).
-# For these accounts we divide the observed invoice amount (or the reversed
-# prior-accrual in beginning_balance) by 6 to derive the monthly accrual.
-# Water/sewer billing at large commercial properties is typically semi-annual.
-_SEMI_ANNUAL_ACCOUNTS: set = {
-    '613310',  # Utilities-Water/Sewer
-    '613320',  # Utilities-Water (if split)
-    '613330',  # Utilities-Sewer (if split)
-}
 
 
 def _parse_date_range(text: str):
@@ -319,68 +310,7 @@ def detect_invoice_proration_accruals(
                 'period_days':    period_days,
                 'invoice_total':  round(total_amount, 2),
             })
-            continue   # Don't also run payroll/semi-annual checks for this account
-
-        # ── SEMI-ANNUAL BILLING PRORATION ─────────────────────────────────────
-        # Certain utilities (water/sewer) are billed only twice a year.  The
-        # invoice rarely falls in the current period, so there is no billing
-        # date range to parse.  Instead we derive a monthly accrual by dividing
-        # the best available invoice proxy by 6:
-        #
-        #   Priority 1 — current-period transaction without a date range:
-        #     If a lump-sum was posted this period (no date range in the
-        #     description), treat it as the semi-annual invoice → divide by 6.
-        #     The remaining 5/6 has been accrued in prior months; only 1/6
-        #     belongs to this period.
-        #
-        #   Priority 2 — beginning_balance reversal:
-        #     When a prior-period accrual is reversed at the start of the year,
-        #     the absolute value of the credit (negative) beginning_balance
-        #     approximates the size of the semi-annual invoice.  Divide by 6
-        #     for the monthly amount.
-        #
-        #   If neither source is available the account falls through to the
-        #   budget-gap layer.
-        if code in _SEMI_ANNUAL_ACCOUNTS:
-            # Check for current-period lump sums (no date range found earlier)
-            period_debits = [
-                (txn.debit or 0) - (txn.credit or 0)
-                for txn in acct.transactions
-                if ((txn.debit or 0) - (txn.credit or 0)) > 0
-            ]
-            total_period = sum(period_debits)
-
-            semi_annual_amount: float = 0.0
-            basis_note: str = ''
-
-            if total_period >= materiality * 6:
-                # A substantial lump-sum is in this period — divide by 6
-                semi_annual_amount = total_period
-                basis_note = f'current-period invoice ${total_period:,.0f}'
-            elif abs(acct.beginning_balance) >= materiality * 6:
-                # Use the reversed prior accrual as a proxy for the semi-annual bill
-                semi_annual_amount = abs(acct.beginning_balance)
-                basis_note = f'prior accrual reversal ${semi_annual_amount:,.0f} (estimate)'
-
-            if semi_annual_amount > 0:
-                monthly_accrual = semi_annual_amount / 6
-                if monthly_accrual >= materiality:
-                    candidates.append({
-                        'account_code':   code,
-                        'account_name':   acct.account_name,
-                        'accrual_amount': round(monthly_accrual, 2),
-                        'source':         'invoice_proration',
-                        'description': (
-                            f'Semi-annual accrual — {acct.account_name}: '
-                            f'{basis_note} / 6 months = '
-                            f'${monthly_accrual:,.2f}/month'
-                        ),
-                        'daily_rate':     round(monthly_accrual / 30, 4),
-                        'uncovered_days': 30,
-                        'period_days':    180,
-                        'invoice_total':  round(semi_annual_amount, 2),
-                    })
-            continue   # Don't run payroll check on water/sewer
+            continue   # Don't also run payroll check for this account
 
         # ── PAYROLL PRORATION ─────────────────────────────────────────────────
         # Only applicable to accounts whose name suggests payroll.
@@ -732,17 +662,19 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           status_filter: list = None,
                           gl_data=None, budget_data=None,
                           period_month_end: Optional[date] = None,
+                          manual_accruals: Optional[List[Dict]] = None,
                           ) -> List[Dict[str, Any]]:
     """
-    Build accrual journal entry lines from four sources:
+    Build accrual journal entry lines from five sources:
+      Layer 0: Manual overrides — user-supplied amounts for accounts that
+               cannot be auto-calculated (e.g., semi-annual water/sewer bills)
       Layer 1: Nexus pending invoices (AP-side, deduped against GL)
       Layer 2: Invoice-period proration (billing date ranges in GL descriptions)
       Layer 3: Budget gap detection (accounts with budget but no GL activity)
       Layer 4: Historical recurring detection (prior-month YTD extrapolation)
 
-    Layer 2 is the highest-fidelity method and takes priority over Layers 3-4.
-    Accounts covered by Layers 1-2 are excluded from Layers 3-4 to avoid
-    double-counting.
+    Manual overrides take absolute priority and suppress all lower layers for
+    the same account.  Layers 1-2 are high-fidelity and suppress Layers 3-4.
 
     Args:
         nexus_data:        List of invoice dicts from Nexus parser
@@ -754,6 +686,19 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         period_month_end:  Override for the last calendar day of the reporting
                            month (date object).  If None, derived from ``period``
                            or gl_data.metadata.period automatically.
+        manual_accruals:   List of dicts for user-supplied accrual amounts::
+
+                               [{
+                                   'account_code': '613310',
+                                   'account_name': 'Utilities-Water/Sewer',
+                                   'amount':        16635.75,   # semi-annual invoice / 6
+                                   'description':   'Water/sewer semi-annual invoice $99,814.50 / 6 months',
+                               }, ...]
+
+                           Amount is the *monthly* accrual to post.  Description
+                           should note the invoice amount and divisor so the
+                           reviewer can verify.  Accounts in manual_accruals are
+                           excluded from all automated layers.
 
     Returns:
         List of JE line dicts with keys:
@@ -772,6 +717,54 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
     je_lines = []
     je_num = 1
+
+    # ── Layer 0: Manual accrual overrides ──────────────────────────────────────
+    # User-supplied amounts for accounts the engine cannot auto-calculate
+    # (e.g., semi-annual water/sewer billing where the invoice amount is known
+    # to the property manager but cannot be reliably derived from GL data).
+    _manual_accounts: set = set()
+    for override in (manual_accruals or []):
+        acct_code = str(override.get('account_code', '') or '').strip()
+        acct_name = str(override.get('account_name', '') or acct_code)
+        amount    = float(override.get('amount', 0) or 0)
+        desc      = str(override.get('description', '') or
+                        f'Manual accrual — {acct_name}')
+        if not acct_code or amount <= 0:
+            continue
+
+        je_id = f'MAN-{je_num:04d}'
+        je_lines.append({
+            'je_number':      je_id,
+            'line':           1,
+            'date':           '',
+            'account_code':   acct_code,
+            'account_name':   acct_name,
+            'description':    desc,
+            'reference':      'MANUAL',
+            'debit':          round(amount, 2),
+            'credit':         0,
+            'vendor':         '[Manual Override]',
+            'invoice_number': '',
+            'source':         'manual',
+            'confidence':     'high',
+        })
+        je_lines.append({
+            'je_number':      je_id,
+            'line':           2,
+            'date':           '',
+            'account_code':   AP_ACCRUAL_ACCOUNT,
+            'account_name':   AP_ACCRUAL_NAME,
+            'description':    desc,
+            'reference':      'MANUAL',
+            'debit':          0,
+            'credit':         round(amount, 2),
+            'vendor':         '[Manual Override]',
+            'invoice_number': '',
+            'source':         'manual',
+            'confidence':     'high',
+        })
+        _manual_accounts.add(acct_code)
+        je_num += 1
 
     for inv in invoices:
         vendor = str(inv.get('vendor', '') or '')
@@ -896,8 +889,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         except Exception:
             pass
 
-    # Collect accounts already covered by Layer 1 (Nexus)
-    _covered = set(l['account_code'] for l in je_lines if l.get('line') == 1)
+    # Collect accounts already covered by Layers 0 (manual) and 1 (Nexus).
+    # Manual overrides seed the set so automated layers never touch those accounts.
+    _covered = _manual_accounts | set(
+        l['account_code'] for l in je_lines
+        if l.get('line') == 1 and l.get('source') == 'nexus'
+    )
 
     # ── Layer 2: Invoice-period proration ──
     if gl_data:

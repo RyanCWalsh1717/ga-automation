@@ -315,6 +315,45 @@ cash_received_override = st.sidebar.number_input(
 cash_received_override = cash_received_override if cash_received_override > 0 else None
 st.sidebar.divider()
 
+# ── Manual Accrual Overrides ─────────────────────────────────────
+st.sidebar.markdown("## Manual Accruals")
+st.sidebar.caption(
+    "For accounts with irregular or semi-annual billing where the invoice "
+    "amount is known but can't be auto-calculated from the GL (e.g., "
+    "water/sewer billed twice a year on a non-calendar cycle). "
+    "Enter the **monthly** accrual amount for each applicable account."
+)
+
+# Water/sewer — semi-annual billing
+water_sewer_invoice = st.sidebar.number_input(
+    "Water/Sewer — semi-annual invoice ($)",
+    min_value=0.0,
+    value=0.0,
+    step=500.0,
+    format="%.2f",
+    help=(
+        "Enter the full semi-annual invoice amount (e.g. $99,814.50). "
+        "The system will divide by 6 and accrue the monthly portion. "
+        "Leave 0 to fall back to the budget-gap estimate."
+    ),
+)
+
+# Build the manual_accruals list from sidebar inputs
+_manual_accruals_input = []
+if water_sewer_invoice > 0:
+    _monthly = round(water_sewer_invoice / 6, 2)
+    _manual_accruals_input.append({
+        'account_code': '613310',
+        'account_name': 'Utilities-Water/Sewer',
+        'amount':       _monthly,
+        'description':  (
+            f'Water/Sewer semi-annual accrual: invoice ${water_sewer_invoice:,.2f} / 6 months '
+            f'= ${_monthly:,.2f}/month'
+        ),
+    })
+
+st.sidebar.divider()
+
 
 # ── Main content ─────────────────────────────────────────────
 
@@ -438,6 +477,7 @@ if run_button:
                 property_name=engine_result.property_name or '',
                 gl_data=gl_parsed,
                 budget_data=bc_parsed,
+                manual_accruals=_manual_accruals_input or [],
             )
             st.session_state.output_files["je_lines"] = je_lines
 
@@ -875,6 +915,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             source_totals[src] = source_totals.get(src, 0) + (l.get('debit') or 0)
 
         source_labels = {
+            'manual':             'Manual Override',
             'nexus':              'Nexus AP',
             'invoice_proration':  'Invoice Proration',
             'budget_gap':         'Budget Gap',
