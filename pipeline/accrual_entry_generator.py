@@ -420,6 +420,26 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
     Returns list of dicts including: account_code, account_name, budget_amount,
         source ('budget_gap'), confidence ('high'|'medium'|'low'), description.
     """
+    # ── Escrow-funded expense accounts ────────────────────────────────────────
+    # These expenses are recognized on the income statement when the actual
+    # payment is made from the dedicated escrow account (115200, 115300), NOT
+    # accrued monthly.  The lender funds the escrow from the monthly mortgage
+    # payment; Berkadia/servicer disburses when the bill is due.  Accruing them
+    # monthly would double-count against payments already booked YTD.
+    #
+    # Lender escrow account mapping:
+    #   115200  RE Tax Escrow      →  641110  Real Estate Taxes
+    #   115300  Insurance Escrow   →  639110  Insurance-Property
+    #                              →  639120  Insurance-General Liability
+    #
+    # Do NOT add these to the budget gap — they are budget-to-actual timing
+    # differences only, not missing accruals.
+    _ESCROW_FUNDED = {
+        '641110',   # Real Estate Taxes        (funded from 115200 RE Tax Escrow)
+        '639110',   # Insurance-Property       (funded from 115300 Insurance Escrow)
+        '639120',   # Insurance-General Liab   (funded from 115300 Insurance Escrow)
+    }
+
     # Account name keywords that signal irregular / repair-type spend.
     # Accounts matching any of these get LOW confidence.
     _REPAIR_KW = (
@@ -470,6 +490,10 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
             annual = getattr(item, 'annual', 0) or 0
 
         if not code or 'TOTAL' in name.upper():
+            continue
+
+        # Skip escrow-funded accounts — recognized at payment date, not monthly
+        if code in _ESCROW_FUNDED:
             continue
 
         first_digit = code[0] if code else '0'
