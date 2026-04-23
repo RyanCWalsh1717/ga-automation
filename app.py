@@ -130,6 +130,16 @@ if "output_files" not in st.session_state:
 if "temp_dir" not in st.session_state:
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
 
+if "manual_je_df" not in st.session_state:
+    import pandas as pd
+    st.session_state.manual_je_df = pd.DataFrame({
+        "JE #":             ["OOE-0001", "OOE-0001"],
+        "Description":      ["",          ""],
+        "Account Code":     ["",          ""],
+        "Amount":           [0.0,         0.0],
+        "Line Description": ["",          ""],
+    })
+
 
 # ── Header ───────────────────────────────────────────────────
 st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
@@ -255,7 +265,57 @@ with col_btn2:
         st.session_state.uploaded_files = {}
         shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
         st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
+        import pandas as _pd
+        st.session_state.manual_je_df = _pd.DataFrame({
+            "JE #": ["OOE-0001", "OOE-0001"], "Description": ["", ""],
+            "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
+        })
         st.rerun()
+
+# ── Manual JE / Reclass Input ────────────────────────────────
+import pandas as pd
+with st.expander("📝 Manual Journal Entries & Reclasses", expanded=False):
+    st.caption(
+        "Enter one-off adjustments and reclasses for this close period. "
+        "Each **JE #** groups debit/credit lines — positive Amount = Debit, negative = Credit. "
+        "Lines must net to zero per JE #. These will export as a separate Yardi CSV."
+    )
+
+    edited_df = st.data_editor(
+        st.session_state.manual_je_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "JE #":             st.column_config.TextColumn("JE #", width="small",
+                                    help="Group debit/credit lines with the same JE # (e.g. OOE-0001)"),
+            "Description":      st.column_config.TextColumn("JE Description", width="medium",
+                                    help="Overall description of the entry"),
+            "Account Code":     st.column_config.TextColumn("Account", width="small",
+                                    help="6-digit Yardi GL account code"),
+            "Amount":           st.column_config.NumberColumn("Amount (+DR / -CR)", format="$%,.2f",
+                                    width="small", help="Positive = Debit, Negative = Credit"),
+            "Line Description": st.column_config.TextColumn("Line Description", width="large",
+                                    help="Per-line description for Yardi import"),
+        },
+        key="manual_je_editor",
+    )
+    st.session_state.manual_je_df = edited_df
+
+    # Balance validation per JE#
+    valid_rows = edited_df[
+        edited_df["Account Code"].str.strip().astype(bool) &
+        (edited_df["Amount"] != 0)
+    ]
+    if not valid_rows.empty:
+        balance_check = valid_rows.groupby("JE #")["Amount"].sum()
+        all_balanced = True
+        for je_id, total in balance_check.items():
+            if abs(total) > 0.01:
+                st.warning(f"⚠️ {je_id} is out of balance by ${abs(total):,.2f}", icon="⚠️")
+                all_balanced = False
+        if all_balanced:
+            total_dr = valid_rows[valid_rows["Amount"] > 0]["Amount"].sum()
+            st.success(f"All entries balanced — {len(balance_check)} JE(s), ${total_dr:,.2f} total debits", icon="✅")
 
 st.divider()
 
@@ -405,16 +465,54 @@ if run_button:
                 property_code=engine_result.property_name or 'revlabpm',
                 je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
             )
-            all_je_lines = je_lines + prepaid_release_je + fee_je
+            # Convert manual JE dataframe → je_lines format
+            manual_je_lines = []
+            _mdf = st.session_state.manual_je_df
+            _valid = _mdf[
+                _mdf["Account Code"].str.strip().astype(bool) &
+                (_mdf["Amount"] != 0)
+            ] if not _mdf.empty else _mdf
+            for _, _row in _valid.iterrows():
+                _amt = float(_row["Amount"])
+                manual_je_lines.append({
+                    "je_number":    str(_row["JE #"]).strip(),
+                    "account_code": str(_row["Account Code"]).strip(),
+                    "description":  str(_row["Description"]).strip(),
+                    "reference":    str(_row["JE #"]).strip(),
+                    "debit":        _amt if _amt > 0 else 0.0,
+                    "credit":       -_amt if _amt < 0 else 0.0,
+                    "source":       "manual",
+                    "date":         close_period,
+                })
+
+            all_je_lines = je_lines + prepaid_release_je + fee_je + manual_je_lines
             st.session_state.output_files["all_je_lines"] = all_je_lines
-            if all_je_lines:
-                je_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accrual_JE_Import.csv")
-                generate_yardi_je_csv(
-                    all_je_lines, je_csv_path,
-                    period=engine_result.period or '',
-                    property_code='revlabpm',
-                )
-                st.session_state.output_files["accrual_je_csv"] = je_csv_path
+            # ── Split into 3 separate Yardi CSVs ──────────────────
+            _accrual_sources = {'nexus', 'budget_gap', 'historical', 'management_fee'}
+            _prepaid_sources  = {'prepaid_ledger'}
+            _manual_sources   = {'manual'}
+
+            _accrual_lines = [l for l in all_je_lines if l.get('source') in _accrual_sources]
+            _prepaid_lines  = [l for l in all_je_lines if l.get('source') in _prepaid_sources]
+            _manual_lines   = [l for l in all_je_lines if l.get('source') in _manual_sources]
+
+            if _accrual_lines:
+                _path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
+                generate_yardi_je_csv(_accrual_lines, _path,
+                    period=engine_result.period or '', property_code='revlabpm')
+                st.session_state.output_files["accrual_je_csv"] = _path
+
+            if _prepaid_lines:
+                _path = os.path.join(st.session_state.temp_dir, "GA_Prepaid_JE.csv")
+                generate_yardi_je_csv(_prepaid_lines, _path,
+                    period=engine_result.period or '', property_code='revlabpm')
+                st.session_state.output_files["prepaid_je_csv"] = _path
+
+            if _manual_lines:
+                _path = os.path.join(st.session_state.temp_dir, "GA_OneOff_JE.csv")
+                generate_yardi_je_csv(_manual_lines, _path,
+                    period=engine_result.period or '', property_code='revlabpm')
+                st.session_state.output_files["oneoff_je_csv"] = _path
 
             # Step 5b: Generate BS Workpaper (if TB uploaded)
             if tb_result and engine_result.parsed.get('gl'):
@@ -990,13 +1088,15 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     import zipfile, io
     period_label = (engine_result.period or 'Period').replace('-', '_')
     zip_files = {
-        f"RevLabs_{period_label}_BS_Workpaper.xlsx":       st.session_state.output_files.get("bs_workpaper"),
-        f"RevLabs_{period_label}_Accrual_JE_Import.csv":   st.session_state.output_files.get("accrual_je_csv"),
-        f"RevLabs_{period_label}_QC_Workbook.xlsx":        st.session_state.output_files.get("qc_workbook"),
-        f"RevLabs_{period_label}_Workpapers.xlsx":         st.session_state.output_files.get("workpapers"),
-        f"RevLabs_{period_label}_Prepaid_Ledger.xlsx":     st.session_state.output_files.get("prepaid_ledger_updated"),
-        f"RevLabs_{period_label}_Monthly_Report.xlsx":     st.session_state.output_files.get("monthly_report"),
-        f"RevLabs_{period_label}_BC_Internal.xlsx":        st.session_state.output_files.get("annotated_bc"),
+        f"RevLabs_{period_label}_BS_Workpaper.xlsx":    st.session_state.output_files.get("bs_workpaper"),
+        f"RevLabs_{period_label}_Accruals_JE.csv":      st.session_state.output_files.get("accrual_je_csv"),
+        f"RevLabs_{period_label}_Prepaid_JE.csv":       st.session_state.output_files.get("prepaid_je_csv"),
+        f"RevLabs_{period_label}_OneOff_JE.csv":        st.session_state.output_files.get("oneoff_je_csv"),
+        f"RevLabs_{period_label}_QC_Workbook.xlsx":     st.session_state.output_files.get("qc_workbook"),
+        f"RevLabs_{period_label}_Workpapers.xlsx":      st.session_state.output_files.get("workpapers"),
+        f"RevLabs_{period_label}_Prepaid_Ledger.xlsx":  st.session_state.output_files.get("prepaid_ledger_updated"),
+        f"RevLabs_{period_label}_Monthly_Report.xlsx":  st.session_state.output_files.get("monthly_report"),
+        f"RevLabs_{period_label}_BC_Internal.xlsx":     st.session_state.output_files.get("annotated_bc"),
     }
     zip_files = {k: v for k, v in zip_files.items() if v and os.path.exists(v)}
 
@@ -1049,19 +1149,48 @@ if st.session_state.processing_complete and st.session_state.engine_result:
 
     with col3:
         if "accrual_je_csv" in st.session_state.output_files:
-            je_csv_path = st.session_state.output_files["accrual_je_csv"]
-            if os.path.exists(je_csv_path):
-                with open(je_csv_path, "rb") as f:
+            _p = st.session_state.output_files["accrual_je_csv"]
+            if os.path.exists(_p):
+                with open(_p, "rb") as f:
                     st.download_button(
-                        label="📝 Download Accrual JE Import (.csv)",
+                        label="📝 Download Accruals JE (.csv)",
                         data=f.read(),
-                        file_name=f"GA_Accrual_JE_Import_{datetime.now().strftime('%Y%m%d')}.csv",
+                        file_name=f"RevLabs_Accruals_JE_{datetime.now().strftime('%Y%m%d')}.csv",
                         mime="text/csv",
                         use_container_width=True,
-                        help="Yardi-ready CSV — upload directly into Yardi Journal Entry import",
+                        help="AP accruals, budget gaps, historical patterns, management fee",
                     )
 
     with col4:
+        if "prepaid_je_csv" in st.session_state.output_files:
+            _p = st.session_state.output_files["prepaid_je_csv"]
+            if os.path.exists(_p):
+                with open(_p, "rb") as f:
+                    st.download_button(
+                        label="📝 Download Prepaid JE (.csv)",
+                        data=f.read(),
+                        file_name=f"RevLabs_Prepaid_JE_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        help="Prepaid amortization entries — upload separately from accruals",
+                    )
+
+    col3c, col4c = st.columns(2)
+    with col3c:
+        if "oneoff_je_csv" in st.session_state.output_files:
+            _p = st.session_state.output_files["oneoff_je_csv"]
+            if os.path.exists(_p):
+                with open(_p, "rb") as f:
+                    st.download_button(
+                        label="📝 Download One-Off JE (.csv)",
+                        data=f.read(),
+                        file_name=f"RevLabs_OneOff_JE_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        help="Manual reclasses and one-off adjustments — review before posting",
+                    )
+
+    with col4c:
         if "exception_report" in st.session_state.output_files:
             exception_path = st.session_state.output_files["exception_report"]
             if os.path.exists(exception_path):
