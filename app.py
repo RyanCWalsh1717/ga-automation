@@ -162,7 +162,8 @@ file_config = {
     "loan": ("Berkadia Loan PDFs (.pdf)", "*.pdf", False),
     "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
     "prepaid_ledger": ("Prepaid Ledger (.xlsx) — optional", "*.xlsx", False),
-    "bank_rec": ("Yardi Bank Rec PDF (.pdf)", "*.pdf", False),
+    "bank_rec": ("Yardi Bank Rec PDF — Operating (.pdf)", "*.pdf", False),
+    "daca_bank": ("DACA Bank Statement — KeyBank x5132 (.pdf)", "*.pdf", False),
 }
 
 for key, (label, file_type, required) in file_config.items():
@@ -515,23 +516,47 @@ if run_button:
                     period=engine_result.period or '', property_code='revlabpm')
                 st.session_state.output_files["oneoff_je_csv"] = _path
 
-            # Step 5b: Parse Yardi Bank Rec PDF (if uploaded)
-            bank_rec_data = None
+            # Step 5b: Parse bank statements (Operating + DACA)
+            bank_rec_data  = None
             gl_cash_balance = None
+            daca_bank_data  = None
+            daca_gl_balance = None
+
+            _gl_result = engine_result.parsed.get('gl')
+
+            # ── PNC Operating — Yardi Bank Rec PDF ────────────
             bank_rec_file = st.session_state.uploaded_files.get("bank_rec")
             if bank_rec_file and os.path.exists(bank_rec_file):
                 try:
                     from parsers.yardi_bank_rec import parse as parse_bank_rec
                     bank_rec_data = parse_bank_rec(bank_rec_file)
-                    # Pull GL cash balance from account 111100
-                    _gl_result = engine_result.parsed.get('gl')
                     if _gl_result:
                         for _a in (_gl_result.accounts or []):
                             if _a.account_code == '111100':
                                 gl_cash_balance = _a.ending_balance
                                 break
                 except Exception as _be:
-                    st.warning(f"Bank Rec PDF parse skipped: {_be}")
+                    st.warning(f"Yardi Bank Rec PDF parse skipped: {_be}")
+
+            # ── DACA — KeyBank x5132 ───────────────────────────
+            daca_file = st.session_state.uploaded_files.get("daca_bank")
+            if daca_file and os.path.exists(daca_file):
+                try:
+                    from parsers.keybank_daca import parse as parse_daca
+                    daca_bank_data = parse_daca(daca_file)
+                    st.session_state.output_files["daca_bank_data"] = daca_bank_data
+                    if _gl_result:
+                        for _a in (_gl_result.accounts or []):
+                            if _a.account_code == '115100':
+                                daca_gl_balance = _a.ending_balance
+                                break
+                except Exception as _be:
+                    st.warning(f"DACA bank statement parse skipped: {_be}")
+
+            # Store bank rec related values for dashboard
+            st.session_state.output_files["bank_rec_data"]   = bank_rec_data
+            st.session_state.output_files["gl_cash_balance"] = gl_cash_balance
+            st.session_state.output_files["daca_gl_balance"] = daca_gl_balance
 
             # Step 5c: Generate BS Workpaper (if TB uploaded)
             if tb_result and engine_result.parsed.get('gl'):
@@ -546,6 +571,8 @@ if run_button:
                         prepaid_ledger_active=ledger_active or [],
                         bank_rec_data=bank_rec_data,
                         gl_cash_balance=gl_cash_balance,
+                        daca_bank_data=daca_bank_data,
+                        daca_gl_balance=daca_gl_balance,
                     )
                     st.session_state.output_files["bs_workpaper"] = bs_wp_path
                 except Exception as _e:
@@ -1021,32 +1048,79 @@ if st.session_state.processing_complete and st.session_state.engine_result:
         )
         st.divider()
 
-    # Bank reconciliation
+    # ── Bank Rec Summary Panel ─────────────────────────────────────────────────
+    _bank_rec  = st.session_state.output_files.get("bank_rec_data")
+    _daca_data = st.session_state.output_files.get("daca_bank_data")
+    _gl_111    = float(st.session_state.output_files.get("gl_cash_balance") or 0)
+    _daca_gl   = float(st.session_state.output_files.get("daca_gl_balance") or 0)
+
+    if _bank_rec or _daca_data:
+        st.markdown("### Bank Reconciliation Summary")
+        _rec_cols = st.columns(2)
+
+        with _rec_cols[0]:
+            if _bank_rec:
+                _bank_bal  = float(_bank_rec.get('bank_statement_balance') or 0)
+                _out_total = float(_bank_rec.get('total_outstanding_checks') or 0)
+                _rec_bal   = float(_bank_rec.get('reconciled_bank_balance') or 0)
+                _diff_111  = _rec_bal - _gl_111
+                _icon_111  = "✅" if abs(_diff_111) < 0.02 else "❌"
+                st.markdown(f"""
+**PNC Operating (x3993) — GL 111100** {_icon_111}
+| | |
+|---|---:|
+| Bank Statement Balance | ${_bank_bal:,.2f} |
+| Less: Outstanding Checks ({len(_bank_rec.get('outstanding_checks') or [])}) | (${_out_total:,.2f}) |
+| Reconciled Bank Balance | **${_rec_bal:,.2f}** |
+| GL Balance (111100) | ${_gl_111:,.2f} |
+| **Difference** | **${_diff_111:+,.2f}** |
+""")
+            else:
+                st.caption("Upload Yardi Bank Rec PDF to see Operating account rec summary")
+
+        with _rec_cols[1]:
+            if _daca_data:
+                _daca_end  = float(_daca_data.get('ending_balance') or 0)
+                _diff_daca = _daca_end - _daca_gl
+                _icon_daca = "✅" if abs(_diff_daca) < 0.02 else "❌"
+                st.markdown(f"""
+**KeyBank DACA (x5132) — GL 115100** {_icon_daca}
+| | |
+|---|---:|
+| Bank Statement Ending Balance | ${_daca_end:,.2f} |
+| GL Balance (115100) | ${_daca_gl:,.2f} |
+| **Difference** | **${_diff_daca:+,.2f}** |
+""")
+            else:
+                st.caption("Upload DACA Bank Statement to see DACA account rec summary")
+
+        st.divider()
+
+    # Bank reconciliation (engine cross-match detail)
     if result.gl_bank_matches:
-        st.markdown("### Bank Reconciliation")
+        with st.expander("Engine Bank Match Detail"):
+            recon_data = []
+            for match in result.gl_bank_matches:
+                recon_data.append({
+                    "Description": match.description,
+                    "GL Amount": match.amount_a,
+                    "Bank Amount": match.amount_b,
+                    "Matched": "✅" if match.matched else "⚠️",
+                    "Variance": abs(match.variance),
+                })
 
-        recon_data = []
-        for match in result.gl_bank_matches:
-            recon_data.append({
-                "Description": match.description,
-                "GL Amount": match.amount_a,
-                "Bank Amount": match.amount_b,
-                "Matched": "✅" if match.matched else "⚠️",
-                "Variance": abs(match.variance),
-            })
-
-        st.dataframe(
-            recon_data,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Description": st.column_config.TextColumn(),
-                "GL Amount": st.column_config.NumberColumn(format="$%,.2f"),
-                "Bank Amount": st.column_config.NumberColumn(format="$%,.2f"),
-                "Matched": st.column_config.TextColumn(),
-                "Variance": st.column_config.NumberColumn(format="$%,.2f"),
-            }
-        )
+            st.dataframe(
+                recon_data,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Description": st.column_config.TextColumn(),
+                    "GL Amount": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Bank Amount": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Matched": st.column_config.TextColumn(),
+                    "Variance": st.column_config.NumberColumn(format="$%,.2f"),
+                }
+            )
         st.divider()
 
     # Debt service

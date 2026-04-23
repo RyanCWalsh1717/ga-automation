@@ -79,7 +79,9 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            period: str = '', property_name: str = '',
                            prepaid_ledger_active: list = None,
                            bank_rec_data: dict = None,
-                           gl_cash_balance: float = None) -> str:
+                           gl_cash_balance: float = None,
+                           daca_bank_data: dict = None,
+                           daca_gl_balance: float = None) -> str:
     """
     Generate the balance sheet reconciliation workpaper.
 
@@ -92,6 +94,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         prepaid_ledger_active: Active prepaid items from prepaid_ledger.py (optional)
         bank_rec_data:        Parsed Yardi Bank Rec dict (from parsers.yardi_bank_rec.parse)
         gl_cash_balance:      GL ending balance for account 111100 (PNC Operating)
+        daca_bank_data:       Parsed KeyBank DACA statement dict (from parsers.keybank_daca.parse)
+        daca_gl_balance:      GL ending balance for account 115100 (DACA)
 
     Returns:
         output_path
@@ -133,6 +137,19 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             wb, bank_rec_data, _gl_cash, period, property_name,
             account_label='PNC Operating (x3993)',
             gl_account_code='111100',
+        )
+
+    # ── DACA Bank Rec tab (KeyBank x5132 — account 115100) ────────────────────
+    if daca_bank_data is not None:
+        _gl_daca = daca_gl_balance
+        if _gl_daca is None and gl_result:
+            for _acct in (gl_result.accounts or []):
+                if _acct.account_code == '115100':
+                    _gl_daca = _acct.ending_balance
+                    break
+        _gl_daca = _gl_daca or 0.0
+        _write_daca_bank_rec_tab(
+            wb, daca_bank_data, _gl_daca, period, property_name,
         )
 
     # Remove default sheet
@@ -825,14 +842,165 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
     ws.freeze_panes = 'A4'
 
 
+# ── DACA Bank Rec tab ────────────────────────────────────────
+
+def _write_daca_bank_rec_tab(wb, daca_bank_data: dict, gl_daca_balance: float,
+                              period: str, property_name: str):
+    """
+    Writes the DACA Bank Rec tab for KeyBank x5132 (GL account 115100).
+
+    DACA accounts are sweep accounts — deposits are collected here and swept
+    daily to PNC Operating.  There are typically no outstanding checks;
+    the reconciliation is simply:
+
+        Bank Statement Ending Balance
+        = GL Account 115100 Ending Balance
+        Difference (should be $0.00)
+
+    The tab also shows:
+      - Statement period and account info
+      - Beginning → Ending balance from bank statement
+      - Full transaction detail if available (sweeps, deposits)
+    """
+    COLOR_DACA = '375623'   # same dark green family as Operating rec
+
+    ws = wb.create_sheet('Bank Rec - DACA')
+    ws.sheet_properties.tabColor = COLOR_DACA
+
+    ending_bal = float(daca_bank_data.get('ending_balance') or 0)
+    beginning_bal = float(daca_bank_data.get('beginning_balance') or 0)
+    acct_num = daca_bank_data.get('account_number') or 'x5132'
+    period_info = daca_bank_data.get('statement_period') or {}
+    parse_error = daca_bank_data.get('_parse_error')
+
+    row = 1
+    # Header
+    c = ws.cell(row=row, column=1,
+                value=f'{property_name or "Revolution Labs"} — Bank Reconciliation (DACA)')
+    c.font = _font(bold=True, size=13, color='FFFFFF')
+    c.fill = _fill(COLOR_DACA)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    row += 1
+
+    period_str = f'{period_info.get("start", "")} — {period_info.get("end", "")}' if period_info else period
+    c = ws.cell(row=row, column=1,
+                value=f'Account: KeyBank DACA (x{acct_num.lstrip("x")})  |  '
+                      f'Period: {period_str}  |  GL Account: 115100  |  '
+                      f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c.font = _font(italic=True, color='FFFFFF')
+    c.fill = _fill(COLOR_DACA)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    row += 2
+
+    # Column widths
+    for ci, w in enumerate([22, 15, 42, 18, 6, 6], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # Parse error warning
+    if parse_error:
+        c = ws.cell(row=row, column=1,
+                    value=f'⚠  Parser note: {parse_error} — verify balances below manually')
+        c.font = _font(italic=True, color='9C0006', size=10)
+        c.fill = _fill(AMBER_FILL)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        row += 2
+
+    # ── Reconciliation block ──────────────────────────────────
+    def _daca_row(label, value, bold=False, fill_hex=None, border=THIN,
+                  fmt='#,##0.00;(#,##0.00);"-"'):
+        nonlocal row
+        c_lbl = ws.cell(row=row, column=1, value=label)
+        c_lbl.font = _font(bold=bold)
+        c_lbl.alignment = Alignment(horizontal='right')
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        c_val = ws.cell(row=row, column=5, value=value)
+        _apply(c_val, font=_font(bold=bold), fmt=fmt, border=border)
+        ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
+        if fill_hex:
+            c_val.fill = _fill(fill_hex)
+        row += 1
+
+    _daca_row('Beginning Balance per Bank Statement:', beginning_bal)
+    _daca_row('Ending Balance per Bank Statement:', ending_bal, bold=True,
+              fill_hex=LIGHT_BLUE, border=DOUBLE_BTM)
+    row += 1
+    _daca_row('Balance per GL — Account 115100:', gl_daca_balance, bold=True,
+              fill_hex=LIGHT_BLUE)
+
+    # Difference
+    difference = ending_bal - gl_daca_balance
+    is_clean   = abs(difference) < 0.02
+    var_fill   = GREEN_FILL if is_clean else RED_FILL
+    var_color  = '006100' if is_clean else '9C0006'
+
+    c_lbl = ws.cell(row=row, column=1, value='Difference:')
+    c_lbl.font = _font(bold=True, color=var_color)
+    c_lbl.alignment = Alignment(horizontal='right')
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    c_val = ws.cell(row=row, column=5, value=difference)
+    _apply(c_val, font=_font(bold=True, color=var_color),
+           fmt='#,##0.00;(#,##0.00);"-"', fill=_fill(var_fill), border=DOUBLE_BTM)
+    ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
+    row += 2
+
+    if not is_clean:
+        note = ws.cell(row=row, column=1,
+                       value=f'Reconciling difference of ${abs(difference):,.2f} — '
+                             f'investigate before close. DACA account should sweep to zero daily.')
+        note.font = _font(italic=True, color='9C0006', size=10)
+        note.alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        ws.row_dimensions[row].height = 28
+        row += 2
+
+    # ── Account Note ──────────────────────────────────────────
+    note2 = ws.cell(row=row, column=1,
+                    value='Note: This is a Deposit Account Control Agreement (DACA) — a sweep account. '
+                          'Tenant rent deposits collect here and are swept daily to PNC Operating (x3993). '
+                          'No outstanding checks are expected. Month-end balance should be minimal.')
+    note2.font = _font(italic=True, size=10, color='595959')
+    note2.alignment = Alignment(wrap_text=True)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    ws.row_dimensions[row].height = 40
+    row += 3
+
+    # ── Raw text preview (first 1500 chars) for auditor reference ──
+    raw_text = (daca_bank_data.get('_raw_text') or '').strip()
+    if raw_text:
+        c_hdr = ws.cell(row=row, column=1, value='Bank Statement — Extracted Text (Reference)')
+        c_hdr.font = _font(bold=True, size=11, color='595959')
+        c_hdr.fill = _fill(LIGHT_GRAY)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        row += 1
+
+        # Split into chunks of ~120 chars per cell so it's readable
+        preview = raw_text[:3000]
+        for chunk_line in preview.split('\n'):
+            if not chunk_line.strip():
+                continue
+            c = ws.cell(row=row, column=1, value=chunk_line)
+            c.font = _font(size=9, name='Courier New')
+            c.alignment = Alignment(wrap_text=False)
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+            row += 1
+            if row > 200:   # cap to avoid massive sheets
+                ws.cell(row=row, column=1, value='... (truncated) ...').font = _font(italic=True, size=9)
+                break
+
+    ws.freeze_panes = 'A4'
+
+
 # ── Convenience function for app.py ──────────────────────────
 
 def generate(gl_result, tb_result, output_path: str,
              period: str = '', property_name: str = '',
              prepaid_ledger_active: list = None,
              bank_rec_data: dict = None,
-             gl_cash_balance: float = None) -> str:
+             gl_cash_balance: float = None,
+             daca_bank_data: dict = None,
+             daca_gl_balance: float = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
-                                  bank_rec_data, gl_cash_balance)
+                                  bank_rec_data, gl_cash_balance,
+                                  daca_bank_data, daca_gl_balance)
