@@ -667,7 +667,7 @@ if run_button:
             all_je_lines = je_lines + prepaid_release_je + fee_je + manual_je_lines
             st.session_state.output_files["all_je_lines"] = all_je_lines
             # ── Split into 3 separate Yardi CSVs ──────────────────
-            _accrual_sources = {'nexus', 'budget_gap', 'historical', 'management_fee'}
+            _accrual_sources = {'nexus', 'budget_gap', 'historical', 'management_fee', 'invoice_proration', 'prepaid_amortization'}
             _prepaid_sources  = {'prepaid_ledger'}
             _manual_sources   = {'manual'}
 
@@ -969,14 +969,15 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             source_totals[src] = source_totals.get(src, 0) + (l.get('debit') or 0)
 
         source_labels = {
-            'manual':             'Manual Override',
-            'nexus':              'Nexus AP',
-            'invoice_proration':  'Invoice Proration',
-            'budget_gap':         'Budget Gap',
-            'historical':         'Historical Pattern',
-            'prepaid_ledger': 'Prepaid Amortization',
-            'management_fee': 'Management Fee',
-            'other':       'Other',
+            'manual':                'Manual Override',
+            'nexus':                 'Nexus AP',
+            'invoice_proration':     'Invoice Proration',
+            'prepaid_amortization':  'Prepaid Amortization',
+            'budget_gap':            'Budget Gap',
+            'historical':            'Historical Pattern',
+            'prepaid_ledger':        'Prepaid Release',
+            'management_fee':        'Management Fee',
+            'other':                 'Other',
         }
 
         cols = st.columns(len(source_totals) + 1)

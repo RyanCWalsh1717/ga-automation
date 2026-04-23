@@ -104,6 +104,89 @@ def _subhdr_fill():
     return PatternFill(start_color=LIGHT_BLUE, end_color=LIGHT_BLUE, fill_type='solid')
 
 
+# ── Layer 1b: Insurance prepaid amortization ─────────────────
+
+# Insurance prepaid account and expense accounts
+_PREPAID_INSURANCE_ACCT = '135110'
+_INSURANCE_EXPENSE_ACCTS = {'639110', '639120'}
+
+def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
+    """
+    Generate monthly insurance expense entries from Prepaid Insurance (135110).
+
+    JLL method: Annual premiums are paid upfront and held in 135110 Prepaid
+    Insurance. Each month JLL posts:
+        DR 639110  Insurance-Property         (budget PTD amount)
+        DR 639120  Insurance-General Liability (budget PTD amount)
+        CR 135110  Prepaid Insurance           (combined monthly total)
+
+    We generate these only when:
+      1. 135110 has a positive ending balance (prepaid exists to draw down)
+      2. The insurance expense account has no current-period GL activity
+         (i.e., JLL hasn't posted the entry yet — normal for pre-close GL)
+
+    Monthly amounts come from the budget PTD column, which is set from the
+    actual policy premium ÷ policy months (matches JLL's calculation within
+    a few cents due to rounding).
+
+    Returns a list of dicts: one per expense account line, with
+    'credit_account' / 'credit_name' keys so build_accrual_entries() can
+    generate the correct CR 135110 offset instead of the default 211200.
+    """
+    results: List[Dict[str, Any]] = []
+
+    if not gl_data or not budget_data:
+        return results
+
+    # 1. Check that 135110 has a positive balance to amortise from
+    prepaid_balance = 0.0
+    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+        if str(acct.account_code).strip() == _PREPAID_INSURANCE_ACCT:
+            prepaid_balance = acct.ending_balance
+            break
+
+    if prepaid_balance <= 0:
+        return results
+
+    # 2. Find which insurance expense accounts already have March activity
+    already_posted: set = set()
+    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+        code = str(acct.account_code).strip()
+        if code in _INSURANCE_EXPENSE_ACCTS and abs(acct.net_change) > 0.01:
+            already_posted.add(code)
+
+    # 3. Pull monthly amounts from the budget PTD column
+    budget_rows = budget_data if isinstance(budget_data, list) else []
+    for row in budget_rows:
+        code = str(row.get('account_code', '') or '').strip()
+        if code not in _INSURANCE_EXPENSE_ACCTS:
+            continue
+        if code in already_posted:
+            continue  # JLL already posted it this period
+
+        name       = str(row.get('account_name', '') or code)
+        monthly    = abs(float(row.get('ptd_budget', 0) or 0))
+        if monthly < 1.0:
+            continue
+
+        results.append({
+            'account_code':   code,
+            'account_name':   name,
+            'amount':         round(monthly, 2),
+            'credit_account': _PREPAID_INSURANCE_ACCT,
+            'credit_name':    'Prepaid Insurance',
+            'source':         'prepaid_amortization',
+            'confidence':     'high',
+            'description': (
+                f'Insurance prepaid amortization — {name}: '
+                f'${monthly:,.2f}/month (DR {code} / CR {_PREPAID_INSURANCE_ACCT}; '
+                f'prepaid balance ${prepaid_balance:,.2f})'
+            ),
+        })
+
+    return results
+
+
 # ── Layer 2: Invoice-period proration ────────────────────────
 
 # Billing date range: "01.31.26-03.02.26" or "01.31.26 - 03.02.26"
@@ -790,6 +873,57 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         _manual_accounts.add(acct_code)
         je_num += 1
 
+    # ── Layer 0b: Insurance prepaid amortization ───────────────────────────────
+    # Monthly expense from 135110 Prepaid Insurance → DR 639110/639120 / CR 135110.
+    # Generated whenever 135110 has a balance and the expense accounts haven't
+    # been posted yet (normal in the pre-close GL we receive from JLL).
+    _insurance_accounts: set = set()
+    if gl_data and budget_data:
+        ins_entries = detect_insurance_amortization(gl_data, budget_data)
+        for ins in ins_entries:
+            acct_code = ins['account_code']
+            if acct_code in _manual_accounts:
+                continue  # user override takes precedence
+
+            je_id      = f'INS-{je_num:04d}'
+            amount     = ins['amount']
+            cr_acct    = ins['credit_account']
+            cr_name    = ins['credit_name']
+            desc       = ins['description']
+
+            je_lines.append({
+                'je_number':      je_id,
+                'line':           1,
+                'date':           '',
+                'account_code':   acct_code,
+                'account_name':   ins['account_name'],
+                'description':    desc,
+                'reference':      'INS-AMORT',
+                'debit':          round(amount, 2),
+                'credit':         0,
+                'vendor':         '[Insurance Amortization]',
+                'invoice_number': '',
+                'source':         'prepaid_amortization',
+                'confidence':     'high',
+            })
+            je_lines.append({
+                'je_number':      je_id,
+                'line':           2,
+                'date':           '',
+                'account_code':   cr_acct,
+                'account_name':   cr_name,
+                'description':    desc,
+                'reference':      'INS-AMORT',
+                'debit':          0,
+                'credit':         round(amount, 2),
+                'vendor':         '[Insurance Amortization]',
+                'invoice_number': '',
+                'source':         'prepaid_amortization',
+                'confidence':     'high',
+            })
+            _insurance_accounts.add(acct_code)
+            je_num += 1
+
     for inv in invoices:
         vendor = str(inv.get('vendor', '') or '')
         inv_num = str(inv.get('invoice_number', '') or '')
@@ -913,9 +1047,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         except Exception:
             pass
 
-    # Collect accounts already covered by Layers 0 (manual) and 1 (Nexus).
-    # Manual overrides seed the set so automated layers never touch those accounts.
-    _covered = _manual_accounts | set(
+    # Collect accounts already covered by Layers 0 (manual), 0b (insurance),
+    # and 1 (Nexus). Seeding _covered here prevents budget gap and historical
+    # layers from generating duplicate entries for the same account.
+    _covered = _manual_accounts | _insurance_accounts | set(
         l['account_code'] for l in je_lines
         if l.get('line') == 1 and l.get('source') == 'nexus'
     )
