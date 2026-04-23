@@ -77,7 +77,9 @@ def _apply(cell, font=None, fill=None, fmt=None, border=None, align=None):
 
 def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            period: str = '', property_name: str = '',
-                           prepaid_ledger_active: list = None) -> str:
+                           prepaid_ledger_active: list = None,
+                           bank_rec_data: dict = None,
+                           gl_cash_balance: float = None) -> str:
     """
     Generate the balance sheet reconciliation workpaper.
 
@@ -88,6 +90,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         period:               Period label e.g. 'Mar-2026'
         property_name:        Property display name
         prepaid_ledger_active: Active prepaid items from prepaid_ledger.py (optional)
+        bank_rec_data:        Parsed Yardi Bank Rec dict (from parsers.yardi_bank_rec.parse)
+        gl_cash_balance:      GL ending balance for account 111100 (PNC Operating)
 
     Returns:
         output_path
@@ -114,6 +118,22 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
         _write_prepaid_schedule_tab(wb, prepaid_ledger_active, period, property_name)
+
+    # ── Bank Rec tab (PNC Operating — account 111100) ──────────────────────────
+    if bank_rec_data:
+        # If gl_cash_balance not passed in, try to pull it from the GL accounts
+        _gl_cash = gl_cash_balance
+        if _gl_cash is None and gl_result:
+            for _acct in (gl_result.accounts or []):
+                if _acct.account_code == '111100':
+                    _gl_cash = _acct.ending_balance
+                    break
+        _gl_cash = _gl_cash or 0.0
+        _write_bank_rec_tab(
+            wb, bank_rec_data, _gl_cash, period, property_name,
+            account_label='PNC Operating (x3993)',
+            gl_account_code='111100',
+        )
 
     # Remove default sheet
     if 'Sheet' in wb.sheetnames:
@@ -642,11 +662,177 @@ def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_na
     ws.freeze_panes = 'A5'
 
 
+# ── Bank Rec tab ─────────────────────────────────────────────
+
+COLOR_BANK_REC = '375623'   # dark green tab
+
+def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
+                        period: str, property_name: str,
+                        account_label: str = 'PNC Operating (x3993)',
+                        gl_account_code: str = '111100'):
+    """
+    Writes one Bank Rec tab showing:
+      Balance per Bank Statement
+      Less: Outstanding Checks
+      = Reconciled Bank Balance  →  must equal GL cash account
+    Then lists outstanding checks and cleared checks for reference.
+    """
+    tab_name = f'Bank Rec - {account_label.split("(")[0].strip()[:20]}'
+    ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = COLOR_BANK_REC
+
+    row = 1
+    # Header
+    c = ws.cell(row=row, column=1,
+                value=f'{property_name or "Revolution Labs"} — Bank Reconciliation')
+    c.font = _font(bold=True, size=13, color='FFFFFF')
+    c.fill = _fill(COLOR_BANK_REC)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    row += 1
+
+    c = ws.cell(row=row, column=1,
+                value=f'Account: {account_label}  |  Period: {period}  |  '
+                      f'Prepared by: GRP  |  {datetime.now().strftime("%m/%d/%Y")}')
+    c.font = _font(italic=True, color='FFFFFF')
+    c.fill = _fill(COLOR_BANK_REC)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    row += 2
+
+    # Column widths
+    for ci, w in enumerate([18, 15, 45, 18, 6, 6], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── Reconciliation Summary ────────────────────────────────
+    bank_bal    = float(bank_rec_data.get('bank_statement_balance', 0) or 0)
+    out_total   = float(bank_rec_data.get('total_outstanding_checks', 0) or 0)
+    rec_bal     = float(bank_rec_data.get('reconciled_bank_balance', 0) or 0)
+    difference  = rec_bal - gl_acct_balance
+
+    def _rec_row(label, value, bold=False, fill_hex=None, border=THIN, fmt='#,##0.00;(#,##0.00);"-"'):
+        c_lbl = ws.cell(row=row, column=1, value=label)
+        c_lbl.font = _font(bold=bold)
+        c_lbl.alignment = Alignment(horizontal='right')
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        c_val = ws.cell(row=row, column=5, value=value)
+        _apply(c_val, font=_font(bold=bold), fmt=fmt, border=border)
+        ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
+        if fill_hex:
+            c_val.fill = _fill(fill_hex)
+        return row + 1
+
+    row = _rec_row('Balance Per Bank Statement:', bank_bal)
+    row = _rec_row(f'  Less: Outstanding Checks:', -out_total)
+    ws.cell(row=row - 1, column=5).border = THICK_BOTTOM
+    row = _rec_row('Reconciled Bank Balance:', rec_bal, bold=True, fill_hex=LIGHT_BLUE, border=DOUBLE_BTM)
+    row += 1
+    row = _rec_row(f'Balance per GL — {gl_account_code}:', gl_acct_balance, bold=True, fill_hex=LIGHT_BLUE)
+
+    # Variance row
+    is_clean = abs(difference) < 0.02
+    var_fill  = GREEN_FILL if is_clean else RED_FILL
+    var_color = '006100' if is_clean else '9C0006'
+    c_lbl = ws.cell(row=row, column=1, value='Difference:')
+    c_lbl.font = _font(bold=True, color=var_color)
+    c_lbl.alignment = Alignment(horizontal='right')
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    c_val = ws.cell(row=row, column=5, value=difference)
+    _apply(c_val, font=_font(bold=True, color=var_color),
+           fmt='#,##0.00;(#,##0.00);"-"', fill=_fill(var_fill), border=DOUBLE_BTM)
+    ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
+    row += 2
+
+    if not is_clean:
+        note = ws.cell(row=row, column=1,
+                       value=f'Reconciling difference of ${abs(difference):,.2f} — investigate before close.')
+        note.font = _font(italic=True, color='9C0006', size=10)
+        note.alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        row += 2
+
+    # ── Outstanding Checks ────────────────────────────────────
+    outstanding = bank_rec_data.get('outstanding_checks', [])
+    if outstanding:
+        c = ws.cell(row=row, column=1, value='Outstanding Checks')
+        c.font = _font(bold=True, size=12, color='FFFFFF')
+        c.fill = _fill(COLOR_BANK_REC)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        row += 1
+
+        hdrs = ['Check Date', 'Check #', 'Payee', 'Amount', '', '']
+        for ci, h in enumerate(hdrs[:4], 1):
+            c = ws.cell(row=row, column=ci, value=h)
+            _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+                   align=Alignment(horizontal='center'))
+        row += 1
+
+        for i, chk in enumerate(outstanding):
+            payee = str(chk.get('payee', '')).split(' - ', 1)[-1]  # strip vendor code prefix
+            alt   = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+            ws.cell(row=row, column=1, value=chk.get('date', '')).border = THIN
+            ws.cell(row=row, column=2, value=str(chk.get('check_number', ''))).border = THIN
+            ws.cell(row=row, column=3, value=payee).border = THIN
+            c_amt = ws.cell(row=row, column=4, value=float(chk.get('amount', 0)))
+            _apply(c_amt, fmt='#,##0.00', border=THIN)
+            if alt:
+                for ci in range(1, 5):
+                    ws.cell(row=row, column=ci).fill = alt
+            row += 1
+
+        # Outstanding total
+        ws.cell(row=row, column=3, value='Total Outstanding Checks').font = _font(bold=True)
+        c_tot = ws.cell(row=row, column=4, value=out_total)
+        _apply(c_tot, font=_font(bold=True), fmt='#,##0.00', fill=_fill(LIGHT_BLUE), border=DOUBLE_BTM)
+        row += 2
+
+    # ── Cleared Checks (reference) ────────────────────────────
+    cleared = bank_rec_data.get('cleared_checks', [])
+    if cleared:
+        c = ws.cell(row=row, column=1, value='Cleared Checks — Reference')
+        c.font = _font(bold=True, size=11, color='595959')
+        c.fill = _fill(LIGHT_GRAY)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        row += 1
+
+        hdrs = ['Date', 'Tran #', 'Payee / Notes', 'Amount', 'Date Cleared', '']
+        for ci, h in enumerate(hdrs[:5], 1):
+            c = ws.cell(row=row, column=ci, value=h)
+            _apply(c, font=_font(bold=True, color='595959'), fill=_fill(LIGHT_GRAY),
+                   border=THIN, align=Alignment(horizontal='center'))
+        row += 1
+
+        cleared_total = 0.0
+        for i, chk in enumerate(cleared):
+            payee = str(chk.get('notes', chk.get('payee', ''))).split(' - ', 1)[-1]
+            amt   = float(chk.get('amount', 0))
+            cleared_total += amt
+            alt   = _fill('F9F9F9') if i % 2 == 1 else None
+            ws.cell(row=row, column=1, value=chk.get('date', '')).border = THIN
+            ws.cell(row=row, column=2, value=str(chk.get('tran_number', chk.get('check_number', '')))).border = THIN
+            ws.cell(row=row, column=3, value=payee).border = THIN
+            c_amt = ws.cell(row=row, column=4, value=amt)
+            _apply(c_amt, fmt='#,##0.00', border=THIN)
+            ws.cell(row=row, column=5, value=chk.get('date_cleared', '')).border = THIN
+            if alt:
+                for ci in range(1, 6):
+                    ws.cell(row=row, column=ci).fill = alt
+            row += 1
+
+        ws.cell(row=row, column=3, value='Total Cleared Checks').font = _font(bold=True, color='595959')
+        c_tot = ws.cell(row=row, column=4, value=cleared_total)
+        _apply(c_tot, font=_font(bold=True, color='595959'), fmt='#,##0.00',
+               fill=_fill(LIGHT_GRAY), border=DOUBLE_BTM)
+
+    ws.freeze_panes = 'A4'
+
+
 # ── Convenience function for app.py ──────────────────────────
 
 def generate(gl_result, tb_result, output_path: str,
              period: str = '', property_name: str = '',
-             prepaid_ledger_active: list = None) -> str:
+             prepaid_ledger_active: list = None,
+             bank_rec_data: dict = None,
+             gl_cash_balance: float = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
-                                  property_name, prepaid_ledger_active)
+                                  property_name, prepaid_ledger_active,
+                                  bank_rec_data, gl_cash_balance)

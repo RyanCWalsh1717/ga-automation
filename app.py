@@ -162,6 +162,7 @@ file_config = {
     "loan": ("Berkadia Loan PDFs (.pdf)", "*.pdf", False),
     "kardin_budget": ("Kardin Budget (.xlsx)", "*.xlsx", False),
     "prepaid_ledger": ("Prepaid Ledger (.xlsx) — optional", "*.xlsx", False),
+    "bank_rec": ("Yardi Bank Rec PDF (.pdf)", "*.pdf", False),
 }
 
 for key, (label, file_type, required) in file_config.items():
@@ -514,7 +515,25 @@ if run_button:
                     period=engine_result.period or '', property_code='revlabpm')
                 st.session_state.output_files["oneoff_je_csv"] = _path
 
-            # Step 5b: Generate BS Workpaper (if TB uploaded)
+            # Step 5b: Parse Yardi Bank Rec PDF (if uploaded)
+            bank_rec_data = None
+            gl_cash_balance = None
+            bank_rec_file = st.session_state.uploaded_files.get("bank_rec")
+            if bank_rec_file and os.path.exists(bank_rec_file):
+                try:
+                    from parsers.yardi_bank_rec import parse as parse_bank_rec
+                    bank_rec_data = parse_bank_rec(bank_rec_file)
+                    # Pull GL cash balance from account 111100
+                    _gl_result = engine_result.parsed.get('gl')
+                    if _gl_result:
+                        for _a in (_gl_result.accounts or []):
+                            if _a.account_code == '111100':
+                                gl_cash_balance = _a.ending_balance
+                                break
+                except Exception as _be:
+                    st.warning(f"Bank Rec PDF parse skipped: {_be}")
+
+            # Step 5c: Generate BS Workpaper (if TB uploaded)
             if tb_result and engine_result.parsed.get('gl'):
                 try:
                     bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_BS_Workpaper.xlsx")
@@ -525,6 +544,8 @@ if run_button:
                         period=engine_result.period or '',
                         property_name=engine_result.property_name or 'Revolution Labs',
                         prepaid_ledger_active=ledger_active or [],
+                        bank_rec_data=bank_rec_data,
+                        gl_cash_balance=gl_cash_balance,
                     )
                     st.session_state.output_files["bs_workpaper"] = bs_wp_path
                 except Exception as _e:
