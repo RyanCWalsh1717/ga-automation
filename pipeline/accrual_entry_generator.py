@@ -466,11 +466,41 @@ def detect_invoice_proration_accruals(
 
 def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
     """
-    Identify accounts that have a budget amount but zero GL activity,
-    indicating a likely accrual candidate.
+    Identify accounts that have a budget amount but zero GL activity.
 
-    Returns list of dicts: account_code, account_name, budget_amount, source='budget_gap'
+    Each candidate is classified with a **confidence** tier:
+
+    HIGH — Fixed predictable monthly cost.  The monthly budget equals exactly
+        1/12 of the annual budget (within 2%).  Typical examples: property
+        insurance, real estate taxes, fixed-fee service contracts.  These can
+        be posted without additional review.
+
+    MEDIUM — Regular recurring cost whose invoice timing is slightly
+        inconsistent (e.g., landscaping contracts, training programs, amenity
+        services).  The budget is a reasonable estimate; reviewer should confirm
+        no invoice is already in transit.
+
+    LOW — Irregular or discretionary spend (repairs, one-time maintenance,
+        variable operating costs).  The account name contains a repair/
+        discretionary keyword.  An absence of an invoice in the GL likely means
+        the work did NOT happen this month.  These are included in the JE CSV
+        marked 'REVIEW REQUIRED' so the reviewer can decide whether to keep,
+        reduce, or delete the entry before posting.
+
+    Returns list of dicts including: account_code, account_name, budget_amount,
+        source ('budget_gap'), confidence ('high'|'medium'|'low'), description.
     """
+    # Account name keywords that signal irregular / repair-type spend.
+    # Accounts matching any of these get LOW confidence.
+    _REPAIR_KW = (
+        'repair', 'repairs', 'maint-repair', 'maint repair',
+        'one-time', 'one time', 'discretionary',
+    )
+    # Account name keywords that signal fixed / scheduled costs → HIGH confidence.
+    _FIXED_KW = (
+        'insurance', 'tax', 'taxes', 'real estate', 'interest',
+    )
+
     candidates = []
 
     if not budget_data or not gl_data:
@@ -478,10 +508,13 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     # Build set of GL accounts with activity this period
     gl_active = set()
+    # Also build a lookup for beginning balance (proxy for prior-period history)
+    gl_beg_bal: Dict[str, float] = {}
     if hasattr(gl_data, 'accounts'):
         for acct in gl_data.accounts:
             if abs(acct.net_change) > 0.01:
                 gl_active.add(acct.account_code)
+            gl_beg_bal[str(acct.account_code).strip()] = acct.beginning_balance
 
     # Check budget items
     budget_items = []
@@ -528,12 +561,70 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
             if monthly_avg > 0 and abs(ptd_budget) < monthly_avg * 0.3:
                 continue
 
+        # ── Confidence classification ──────────────────────────────────────
+        name_lower = name.lower()
+
+        # Does this account have ANY history in the GL this fiscal year?
+        # (beginning_balance reflects Jan–prior month cumulative activity)
+        has_prior_history = abs(gl_beg_bal.get(code, 0.0)) > 50.0
+        # Is it a known fixed-cost account (insurance, RE taxes)?
+        is_fixed = any(kw in name_lower for kw in _FIXED_KW)
+        # Is it a repair / irregular / discretionary account?
+        is_repair = any(kw in name_lower for kw in _REPAIR_KW)
+
+        if is_repair:
+            # Repair accounts are inherently irregular — always LOW
+            confidence = 'low'
+        elif is_fixed:
+            # Fixed costs (insurance, RE taxes): budget = precise monthly amount.
+            # Even if GL history is zero (e.g., first year, or prepaid route),
+            # these are contractually fixed → keep HIGH.
+            confidence = 'high'
+        elif not has_prior_history:
+            # No prior GL activity this fiscal year + not a known fixed cost.
+            # Two likely causes:
+            #   a) Seasonal expense (e.g., landscaping in winter) — don't accrue.
+            #   b) New contract with first invoice pending — might need accrual.
+            # Both are LOW confidence: reviewer must decide.
+            confidence = 'low'
+        elif abs(annual) > 0:
+            monthly_avg = abs(annual) / 12
+            deviation = abs(abs(ptd_budget) - monthly_avg) / monthly_avg if monthly_avg > 0 else 1.0
+            # Within 2% of the flat monthly rate → effectively fixed → HIGH
+            confidence = 'high' if deviation <= 0.02 else 'medium'
+        else:
+            confidence = 'medium'
+
+        # ── Build human-readable description ──────────────────────────────
+        if confidence == 'high':
+            desc = (
+                f'Budget gap accrual — {name}: ${abs(ptd_budget):,.2f}/month '
+                f'(fixed monthly cost, no GL activity this period)'
+            )
+        elif confidence == 'low' and not has_prior_history and not is_repair:
+            desc = (
+                f'REVIEW REQUIRED — {name}: budget ${abs(ptd_budget):,.2f} but '
+                f'no GL activity in any prior month this year. '
+                f'Confirm whether the expense was incurred (may be seasonal).'
+            )
+        elif confidence == 'low':
+            desc = (
+                f'REVIEW REQUIRED — {name}: budget ${abs(ptd_budget):,.2f} but '
+                f'no invoice received. Confirm whether work was performed before posting.'
+            )
+        else:
+            desc = (
+                f'Budget gap accrual — {name}: budgeted ${abs(ptd_budget):,.2f}, '
+                f'no GL activity this period. Confirm invoice is in transit.'
+            )
+
         candidates.append({
-            'account_code': code,
-            'account_name': name,
+            'account_code':  code,
+            'account_name':  name,
             'budget_amount': abs(ptd_budget),
-            'source': 'budget_gap',
-            'description': f'Budget gap — {name} budgeted ${abs(ptd_budget):,.2f}, no GL activity',
+            'source':        'budget_gap',
+            'confidence':    confidence,
+            'description':   desc,
         })
 
     return candidates
@@ -860,36 +951,42 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             if gap['account_code'] in _covered:
                 continue   # already handled by Nexus or proration
 
+            confidence = gap.get('confidence', 'medium')
             je_id   = f"BGA-{je_num:04d}"
-            je_desc = f"Budget gap accrual — {gap['account_name']}"
+            # Use the rich description from detect_budget_gaps (includes confidence note)
+            je_desc = gap.get('description') or f"Budget gap accrual — {gap['account_name']}"
 
+            # LOW confidence gaps are still included but clearly flagged so the
+            # reviewer can decide whether to keep, adjust, or delete before posting.
             je_lines.append({
-                'je_number': je_id,
-                'line': 1,
-                'date': '',
+                'je_number':    je_id,
+                'line':         1,
+                'date':         '',
                 'account_code': gap['account_code'],
                 'account_name': gap['account_name'],
-                'description': je_desc,
-                'reference': 'BUDGET-GAP',
-                'debit': gap['budget_amount'],
-                'credit': 0,
-                'vendor': '[Budget Gap]',
+                'description':  je_desc,
+                'reference':    'BUDGET-GAP',
+                'debit':        gap['budget_amount'],
+                'credit':       0,
+                'vendor':       '[Budget Gap]',
                 'invoice_number': '',
-                'source': 'budget_gap',
+                'source':       'budget_gap',
+                'confidence':   confidence,
             })
             je_lines.append({
-                'je_number': je_id,
-                'line': 2,
-                'date': '',
+                'je_number':    je_id,
+                'line':         2,
+                'date':         '',
                 'account_code': AP_ACCRUAL_ACCOUNT,
                 'account_name': AP_ACCRUAL_NAME,
-                'description': je_desc,
-                'reference': 'BUDGET-GAP',
-                'debit': 0,
-                'credit': gap['budget_amount'],
-                'vendor': '[Budget Gap]',
+                'description':  je_desc,
+                'reference':    'BUDGET-GAP',
+                'debit':        0,
+                'credit':       gap['budget_amount'],
+                'vendor':       '[Budget Gap]',
                 'invoice_number': '',
-                'source': 'budget_gap',
+                'source':       'budget_gap',
+                'confidence':   confidence,
             })
             _covered.add(gap['account_code'])
             je_num += 1
