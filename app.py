@@ -154,6 +154,33 @@ if "manual_je_df" not in st.session_state:
         "Line Description": ["",          ""],
     })
 
+if "manual_accruals_df" not in st.session_state:
+    import pandas as pd
+    # Pre-seed with common one-off accruals. Leave Amount at $0 for months
+    # where the item doesn't apply. Add rows for anything new.
+    st.session_state.manual_accruals_df = pd.DataFrame({
+        "Account Code": ["613310", "637150", "637150", "617110", "619120",
+                         "627230", "635110", "610140", "610160", "637230", ""],
+        "Account Name": ["Utilities-Water/Sewer", "Admin-Tenant Relations",
+                         "Admin-Tenant Relations", "HVAC Maint-Contract Svc",
+                         "Water Contract Svc", "Fire Life Safety",
+                         "Snow & Ice Removal", "Cleaning Mat/Supplies",
+                         "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
+        "Vendor":       ["Town of Lexington", "Transaction Associates",
+                         "Jones Lang Lasalle", "HAVAC (quarterly)",
+                         "PPM", "J&M Brown (quarterly)",
+                         "Outdoor Pride", "Durkin",
+                         "Casella (extra lines)", "BlueTriton/Primo", ""],
+        "Amount ($)":   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "Description":  ["Semi-annual ÷ 6 (enter invoice ÷ 6)",
+                         "Monthly retainer", "Monthly brokerage fee",
+                         "Quarterly HVAC contract", "Monthly water treatment",
+                         "Quarterly fire/life safety PM", "Pending storm invoices",
+                         "Monthly cleaning supplies", "Service lines not yet in Yardi",
+                         "Water delivery", ""],
+        "Auto-Reverse": [True, True, True, True, True, True, True, True, True, True, True],
+    })
+
 
 # ── Header ───────────────────────────────────────────────────
 st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
@@ -377,160 +404,7 @@ else:
 
 st.sidebar.divider()
 
-# ── Manual Accrual Overrides ─────────────────────────────────────
-st.sidebar.markdown("## Manual Accruals")
-st.sidebar.caption(
-    "For services completed where the invoice isn't in Nexus or Yardi yet — "
-    "HVAC calls, one-off repairs, reimbursable payroll, semi-annual billing, etc. "
-    "Entries here are processed first and suppress automated layers for the same account."
-)
-
-# Water/sewer — semi-annual billing, accrued monthly with auto-reversal
-water_sewer_invoice = st.sidebar.number_input(
-    "Water/Sewer — semi-annual invoice ($)",
-    min_value=0.0,
-    value=0.0,
-    step=500.0,
-    format="%.2f",
-    help=(
-        "Enter the full semi-annual invoice amount (e.g. $99,814.48). "
-        "System divides by 6 to get the monthly accrual ($16,635.75). "
-        "Posted each month with auto-reversal — prior month reverses, "
-        "current month re-accrues. Leave $0 to fall back to budget estimate."
-    ),
-)
-
-
-# One-off manual entries (dynamic rows)
-st.sidebar.markdown("**One-off accruals**")
-st.sidebar.caption("Known invoices not yet in Nexus or Yardi (HVAC, repairs, reimbursables, etc.)")
-
-_btn_col1, _btn_col2 = st.sidebar.columns([1, 1])
-with _btn_col1:
-    if st.button("＋ Add entry", key="add_manual_row", use_container_width=True):
-        st.session_state.n_manual_rows += 1
-with _btn_col2:
-    if st.button("✕ Clear all", key="clear_manual_rows", use_container_width=True,
-                 disabled=st.session_state.n_manual_rows == 0):
-        st.session_state.n_manual_rows = 0
-
-_one_off_rows = []
-for _i in range(st.session_state.n_manual_rows):
-    st.sidebar.markdown(f"*Entry {_i + 1}*")
-    _acct = st.sidebar.text_input(
-        "GL Account #",
-        key=f"man_acct_{_i}",
-        placeholder="e.g. 617120",
-        label_visibility="collapsed",
-    )
-    _amt = st.sidebar.number_input(
-        "Amount ($)",
-        min_value=0.0,
-        value=0.0,
-        step=100.0,
-        format="%.2f",
-        key=f"man_amt_{_i}",
-        label_visibility="collapsed",
-    )
-    _desc = st.sidebar.text_input(
-        "Description",
-        key=f"man_desc_{_i}",
-        placeholder="e.g. HVAC repair — March service call",
-        label_visibility="collapsed",
-    )
-    if _acct.strip() and _amt > 0:
-        _one_off_rows.append({
-            'account_code': _acct.strip(),
-            'account_name': _desc.strip() or _acct.strip(),
-            'amount':       _amt,
-            'description':  _desc.strip() or f'Manual accrual — {_acct.strip()}',
-        })
-
-# ── Periodic Contract Supplements ────────────────────────────────────────────
-# These accounts have monthly auto-detection (pipeline catches the regular
-# portion from GL), but may also carry quarterly or periodic billings that
-# won't appear in GL until the invoice arrives.  Ryan enters the periodic
-# amount here; it is appended AFTER build_accrual_entries so both the
-# pipeline's auto-detected entry and this supplement coexist for the same account.
-st.sidebar.markdown("**Contract Billing Supplements**")
-st.sidebar.caption(
-    "Pipeline auto-detects the monthly GL portion. "
-    "Enter the supplemental amount for any periodic (quarterly, etc.) billing "
-    "not yet reflected in GL. Leave $0 if nothing extra is due."
-)
-
-_SUPPLEMENT_DEFS = [
-    ('617110', 'HVAC Contract',        'e.g. quarterly billing ~$8,375'),
-    ('619120', 'PPM Water Treatment',  'e.g. monthly contract ~$1,800'),
-    ('627230', 'Fire / Life Safety',   'e.g. monthly contract ~$985'),
-    ('610160', 'Casella Waste — additional service line',
-               'Enter any Casella service lines not yet entered in Yardi (e.g. recycling, compactor, surcharge). '
-               'Pipeline auto-accrues lines already posted; enter only the missing portion. '
-               'March 2026 example: $356.68'),
-]
-
-_periodic_supplement_rows = []
-for _code, _slabel, _shelp in _SUPPLEMENT_DEFS:
-    _sup_amt = st.sidebar.number_input(
-        f"{_slabel} ({_code})",
-        min_value=0.0,
-        value=0.0,
-        step=100.0,
-        format="%.2f",
-        key=f"widget_supp_{_code}",
-        help=_shelp,
-    )
-    if _sup_amt > 0:
-        _periodic_supplement_rows.append({
-            'account_code': _code,
-            'account_name': _slabel,
-            'amount':       _sup_amt,
-            'description':  f'{_slabel} — periodic billing supplement ${_sup_amt:,.2f}',
-        })
-
-# ── Seasonal / judgment-call accruals ─────────────────────────────────────────
-# Accounts where the pipeline cannot auto-detect the remaining balance — either
-# because GL already has heavy activity that exceeds budget, or because the
-# amount depends on operational knowledge (storm events, pending vendor invoices).
-# Leave at $0 during off-season months.
-st.sidebar.markdown("**Seasonal / Judgment Accruals**")
-st.sidebar.caption(
-    "Enter known pending invoices the pipeline can't auto-detect. "
-    "Active Oct–Apr for snow; $0 in off-season."
-)
-
-_snow_ice_amt = st.sidebar.number_input(
-    "Snow & Ice Removal (635110)",
-    min_value=0.0,
-    value=0.0,
-    step=500.0,
-    format="%.2f",
-    key="widget_supp_635110",
-    help=(
-        "GL typically shows large Feb storm invoices posted in early March. "
-        "Enter the estimated amount for late-month events still unbilled "
-        "(check with Outdoor Pride for open work orders). JLL used ~$5,000 in March 2026."
-    ),
-)
-if _snow_ice_amt > 0:
-    _periodic_supplement_rows.append({
-        'account_code': '635110',
-        'account_name': 'Snow & Ice Removal',
-        'amount':       _snow_ice_amt,
-        'description':  f'Snow & Ice — pending storm invoices (Outdoor Pride) ${_snow_ice_amt:,.2f}',
-    })
-
-# ── Bonus Accruals ────────────────────────────────────────────────────────────
-# Bonuses post to the same account codes as regular payroll.
-# When Kardin budget is uploaded the pipeline auto-accrues monthly bonus
-# (annual Kardin ÷ 12 − standard payroll month) for 615110 and 637110.
-# Enter an override below only when you know the exact approved amount for
-# this period (e.g., a special mid-year bonus outside the Kardin schedule).
-# Leave $0 to use the Kardin auto-detection.
-#
-# Note: In the future, Kardin will carry separate line items for OT, Payroll,
-# and Bonus — at that point, the auto-detection will pick up each component
-# independently and these override fields can be retired.
+# ── Bonus Accruals (sidebar — overrides Kardin auto-detection) ────────────────
 st.sidebar.divider()
 st.sidebar.markdown("**Bonus Accruals**")
 st.sidebar.caption(
@@ -569,40 +443,16 @@ _admin_bonus_amt = st.sidebar.number_input(
     ),
 )
 
-# Build bonus overrides dict — passed to build_accrual_entries to replace
-# Kardin auto-detection for any account where the user supplied a value.
+# Build bonus overrides dict — passed to build_accrual_entries
 _bonus_overrides: dict = {}
 if _rm_bonus_amt > 0:
     _bonus_overrides['615110'] = _rm_bonus_amt
 if _admin_bonus_amt > 0:
     _bonus_overrides['637110'] = _admin_bonus_amt
 
-if _periodic_supplement_rows:
-    st.sidebar.caption(
-        f"✓ {len(_periodic_supplement_rows)} supplement(s) queued — "
-        f"${sum(r['amount'] for r in _periodic_supplement_rows):,.2f} total"
-    )
-
-# Build the combined manual_accruals list
-_manual_accruals_input = []
-if water_sewer_invoice > 0:
-    _monthly = round(water_sewer_invoice / 6, 2)
-    _manual_accruals_input.append({
-        'account_code': '613310',
-        'account_name': 'Utilities-Water/Sewer',
-        'amount':       _monthly,
-        'description':  (
-            f'Water/Sewer semi-annual accrual: invoice ${water_sewer_invoice:,.2f} / 6 months '
-            f'= ${_monthly:,.2f}/month'
-        ),
-    })
-_manual_accruals_input.extend(_one_off_rows)
-
-if _manual_accruals_input:
-    st.sidebar.caption(
-        f"✓ {len(_manual_accruals_input)} manual accrual(s) queued — "
-        f"${sum(r['amount'] for r in _manual_accruals_input):,.2f} total"
-    )
+# These are populated from the main-area tables below
+_manual_accruals_input = []   # one-sided accruals (DR only; CR 211200 auto-generated)
+_periodic_supplement_rows = []  # kept for backward compat — merged from accruals table
 
 st.sidebar.divider()
 
@@ -633,15 +483,70 @@ with col_btn2:
             "JE #": ["OOE-0001", "OOE-0001"], "Description": ["", ""],
             "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
         })
+        # Reset accruals table amounts to $0 but keep the pre-seeded rows
+        if "manual_accruals_df" in st.session_state:
+            st.session_state.manual_accruals_df["Amount ($)"] = 0.0
         st.rerun()
 
 # ── Manual JE / Reclass Input ────────────────────────────────
 import pandas as pd
-with st.expander("📝 Manual Journal Entries & Reclasses", expanded=False):
+
+# ── Table 1: One-Off Accruals ─────────────────────────────────────────────────
+# DR the expense account; pipeline auto-generates the CR to 211200 Accrued Expenses.
+# Use for: known invoices not yet in Nexus/Yardi, quarterly/semi-annual contracts,
+# seasonal items (snow), recurring retainers, etc.
+# Pre-seeded rows show common monthly items — just fill in the Amount for the month.
+with st.expander("🧾 One-Off Accruals  (DR expense → CR 211200 auto)", expanded=False):
     st.caption(
-        "Enter one-off adjustments and reclasses for this close period. "
-        "Each **JE #** groups debit/credit lines — positive Amount = Debit, negative = Credit. "
-        "Lines must net to zero per JE #. These will export as a separate Yardi CSV."
+        "Enter the **debit side only** — the credit to 211200 Accrued Expenses is generated automatically. "
+        "Each row becomes a single balanced JE (DR expense acct / CR 211200). "
+        "Leave Amount at $0 to skip a row this month. Add rows for anything new."
+    )
+
+    accruals_edited_df = st.data_editor(
+        st.session_state.manual_accruals_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Account Code":  st.column_config.TextColumn("Account", width="small",
+                                 help="6-digit Yardi GL account code (e.g. 613310)"),
+            "Account Name":  st.column_config.TextColumn("Account Name", width="medium"),
+            "Vendor":        st.column_config.TextColumn("Vendor", width="medium"),
+            "Amount ($)":    st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
+                                 width="small", min_value=0.0,
+                                 help="Positive amount — debit to expense account"),
+            "Description":   st.column_config.TextColumn("Description", width="large",
+                                 help="Description for the Yardi JE line"),
+            "Auto-Reverse":  st.column_config.CheckboxColumn("Rev?", width="small",
+                                 help="Check to auto-reverse next period (standard for accruals)"),
+        },
+        key="manual_accruals_editor",
+    )
+    st.session_state.manual_accruals_df = accruals_edited_df
+
+    # Summary of queued accruals
+    _accrual_active = accruals_edited_df[
+        accruals_edited_df["Account Code"].fillna("").str.strip().astype(bool) &
+        (accruals_edited_df["Amount ($)"].fillna(0) > 0)
+    ]
+    if not _accrual_active.empty:
+        _total_accruals = _accrual_active["Amount ($)"].sum()
+        st.success(
+            f"✅ {len(_accrual_active)} accrual(s) queued — ${_total_accruals:,.2f} total debits",
+            icon="✅",
+        )
+
+st.divider()
+
+# ── Table 2: Manual Journal Entries & Reclasses ───────────────────────────────
+# Full balanced JEs — user enters both DR and CR lines explicitly.
+# Use for: reclasses between accounts, owner distributions, true-up entries,
+# anything that doesn't fit the standard DR expense / CR 211200 pattern.
+with st.expander("📝 Manual Journal Entries & Reclasses  (fully balanced)", expanded=False):
+    st.caption(
+        "Enter both sides of each JE — positive Amount = Debit, negative = Credit. "
+        "Group debit/credit lines with the same **JE #**. Lines must net to $0 per JE. "
+        "Exports as a separate Yardi CSV."
     )
 
     edited_df = st.data_editor(
@@ -650,7 +555,7 @@ with st.expander("📝 Manual Journal Entries & Reclasses", expanded=False):
         use_container_width=True,
         column_config={
             "JE #":             st.column_config.TextColumn("JE #", width="small",
-                                    help="Group debit/credit lines with the same JE # (e.g. OOE-0001)"),
+                                    help="Group lines with the same JE # (e.g. OOE-0001)"),
             "Description":      st.column_config.TextColumn("JE Description", width="medium",
                                     help="Overall description of the entry"),
             "Account Code":     st.column_config.TextColumn("Account", width="small",
@@ -666,7 +571,7 @@ with st.expander("📝 Manual Journal Entries & Reclasses", expanded=False):
 
     # Balance validation per JE#
     valid_rows = edited_df[
-        edited_df["Account Code"].str.strip().astype(bool) &
+        edited_df["Account Code"].fillna("").str.strip().astype(bool) &
         (edited_df["Amount"] != 0)
     ]
     if not valid_rows.empty:
@@ -678,7 +583,7 @@ with st.expander("📝 Manual Journal Entries & Reclasses", expanded=False):
                 all_balanced = False
         if all_balanced:
             total_dr = valid_rows[valid_rows["Amount"] > 0]["Amount"].sum()
-            st.success(f"All entries balanced — {len(balance_check)} JE(s), ${total_dr:,.2f} total debits", icon="✅")
+            st.success(f"✅ All entries balanced — {len(balance_check)} JE(s), ${total_dr:,.2f} total debits", icon="✅")
 
 st.divider()
 
@@ -884,20 +789,45 @@ if run_button:
                     "date":         close_period,
                 })
 
-            # ── Periodic contract supplement JEs ──────────────────────────────
-            # Built AFTER build_accrual_entries so the pipeline's partial-contract
-            # auto-detection and the user's supplement coexist for the same account
-            # (e.g., 617110 gets both the $1,000 DAC auto-entry + $8,375 quarterly).
+            # ── One-Off Accrual JEs (from main-area table) ────────────────────
+            # Convert active rows from the One-Off Accruals data_editor into
+            # balanced JEs: DR expense account / CR 211200 Accrued Expenses.
+            # Built AFTER build_accrual_entries so auto-detected entries and
+            # user-supplied supplements coexist for the same account.
             _supplement_je_lines = []
             _sup_base = (
                 len(je_lines) // 2
                 + len(prepaid_release_je) // 2
                 + len(fee_je) // 2
             )
+            # Pull active rows from the data_editor table
+            _accruals_tbl = st.session_state.get("manual_accruals_df")
+            if _accruals_tbl is not None and not _accruals_tbl.empty:
+                _active_accruals = _accruals_tbl[
+                    _accruals_tbl["Account Code"].fillna("").str.strip().astype(bool) &
+                    (_accruals_tbl["Amount ($)"].fillna(0) > 0)
+                ]
+                for _si, (_, _row) in enumerate(_active_accruals.iterrows()):
+                    _periodic_supplement_rows.append({
+                        'account_code': str(_row["Account Code"]).strip(),
+                        'account_name': str(_row.get("Account Name", "") or "").strip()
+                                        or str(_row["Account Code"]).strip(),
+                        'amount':       float(_row["Amount ($)"]),
+                        'description':  str(_row.get("Description", "") or "").strip()
+                                        or f'{_row.get("Vendor","") or ""} — one-off accrual',
+                        'vendor':       str(_row.get("Vendor", "") or "").strip(),
+                        'auto_reverse': bool(_row.get("Auto-Reverse", True)),
+                    })
+
+            _si_offset = 0
             for _si, _sup in enumerate(_periodic_supplement_rows):
                 _sje_id   = f'SUP-{_sup_base + _si + 1:04d}'
                 _sup_amt  = round(float(_sup['amount']), 2)
-                _sup_desc = f"{_sup['account_name']} — periodic billing supplement"
+                _sup_desc = (
+                    _sup.get('description')
+                    or f"{_sup['account_name']} — one-off accrual"
+                )
+                _sup_vendor = _sup.get('vendor') or _sup['account_name']
                 _supplement_je_lines.extend([
                     {
                         'je_number':      _sje_id, 'line': 1,
@@ -905,10 +835,10 @@ if run_button:
                         'account_code':   _sup['account_code'],
                         'account_name':   _sup['account_name'],
                         'description':    _sup_desc,
-                        'reference':      'CONTRACT-SUPP',
+                        'reference':      'ONE-OFF-ACCRUAL',
                         'debit':          _sup_amt,
                         'credit':         0,
-                        'vendor':         '[Contract Supplement]',
+                        'vendor':         _sup_vendor,
                         'invoice_number': '',
                         'source':         'contract_supplement',
                         'confidence':     'high',
@@ -919,10 +849,10 @@ if run_button:
                         'account_code':   '211200',
                         'account_name':   'Accrued Expenses',
                         'description':    _sup_desc,
-                        'reference':      'CONTRACT-SUPP',
+                        'reference':      'ONE-OFF-ACCRUAL',
                         'debit':          0,
                         'credit':         _sup_amt,
-                        'vendor':         '[Contract Supplement]',
+                        'vendor':         _sup_vendor,
                         'invoice_number': '',
                         'source':         'contract_supplement',
                         'confidence':     'high',
