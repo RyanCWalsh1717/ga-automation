@@ -594,10 +594,6 @@ def _build_recon_from_yardi_rec(
     matches = []
     exceptions = []
 
-    from datetime import datetime
-    matches = []
-    exceptions = []
-
     # ── Step 1: Key balances from the bank PDF ────────────────────────────────
     bank_end   = bank_result.get('bank_statement_balance') or bank_result.get('ending_balance') or 0.0
     bank_begin = bank_result.get('beginning_balance') or 0.0

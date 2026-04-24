@@ -21,6 +21,7 @@ if str(pipeline_dir) not in sys.path:
     sys.path.insert(0, str(pipeline_dir))
 
 from engine import run_pipeline, EngineResult, Exception_
+from property_config import is_revenue_account, is_income_statement_account
 from report_generator import generate_report, generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
@@ -1057,6 +1058,24 @@ if run_button:
             except Exception:
                 pass  # No secrets configured
 
+            # Build pro-forma JE adjustments so comments reflect projected final-close
+            # actuals (GL + all pipeline JEs), not the pre-close Yardi snapshot.
+            # Convention:
+            #   Revenue (4xxxxx): actual = net credit activity → adjustment = credit − debit
+            #   Expense (5-8xxxxx): actual = net debit activity → adjustment = debit − credit
+            _je_adjustments: Dict[str, float] = {}
+            for _adj_line in (all_je_lines or []):
+                _adj_code = str(_adj_line.get('account_code', '') or '').strip()
+                if not _adj_code or not is_income_statement_account(_adj_code):
+                    continue
+                _net_debit = (
+                    float(_adj_line.get('debit', 0) or 0)
+                    - float(_adj_line.get('credit', 0) or 0)
+                )
+                # Revenue: CR increases actual → flip sign; Expense: DR increases actual
+                _adj_delta = -_net_debit if is_revenue_account(_adj_code) else _net_debit
+                _je_adjustments[_adj_code] = _je_adjustments.get(_adj_code, 0.0) + _adj_delta
+
             # Call grp variant directly — returns Dict keyed by account code,
             # which we need for the BC write-back AND the dashboard display
             _gl_for_vc   = engine_result.parsed.get('gl')
@@ -1074,6 +1093,7 @@ if run_button:
                     period=_period_str,
                     property_name=_prop_str,
                     api_key=api_key,
+                    je_adjustments=_je_adjustments,
                 )
                 # Detect silent API fallback — surface before user sees outputs
                 _fallback_reasons = {

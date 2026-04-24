@@ -232,7 +232,7 @@ def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
         largest = max(findings, key=lambda f: abs(f.difference))
         summary = (f'{t1_count} Tier-1 variance(s) flagged ({over_count} OVER, {under_count} UNDER). '
                    f'Largest: {largest.account_name} '
-                   f'{"OVER" if largest.difference > 0 else "UNDER"} '
+                   f'{largest.flag} '
                    f'${abs(largest.difference):,.0f}.')
         status = 'FLAG'
 

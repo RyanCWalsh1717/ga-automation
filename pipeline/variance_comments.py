@@ -583,10 +583,7 @@ def _data_driven_comment(account_name: str, var_dollar: float, var_pct: float,
 
 def _noi_direction(account_code: str, variance: float) -> str:
     """Return 'favorable' or 'unfavorable' relative to NOI."""
-    code = str(account_code or '').strip()
-    first = code[0] if code else '0'
-    is_revenue = first == '4'
-    if is_revenue:
+    if _is_revenue(account_code):
         return 'favorable' if variance > 0 else 'unfavorable'
     return 'unfavorable' if variance > 0 else 'favorable'
 
@@ -606,6 +603,7 @@ def generate_variance_comments_grp(
     period: str = '',
     property_name: str = 'Revolution Labs Owner, LLC',
     api_key: Optional[str] = None,
+    je_adjustments: Optional[Dict[str, float]] = None,
 ) -> Dict[str, dict]:
     """
     Generate MTD and YTD variance comments for all budget comparison rows
@@ -622,6 +620,13 @@ def generate_variance_comments_grp(
         period:          Period string (e.g. "Apr 2026").
         property_name:   Property display name.
         api_key:         Anthropic API key. If omitted, uses data-driven fallback.
+        je_adjustments:  Optional dict {account_code: signed_delta} representing the
+                         net effect of all pipeline JEs on each income-statement account's
+                         PTD actual. Revenue accounts: positive = more revenue earned.
+                         Expense accounts: positive = more expense incurred.
+                         When provided, actuals are adjusted before tier classification so
+                         comments reflect the projected final-close position, not the
+                         pre-close Yardi snapshot.
 
     Returns:
         Dict keyed by account_code:
@@ -660,6 +665,14 @@ def generate_variance_comments_grp(
         ytd_budget = float(row.get('ytd_budget', 0) or 0)
         annual = row.get('annual')
         annual = float(annual) if annual else None
+
+        # Apply pro-forma JE adjustments — shift actuals to projected final-close
+        # position so comments are written against the numbers that will be posted,
+        # not the mid-close Yardi snapshot.
+        if je_adjustments and code in je_adjustments:
+            _delta = je_adjustments[code]
+            mtd_actual += _delta
+            ytd_actual += _delta   # current-period JEs affect MTD and YTD equally
 
         mtd_tier, mtd_var, mtd_pct = classify_tier(mtd_actual, mtd_budget)
         ytd_tier, ytd_var, ytd_pct = classify_tier(ytd_actual, ytd_budget)

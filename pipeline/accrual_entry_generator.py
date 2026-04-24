@@ -1932,6 +1932,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'invoice_number': '',
                 'source': 'historical',
             })
+            _covered.add(hist['account_code'])
             je_num += 1
 
     # ── Layer 5: Payroll bonus accruals (Kardin-driven) ─────────────────────

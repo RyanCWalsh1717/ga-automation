@@ -26,6 +26,7 @@ source invoice (from Nexus) and its bank payment by reference number.
 """
 
 import os
+import re
 from datetime import datetime, date
 from dataclasses import dataclass, field, asdict
 from typing import Optional
@@ -188,14 +189,24 @@ def parse_metadata(ws) -> GLMetadata:
     raw_period = _safe_str(ws.cell(row=3, column=1).value)
     raw_book = _safe_str(ws.cell(row=4, column=1).value)
 
-    # Parse "Property = revlabpm Revolution Labs Owner, LLC"
+    # Parse property code and name from the header row.
+    # Two formats observed in the wild:
+    #   Format A: "Property = revlabpm Revolution Labs Owner, LLC"
+    #   Format B: "Revolution Labs Owner, LLC (revlabpm)"
     property_code = ""
     property_name = ""
     if "=" in raw_property:
+        # Format A
         after_eq = raw_property.split("=", 1)[1].strip()
         parts = after_eq.split(" ", 1)
         property_code = parts[0] if parts else ""
         property_name = parts[1] if len(parts) > 1 else ""
+    else:
+        # Format B: "Some Name (code)"
+        m = re.match(r'^(.+?)\s*\((\w+)\)\s*$', raw_property)
+        if m:
+            property_name = m.group(1).strip()
+            property_code = m.group(2).strip()
 
     # Parse "Period = Feb-2026"
     period = ""
