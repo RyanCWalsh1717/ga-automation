@@ -133,11 +133,6 @@ if "temp_dir" not in st.session_state:
 if "n_manual_rows" not in st.session_state:
     st.session_state.n_manual_rows = 0
 
-# Pre-populated bonus accrual standing entries
-if "bonus_rm_acct" not in st.session_state:
-    st.session_state.bonus_rm_acct = ""
-if "bonus_admin_acct" not in st.session_state:
-    st.session_state.bonus_admin_acct = ""
 
 if "tenant_billing_df" not in st.session_state:
     import pandas as pd
@@ -405,74 +400,6 @@ water_sewer_invoice = st.sidebar.number_input(
     ),
 )
 
-# ── Payroll & Bonus Accruals (standing monthly entries) ──────────────────────
-st.sidebar.markdown("**Payroll & Bonus Accruals**")
-st.sidebar.caption(
-    "Enter each month — requires HR input. "
-    "Leave amount at $0 to skip. GL account codes to be confirmed."
-)
-
-_bonus_rows = []
-
-# R&M Bonus
-st.sidebar.markdown("*R&M Bonus*")
-_rm_col1, _rm_col2 = st.sidebar.columns([1, 1])
-with _rm_col1:
-    _bonus_rm_acct = st.text_input(
-        "GL Acct",
-        key="bonus_rm_acct_input",
-        value=st.session_state.bonus_rm_acct,
-        placeholder="e.g. 615120",
-        label_visibility="collapsed",
-    )
-    st.session_state.bonus_rm_acct = _bonus_rm_acct
-with _rm_col2:
-    _bonus_rm_amt = st.number_input(
-        "Amount ($)",
-        min_value=0.0,
-        value=0.0,
-        step=500.0,
-        format="%.2f",
-        key="bonus_rm_amt",
-        label_visibility="collapsed",
-    )
-if _bonus_rm_acct.strip() and _bonus_rm_amt > 0:
-    _bonus_rows.append({
-        'account_code': _bonus_rm_acct.strip(),
-        'account_name': 'RM-Bonus/Incentive',
-        'amount':       _bonus_rm_amt,
-        'description':  f'R&M bonus accrual — monthly estimate ${_bonus_rm_amt:,.2f}',
-    })
-
-# Admin Bonus
-st.sidebar.markdown("*Admin Bonus*")
-_adm_col1, _adm_col2 = st.sidebar.columns([1, 1])
-with _adm_col1:
-    _bonus_admin_acct = st.text_input(
-        "GL Acct",
-        key="bonus_admin_acct_input",
-        value=st.session_state.bonus_admin_acct,
-        placeholder="e.g. 637120",
-        label_visibility="collapsed",
-    )
-    st.session_state.bonus_admin_acct = _bonus_admin_acct
-with _adm_col2:
-    _bonus_admin_amt = st.number_input(
-        "Amount ($)",
-        min_value=0.0,
-        value=0.0,
-        step=500.0,
-        format="%.2f",
-        key="bonus_admin_amt",
-        label_visibility="collapsed",
-    )
-if _bonus_admin_acct.strip() and _bonus_admin_amt > 0:
-    _bonus_rows.append({
-        'account_code': _bonus_admin_acct.strip(),
-        'account_name': 'Admin-Bonus/Incentive',
-        'amount':       _bonus_admin_amt,
-        'description':  f'Admin bonus accrual — monthly estimate ${_bonus_admin_amt:,.2f}',
-    })
 
 # One-off manual entries (dynamic rows)
 st.sidebar.markdown("**One-off accruals**")
@@ -669,7 +596,6 @@ if water_sewer_invoice > 0:
             f'= ${_monthly:,.2f}/month'
         ),
     })
-_manual_accruals_input.extend(_bonus_rows)
 _manual_accruals_input.extend(_one_off_rows)
 
 if _manual_accruals_input:
