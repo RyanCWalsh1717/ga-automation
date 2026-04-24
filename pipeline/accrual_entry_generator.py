@@ -30,11 +30,36 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ── GL dedup utilities ──────────────────────────────────────
 
+def _normalize_vendor(name: str) -> str:
+    """
+    Reduce a vendor name to a stable comparison key.
+
+    Lowercases, strips punctuation, collapses whitespace, and takes the first
+    24 characters.  This lets "OpenPath Security, Inc." match "Openpath" and
+    "Stewart Title" match "Stewart Title Guaranty Co." without false positives
+    on short generic words.
+
+    Returns '' if the name is blank or consists only of punctuation/whitespace.
+    """
+    if not name:
+        return ''
+    key = re.sub(r'[^a-z0-9 ]', ' ', name.lower())
+    key = ' '.join(key.split())   # collapse whitespace
+    return key[:24].strip()
+
+
 def _build_gl_invoice_lookup(gl_data) -> dict:
-    """Build lookup structures to check if an invoice is already in GL.
-    Returns dict with 'by_reference' and 'by_control' keys, each mapping
-    strings to lists of transactions."""
-    lookup = {'by_reference': {}, 'by_control': {}}
+    """
+    Build lookup structures to check if an invoice is already in GL.
+
+    Returns a dict with three keys:
+      'by_reference'    : {reference_str: [txns]}   — exact invoice-number match
+      'by_control'      : {control_str:   [txns]}   — control-number substring match
+      'by_vendor_amount': {(account_code, vendor_key, amount_cents): [txns]}
+                          — secondary dedup when invoice number is absent;
+                            amount_cents is int(round(debit * 100)) for expense debits
+    """
+    lookup = {'by_reference': {}, 'by_control': {}, 'by_vendor_amount': {}}
     if not gl_data or not hasattr(gl_data, 'all_transactions'):
         return lookup
 
@@ -45,6 +70,14 @@ def _build_gl_invoice_lookup(gl_data) -> dict:
         ctrl = (txn.control or '').strip()
         if ctrl:
             lookup['by_control'].setdefault(ctrl, []).append(txn)
+
+        # Vendor+amount index — only for expense debit postings (debit > 0)
+        if txn.debit > 0:
+            vendor_key = _normalize_vendor(txn.description or '')
+            if vendor_key:
+                amount_cents = int(round(txn.debit * 100))
+                va_key = (str(txn.account_code).strip(), vendor_key, amount_cents)
+                lookup['by_vendor_amount'].setdefault(va_key, []).append(txn)
 
     return lookup
 
@@ -59,6 +92,39 @@ def _is_invoice_in_gl(invoice_number: str, gl_lookup: dict) -> bool:
         return True
     for ctrl in gl_lookup['by_control']:
         if inv in ctrl:
+            return True
+    return False
+
+
+def _is_in_gl_by_vendor_amount(
+    vendor: str, amount: float, account_code: str, gl_lookup: dict
+) -> bool:
+    """
+    Secondary dedup: check whether an expense posting with matching vendor name
+    and amount already exists in the GL for this account.
+
+    Used only when the invoice number is absent (no reference field to match on).
+    A $0.02 tolerance band is applied — we check ±2 cents — to absorb rounding
+    differences between the AP system and GL.
+
+    Strategy: vendor name normalization via _normalize_vendor(), then amount
+    comparison by integer cents to avoid float equality traps.
+
+    Returns True if a plausible match is found; False otherwise.
+    """
+    if not vendor or not amount or not account_code:
+        return False
+    vendor_key = _normalize_vendor(vendor)
+    if not vendor_key:
+        return False
+    acct = str(account_code).strip()
+    amount_cents = int(round(abs(amount) * 100))
+    by_va = gl_lookup.get('by_vendor_amount', {})
+
+    # Check exact match and ±2 cent tolerance
+    for delta in (0, 1, -1, 2, -2):
+        key = (acct, vendor_key, amount_cents + delta)
+        if key in by_va:
             return True
     return False
 
@@ -1599,8 +1665,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         if amount == 0:
             continue
 
-        # Dedup: skip invoices already recorded in GL
+        # Dedup — two strategies, first-match wins:
+        #   Strategy 1 (exact):     invoice number matches GL reference/control
+        #   Strategy 2 (fuzzy):     vendor name + amount already posted to same account
+        #                           (fires only when invoice number is absent)
         if inv_num and _is_invoice_in_gl(inv_num, gl_lookup):
+            continue
+        if not inv_num and _is_in_gl_by_vendor_amount(vendor, amount, gl_account, gl_lookup):
             continue
 
         # Format date
