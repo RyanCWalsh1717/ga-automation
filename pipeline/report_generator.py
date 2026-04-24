@@ -32,6 +32,7 @@ from openpyxl.utils import get_column_letter
 
 # Import data structures for building tabs dynamically
 from parsers.monthly_report_template import ReportLine, TabStructure
+from property_config import is_balance_sheet_account, is_income_statement_account
 
 
 # ── Styling utilities ────────────────────────────────────────
@@ -124,9 +125,8 @@ def _build_bs_tab_from_gl(gl_data) -> Optional[TabStructure]:
 
     line_items = []
     for account in gl_data.accounts:
-        # Filter to balance sheet accounts (asset, liability, equity: codes 1xxxxx, 2xxxxx, 3xxxxx)
-        first_digit = account.account_code[0] if account.account_code else '0'
-        if first_digit not in ('1', '2', '3'):
+        # Filter to balance sheet accounts — uses per-property COA config (defaults 1-3xxxxx)
+        if not is_balance_sheet_account(account.account_code):
             continue
 
         report_line = ReportLine(
@@ -219,8 +219,7 @@ def _build_t12_tab_from_gl(gl_data) -> Optional[TabStructure]:
     line_items = []
     for account in gl_data.accounts:
         values = {}
-        first_digit = account.account_code[0] if account.account_code else '0'
-        is_pnl = first_digit in ('4', '5', '6', '7', '8')
+        is_pnl = is_income_statement_account(account.account_code)
         prior_months = month_num - 1
 
         total = 0
@@ -310,8 +309,7 @@ def _build_tb_ytd_tab_from_gl(gl_data) -> Optional[TabStructure]:
 
     line_items = []
     for account in gl_data.accounts:
-        first_digit = account.account_code[0] if account.account_code else '0'
-        is_pnl = first_digit in ('4', '5', '6', '7', '8')
+        is_pnl = is_income_statement_account(account.account_code)
 
         if is_pnl:
             # P&L accounts: YTD forward balance is 0 (resets each year)

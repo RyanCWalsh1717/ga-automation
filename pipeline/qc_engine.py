@@ -28,21 +28,22 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from variance_comments import classify_tier, TIER1_ABS, TIER1_PCT, TIER2_MIN
+from property_config import is_revenue_account, is_expense_account, is_balance_sheet_account
 
 
-# ── Revenue accounts (4xxxx) are income; expenses start at 6xxxx ──────────────
+# ── Account type helpers — delegate to per-property COA config ─────────────────
+# Defaults match the standard Yardi COA (4xxxxx=revenue, 5-8xxxxx=expense,
+# 1-3xxxxx=BS).  Override via PropertyConfig when onboarding a new property.
 def _is_revenue(code: str) -> bool:
-    return str(code or '').startswith('4')
+    return is_revenue_account(code)
 
 
 def _is_expense(code: str) -> bool:
-    c = str(code or '')
-    return c.startswith(('6', '7', '8'))
+    return is_expense_account(code)
 
 
 def _is_balance_sheet(code: str) -> bool:
-    c = str(code or '')
-    return c.startswith(('1', '2', '3'))
+    return is_balance_sheet_account(code)
 
 
 def _safe_float(v) -> float:

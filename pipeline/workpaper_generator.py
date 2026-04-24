@@ -21,6 +21,7 @@ from openpyxl.utils import get_column_letter
 from accrual_entry_generator import (
     build_accrual_entries, write_accrual_entries_workpaper_tab
 )
+from property_config import is_revenue_account
 
 
 # ── Styling ──────────────────────────────────────────────────
@@ -749,7 +750,7 @@ def _write_rent_roll_workpaper(wb, engine_result):
     gl_revenue_total = 0
     if gl_data and hasattr(gl_data, 'accounts'):
         for acct in gl_data.accounts:
-            if acct.account_code.startswith('4'):
+            if is_revenue_account(acct.account_code):
                 ws.cell(row=row, column=1, value=acct.account_code)
                 ws.cell(row=row, column=2, value=acct.account_name)
                 ws.cell(row=row, column=3, value=abs(acct.net_change))

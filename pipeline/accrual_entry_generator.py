@@ -25,6 +25,7 @@ from typing import List, Dict, Any, Optional
 from openpyxl import Workbook
 
 from accounting_utils import _round
+from property_config import is_expense_account
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 
@@ -1000,8 +1001,8 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
                 if not already_normalised:
                     ptd_budget = abs(annual) / _SEASONAL_ACTIVE_COUNT
 
-        first_digit = code[0] if code else '0'
-        if first_digit not in ('5', '6', '7', '8'):
+        # Only expense accounts — uses per-property COA config (defaults to 5/6/7/8xxxxx)
+        if not is_expense_account(code):
             continue
 
         # Materiality: budget must exceed $500 with no GL activity
@@ -1238,10 +1239,8 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     for acct in gl_data.accounts:
         code = acct.account_code
-        first_digit = code[0] if code else '0'
-
-        # Only expense accounts
-        if first_digit not in ('5', '6', '7', '8'):
+        # Only expense accounts — uses per-property COA config (defaults to 5/6/7/8xxxxx)
+        if not is_expense_account(code):
             continue
 
         # Skip if there's activity this month

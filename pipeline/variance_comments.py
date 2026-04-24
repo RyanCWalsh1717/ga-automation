@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
+from property_config import is_revenue_account
 
 
 # ── Thresholds ────────────────────────────────────────────────
@@ -591,8 +592,7 @@ def _noi_direction(account_code: str, variance: float) -> str:
 
 
 def _is_revenue(account_code: str) -> bool:
-    code = str(account_code or '').strip()
-    return code.startswith('4')
+    return is_revenue_account(account_code)
 
 
 # ══════════════════════════════════════════════════════════════
