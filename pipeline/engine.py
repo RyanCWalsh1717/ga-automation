@@ -1242,8 +1242,17 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
             # Normalize period: "Mar 2026" → "Mar-2026"
             raw_period = gl.metadata.period or ''
             result.period = raw_period.replace(' ', '-') if raw_period else ''
-            # Fallback property name if GL header is blank
-            result.property_name = gl.metadata.property_name or 'Revolution Labs'
+            # Fallback property name: GL header → property config → generic placeholder
+            _gl_prop_code = gl.metadata.property_code or ''
+            if gl.metadata.property_name:
+                result.property_name = gl.metadata.property_name
+            else:
+                try:
+                    from property_config import get_config
+                    _cfg = get_config(_gl_prop_code)
+                    result.property_name = (_cfg.property_name if _cfg else '') or '[Property Name]'
+                except Exception:
+                    result.property_name = '[Property Name]'
         except Exception as e:
             result.add_exception("error", "parse", "yardi_gl", f"GL parse failed: {e}")
 
@@ -1286,7 +1295,10 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
     # arise from incomplete transaction-level matching against the raw PNC PDF.
     if "bank_rec" in files and files["bank_rec"]:
         try:
-            yardi_rec = parse_yardi_bank_rec(files["bank_rec"])
+            # Pass property_code so the GL-section parser can identify transaction lines
+            _prop_code = (result.parsed.get('gl') and
+                          result.parsed['gl'].metadata.property_code) or 'revlabpm'
+            yardi_rec = parse_yardi_bank_rec(files["bank_rec"], property_code=_prop_code)
             result.parsed["bank_rec"] = yardi_rec
             bank_data = yardi_rec   # preferred source
         except Exception as e:

@@ -72,9 +72,16 @@ def is_yardi_bank_rec(filepath: str) -> bool:
         return False
 
 
-def parse(filepath: str) -> Dict[str, Any]:
+def parse(filepath: str, property_code: str = 'revlabpm') -> Dict[str, Any]:
     """
     Parse a Yardi Bank Reconciliation PDF.
+
+    Args:
+        filepath:      Path to the PDF file.
+        property_code: Yardi property code (e.g. 'revlabpm').  Used to detect
+                       the GL detail section in the PDF, which begins every
+                       transaction line with the property code.  Must match the
+                       code Yardi prints in the exported PDF exactly (lowercase).
 
     Returns the structured dict described in the module docstring.
     Returns an empty dict with bank_type='YardiBankRec' if parsing fails.
@@ -122,8 +129,9 @@ def parse(filepath: str) -> Dict[str, Any]:
             if pnc_start_page is None and 'Corporate Business Account Statement' in text:
                 pnc_start_page = i
             elif pnc_start_page is not None and gl_start_page is None:
-                # GL section: look for "111100 Cash" header or revlabpm lines
-                if re.search(r'111100\s+Cash', text) or re.search(r'^revlabpm\s', text, re.MULTILINE):
+                # GL section: look for "111100 Cash" header or property-code lines
+                _prop_pattern = re.escape(property_code)
+                if re.search(r'111100\s+Cash', text) or re.search(rf'^{_prop_pattern}\s', text, re.MULTILINE):
                     gl_start_page = i
 
         yardi_text = '\n'.join(all_pages[:pnc_start_page] if pnc_start_page else all_pages)
@@ -142,7 +150,7 @@ def parse(filepath: str) -> Dict[str, Any]:
         if pnc_text:
             _parse_pnc_statement_section(pnc_text, result)
         if gl_text:
-            result['gl_transactions'] = parse_gl_section(gl_text)
+            result['gl_transactions'] = parse_gl_section(gl_text, property_code=property_code)
 
     except Exception as exc:
         result['_parse_error'] = str(exc)
@@ -571,23 +579,26 @@ def _extract_pnc_deposits(text: str) -> List[dict]:
 
 # ── Yardi GL section parser (pages 6-9) ──────────────────────────────────────
 
-def parse_gl_section(text: str) -> List[dict]:
+def parse_gl_section(text: str, property_code: str = 'revlabpm') -> List[dict]:
     """
     Parse the Yardi GL detail section (account 111100, Cash - Operating) from
     the text of pages 6-9 of the bank rec PDF.
 
-    pdfplumber renders each transaction as a single line starting with "revlabpm".
+    pdfplumber renders each transaction as a single line starting with the
+    Yardi property code (e.g. 'revlabpm').  Pass the correct property_code
+    so the parser can identify GL transaction lines.
+
     Three line formats appear in practice:
 
     AP check (K- control):
-      revlabpm Entity date period Vendor Name (vNNNNNN) K-NNNNN CHECKNUM DEBIT CREDIT BALANCE[remarks]
+      {property_code} Entity date period Vendor Name (vNNNNNN) K-NNNNN CHECKNUM DEBIT CREDIT BALANCE[remarks]
 
     Journal entry / Sweep / Mortgage (J- control):
-      revlabpm Entity date period Description J-NNNNN DEBIT CREDIT BALANCE[remarks]
+      {property_code} Entity date period Description J-NNNNN DEBIT CREDIT BALANCE[remarks]
       (no vendor code in parens, no separate reference token)
 
     Rent application (R- control):
-      revlabpm Entity date period Tenant Name (tNNNNNN) R-NNNN APPLY DEBIT CREDIT BALANCE[remarks]
+      {property_code} Entity date period Tenant Name (tNNNNNN) R-NNNN APPLY DEBIT CREDIT BALANCE[remarks]
 
     The balance number is concatenated directly with remarks (no space) by pdfplumber.
 
@@ -612,7 +623,7 @@ def parse_gl_section(text: str) -> List[dict]:
 
     for raw_line in lines:
         line = raw_line.rstrip()
-        if not line.startswith('revlabpm'):
+        if not line.startswith(property_code):
             continue
 
         # Find the three trailing amount fields
