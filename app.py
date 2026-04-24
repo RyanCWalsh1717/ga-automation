@@ -228,6 +228,13 @@ FILE_CONFIG = {
         "Enables AP accrual detection (Layer 1 — open invoices not yet posted to GL). "
         "Without it: invoice-proration (Layer 2), budget gap (Layer 3), and historical (Layer 4) still run.",
     ),
+    "nexus_paid": (
+        "Nexus Invoice Detail — Paid (.xls/.xlsx)", ["xls", "xlsx"], False, "core",
+        "Paid invoices export from Nexus. Pipeline auto-detects multi-period (prepaid) invoices "
+        "by scanning the line description for service-period date ranges. Detected prepaids are "
+        "added to the Prepaid Ledger and amortized month-by-month. "
+        "Without it: no new prepaids detected from paid invoices this month.",
+    ),
     # ── Bank ──────────────────────────────────────────────────
     "bank_rec": (
         "Yardi Bank Rec PDF — Operating (.pdf)", "pdf", False, "bank",
@@ -655,18 +662,39 @@ if run_button:
             ledger_path  = st.session_state.uploaded_files.get("prepaid_ledger")
             ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
 
-            # Add any new prepaid invoices from this month's Nexus export
-            ledger_active, newly_added = prepaid_ledger.merge_nexus(
-                ledger_active, nexus_data or [], close_period
+            # Parse paid invoices file (separate Nexus export) and detect prepaids
+            nexus_paid_path = st.session_state.uploaded_files.get("nexus_paid")
+            nexus_paid_records = []
+            if nexus_paid_path:
+                try:
+                    from parsers.nexus_paid_invoices import parse as parse_nexus_paid
+                    nexus_paid_records = parse_nexus_paid(nexus_paid_path)
+                    if nexus_paid_records and '_parse_error' in nexus_paid_records[0]:
+                        st.warning(f"Nexus Paid file parse error: {nexus_paid_records[0]['_parse_error']}")
+                        nexus_paid_records = []
+                except Exception as _e:
+                    st.warning(f"Could not parse Nexus Paid file: {_e}")
+
+            # Add new prepaids from paid invoices (primary source for prepaid detection)
+            ledger_active, newly_added_paid = prepaid_ledger.merge_nexus(
+                ledger_active, nexus_paid_records, close_period
             )
 
-            # Build the visual amortization schedule (for workpaper/dashboard)
+            # Also check open accrual invoices for any prepaids (secondary, belt-and-suspenders)
+            ledger_active, newly_added_accrual = prepaid_ledger.merge_nexus(
+                ledger_active, nexus_data or [], close_period
+            )
+            newly_added = newly_added_paid + newly_added_accrual
+
+            # Build visual amortization schedule — combine paid invoices (primary) + open accrual invoices
+            _all_nexus_for_amort = nexus_paid_records + (nexus_data or [])
             amort_lines = build_prepaid_amortization(
-                nexus_data or [],
+                _all_nexus_for_amort,
                 close_period=close_period,
             )
             st.session_state.output_files["prepaid_amortization"] = amort_lines
             st.session_state.output_files["newly_added_prepaids"] = newly_added
+            st.session_state.output_files["nexus_paid_records"]   = nexus_paid_records
 
             # Generate prepaid release JEs for months 2+ (from ledger)
             ledger_release_lines = prepaid_ledger.get_current_amortization(
@@ -1317,7 +1345,7 @@ if st.session_state.processing_complete and st.session_state.engine_result:
                       help="Items still being amortized — upload updated ledger next month")
         with col_l2:
             st.metric("New This Month", len(newly_added),
-                      help="Invoices added to ledger from this Nexus export")
+                      help="Invoices auto-detected as prepaid from the Nexus Invoice Detail (Paid) file and added to the ledger")
         with col_l3:
             st.metric("Completed This Month", len(ledger_completed),
                       help="Items that fully amortized as of this close")
