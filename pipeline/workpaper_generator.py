@@ -491,31 +491,32 @@ def _write_debt_service_workpaper(wb, engine_result):
     row += 1
 
     for i, loan in enumerate(loans):
-        if isinstance(loan, dict):
-            ln = loan.get('loan_number', '')
-            pmt = loan.get('payment_breakdown', {})
-            due_date = loan.get('payment_due_date', '')
-        else:
-            ln = getattr(loan, 'loan_number', '')
-            pmt = getattr(loan, 'payment_breakdown', {})
-            due_date = getattr(loan, 'payment_due_date', '')
+        def _safe_num(v):
+            if isinstance(v, (int, float)):
+                return float(v)
+            try:
+                return float(v) if v else 0.0
+            except (ValueError, TypeError):
+                return 0.0
 
-        if isinstance(pmt, dict):
-            def _safe_num(v):
-                if isinstance(v, (int, float)):
-                    return v
-                try:
-                    return float(v) if v else 0
-                except (ValueError, TypeError):
-                    return 0
-            p_amt = _safe_num(pmt.get('principal', 0))
-            i_amt = _safe_num(pmt.get('interest', 0))
-            t_amt = _safe_num(pmt.get('taxes', 0))
-            ins_amt = _safe_num(pmt.get('insurance', 0))
-            r_amt = _safe_num(pmt.get('reserves', 0))
-            total = _safe_num(pmt.get('total_payment_due', 0)) or (p_amt + i_amt + t_amt + ins_amt + r_amt)
+        if isinstance(loan, dict):
+            ln       = loan.get('loan_number', '')
+            due_date = loan.get('payment_due_date', '')
+            p_amt    = _safe_num(loan.get('payment_principal', 0))
+            i_amt    = _safe_num(loan.get('payment_interest', 0))
+            t_amt    = _safe_num(loan.get('payment_re_taxes', 0))
+            ins_amt  = _safe_num(loan.get('payment_insurance', 0))
+            r_amt    = _safe_num(loan.get('payment_reserves', 0))
+            total    = _safe_num(loan.get('payment_total', 0)) or (p_amt + i_amt + t_amt + ins_amt + r_amt)
         else:
-            p_amt = i_amt = t_amt = ins_amt = r_amt = total = 0
+            ln       = getattr(loan, 'loan_number', '')
+            due_date = getattr(loan, 'payment_due_date', '')
+            p_amt    = _safe_num(getattr(loan, 'payment_principal', 0))
+            i_amt    = _safe_num(getattr(loan, 'payment_interest', 0))
+            t_amt    = _safe_num(getattr(loan, 'payment_re_taxes', 0))
+            ins_amt  = _safe_num(getattr(loan, 'payment_insurance', 0))
+            r_amt    = _safe_num(getattr(loan, 'payment_reserves', 0))
+            total    = _safe_num(getattr(loan, 'payment_total', 0)) or (p_amt + i_amt + t_amt + ins_amt + r_amt)
 
         alt = i % 2 == 1
         ws.cell(row=row, column=1, value=ln); _apply(ws.cell(row=row, column=1), _cell(alt))

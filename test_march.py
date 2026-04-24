@@ -150,7 +150,7 @@ for loan in loan_data:
     if isinstance(loan, dict):
         name = loan.get('loan_number') or loan.get('property') or 'Unknown'
         bal  = loan.get('principal_balance') or loan.get('ending_balance') or 0
-        pmt  = loan.get('total_payment') or loan.get('payment_amount') or 0
+        pmt  = loan.get('payment_total') or loan.get('total_payment') or loan.get('payment_amount') or 0
         print(f'  Loan {name}: balance=${bal:,.2f}  payment=${pmt:,.2f}')
     else:
         print(f'  Loan: {type(loan)}')

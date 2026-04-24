@@ -316,3 +316,130 @@ def accrued_fee_from_bc(budget_rows: list[dict]) -> float:
         if str(row.get('account_code', '') or '').strip() == _MGMT_FEE_CODE:
             return abs(float(row.get('ptd_actual', 0) or 0))
     return 0.0
+
+
+# ── Prior-period catch-up detection ───────────────────────────────────────────
+
+def detect_prior_period_catchup(gl_data) -> Optional[float]:
+    """
+    Detect whether the prior month's management fee accrual auto-reversed
+    without a matching invoice entry, leaving a net credit in 637130.
+
+    Business context
+    ----------------
+    GRP's management fee check is cut around the 15th of the month.  If the
+    vendor hasn't cashed the check by month-end, the bank close captures it
+    as an outstanding item.  Meanwhile, Yardi's accrual cycle runs:
+
+      Month N close  : DR 637130 / CR 211200  (accrual posted)
+      Month N+1 Day 1: DR 211200 / CR 637130  (auto-reversal)
+      Month N+1      : DR 637130 / CR 211200  (invoice entry) — if check clears
+      Month N+1 close: DR 637130 / CR 211200  (current-month new accrual)
+
+    The CURRENT month's new accrual is generated separately by build_management_
+    fee_je() and should NOT be factored into this catch-up calculation — it
+    represents the current period's fee, not the prior-period shortfall.
+
+    This function looks only at what is ALREADY in the GL:
+      - Credits in 637130 = auto-reversals of prior-period accruals
+      - Debits  in 637130 = actual invoice postings clearing prior accruals
+
+    If the auto-reversal credit has no matching invoice debit, the net credit
+    is the catch-up amount (the prior period's expense was never reinstated).
+
+    Detection
+    ---------
+    Sum period credits (auto-reversals) and period debits (invoice entries).
+    If credits exceed debits by a material amount (> $100) the gap is the
+    catch-up amount needed.
+
+    Returns the catch-up amount (positive float) if needed, else None.
+
+    Note: The catch-up JE (MGT-002) and the current-period accrual (MGT-001)
+    are independent.  Both will debit 637130: MGT-002 restores the prior-period
+    fee; MGT-001 records the current-period fee.  Total DR = catch-up + new fee.
+    """
+    if not gl_data or not hasattr(gl_data, 'accounts'):
+        return None
+
+    for acct in gl_data.accounts:
+        if str(acct.account_code).strip() != _MGMT_FEE_CODE:
+            continue
+
+        # Sum credits (auto-reversals) and debits (invoice entries) already in GL.
+        # The current-period new accrual from build_management_fee_je() is NOT in
+        # the GL at this point — it is built and posted as a separate entry (MGT-001).
+        # We only look at what Yardi has already recorded.
+        period_debits  = sum(float(txn.debit  or 0) for txn in acct.transactions)
+        period_credits = sum(float(txn.credit or 0) for txn in acct.transactions)
+
+        # Net credit = auto-reversal exceeded invoice postings → catch-up gap
+        net_credit = period_credits - period_debits
+
+        # Return the catch-up amount only when material (> $100)
+        if net_credit > 100.0:
+            return round(net_credit, 2)
+
+        return None   # account found but no catch-up needed
+
+    return None  # account not present in GL
+
+
+def build_catchup_je(
+    catchup_amount: float,
+    period: str = '',
+    property_code: str = 'revlabpm',
+    ap_account: str = '211200',
+    ap_account_name: str = 'Accrued Expenses',
+    je_number: str = 'MGT-002',
+) -> list[dict]:
+    """
+    Build the catch-up journal entry for an unmatched prior-period
+    management fee auto-reversal.
+
+    Debit  637130  Admin-Management Fees     (catch-up amount)
+    Credit 211200  Accrued Expenses          (catch-up amount)
+
+    This entry offsets the credit left in 637130 by the auto-reversal and
+    re-establishes the management fee expense for the prior period.
+
+    Returns list of two JE line dicts in the standard pipeline format.
+    """
+    if catchup_amount <= 0:
+        return []
+
+    desc = (
+        f'Management fee catch-up — prior month accrual reversed without '
+        f'matching invoice; reinstating ${catchup_amount:,.2f} expense'
+    )
+
+    return [
+        {
+            'je_number':      je_number,
+            'line':           1,
+            'date':           period,
+            'account_code':   _MGMT_FEE_CODE,
+            'account_name':   'Admin-Management Fees',
+            'description':    desc,
+            'reference':      'MGMT-CATCHUP',
+            'debit':          round(catchup_amount, 2),
+            'credit':         0.0,
+            'vendor':         'Management Fee Catch-up',
+            'invoice_number': '',
+            'source':         'management_fee_catchup',
+        },
+        {
+            'je_number':      je_number,
+            'line':           2,
+            'date':           period,
+            'account_code':   ap_account,
+            'account_name':   ap_account_name,
+            'description':    desc,
+            'reference':      'MGMT-CATCHUP',
+            'debit':          0.0,
+            'credit':         round(catchup_amount, 2),
+            'vendor':         'Management Fee Catch-up',
+            'invoice_number': '',
+            'source':         'management_fee_catchup',
+        },
+    ]

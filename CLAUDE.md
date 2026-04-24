@@ -74,9 +74,10 @@ Push to `main` branch on GitHub. Streamlit Community Cloud auto-deploys within 1
 
 ## People
 
-- **Philip Dorman** — Project owner, Greatland Realty Partners
-- **Lauren Sullivan** — CFO, primary end user of the pipeline outputs
-- **Ryan Walsh** — Building API prompts for variance commentary (Phase 2)
+- **Ryan Walsh** — Accountant, primary pipeline reviewer and operator. Reviews all outputs before sign-off.
+- **Natasha** — Accountant, co-reviewer. Reviews pipeline outputs alongside Ryan.
+- **Lauren Sullivan** — CFO, final reviewer only. Sees outputs after Ryan or Natasha have completed their review.
+- **Philip Dorman** — GitHub repo owner (Pdorman76). Not part of the monthly accounting review process.
 
 ## Conventions
 

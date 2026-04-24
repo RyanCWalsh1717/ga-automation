@@ -133,6 +133,22 @@ if "temp_dir" not in st.session_state:
 if "n_manual_rows" not in st.session_state:
     st.session_state.n_manual_rows = 0
 
+# Pre-populated bonus accrual standing entries
+if "bonus_rm_acct" not in st.session_state:
+    st.session_state.bonus_rm_acct = ""
+if "bonus_admin_acct" not in st.session_state:
+    st.session_state.bonus_admin_acct = ""
+
+if "tenant_billing_df" not in st.session_state:
+    import pandas as pd
+    st.session_state.tenant_billing_df = pd.DataFrame({
+        "Tenant":        ["Accent Therapeutics", "Keros Therapeutics (N)",
+                          "Keros Therapeutics (S)", "Orum Therapeutics",
+                          "Santi Therapeutics"],
+        "Electric ($)":  [0.0, 0.0, 0.0, 0.0, 0.0],
+        "Gas ($)":       [0.0, 0.0, 0.0, 0.0, 0.0],
+    })
+
 if "manual_je_df" not in st.session_state:
     import pandas as pd
     st.session_state.manual_je_df = pd.DataFrame({
@@ -318,6 +334,54 @@ cash_received_override = st.sidebar.number_input(
 cash_received_override = cash_received_override if cash_received_override > 0 else None
 st.sidebar.divider()
 
+# ── Tenant Utility Billing (Meter Read JE) ──────────────────────────────────
+st.sidebar.markdown("## Tenant Utility Billing")
+st.sidebar.caption(
+    "Enter per-tenant amounts from the meter read company. "
+    "Pipeline auto-accrues budget ($18,884 electric / $1,260 gas) if all rows are $0. "
+    "Both sides post: DR AR / CR 440500 (electric) and CR 440700 (gas)."
+)
+
+_tenant_billing_edited = st.sidebar.data_editor(
+    st.session_state.tenant_billing_df,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "Tenant":       st.column_config.TextColumn("Tenant", width="medium"),
+        "Electric ($)": st.column_config.NumberColumn("Electric ($)", format="$%.2f", width="small"),
+        "Gas ($)":      st.column_config.NumberColumn("Gas ($)",      format="$%.2f", width="small"),
+    },
+    key="tenant_billing_editor",
+)
+st.session_state.tenant_billing_df = _tenant_billing_edited
+
+# Build per-tenant rows for pipeline
+_tenant_utility_rows = []
+_tu_elec_total = 0.0
+_tu_gas_total  = 0.0
+for _, _trow in _tenant_billing_edited.iterrows():
+    _tname = str(_trow.get("Tenant", "") or "").strip()
+    _telec = float(_trow.get("Electric ($)", 0) or 0)
+    _tgas  = float(_trow.get("Gas ($)", 0) or 0)
+    if _tname and (_telec > 0 or _tgas > 0):
+        _tenant_utility_rows.append({
+            'tenant':   _tname,
+            'electric': _telec,
+            'gas':      _tgas,
+        })
+        _tu_elec_total += _telec
+        _tu_gas_total  += _tgas
+
+if _tenant_utility_rows:
+    st.sidebar.caption(
+        f"✓ {len(_tenant_utility_rows)} tenant(s) — "
+        f"Electric ${_tu_elec_total:,.2f} / Gas ${_tu_gas_total:,.2f}"
+    )
+else:
+    st.sidebar.caption("↳ No entries — will auto-accrue budget if meter read not in GL")
+
+st.sidebar.divider()
+
 # ── Manual Accrual Overrides ─────────────────────────────────────
 st.sidebar.markdown("## Manual Accruals")
 st.sidebar.caption(
@@ -326,7 +390,7 @@ st.sidebar.caption(
     "Entries here are processed first and suppress automated layers for the same account."
 )
 
-# Water/sewer — semi-annual billing (permanent fixture, own named field)
+# Water/sewer — semi-annual billing, accrued monthly with auto-reversal
 water_sewer_invoice = st.sidebar.number_input(
     "Water/Sewer — semi-annual invoice ($)",
     min_value=0.0,
@@ -334,11 +398,81 @@ water_sewer_invoice = st.sidebar.number_input(
     step=500.0,
     format="%.2f",
     help=(
-        "Enter the full semi-annual invoice amount (e.g. $99,814.50). "
-        "The system divides by 6 and accrues the monthly portion. "
-        "Leave 0 to fall back to the budget-gap estimate."
+        "Enter the full semi-annual invoice amount (e.g. $99,814.48). "
+        "System divides by 6 to get the monthly accrual ($16,635.75). "
+        "Posted each month with auto-reversal — prior month reverses, "
+        "current month re-accrues. Leave $0 to fall back to budget estimate."
     ),
 )
+
+# ── Payroll & Bonus Accruals (standing monthly entries) ──────────────────────
+st.sidebar.markdown("**Payroll & Bonus Accruals**")
+st.sidebar.caption(
+    "Enter each month — requires HR input. "
+    "Leave amount at $0 to skip. GL account codes to be confirmed."
+)
+
+_bonus_rows = []
+
+# R&M Bonus
+st.sidebar.markdown("*R&M Bonus*")
+_rm_col1, _rm_col2 = st.sidebar.columns([1, 1])
+with _rm_col1:
+    _bonus_rm_acct = st.text_input(
+        "GL Acct",
+        key="bonus_rm_acct_input",
+        value=st.session_state.bonus_rm_acct,
+        placeholder="e.g. 615120",
+        label_visibility="collapsed",
+    )
+    st.session_state.bonus_rm_acct = _bonus_rm_acct
+with _rm_col2:
+    _bonus_rm_amt = st.number_input(
+        "Amount ($)",
+        min_value=0.0,
+        value=0.0,
+        step=500.0,
+        format="%.2f",
+        key="bonus_rm_amt",
+        label_visibility="collapsed",
+    )
+if _bonus_rm_acct.strip() and _bonus_rm_amt > 0:
+    _bonus_rows.append({
+        'account_code': _bonus_rm_acct.strip(),
+        'account_name': 'RM-Bonus/Incentive',
+        'amount':       _bonus_rm_amt,
+        'description':  f'R&M bonus accrual — monthly estimate ${_bonus_rm_amt:,.2f}',
+    })
+
+# Admin Bonus
+st.sidebar.markdown("*Admin Bonus*")
+_adm_col1, _adm_col2 = st.sidebar.columns([1, 1])
+with _adm_col1:
+    _bonus_admin_acct = st.text_input(
+        "GL Acct",
+        key="bonus_admin_acct_input",
+        value=st.session_state.bonus_admin_acct,
+        placeholder="e.g. 637120",
+        label_visibility="collapsed",
+    )
+    st.session_state.bonus_admin_acct = _bonus_admin_acct
+with _adm_col2:
+    _bonus_admin_amt = st.number_input(
+        "Amount ($)",
+        min_value=0.0,
+        value=0.0,
+        step=500.0,
+        format="%.2f",
+        key="bonus_admin_amt",
+        label_visibility="collapsed",
+    )
+if _bonus_admin_acct.strip() and _bonus_admin_amt > 0:
+    _bonus_rows.append({
+        'account_code': _bonus_admin_acct.strip(),
+        'account_name': 'Admin-Bonus/Incentive',
+        'amount':       _bonus_admin_amt,
+        'description':  f'Admin bonus accrual — monthly estimate ${_bonus_admin_amt:,.2f}',
+    })
 
 # One-off manual entries (dynamic rows)
 st.sidebar.markdown("**One-off accruals**")
@@ -385,6 +519,143 @@ for _i in range(st.session_state.n_manual_rows):
             'description':  _desc.strip() or f'Manual accrual — {_acct.strip()}',
         })
 
+# ── Periodic Contract Supplements ────────────────────────────────────────────
+# These accounts have monthly auto-detection (pipeline catches the regular
+# portion from GL), but may also carry quarterly or periodic billings that
+# won't appear in GL until the invoice arrives.  Ryan enters the periodic
+# amount here; it is appended AFTER build_accrual_entries so both the
+# pipeline's auto-detected entry and this supplement coexist for the same account.
+st.sidebar.markdown("**Contract Billing Supplements**")
+st.sidebar.caption(
+    "Pipeline auto-detects the monthly GL portion. "
+    "Enter the supplemental amount for any periodic (quarterly, etc.) billing "
+    "not yet reflected in GL. Leave $0 if nothing extra is due."
+)
+
+_SUPPLEMENT_DEFS = [
+    ('617110', 'HVAC Contract',        'e.g. quarterly billing ~$8,375'),
+    ('619120', 'PPM Water Treatment',  'e.g. monthly contract ~$1,800'),
+    ('627230', 'Fire / Life Safety',   'e.g. monthly contract ~$985'),
+    ('610160', 'Casella Waste — additional service line',
+               'Enter any Casella service lines not yet entered in Yardi (e.g. recycling, compactor, surcharge). '
+               'Pipeline auto-accrues lines already posted; enter only the missing portion. '
+               'March 2026 example: $356.68'),
+]
+
+_periodic_supplement_rows = []
+for _code, _slabel, _shelp in _SUPPLEMENT_DEFS:
+    _sup_amt = st.sidebar.number_input(
+        f"{_slabel} ({_code})",
+        min_value=0.0,
+        value=0.0,
+        step=100.0,
+        format="%.2f",
+        key=f"widget_supp_{_code}",
+        help=_shelp,
+    )
+    if _sup_amt > 0:
+        _periodic_supplement_rows.append({
+            'account_code': _code,
+            'account_name': _slabel,
+            'amount':       _sup_amt,
+            'description':  f'{_slabel} — periodic billing supplement ${_sup_amt:,.2f}',
+        })
+
+# ── Seasonal / judgment-call accruals ─────────────────────────────────────────
+# Accounts where the pipeline cannot auto-detect the remaining balance — either
+# because GL already has heavy activity that exceeds budget, or because the
+# amount depends on operational knowledge (storm events, pending vendor invoices).
+# Leave at $0 during off-season months.
+st.sidebar.markdown("**Seasonal / Judgment Accruals**")
+st.sidebar.caption(
+    "Enter known pending invoices the pipeline can't auto-detect. "
+    "Active Oct–Apr for snow; $0 in off-season."
+)
+
+_snow_ice_amt = st.sidebar.number_input(
+    "Snow & Ice Removal (635110)",
+    min_value=0.0,
+    value=0.0,
+    step=500.0,
+    format="%.2f",
+    key="widget_supp_635110",
+    help=(
+        "GL typically shows large Feb storm invoices posted in early March. "
+        "Enter the estimated amount for late-month events still unbilled "
+        "(check with Outdoor Pride for open work orders). JLL used ~$5,000 in March 2026."
+    ),
+)
+if _snow_ice_amt > 0:
+    _periodic_supplement_rows.append({
+        'account_code': '635110',
+        'account_name': 'Snow & Ice Removal',
+        'amount':       _snow_ice_amt,
+        'description':  f'Snow & Ice — pending storm invoices (Outdoor Pride) ${_snow_ice_amt:,.2f}',
+    })
+
+# ── Bonus Accruals ────────────────────────────────────────────────────────────
+# Bonuses post to the same account codes as regular payroll.
+# When Kardin budget is uploaded the pipeline auto-accrues monthly bonus
+# (annual Kardin ÷ 12 − standard payroll month) for 615110 and 637110.
+# Enter an override below only when you know the exact approved amount for
+# this period (e.g., a special mid-year bonus outside the Kardin schedule).
+# Leave $0 to use the Kardin auto-detection.
+#
+# Note: In the future, Kardin will carry separate line items for OT, Payroll,
+# and Bonus — at that point, the auto-detection will pick up each component
+# independently and these override fields can be retired.
+st.sidebar.divider()
+st.sidebar.markdown("**Bonus Accruals**")
+st.sidebar.caption(
+    "Auto-detected from Kardin when budget file is uploaded. "
+    "Enter an override only for special bonuses outside the Kardin schedule. "
+    "Leave $0 to use Kardin auto-detection."
+)
+
+_rm_bonus_amt = st.sidebar.number_input(
+    "R&M Bonus Override (615110)",
+    min_value=0.0,
+    value=0.0,
+    step=100.0,
+    format="%.2f",
+    key="widget_bonus_615110",
+    help=(
+        "Engineering / maintenance staff bonus. "
+        "Posts to 615110 alongside regular payroll. "
+        "Leave $0 to auto-detect from Kardin (Kardin annual / 12 − standard month). "
+        "Enter a specific amount only to override the Kardin calculation."
+    ),
+)
+
+_admin_bonus_amt = st.sidebar.number_input(
+    "Admin Bonus Override (637110)",
+    min_value=0.0,
+    value=0.0,
+    step=100.0,
+    format="%.2f",
+    key="widget_bonus_637110",
+    help=(
+        "Administrative staff bonus. "
+        "Posts to 637110 alongside regular payroll. "
+        "Leave $0 to auto-detect from Kardin. "
+        "Enter a specific amount only to override the Kardin calculation."
+    ),
+)
+
+# Build bonus overrides dict — passed to build_accrual_entries to replace
+# Kardin auto-detection for any account where the user supplied a value.
+_bonus_overrides: dict = {}
+if _rm_bonus_amt > 0:
+    _bonus_overrides['615110'] = _rm_bonus_amt
+if _admin_bonus_amt > 0:
+    _bonus_overrides['637110'] = _admin_bonus_amt
+
+if _periodic_supplement_rows:
+    st.sidebar.caption(
+        f"✓ {len(_periodic_supplement_rows)} supplement(s) queued — "
+        f"${sum(r['amount'] for r in _periodic_supplement_rows):,.2f} total"
+    )
+
 # Build the combined manual_accruals list
 _manual_accruals_input = []
 if water_sewer_invoice > 0:
@@ -398,6 +669,7 @@ if water_sewer_invoice > 0:
             f'= ${_monthly:,.2f}/month'
         ),
     })
+_manual_accruals_input.extend(_bonus_rows)
 _manual_accruals_input.extend(_one_off_rows)
 
 if _manual_accruals_input:
@@ -532,6 +804,9 @@ if run_button:
                 gl_data=gl_parsed,
                 budget_data=bc_parsed,
                 manual_accruals=_manual_accruals_input or [],
+                tenant_utility_rows=_tenant_utility_rows or None,
+                kardin_records=engine_result.parsed.get('kardin_budget') or [],
+                bonus_overrides=_bonus_overrides or None,
             )
             st.session_state.output_files["je_lines"] = je_lines
 
@@ -637,13 +912,32 @@ if run_button:
             st.session_state.output_files["fee_result"] = fee_result
 
             # Inject management fee JE into accrual entries, then write file
-            from management_fee import build_management_fee_je
+            from management_fee import (
+                build_management_fee_je,
+                detect_prior_period_catchup,
+                build_catchup_je,
+            )
             fee_je = build_management_fee_je(
                 fee_result,
                 period=engine_result.period or '',
                 property_code=engine_result.property_name or 'revlabpm',
                 je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
             )
+
+            # ── Prior-period management fee catch-up detection ────────────────
+            # Checks 637130 for unmatched auto-reversal credits (prior month
+            # check cut but not yet cashed → reversal in 637130, no offset).
+            _catchup_amount = detect_prior_period_catchup(gl_data_for_fee)
+            st.session_state.output_files["mgmt_fee_catchup_amount"] = _catchup_amount
+            _catchup_je = []
+            if _catchup_amount and _catchup_amount > 0:
+                _catchup_je = build_catchup_je(
+                    _catchup_amount,
+                    period=engine_result.period or '',
+                    property_code=engine_result.property_name or 'revlabpm',
+                    je_number=f'MGT-{len(je_lines)//2 + 2:03d}',
+                )
+            st.session_state.output_files["catchup_je"] = _catchup_je
             # Convert manual JE dataframe → je_lines format
             manual_je_lines = []
             _mdf = st.session_state.manual_je_df
@@ -664,10 +958,56 @@ if run_button:
                     "date":         close_period,
                 })
 
-            all_je_lines = je_lines + prepaid_release_je + fee_je + manual_je_lines
+            # ── Periodic contract supplement JEs ──────────────────────────────
+            # Built AFTER build_accrual_entries so the pipeline's partial-contract
+            # auto-detection and the user's supplement coexist for the same account
+            # (e.g., 617110 gets both the $1,000 DAC auto-entry + $8,375 quarterly).
+            _supplement_je_lines = []
+            _sup_base = (
+                len(je_lines) // 2
+                + len(prepaid_release_je) // 2
+                + len(fee_je) // 2
+            )
+            for _si, _sup in enumerate(_periodic_supplement_rows):
+                _sje_id   = f'SUP-{_sup_base + _si + 1:04d}'
+                _sup_amt  = round(float(_sup['amount']), 2)
+                _sup_desc = f"{_sup['account_name']} — periodic billing supplement"
+                _supplement_je_lines.extend([
+                    {
+                        'je_number':      _sje_id, 'line': 1,
+                        'date':           close_period,
+                        'account_code':   _sup['account_code'],
+                        'account_name':   _sup['account_name'],
+                        'description':    _sup_desc,
+                        'reference':      'CONTRACT-SUPP',
+                        'debit':          _sup_amt,
+                        'credit':         0,
+                        'vendor':         '[Contract Supplement]',
+                        'invoice_number': '',
+                        'source':         'contract_supplement',
+                        'confidence':     'high',
+                    },
+                    {
+                        'je_number':      _sje_id, 'line': 2,
+                        'date':           close_period,
+                        'account_code':   '211200',
+                        'account_name':   'Accrued Expenses',
+                        'description':    _sup_desc,
+                        'reference':      'CONTRACT-SUPP',
+                        'debit':          0,
+                        'credit':         _sup_amt,
+                        'vendor':         '[Contract Supplement]',
+                        'invoice_number': '',
+                        'source':         'contract_supplement',
+                        'confidence':     'high',
+                    },
+                ])
+            st.session_state.output_files["supplement_je_lines"] = _supplement_je_lines
+
+            all_je_lines = je_lines + prepaid_release_je + fee_je + _catchup_je + manual_je_lines + _supplement_je_lines
             st.session_state.output_files["all_je_lines"] = all_je_lines
             # ── Split into 3 separate Yardi CSVs ──────────────────
-            _accrual_sources = {'nexus', 'budget_gap', 'historical', 'management_fee', 'invoice_proration', 'prepaid_amortization'}
+            _accrual_sources = {'nexus', 'budget_gap', 'historical', 'management_fee', 'management_fee_catchup', 'invoice_proration', 'prepaid_amortization', 'contract_supplement', 'tenant_utility_billing', 'bonus_accrual'}
             _prepaid_sources  = {'prepaid_ledger'}
             _manual_sources   = {'manual'}
 
@@ -952,6 +1292,26 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             diff = accrued - fee_result.total_fee
             diff_str = f"${abs(diff):,.0f} {'over' if diff > 0 else 'under'} calculated"
             st.caption(f"BC accrued (637130): ${accrued:,.2f} — {diff_str}")
+
+        # ── Prior-period catch-up alert ────────────────────────────
+        _catchup_amt = st.session_state.output_files.get("mgmt_fee_catchup_amount")
+        if _catchup_amt and _catchup_amt > 0:
+            st.warning(
+                f"**Management Fee Catch-up Detected — ${_catchup_amt:,.2f}**\n\n"
+                f"Account 637130 shows a net credit of ${_catchup_amt:,.2f} in the current period "
+                f"(auto-reversal of prior month accrual with no matching invoice entry). "
+                f"This typically means the prior month's GRP/JLL check was not cashed before "
+                f"bank close. A catch-up entry **(MGT-002)** has been included in the Accruals CSV "
+                f"to restore the expense.\n\n"
+                f"**Verify before posting:** confirm the prior month check is still outstanding "
+                f"in AP (account 211200) before uploading the catch-up JE to Yardi."
+            )
+            _catchup_total_dr = (fee_result.total_fee or 0) + _catchup_amt
+            st.caption(
+                f"Total 637130 DR this period: ${fee_result.total_fee:,.2f} (current month, MGT-001) "
+                f"+ ${_catchup_amt:,.2f} (prior month catch-up, MGT-002) = ${_catchup_total_dr:,.2f}"
+            )
+
         st.divider()
 
     # ── Accruals Panel ─────────────────────────────────────────────
@@ -976,8 +1336,10 @@ if st.session_state.processing_complete and st.session_state.engine_result:
             'budget_gap':            'Budget Gap',
             'historical':            'Historical Pattern',
             'prepaid_ledger':        'Prepaid Release',
-            'management_fee':        'Management Fee',
-            'other':                 'Other',
+            'management_fee':         'Management Fee',
+            'management_fee_catchup': 'Mgmt Fee Catch-up',
+            'bonus_accrual':          'Payroll Bonus',
+            'other':                  'Other',
         }
 
         cols = st.columns(len(source_totals) + 1)

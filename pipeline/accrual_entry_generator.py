@@ -65,8 +65,64 @@ def _is_invoice_in_gl(invoice_number: str, gl_lookup: dict) -> bool:
 
 AP_ACCRUAL_ACCOUNT    = '211200'
 AP_ACCRUAL_NAME       = 'Accrued Expenses'
+
+# Known periodic-billing contract accounts.
+# The pipeline auto-detects the monthly portion via partial-contract coverage,
+# but these accounts often carry quarterly or semi-annual billings that won't
+# appear in the GL until the invoice arrives.  The UI surfaces these accounts
+# with a supplement input so the reviewer can add the periodic amount on top
+# of whatever the pipeline detected automatically.
+#   billing_cycle: 'monthly' | 'quarterly' | 'semi-annual'
+PERIODIC_CONTRACT_ACCOUNTS: dict = {
+    '617110': {'label': 'HVAC Contract',       'billing_cycle': 'quarterly'},
+    '619120': {'label': 'PPM Water Treatment', 'billing_cycle': 'monthly'},
+    '627230': {'label': 'Fire / Life Safety',  'billing_cycle': 'monthly'},
+}
+# Tenant sub-metered utility recovery accounts.
+# Each month the meter read company provides per-tenant consumption data.
+# The property manager posts a JE:
+#   DR 131100  Accounts Receivable - Control  (per tenant)
+#   CR 440500  Recovery - Electricity         (electric portion)
+#   CR 440700  Recovery - Misc Utilities      (gas portion, reclassed from 440500)
+#
+# If the meter read JE hasn't been posted yet at close, the pipeline accrues
+# the budget amount so NOI is not understated. When the actual meter read
+# data is available, the sidebar overrides with per-tenant actual amounts.
+TENANT_UTILITY_AR_ACCOUNT   = '131100'
+TENANT_UTILITY_AR_NAME      = 'Accounts Receivable - Control'
+TENANT_UTILITY_ACCOUNTS: dict = {
+    '440500': {'label': 'Tenant Electric Recovery',     'budget_key': '440500'},
+    '440700': {'label': 'Tenant Gas Recovery',          'budget_key': '440700'},
+}
+
 PREPAID_ASSET_ACCOUNT = '130000'
 PREPAID_ASSET_NAME    = 'Prepaid Expenses'
+
+# ── Payroll bonus accounts ───────────────────────────────────────────────────
+# Bonuses post to the same account codes as regular payroll.  The annual bonus
+# is paid once or twice a year (Jan and Jul at Revolution Labs) but Kardin
+# budgets it evenly across all 12 months.
+#
+# Monthly bonus accrual = (Kardin annual budget ÷ 12) − standard_monthly
+#   where standard_monthly = the minimum monthly value across M1–M12
+#   (i.e., the non-payment months that carry only base payroll).
+#
+# The accrual posts every month UNLESS the GL net_change for the period already
+# equals or exceeds the monthly average (meaning the actual payment hit the GL
+# in that period — no separate accrual needed).
+#
+# 'kardin_keywords' are matched against the Kardin row's 'description' field
+# to select only the bonus-inclusive budget row (not the SX/admin-overhead rows).
+PAYROLL_BONUS_ACCOUNTS: dict = {
+    '615110': {
+        'label':            'RM-Pay/Wages',
+        'kardin_keywords':  ['bonus', 'payroll', 'ot'],
+    },
+    '637110': {
+        'label':            'Admin-Pay/Wages',
+        'kardin_keywords':  ['bonus', 'salary'],
+    },
+}
 
 THIN_BORDER = Border(
     left=Side(style='thin'), right=Side(style='thin'),
@@ -284,6 +340,74 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
             f'escrow balance ${escrow_balance:,.2f})'
         ),
     }
+
+
+# ── Tenant utility billing detection ────────────────────────
+
+def detect_tenant_utility_billing(gl_data, budget_data) -> List[Dict[str, Any]]:
+    """
+    Check whether the tenant sub-metered utility billing JE (meter read) has
+    been posted this period for 440500 (electric) and 440700 (gas).
+
+    When NOT posted:  returns budget accrual candidates so the income side of
+    NOI is not understated while the expense proration is accruing the full
+    building bill.
+
+    When already posted: returns nothing (GL already has the income entry).
+
+    The pipeline accrues ONE aggregate line per account (budget amount) as a
+    placeholder.  When the sidebar provides per-tenant actual amounts, those
+    replace the budget aggregate and generate one JE line per tenant.
+
+    Returns list of dicts:
+        account_code, account_name, amount (budget), label,
+        source='tenant_utility_billing', confidence='medium'
+    """
+    results: List[Dict[str, Any]] = []
+    if not gl_data or not budget_data:
+        return results
+
+    # Build budget amount lookup
+    budget_by_code: Dict[str, float] = {}
+    rows = budget_data if isinstance(budget_data, list) else getattr(budget_data, 'line_items', [])
+    for row in rows:
+        code = str((row.get('account_code') if isinstance(row, dict)
+                    else getattr(row, 'account_code', '')) or '').strip()
+        ptd  = (row.get('ptd_budget') if isinstance(row, dict)
+                else getattr(row, 'ptd_budget', 0)) or 0
+        budget_by_code[code] = abs(float(ptd))
+
+    # Check each tenant utility account
+    gl_accounts_by_code: Dict[str, Any] = {}
+    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+        gl_accounts_by_code[str(acct.account_code).strip()] = acct
+
+    for code, info in TENANT_UTILITY_ACCOUNTS.items():
+        acct = gl_accounts_by_code.get(code)
+        # Activity = any net_change (income = credit = negative net_change)
+        if acct and abs(acct.net_change) > 0.01:
+            continue   # already posted this period
+
+        budget_amt = budget_by_code.get(code, 0.0)
+        if budget_amt < 1.0:
+            continue
+
+        results.append({
+            'account_code': code,
+            'account_name': info['label'],
+            'amount':       round(budget_amt, 2),
+            'label':        info['label'],
+            'source':       'tenant_utility_billing',
+            'confidence':   'medium',
+            'description': (
+                f'Tenant utility accrual — {info["label"]}: '
+                f'meter read JE not yet posted. '
+                f'Accruing budget ${budget_amt:,.2f}. '
+                f'Update with actual per-tenant amounts when meter read received.'
+            ),
+        })
+
+    return results
 
 
 # ── Layer 2: Invoice-period proration ────────────────────────
@@ -571,12 +695,99 @@ def detect_invoice_proration_accruals(
             'invoice_total':  round(latest_run_total, 2),
         })
 
+        continue   # payroll path handled — skip recurring-vendor check
+
+    # ── PASS 2: Recurring month-start vendor accruals ─────────────────────────
+    # Pattern: monthly service billed in arrears at the start of the following
+    # month (e.g., Casella trash on 03/01 covers February service → March
+    # service is unbilled and needs an accrual).
+    #
+    # Detection criteria — ALL must be true:
+    #   1. No billing date ranges in any transaction (already handled above)
+    #   2. All current-period transactions posted within the first 5 days of
+    #      the reporting month (strong signal of "prior month billed at open")
+    #   3. Account has prior-period history (beginning_balance > 0) — confirms
+    #      it's a recurring expense, not a one-off
+    #   4. Total debit for the period exceeds materiality threshold
+    #   5. Expense account (6xxx / 5xxx / 7xxx / 8xxx)
+
+    period_month_start = date(month_end.year, month_end.month, 1)
+
+    _already_coded = {c['account_code'] for c in candidates}
+
+    for acct in gl_data.accounts:
+        code = str(acct.account_code).strip()
+        if not code or code[0] not in ('5', '6', '7', '8'):
+            continue
+        if code in _already_coded:
+            continue   # already handled by date-range or payroll path
+
+        # Must have some GL activity this period
+        if not acct.transactions:
+            continue
+
+        # Must have prior-period history
+        beg_bal = getattr(acct, 'beginning_balance', 0) or 0
+        if abs(beg_bal) < 1.0:
+            continue
+
+        # All debits in the period must be posted within the first 5 days
+        period_debits = []
+        all_early = True
+        for txn in acct.transactions:
+            amt = (txn.debit or 0) - (txn.credit or 0)
+            if amt <= 0:
+                continue
+            txn_date = txn.date
+            if not isinstance(txn_date, date):
+                all_early = False
+                break
+            if txn_date < period_month_start or txn_date > month_end:
+                # Transaction outside the reporting month — not an early-month bill
+                all_early = False
+                break
+            if txn_date.day > 5:
+                all_early = False
+                break
+            period_debits.append(amt)
+
+        if not all_early or not period_debits:
+            continue
+
+        invoice_total = sum(period_debits)
+        if invoice_total < materiality:
+            continue
+
+        # All criteria met — accrual = same amount as the current-period invoices
+        # (current invoices cover prior month; current month is unbilled at same rate)
+        vendors = list({(txn.description or '').split('(')[0].strip()
+                        for txn in acct.transactions
+                        if (txn.debit or 0) > 0})
+        vendor_str = ', '.join(v for v in vendors if v)[:60]
+
+        candidates.append({
+            'account_code':   code,
+            'account_name':   acct.account_name,
+            'accrual_amount': round(invoice_total, 2),
+            'source':         'invoice_proration',
+            'description': (
+                f'Recurring monthly accrual — {acct.account_name}: '
+                f'{vendor_str} invoiced {period_month_start.strftime("%m/%d/%y")} '
+                f'(prior month billing in arrears, current month unbilled = '
+                f'${invoice_total:,.2f})'
+            ),
+            'daily_rate':     0.0,
+            'uncovered_days': 0,
+            'period_days':    0,
+            'invoice_total':  round(invoice_total, 2),
+        })
+
     return candidates
 
 
 # ── Layer 3: Budget gap detection ────────────────────────────
 
-def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
+def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str, Any]]:
     """
     Identify accounts that have a budget amount but zero GL activity.
 
@@ -634,6 +845,26 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
         'insurance', 'tax', 'taxes', 'real estate', 'interest',
     )
 
+    # ── Seasonal suppression ──────────────────────────────────────────────────
+    # Accounts matching these name keywords are only active Apr–Oct (months 4–10).
+    # Outside that window: suppress entirely (no accrual, no REVIEW flag).
+    # Inside the window: normalise monthly amount to annual / 7 (active months).
+    _SEASONAL_KW = ('landscap',)
+    _SEASONAL_ACTIVE_MONTHS = frozenset(range(4, 11))   # Apr=4 … Oct=10
+    _SEASONAL_ACTIVE_COUNT  = 7                          # Apr–Oct
+
+    # Parse period month (0 = unknown → seasonal filter disabled, accrue normally)
+    _MONTH_MAP_BG = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    }
+    _period_month = 0
+    for _abbr, _num in _MONTH_MAP_BG.items():
+        if _abbr in (period or '').lower():
+            _period_month = _num
+            break
+
     candidates = []
 
     if not budget_data or not gl_data:
@@ -678,6 +909,28 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
         # Skip escrow-funded accounts — recognized at payment date, not monthly
         if code in _ESCROW_FUNDED:
             continue
+
+        # ── Seasonal suppression ───────────────────────────────────────────────
+        # Interior landscaping (633120) is year-round — only suppress exterior.
+        name_lower_pre = name.lower()
+        is_seasonal = (any(kw in name_lower_pre for kw in _SEASONAL_KW)
+                       and 'interior' not in name_lower_pre)
+        if is_seasonal and _period_month > 0:
+            if _period_month not in _SEASONAL_ACTIVE_MONTHS:
+                # Off-season: suppress entirely — no accrual, no REVIEW flag
+                continue
+            # In-season: normalise to annual / active_months so the PTD budget
+            # (which spreads annual cost across 12 months) is replaced with the
+            # correct per-active-month rate.
+            # Guard: if the budget is already on 7 months (ptd_budget ≈ annual/7),
+            # the Kardin budget has been corrected — use ptd_budget as-is.
+            if abs(annual) > 0:
+                already_normalised = (
+                    abs(ptd_budget) > 0 and
+                    abs(abs(ptd_budget) - abs(annual) / _SEASONAL_ACTIVE_COUNT) < 1.0
+                )
+                if not already_normalised:
+                    ptd_budget = abs(annual) / _SEASONAL_ACTIVE_COUNT
 
         first_digit = code[0] if code else '0'
         if first_digit not in ('5', '6', '7', '8'):
@@ -763,6 +1016,107 @@ def detect_budget_gaps(gl_data, budget_data) -> List[Dict[str, Any]]:
             'confidence':    confidence,
             'description':   desc,
         })
+
+    # ── PASS 2: Partial contract coverage ─────────────────────────────────────
+    # Accounts that have SOME GL activity this period but are significantly below
+    # their PTD budget, and whose name contains "contract" — indicating a known
+    # recurring service contract where one or more invoices may be missing.
+    #
+    # Example: HVAC-Contract Svc budgeted $12,676/month; GL shows $3,526 (one
+    # vendor's monthly payment received, another's March invoice not yet arrived).
+    #
+    # Detection criteria — ALL must be true:
+    #   1. Account name contains 'contract'
+    #   2. ptd_actual > 0 (has some activity — distinguishes from zero-activity gaps)
+    #   3. ptd_actual < ptd_budget × 0.5 (below 50% of expected monthly spend)
+    #   4. Gap (ptd_budget − ptd_actual) > $500 materiality
+    #   5. Has prior-period history (beginning_balance > 0)
+    #   6. Not already captured by the main gap loop (ptd_actual was > 0 so main loop skipped it)
+    #
+    # Suggested amount: smallest debit from the current period — proxy for the
+    # missing monthly contract payment (e.g., DAC $1,000 within a $3,526 period).
+    # Confidence: always LOW — reviewer must confirm which invoice is missing.
+
+    _partial_coded = {c['account_code'] for c in candidates}
+
+    for item in budget_items:
+        if isinstance(item, dict):
+            code     = str(item.get('account_code', '') or '').strip()
+            name     = str(item.get('account_name', '') or '').strip()
+            ptd_b    = float(item.get('ptd_budget', 0) or 0)
+            ptd_a    = float(item.get('ptd_actual', 0) or 0)
+        else:
+            code     = str(getattr(item, 'account_code', '') or '').strip()
+            name     = str(getattr(item, 'account_name', '') or '').strip()
+            ptd_b    = float(getattr(item, 'ptd_budget', 0) or 0)
+            ptd_a    = float(getattr(item, 'ptd_actual', 0) or 0)
+
+        if not code or 'TOTAL' in name.upper():
+            continue
+        if code[0] not in ('5', '6', '7', '8'):
+            continue
+        if code in _partial_coded:
+            continue
+        if code in _ESCROW_FUNDED:
+            continue
+        if 'contract' not in name.lower():
+            continue
+        if abs(ptd_a) < 1:
+            continue   # zero-activity — already handled by main loop
+        if abs(ptd_b) <= 500:
+            continue
+        gap = abs(ptd_b) - abs(ptd_a)
+        if gap < 500:
+            continue
+        if abs(ptd_a) >= abs(ptd_b) * 0.5:
+            continue   # >= 50% covered — normal variation, not a missing invoice
+
+        # Check prior history
+        has_history = abs(gl_beg_bal.get(code, 0.0)) > 50.0
+        if not has_history:
+            continue
+
+        # Suggested amount: smallest positive debit this period from GL
+        gl_acct = None
+        if hasattr(gl_data, 'accounts'):
+            for a in gl_data.accounts:
+                if str(a.account_code).strip() == code:
+                    gl_acct = a
+                    break
+        if gl_acct:
+            debits = [abs((t.debit or 0) - (t.credit or 0))
+                      for t in gl_acct.transactions
+                      if (t.debit or 0) - (t.credit or 0) > 0]
+            suggested = min(debits) if debits else gap
+        else:
+            suggested = gap
+
+        # Check if this is a known periodic-billing account (quarterly, etc.)
+        _periodic_info = PERIODIC_CONTRACT_ACCOUNTS.get(code)
+        _periodic_gap  = round(gap - suggested, 2)   # estimated outstanding beyond min invoice
+
+        _entry: Dict[str, Any] = {
+            'account_code':  code,
+            'account_name':  name,
+            'budget_amount': round(suggested, 2),
+            'source':        'budget_gap',
+            'confidence':    'low',
+            'description': (
+                f'REVIEW — Partial contract coverage: {name} — '
+                f'${abs(ptd_a):,.2f} billed of ${abs(ptd_b):,.2f} budget '
+                f'({abs(ptd_a)/abs(ptd_b)*100:.0f}% covered). '
+                f'Suggested accrual ${suggested:,.2f} (smallest invoice this period). '
+                f'Confirm which contract invoices are still outstanding.'
+            ),
+        }
+
+        if _periodic_info:
+            _entry['periodic_flag']      = True
+            _entry['periodic_label']     = _periodic_info['label']
+            _entry['periodic_billing']   = _periodic_info['billing_cycle']
+            _entry['periodic_suggested'] = _periodic_gap  # remaining gap after min invoice
+
+        candidates.append(_entry)
 
     return candidates
 
@@ -862,6 +1216,112 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
     return candidates
 
 
+# ── Payroll bonus detection ──────────────────────────────────────────────────
+
+def detect_payroll_bonus_accrual(
+    gl_data,
+    kardin_records: List[Dict],
+    period_month: int,
+) -> List[Dict[str, Any]]:
+    """
+    Generate monthly bonus accrual entries for payroll accounts.
+
+    Business rule
+    -------------
+    The annual engineering and admin bonuses are paid in January and July
+    but should be expensed evenly across all 12 months.  Kardin reflects
+    this intent — the two payment months carry higher values while the
+    remaining months carry only base payroll.
+
+    Monthly bonus accrual = (Kardin annual ÷ 12) − standard_month
+      where standard_month = min(M1..M12) for the bonus-inclusive row.
+
+    The accrual is suppressed if the GL net_change for the period already
+    equals or exceeds the monthly average (the actual bonus payment is in
+    the GL — no separate accrual needed).
+
+    Args:
+        gl_data:        GLParseResult from yardi_gl parser
+        kardin_records: List of dicts from parsers.kardin_budget.parse()
+        period_month:   Integer month of the reporting period (1=Jan … 12=Dec)
+
+    Returns:
+        List of candidate dicts (same shape as budget_gap candidates) with
+        source='bonus_accrual'.
+    """
+    results: List[Dict[str, Any]] = []
+
+    if not gl_data or not kardin_records or not period_month:
+        return results
+
+    # Build GL net_change lookup for payroll accounts
+    gl_net: dict = {}
+    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+        code = str(acct.account_code).strip()
+        if code in PAYROLL_BONUS_ACCOUNTS:
+            gl_net[code] = acct.net_change
+
+    for acct_code, config in PAYROLL_BONUS_ACCOUNTS.items():
+        keywords = [k.lower() for k in config['kardin_keywords']]
+
+        # Find Kardin rows for this account that include the bonus component
+        bonus_rows = [
+            r for r in kardin_records
+            if str(r.get('account_code', '') or '').strip() == acct_code
+            and any(kw in (r.get('description', '') or '').lower() for kw in keywords)
+        ]
+        if not bonus_rows:
+            continue
+
+        # Sum annual and all monthly amounts across matching rows
+        annual = sum(float(r.get('m_total', 0) or 0) for r in bonus_rows)
+        if annual <= 0:
+            continue
+
+        monthly_avg = annual / 12.0
+
+        # Standard month = minimum Kardin monthly value (non-payment months)
+        all_monthly: List[float] = []
+        for r in bonus_rows:
+            for m in range(1, 13):
+                val = float(r.get(f'M{m}', 0) or 0)
+                if val > 0:
+                    all_monthly.append(val)
+        if not all_monthly:
+            continue
+        standard_monthly = min(all_monthly)
+
+        monthly_bonus = monthly_avg - standard_monthly
+
+        # Skip if not material (< $100)
+        if monthly_bonus < 100.0:
+            continue
+
+        # Check current-period GL activity
+        net = gl_net.get(acct_code, 0.0)
+
+        # Suppress in payment months: GL already ≥ monthly average
+        # (the actual bonus payment is in the GL — no accrual needed)
+        if net >= monthly_avg:
+            continue
+
+        results.append({
+            'account_code':    acct_code,
+            'account_name':    config['label'],
+            'estimated_amount': round(monthly_bonus, 2),
+            'source':          'bonus_accrual',
+            'confidence':      'high',
+            'description': (
+                f'Monthly bonus accrual — {config["label"]}: '
+                f'Kardin annual ${annual:,.2f} / 12 = ${monthly_avg:,.2f}/mo avg; '
+                f'standard month ${standard_monthly:,.2f}; '
+                f'bonus component ${monthly_bonus:,.2f}/mo'
+            ),
+        })
+
+    return results
+
+
 # ── Build JE lines from all sources ─────────────────────────
 
 def build_accrual_entries(nexus_data: list, period: str = '',
@@ -870,15 +1330,19 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           gl_data=None, budget_data=None,
                           period_month_end: Optional[date] = None,
                           manual_accruals: Optional[List[Dict]] = None,
+                          tenant_utility_rows: Optional[List[Dict]] = None,
+                          kardin_records: Optional[List[Dict]] = None,
+                          bonus_overrides: Optional[Dict[str, float]] = None,
                           ) -> List[Dict[str, Any]]:
     """
-    Build accrual journal entry lines from five sources:
+    Build accrual journal entry lines from six sources:
       Layer 0: Manual overrides — user-supplied amounts for accounts that
                cannot be auto-calculated (e.g., semi-annual water/sewer bills)
       Layer 1: Nexus pending invoices (AP-side, deduped against GL)
       Layer 2: Invoice-period proration (billing date ranges in GL descriptions)
       Layer 3: Budget gap detection (accounts with budget but no GL activity)
       Layer 4: Historical recurring detection (prior-month YTD extrapolation)
+      Layer 5: Payroll bonus accrual (Kardin annual ÷ 12 − standard month)
 
     Manual overrides take absolute priority and suppress all lower layers for
     the same account.  Layers 1-2 are high-fidelity and suppress Layers 3-4.
@@ -972,6 +1436,101 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         })
         _manual_accounts.add(acct_code)
         je_num += 1
+
+    # ── Tenant utility billing (meter read JE) ─────────────────────────────────
+    # Revenue side of the utility accrual: ensures NOI is not understated while
+    # the expense proration (Layer 2) accrues the full building bill.
+    #
+    # Two modes:
+    #   a) Actual per-tenant amounts (tenant_utility_rows provided by sidebar):
+    #      One DR 131100 / CR 440500 line per tenant for electric.
+    #      One DR 131100 / CR 440700 line per tenant for gas.
+    #   b) Budget aggregate (no rows provided, account has no GL activity):
+    #      Single DR 131100 / CR 440500 (electric budget).
+    #      Single DR 131100 / CR 440700 (gas budget).
+    #
+    # When the meter read JE is already in GL (440500/440700 have activity),
+    # this block is skipped entirely for that account.
+    _tub_accounts: set = set()
+
+    def _post_tub_line(cr_code: str, cr_name: str, amount: float,
+                       tenant: str, desc: str) -> None:
+        """Append DR 131100 / CR recovery-account pair for one tenant billing."""
+        nonlocal je_num
+        je_id = f'TUB-{je_num:04d}'
+        je_lines.append({
+            'je_number':      je_id, 'line': 1, 'date': '',
+            'account_code':   TENANT_UTILITY_AR_ACCOUNT,
+            'account_name':   TENANT_UTILITY_AR_NAME,
+            'description':    desc,
+            'reference':      'METER-READ',
+            'debit':          round(amount, 2), 'credit': 0,
+            'vendor':         tenant or '[Tenant Billing]',
+            'invoice_number': '',
+            'source':         'tenant_utility_billing', 'confidence': 'medium',
+        })
+        je_lines.append({
+            'je_number':      je_id, 'line': 2, 'date': '',
+            'account_code':   cr_code,
+            'account_name':   cr_name,
+            'description':    desc,
+            'reference':      'METER-READ',
+            'debit':          0, 'credit': round(amount, 2),
+            'vendor':         tenant or '[Tenant Billing]',
+            'invoice_number': '',
+            'source':         'tenant_utility_billing', 'confidence': 'medium',
+        })
+        je_num += 1
+
+    if gl_data and budget_data:
+        # Determine which accounts already have GL activity this period
+        _tub_gl: Dict[str, Any] = {
+            str(a.account_code).strip(): a
+            for a in (gl_data.accounts if hasattr(gl_data, 'accounts') else [])
+        }
+
+        if tenant_utility_rows:
+            # Mode (a): per-tenant actuals from sidebar
+            for row in (tenant_utility_rows or []):
+                tenant_name = str(row.get('tenant', '') or '').strip()
+                elec_amt    = float(row.get('electric', 0) or 0)
+                gas_amt     = float(row.get('gas',     0) or 0)
+                if not tenant_name:
+                    continue
+
+                if elec_amt > 0:
+                    _acct = _tub_gl.get('440500')
+                    if _acct is None or abs(_acct.net_change) < 0.01:
+                        _post_tub_line(
+                            '440500', 'Recovery - Electricity', elec_amt,
+                            tenant_name,
+                            f'Tenant electric billing — {tenant_name} '
+                            f'(per meter read) ${elec_amt:,.2f}',
+                        )
+                        _tub_accounts.add('440500')
+
+                if gas_amt > 0:
+                    _acct = _tub_gl.get('440700')
+                    if _acct is None or abs(_acct.net_change) < 0.01:
+                        _post_tub_line(
+                            '440700', 'Recovery - Misc Utilities', gas_amt,
+                            tenant_name,
+                            f'Tenant gas billing — {tenant_name} '
+                            f'(per meter read) ${gas_amt:,.2f}',
+                        )
+                        _tub_accounts.add('440700')
+
+        else:
+            # Mode (b): auto-detect from GL + budget (aggregate budget accrual)
+            for cand in detect_tenant_utility_billing(gl_data, budget_data):
+                cr_code = cand['account_code']
+                cr_name = 'Recovery - Electricity' if cr_code == '440500' else 'Recovery - Misc Utilities'
+                _post_tub_line(
+                    cr_code, cr_name, cand['amount'],
+                    '[Budget Accrual]',
+                    cand['description'],
+                )
+                _tub_accounts.add(cr_code)
 
     # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
     # Entries that draw down a balance sheet asset/escrow rather than creating
@@ -1202,7 +1761,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # ── Layer 3: Budget gap accruals ──
     # Fallback for accounts with a budget but no GL activity AND no proration data.
     if gl_data and budget_data:
-        budget_gaps = detect_budget_gaps(gl_data, budget_data)
+        budget_gaps = detect_budget_gaps(gl_data, budget_data, period=period)
 
         for gap in budget_gaps:
             if gap['account_code'] in _covered:
@@ -1215,7 +1774,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
             # LOW confidence gaps are still included but clearly flagged so the
             # reviewer can decide whether to keep, adjust, or delete before posting.
-            je_lines.append({
+            _gap_line: Dict[str, Any] = {
                 'je_number':    je_id,
                 'line':         1,
                 'date':         '',
@@ -1229,7 +1788,15 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'invoice_number': '',
                 'source':       'budget_gap',
                 'confidence':   confidence,
-            })
+            }
+            # Carry periodic-billing flag through so the UI can surface
+            # a supplement input for the remaining undetected portion.
+            if gap.get('periodic_flag'):
+                _gap_line['periodic_flag']      = True
+                _gap_line['periodic_label']     = gap.get('periodic_label', '')
+                _gap_line['periodic_billing']   = gap.get('periodic_billing', '')
+                _gap_line['periodic_suggested'] = gap.get('periodic_suggested', 0.0)
+            je_lines.append(_gap_line)
             je_lines.append({
                 'je_number':    je_id,
                 'line':         2,
@@ -1287,6 +1854,85 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'source': 'historical',
             })
             je_num += 1
+
+    # ── Layer 5: Payroll bonus accruals (Kardin-driven) ─────────────────────
+    # Monthly bonus component = (Kardin annual ÷ 12) − standard payroll month.
+    # Posts every month UNLESS GL already shows the actual bonus payment.
+    if gl_data and kardin_records:
+        # Derive period month from period string (e.g., 'Mar-2026' -> 3)
+        _month_num = 0
+        _month_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                          Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+        if period:
+            import re as _re
+            _m = _re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', period)
+            if _m:
+                _month_num = _month_map.get(_m.group(1), 0)
+
+        if _month_num:
+            bonus_candidates = detect_payroll_bonus_accrual(
+                gl_data, kardin_records, _month_num
+            )
+            # Apply sidebar overrides: replace Kardin amount for any account
+            # where the user supplied an explicit value.
+            _overrides = bonus_overrides or {}
+            _override_codes = set(_overrides.keys())
+            # Add override accounts that Kardin didn't detect (e.g. no Kardin file)
+            for _oc, _oa in _overrides.items():
+                if _oa > 0 and not any(b['account_code'] == _oc for b in bonus_candidates):
+                    bonus_candidates.append({
+                        'account_code':    _oc,
+                        'account_name':    PAYROLL_BONUS_ACCOUNTS.get(_oc, {}).get('label', _oc),
+                        'estimated_amount': round(_oa, 2),
+                        'source':          'bonus_accrual',
+                        'confidence':      'high',
+                        'description':     f'Bonus accrual override (manual) — ${_oa:,.2f}',
+                    })
+            for bonus in bonus_candidates:
+                # Replace Kardin amount with override if provided
+                if bonus['account_code'] in _override_codes:
+                    ovr = _overrides[bonus['account_code']]
+                    if ovr <= 0:
+                        continue  # Override explicitly set to $0 → skip
+                    bonus = {**bonus,
+                             'estimated_amount': round(ovr, 2),
+                             'description': f'Bonus accrual override (manual) — ${ovr:,.2f}',
+                             'confidence': 'high'}
+                # Bonus accounts are NOT suppressed by _covered — they coexist
+                # with the regular payroll proration for the same account.
+                je_id   = f'BON-{je_num:04d}'
+                je_desc = bonus['description']
+                je_lines.append({
+                    'je_number':      je_id,
+                    'line':           1,
+                    'date':           '',
+                    'account_code':   bonus['account_code'],
+                    'account_name':   bonus['account_name'],
+                    'description':    je_desc,
+                    'reference':      'BONUS-ACCRUAL',
+                    'debit':          bonus['estimated_amount'],
+                    'credit':         0,
+                    'vendor':         '[Bonus Accrual]',
+                    'invoice_number': '',
+                    'source':         'bonus_accrual',
+                    'confidence':     'high',
+                })
+                je_lines.append({
+                    'je_number':      je_id,
+                    'line':           2,
+                    'date':           '',
+                    'account_code':   AP_ACCRUAL_ACCOUNT,
+                    'account_name':   AP_ACCRUAL_NAME,
+                    'description':    je_desc,
+                    'reference':      'BONUS-ACCRUAL',
+                    'debit':          0,
+                    'credit':         bonus['estimated_amount'],
+                    'vendor':         '[Bonus Accrual]',
+                    'invoice_number': '',
+                    'source':         'bonus_accrual',
+                    'confidence':     'high',
+                })
+                je_num += 1
 
     return je_lines
 
