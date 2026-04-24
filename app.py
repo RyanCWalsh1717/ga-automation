@@ -184,8 +184,8 @@ if "manual_accruals_df" not in st.session_state:
 
 # ── Header ───────────────────────────────────────────────────
 st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
-st.markdown("### GA Automation — Monthly Report Pipeline")
-st.markdown("**Revolution Labs | 1050 Waltham**")
+st.markdown("### GA Automation — Monthly Close Pipeline")
+st.markdown("**Revolution Labs — 275 Grove St, Newton, MA**")
 st.divider()
 
 
@@ -214,35 +214,37 @@ FILE_CONFIG = {
     ),
     "budget_comparison": (
         "Yardi Budget Comparison (.xlsx)", "xlsx", False, "core",
-        "Enables budget gap accrual detection (Layer 2) and variance commentary. "
-        "Without it: only Nexus and historical accruals generated; no variance comments.",
+        "Enables budget gap accrual detection (Layer 3) and variance commentary. "
+        "Without it: only Nexus invoice and invoice-proration accruals generated; no variance comments.",
     ),
     "kardin_budget": (
         "Kardin 2026 Budget (.xlsx)", "xlsx", False, "core",
-        "Enables QC YTD budget vs Kardin cross-check. "
-        "Without it: QC budget check skipped silently.",
+        "Enables QC YTD budget vs Kardin cross-check AND monthly payroll bonus accruals (Layer 5 — "
+        "annual budget ÷ 12, suppressed in payment months). "
+        "Without it: QC budget check and bonus accruals skipped.",
     ),
     "nexus_accrual": (
         "Nexus Accrual Detail (.xls)", "xls", False, "core",
-        "Enables AP accrual detection (Layer 1 — pending invoices). "
-        "Without it: only budget gap and historical accruals are generated.",
+        "Enables AP accrual detection (Layer 1 — open invoices not yet posted to GL). "
+        "Without it: invoice-proration (Layer 2), budget gap (Layer 3), and historical (Layer 4) still run.",
     ),
     # ── Bank ──────────────────────────────────────────────────
     "bank_rec": (
         "Yardi Bank Rec PDF — Operating (.pdf)", "pdf", False, "bank",
-        "Enables Operating bank rec tab in the BS workpaper (PNC x3993 vs GL 111100 "
-        "with outstanding check detail). Without it: no bank rec tab in workpaper.",
+        "PREFERRED bank source. Reads Yardi's pre-computed reconciliation: bank balance, "
+        "outstanding checks, reconciled balance, and $0 difference. Enables Operating bank "
+        "rec tab in the BS workpaper (PNC x3993 vs GL 111100). Without it: no bank rec tab.",
     ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
-        "Enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
-        "Without it: no DACA tab in workpaper.",
+        "Used as the management fee cash-received basis (matches JLL's methodology). "
+        "Also enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
+        "Without it: management fee falls back to GL 111100 debits as the cash basis.",
     ),
     "pnc_bank": (
         "PNC Bank Statement — raw (.pdf)", "pdf", False, "bank",
-        "Enables GL-to-bank transaction matching in the engine. "
-        "Without it: transaction-level matching skipped (bank rec workpaper tab is unaffected "
-        "— that uses the Yardi Bank Rec PDF above).",
+        "Used for transaction-level GL↔bank matching when Yardi Bank Rec PDF is not uploaded. "
+        "If Yardi Bank Rec PDF is uploaded, that takes priority and this file is not used for reconciliation.",
     ),
     # ── Reference ─────────────────────────────────────────────
     "loan": (
@@ -334,10 +336,10 @@ prior_period_outstanding = st.sidebar.number_input(
     step=100.0,
     format="%.2f",
     help=(
-        "Outstanding checks from prior periods not visible in the current GL. "
-        "Leave 0 on first run — if a reconciling difference appears, enter "
-        "that amount here to close the rec. GRP confirms these are legitimate "
-        "uncleared checks from a prior month."
+        "Only needed when using the raw PNC statement (no Yardi Bank Rec PDF). "
+        "Enter the total of checks outstanding from prior periods that aren't in the "
+        "current GL export. Leave $0 when uploading the Yardi Bank Rec PDF — "
+        "Yardi's pre-computed values are used directly in that case."
     ),
 )
 prior_period_outstanding = prior_period_outstanding if prior_period_outstanding > 0 else 0.0
@@ -351,7 +353,11 @@ cash_received_override = st.sidebar.number_input(
     value=0.0,
     step=1000.0,
     format="%.2f",
-    help="Override auto-detected cash received for management fee calc. Leave 0 to auto-detect from GL.",
+    help=(
+        "Override the auto-detected cash received used for the management fee calculation. "
+        "Auto-detect priority: DACA additions → GL 111100 debits → revenue proxy. "
+        "Only enter a value here if you know the correct amount and the auto-detection is wrong."
+    ),
 )
 cash_received_override = cash_received_override if cash_received_override > 0 else None
 st.sidebar.divider()
@@ -359,9 +365,9 @@ st.sidebar.divider()
 # ── Tenant Utility Billing (Meter Read JE) ──────────────────────────────────
 st.sidebar.markdown("## Tenant Utility Billing")
 st.sidebar.caption(
-    "Enter per-tenant amounts from the meter read company. "
-    "Pipeline auto-accrues budget ($18,884 electric / $1,260 gas) if all rows are $0. "
-    "Both sides post: DR AR / CR 440500 (electric) and CR 440700 (gas)."
+    "Enter electric and gas amounts per tenant from the monthly meter read. "
+    "Posts as: DR Accounts Receivable / CR 440500 Tenant Electric and CR 440700 Tenant Gas. "
+    "Leave all $0 to skip — pipeline will auto-accrue the budget amount if meter reads aren't in the GL yet."
 )
 
 _tenant_billing_edited = st.sidebar.data_editor(
@@ -498,9 +504,11 @@ import pandas as pd
 # Pre-seeded rows show common monthly items — just fill in the Amount for the month.
 with st.expander("🧾 One-Off Accruals  (DR expense → CR 211200 auto)", expanded=False):
     st.caption(
-        "Enter the **debit side only** — the credit to 211200 Accrued Expenses is generated automatically. "
-        "Each row becomes a single balanced JE (DR expense acct / CR 211200). "
-        "Leave Amount at $0 to skip a row this month. Add rows for anything new."
+        "Use this for known invoices not yet in Nexus or Yardi — quarterly contracts, seasonal items, "
+        "recurring retainers, semi-annual billings, etc. "
+        "Enter the **debit side only** — the credit to **211200 Accrued Expenses** is generated automatically. "
+        "Leave Amount at $0 to skip a row this month. Add new rows at the bottom for anything not pre-seeded. "
+        "These export in the Accruals JE CSV alongside the pipeline's auto-detected entries."
     )
 
     accruals_edited_df = st.data_editor(
@@ -544,9 +552,10 @@ st.divider()
 # anything that doesn't fit the standard DR expense / CR 211200 pattern.
 with st.expander("📝 Manual Journal Entries & Reclasses  (fully balanced)", expanded=False):
     st.caption(
-        "Enter both sides of each JE — positive Amount = Debit, negative = Credit. "
-        "Group debit/credit lines with the same **JE #**. Lines must net to $0 per JE. "
-        "Exports as a separate Yardi CSV."
+        "Use this for reclasses between accounts, true-up entries, or any adjustment where you control "
+        "both the debit and credit sides (i.e., the offset is not 211200 Accrued Expenses). "
+        "Positive Amount = Debit, Negative = Credit. Group lines with the same **JE #** — they must net to $0. "
+        "Exports as a separate Manual JE CSV (not mixed with accruals)."
     )
 
     edited_df = st.data_editor(
