@@ -1768,10 +1768,12 @@ if st.session_state.processing_complete and st.session_state.engine_result:
 if not st.session_state.processing_complete:
     st.info("""
     **Instructions:**
-    1. Upload at least the **Yardi GL Detail** file (required)
-    2. Upload any additional data files you have available
-    3. Click **Run Pipeline** to process and generate reports
-    4. Results and downloadable reports will appear below
+    1. Upload the **Yardi GL Detail** file in the sidebar (required — everything else is optional)
+    2. Upload any additional files you have: Trial Balance, Budget Comparison, Kardin, Nexus, bank statements, loan PDFs
+    3. Fill in the **One-Off Accruals** table above for any known invoices not yet in Nexus/Yardi (quarterly contracts, retainers, seasonal items, semi-annual billings, etc.)
+    4. Use the **Manual JEs & Reclasses** table for entries where you control both sides (reclasses, true-ups, owner distributions)
+    5. Click **Run Pipeline** — pipeline auto-detects accruals, reconciles the bank, computes the management fee, and runs 7 QC checks
+    6. Download outputs: Singerman workbook, workpapers, QC report, and 3 Yardi-import JE CSVs (Accruals, Prepaid, Manual)
     """, icon="ℹ️")
 
 
