@@ -1707,6 +1707,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         acct_name = gl_category or description[:30]
 
         # DR line: Expense account (current month only)
+        # 'source': 'nexus' is REQUIRED — the _covered exclusion set at the
+        # bottom of this function filters on source == 'nexus' to prevent
+        # Layers 2-4 from generating duplicate entries for these accounts.
         je_lines.append({
             'je_number':      je_id,
             'line':           1,
@@ -1719,6 +1722,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'credit':         0,
             'vendor':         vendor,
             'invoice_number': inv_num,
+            'source':         'nexus',
         })
 
         # CR line: AP Accrual (211200) — current month
@@ -1734,6 +1738,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'credit':         current_amt,
             'vendor':         vendor,
             'invoice_number': inv_num,
+            'source':         'nexus',
         })
 
         je_num += 1
@@ -1755,6 +1760,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'credit':         0,
                 'vendor':         vendor,
                 'invoice_number': inv_num,
+                'source':         'nexus',
             })
             je_lines.append({
                 'je_number':      je_id_ppd,
@@ -1768,6 +1774,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'credit':         future_amt,
                 'vendor':         vendor,
                 'invoice_number': inv_num,
+                'source':         'nexus',
             })
             je_num += 1
 

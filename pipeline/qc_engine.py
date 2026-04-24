@@ -195,9 +195,16 @@ def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
         if tier == 'tier_3':
             continue
 
-        # Determine direction relative to NOI
+        # Determine direction relative to NOI impact.
+        # Convention: OVER  → unfavorable (red in workbook)
+        #             UNDER → favorable   (yellow in workbook)
+        #
+        # Revenue accounts: actual > budget = favorable  → UNDER (yellow)
+        #                   actual < budget = unfavorable → OVER  (red)
+        # Expense accounts: actual > budget = unfavorable → OVER  (red)
+        #                   actual < budget = favorable  → UNDER (yellow)
         if _is_revenue(code):
-            flag = 'OVER' if var_dollar > 0 else 'UNDER'
+            flag = 'UNDER' if var_dollar > 0 else 'OVER'
         else:
             flag = 'OVER' if var_dollar > 0 else 'UNDER'
 

@@ -653,6 +653,28 @@ if run_button:
             gl_parsed = engine_result.parsed.get('gl')
             bc_parsed = engine_result.parsed.get('budget_comparison')
 
+            # Build _manual_accruals_input from the One-Off Accruals data_editor NOW,
+            # before calling build_accrual_entries.  This populates _manual_accounts
+            # inside the engine so those account codes are excluded from Layers 2-4
+            # (budget-gap, proration, historical), preventing double-accruals.
+            # NOTE: the actual JE lines for these entries are built later via
+            # _periodic_supplement_rows → _supplement_je_lines (labeled SUP-XXXX),
+            # not through Layer 0 / MAN-XXXX.  We only need the account codes here
+            # for exclusion; passing amount=0 skips the JE generation in Layer 0.
+            _accruals_tbl_early = st.session_state.get("manual_accruals_df")
+            if _accruals_tbl_early is not None and not _accruals_tbl_early.empty:
+                _manual_accruals_input = [
+                    {
+                        'account_code': str(r["Account Code"]).strip(),
+                        'account_name': str(r.get("Account Name", "") or "").strip(),
+                        'amount': 0,   # 0 → Layer 0 skips JE; we only need the dedup exclusion
+                        'description': '',
+                    }
+                    for _, r in _accruals_tbl_early.iterrows()
+                    if str(r.get("Account Code", "") or "").strip()
+                    and float(r.get("Amount ($)", 0) or 0) > 0
+                ]
+
             je_lines = build_accrual_entries(
                 nexus_data or [],
                 period=engine_result.period or '',
