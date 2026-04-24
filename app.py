@@ -8,6 +8,7 @@ Processes Yardi, Nexus, bank, and loan exports to produce monthly reports for Si
 import streamlit as st
 import sys
 import os
+import re
 import tempfile
 import shutil
 from pathlib import Path
@@ -270,10 +271,17 @@ FILE_CONFIG = {
 file_config = FILE_CONFIG
 
 def _save_upload(uf, key: str):
-    """Save an uploaded file to temp dir and register in session state."""
+    """Save an uploaded file to temp dir and register in session state.
+
+    Streamlit reruns the full script on every widget interaction, so this
+    function is called on every rerun while a file is uploaded.  We skip
+    the write when the file already exists at the correct size — avoids
+    re-writing multi-MB PDFs/Excel files on every sidebar click.
+    """
     temp_file = os.path.join(st.session_state.temp_dir, uf.name)
-    with open(temp_file, "wb") as f:
-        f.write(uf.getbuffer())
+    if not os.path.exists(temp_file) or os.path.getsize(temp_file) != uf.size:
+        with open(temp_file, "wb") as f:
+            f.write(uf.getbuffer())
     st.session_state.uploaded_files[key] = temp_file
 
 # Render each group
@@ -294,8 +302,9 @@ for group_key, group_label in FILE_GROUPS.items():
                     paths = []
                     for uf in multi:
                         temp_file = os.path.join(st.session_state.temp_dir, uf.name)
-                        with open(temp_file, "wb") as f:
-                            f.write(uf.getbuffer())
+                        if not os.path.exists(temp_file) or os.path.getsize(temp_file) != uf.size:
+                            with open(temp_file, "wb") as f:
+                                f.write(uf.getbuffer())
                         paths.append(temp_file)
                     st.session_state.uploaded_files["loan"] = paths
             else:
@@ -935,18 +944,14 @@ if run_button:
             _gl_result = engine_result.parsed.get('gl')
 
             # ── PNC Operating — Yardi Bank Rec PDF ────────────
-            bank_rec_file = st.session_state.uploaded_files.get("bank_rec")
-            if bank_rec_file and os.path.exists(bank_rec_file):
-                try:
-                    from parsers.yardi_bank_rec import parse as parse_bank_rec
-                    bank_rec_data = parse_bank_rec(bank_rec_file)
-                    if _gl_result:
-                        for _a in (_gl_result.accounts or []):
-                            if _a.account_code == '111100':
-                                gl_cash_balance = _a.ending_balance
-                                break
-                except Exception as _be:
-                    st.warning(f"Yardi Bank Rec PDF parse skipped: {_be}")
+            # Reuse the already-parsed result from engine.run_pipeline() —
+            # avoids re-opening and re-extracting the full 10-page PDF a second time.
+            bank_rec_data = engine_result.parsed.get("bank_rec")
+            if bank_rec_data and _gl_result:
+                for _a in (_gl_result.accounts or []):
+                    if _a.account_code == '111100':
+                        gl_cash_balance = _a.ending_balance
+                        break
 
             # ── DACA — KeyBank x5132 (reuse early parse from mgmt fee step) ──
             # _daca_parsed_early was parsed before the management fee calc
@@ -989,19 +994,14 @@ if run_button:
             status_text.text("Step 6/7: Running QC checks...")
             progress_bar.progress(88)
 
-            try:
-                from parsers.kardin_budget import parse as parse_kardin
-                kardin_records = []
-                if "kardin_budget" in st.session_state.uploaded_files:
-                    kardin_records = parse_kardin(st.session_state.uploaded_files["kardin_budget"])
-            except Exception:
-                kardin_records = []
+            # Reuse Kardin records already parsed by engine.run_pipeline() —
+            # avoids a second openpyxl load of the multi-sheet Kardin workbook.
+            kardin_records = engine_result.parsed.get("kardin_budget") or []
 
             # Derive period_month from engine_result period string
             _period_month = 1
             try:
-                import re as _re
-                _m = _re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', engine_result.period or '')
+                _m = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', engine_result.period or '')
                 _month_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
                 if _m:
                     _period_month = _month_map.get(_m.group(1), 1)
