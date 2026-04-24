@@ -137,6 +137,17 @@ def _write_bank_recon_workpaper(wb, engine_result):
     prop = engine_result.property_name or 'N/A'
     recon = engine_result.bank_recon_detail
 
+    # Determine close date for stale-check aging (last day of the period month)
+    _close_date: Optional[date] = None
+    try:
+        # period is "Mar-2026", "Apr-2026", etc.
+        _pd = datetime.strptime(period, '%b-%Y')
+        # Last day of month: first day of next month minus one day
+        _next_m = _pd.replace(day=28) + timedelta(days=4)
+        _close_date = (_next_m - timedelta(days=_next_m.day)).date()
+    except (ValueError, AttributeError):
+        _close_date = None
+
     # Use precomputed recon from engine (single source of truth)
     if recon:
         gl_end = recon.gl_ending
@@ -216,14 +227,26 @@ def _write_bank_recon_workpaper(wb, engine_result):
     row += 1
 
     if outstanding_checks:
-        oc_headers = ['Date', 'Control #', 'Description', 'Reference', 'Amount']
+        oc_headers = ['Date', 'Control #', 'Description', 'Reference', 'Amount', 'Days Out']
         for ci, h in enumerate(oc_headers, 1):
             c = ws.cell(row=row, column=ci, value=h)
             _apply(c, _hdr(fill_color=LIGHT_BLUE, color='000000'))
         row += 1
 
+        _stale_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')  # red
+        _stale_font = Font(name='Calibri', size=11, bold=True, color='9C0006')
+
         for i, txn in enumerate(outstanding_checks):
             alt = i % 2 == 1
+
+            # Days outstanding calculation
+            days_out: Optional[int] = None
+            is_stale = False
+            if _close_date and txn.date:
+                txn_date = txn.date if isinstance(txn.date, date) else txn.date
+                days_out = (_close_date - txn_date).days
+                is_stale = days_out > 90
+
             dt = txn.date.strftime('%m/%d/%Y') if txn.date else ''
             ws.cell(row=row, column=1, value=dt)
             _apply(ws.cell(row=row, column=1), _cell(alt))
@@ -235,6 +258,16 @@ def _write_bank_recon_workpaper(wb, engine_result):
             _apply(ws.cell(row=row, column=4), _cell(alt))
             ws.cell(row=row, column=5, value=txn.credit)
             _apply(ws.cell(row=row, column=5), _cell(alt, fmt='$#,##0.00'))
+
+            # Days outstanding column — red highlight when stale (>90 days)
+            days_cell = ws.cell(row=row, column=6, value=days_out)
+            if is_stale:
+                days_cell.fill = _stale_fill
+                days_cell.font = _stale_font
+                days_cell.value = f'{days_out}d ⚠'
+            else:
+                _apply(days_cell, _cell(alt))
+
             row += 1
 
         # Total row
@@ -244,6 +277,37 @@ def _write_bank_recon_workpaper(wb, engine_result):
         c.font = Font(name='Calibri', size=11, bold=True)
         c.border = DOUBLE_BOTTOM
         row += 1
+
+        # Inject stale-check exceptions into engine_result so they appear in QC report
+        _stale_checks = [
+            txn for txn in outstanding_checks
+            if _close_date and txn.date and (_close_date - txn.date).days > 90
+        ]
+        if _stale_checks:
+            try:
+                from engine import Exception_
+                for txn in _stale_checks:
+                    days_aged = (_close_date - txn.date).days
+                    engine_result.exceptions.append(Exception_(
+                        severity='warning',
+                        category='bank_rec',
+                        source='outstanding_checks',
+                        description=(
+                            f'Stale outstanding check — {days_aged} days old: '
+                            f'{txn.control} {txn.description} ${txn.credit:,.2f} '
+                            f'(issued {txn.date.strftime("%m/%d/%Y")}). '
+                            f'Checks >90 days should be voided and re-issued or investigated.'
+                        ),
+                        details={
+                            'control': txn.control,
+                            'description': txn.description,
+                            'amount': txn.credit,
+                            'issue_date': str(txn.date),
+                            'days_outstanding': days_aged,
+                        },
+                    ))
+            except Exception:
+                pass  # Don't block workpaper generation if exception injection fails
     else:
         ws.cell(row=row, column=1, value='No outstanding checks identified').font = Font(name='Calibri', size=11, italic=True)
         row += 1
