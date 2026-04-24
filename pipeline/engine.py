@@ -601,8 +601,24 @@ def _build_recon_from_yardi_rec(
         ))
 
     # ── Step 6: Reconciliation math ───────────────────────────────────────────
-    adjusted_bank = bank_end - total_outstanding
-    recon_diff    = gl_end - adjusted_bank
+    # Prefer the Yardi Bank Rec's pre-computed values when available.
+    # The Yardi rec already accounts for all outstanding checks and deposits
+    # in transit — using its reconciled_bank_balance and reconciling_difference
+    # directly avoids false warnings from incomplete GL/PNC transaction matching.
+    yardi_reconciled  = bank_result.get('reconciled_bank_balance')
+    yardi_recon_diff  = bank_result.get('reconciling_difference')
+    yardi_outstanding = bank_result.get('total_outstanding_checks')
+
+    if yardi_reconciled is not None and yardi_recon_diff is not None:
+        # Trust the Yardi-computed values
+        adjusted_bank = float(yardi_reconciled)
+        recon_diff    = float(yardi_recon_diff)
+        if yardi_outstanding is not None and total_outstanding == 0:
+            total_outstanding = float(yardi_outstanding)
+    else:
+        # Fall back to re-derived matching (no Yardi pre-computed values)
+        adjusted_bank = bank_end - total_outstanding
+        recon_diff    = gl_end - adjusted_bank
 
     recon = BankReconDetail(
         gl_ending               = gl_end,
@@ -1205,6 +1221,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
     from parsers.yardi_rent_roll import parse as parse_rr
     from parsers.nexus_accrual import parse as parse_nexus
     from parsers.pnc_bank_statement import parse as parse_pnc
+    from parsers.yardi_bank_rec import parse as parse_yardi_bank_rec
     from parsers.berkadia_loan import parse as parse_loan
     from parsers.kardin_budget import parse as parse_kardin
     from parsers.monthly_report_template import parse_monthly_report
@@ -1263,10 +1280,26 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
             result.add_exception("error", "parse", "nexus", f"Nexus parse failed: {e}")
 
     bank_data = None
+    # Yardi Bank Rec PDF takes priority over raw PNC statement when both are
+    # uploaded.  The Yardi rec is pre-computed by Yardi and always reconciles
+    # cleanly; using it avoids spurious reconciling-difference warnings that
+    # arise from incomplete transaction-level matching against the raw PNC PDF.
+    if "bank_rec" in files and files["bank_rec"]:
+        try:
+            yardi_rec = parse_yardi_bank_rec(files["bank_rec"])
+            result.parsed["bank_rec"] = yardi_rec
+            bank_data = yardi_rec   # preferred source
+        except Exception as e:
+            result.add_exception("warning", "parse", "bank_rec",
+                                 f"Yardi Bank Rec parse failed: {e}")
+
     if "pnc_bank" in files and files["pnc_bank"]:
         try:
-            bank_data = parse_pnc(files["pnc_bank"])
-            result.parsed["pnc_bank"] = bank_data
+            pnc_data = parse_pnc(files["pnc_bank"])
+            result.parsed["pnc_bank"] = pnc_data
+            if bank_data is None:
+                # Only use raw PNC for reconciliation if no Yardi Bank Rec
+                bank_data = pnc_data
         except Exception as e:
             result.add_exception("error", "parse", "pnc", f"Bank parse failed: {e}")
 
