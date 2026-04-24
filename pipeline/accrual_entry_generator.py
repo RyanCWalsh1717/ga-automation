@@ -23,6 +23,8 @@ from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Any, Optional
 from openpyxl import Workbook
+
+from accounting_utils import _round
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 
@@ -228,7 +230,7 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
         results.append({
             'account_code':   code,
             'account_name':   name,
-            'amount':         round(monthly, 2),
+            'amount':         _round(monthly),
             'credit_account': _PREPAID_INSURANCE_ACCT,
             'credit_name':    'Prepaid Insurance',
             'source':         'prepaid_amortization',
@@ -317,7 +319,7 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
 
     # Derive monthly amount: beginning balance covers months 1 → (period_month − 1)
     prior_months = period_month - 1
-    monthly_amt  = round(beg_bal / prior_months, 2)
+    monthly_amt  = _round(beg_bal / prior_months)
 
     # Verify escrow account exists and has a balance to draw from
     escrow_balance = 0.0
@@ -395,7 +397,7 @@ def detect_tenant_utility_billing(gl_data, budget_data) -> List[Dict[str, Any]]:
         results.append({
             'account_code': code,
             'account_name': info['label'],
-            'amount':       round(budget_amt, 2),
+            'amount':       _round(budget_amt),
             'label':        info['label'],
             'source':       'tenant_utility_billing',
             'confidence':   'medium',
@@ -602,7 +604,7 @@ def detect_invoice_proration_accruals(
             candidates.append({
                 'account_code':   code,
                 'account_name':   acct.account_name,
-                'accrual_amount': round(accrual, 2),
+                'accrual_amount': _round(accrual),
                 'source':         'invoice_proration',
                 'description': (
                     f'Invoice proration — {acct.account_name}: '
@@ -614,7 +616,7 @@ def detect_invoice_proration_accruals(
                 'daily_rate':     round(daily_rate, 4),
                 'uncovered_days': uncovered,
                 'period_days':    period_days,
-                'invoice_total':  round(total_amount, 2),
+                'invoice_total':  _round(total_amount),
             })
             continue   # Don't also run payroll check for this account
 
@@ -681,7 +683,7 @@ def detect_invoice_proration_accruals(
         candidates.append({
             'account_code':   code,
             'account_name':   acct.account_name,
-            'accrual_amount': round(accrual, 2),
+            'accrual_amount': _round(accrual),
             'source':         'invoice_proration',
             'description': (
                 f'Payroll accrual — {acct.account_name}: '
@@ -692,7 +694,7 @@ def detect_invoice_proration_accruals(
             'daily_rate':     round(daily_rate, 4),
             'uncovered_days': uncovered,
             'period_days':    pay_period_days,
-            'invoice_total':  round(latest_run_total, 2),
+            'invoice_total':  _round(latest_run_total),
         })
 
         continue   # payroll path handled — skip recurring-vendor check
@@ -768,7 +770,7 @@ def detect_invoice_proration_accruals(
         candidates.append({
             'account_code':   code,
             'account_name':   acct.account_name,
-            'accrual_amount': round(invoice_total, 2),
+            'accrual_amount': _round(invoice_total),
             'source':         'invoice_proration',
             'description': (
                 f'Recurring monthly accrual — {acct.account_name}: '
@@ -779,7 +781,7 @@ def detect_invoice_proration_accruals(
             'daily_rate':     0.0,
             'uncovered_days': 0,
             'period_days':    0,
-            'invoice_total':  round(invoice_total, 2),
+            'invoice_total':  _round(invoice_total),
         })
 
     return candidates
@@ -1093,12 +1095,12 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
 
         # Check if this is a known periodic-billing account (quarterly, etc.)
         _periodic_info = PERIODIC_CONTRACT_ACCOUNTS.get(code)
-        _periodic_gap  = round(gap - suggested, 2)   # estimated outstanding beyond min invoice
+        _periodic_gap  = _round(gap - suggested)   # estimated outstanding beyond min invoice
 
         _entry: Dict[str, Any] = {
             'account_code':  code,
             'account_name':  name,
-            'budget_amount': round(suggested, 2),
+            'budget_amount': _round(suggested),
             'source':        'budget_gap',
             'confidence':    'low',
             'description': (
@@ -1206,7 +1208,7 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
             candidates.append({
                 'account_code': code,
                 'account_name': acct.account_name,
-                'estimated_amount': round(est_monthly, 2),
+                'estimated_amount': _round(est_monthly),
                 'ytd_prior': begin,
                 'months_prior': prior_months,
                 'source': 'historical',
@@ -1308,7 +1310,7 @@ def detect_payroll_bonus_accrual(
         results.append({
             'account_code':    acct_code,
             'account_name':    config['label'],
-            'estimated_amount': round(monthly_bonus, 2),
+            'estimated_amount': _round(monthly_bonus),
             'source':          'bonus_accrual',
             'confidence':      'high',
             'description': (
@@ -1412,7 +1414,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'account_name':   acct_name,
             'description':    desc,
             'reference':      'MANUAL',
-            'debit':          round(amount, 2),
+            'debit':          _round(amount),
             'credit':         0,
             'vendor':         '[Manual Override]',
             'invoice_number': '',
@@ -1428,7 +1430,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'description':    desc,
             'reference':      'MANUAL',
             'debit':          0,
-            'credit':         round(amount, 2),
+            'credit':         _round(amount),
             'vendor':         '[Manual Override]',
             'invoice_number': '',
             'source':         'manual',
@@ -1464,7 +1466,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'account_name':   TENANT_UTILITY_AR_NAME,
             'description':    desc,
             'reference':      'METER-READ',
-            'debit':          round(amount, 2), 'credit': 0,
+            'debit':          _round(amount), 'credit': 0,
             'vendor':         tenant or '[Tenant Billing]',
             'invoice_number': '',
             'source':         'tenant_utility_billing', 'confidence': 'medium',
@@ -1475,7 +1477,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'account_name':   cr_name,
             'description':    desc,
             'reference':      'METER-READ',
-            'debit':          0, 'credit': round(amount, 2),
+            'debit':          0, 'credit': _round(amount),
             'vendor':         tenant or '[Tenant Billing]',
             'invoice_number': '',
             'source':         'tenant_utility_billing', 'confidence': 'medium',
@@ -1557,7 +1559,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'account_code':   acct_code,
             'account_name':   entry['account_name'],
             'description':    desc, 'reference': ref,
-            'debit':          round(amount, 2), 'credit': 0,
+            'debit':          _round(amount), 'credit': 0,
             'vendor':         vendor, 'invoice_number': '',
             'source':         'prepaid_amortization', 'confidence': 'high',
         })
@@ -1566,7 +1568,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'account_code':   entry['credit_account'],
             'account_name':   entry['credit_name'],
             'description':    desc, 'reference': ref,
-            'debit':          0, 'credit': round(amount, 2),
+            'debit':          0, 'credit': _round(amount),
             'vendor':         vendor, 'invoice_number': '',
             'source':         'prepaid_amortization', 'confidence': 'high',
         })
@@ -1623,8 +1625,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         prepaid_months = int(inv.get('prepaid_months', 1) or 1)
 
         if is_prepaid and prepaid_months > 1:
-            monthly_amt = round(abs(amount) / prepaid_months, 2)
-            rounding_adj = round(abs(amount) - monthly_amt * prepaid_months, 2)
+            monthly_amt = _round(abs(amount) / prepaid_months)
+            rounding_adj = _round(abs(amount) - monthly_amt * prepaid_months)
             current_amt = monthly_amt + rounding_adj          # this period's expense
             future_amt  = abs(amount) - current_amt           # prepaid asset to book
         else:
@@ -1883,7 +1885,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     bonus_candidates.append({
                         'account_code':    _oc,
                         'account_name':    PAYROLL_BONUS_ACCOUNTS.get(_oc, {}).get('label', _oc),
-                        'estimated_amount': round(_oa, 2),
+                        'estimated_amount': _round(_oa),
                         'source':          'bonus_accrual',
                         'confidence':      'high',
                         'description':     f'Bonus accrual override (manual) — ${_oa:,.2f}',
@@ -1895,7 +1897,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     if ovr <= 0:
                         continue  # Override explicitly set to $0 → skip
                     bonus = {**bonus,
-                             'estimated_amount': round(ovr, 2),
+                             'estimated_amount': _round(ovr),
                              'description': f'Bonus accrual override (manual) — ${ovr:,.2f}',
                              'confidence': 'high'}
                 # Bonus accounts are NOT suppressed by _covered — they coexist
@@ -1987,9 +1989,9 @@ def build_prepaid_amortization(nexus_data: list, close_period: str = '') -> List
             continue
 
         total_amount = inv.get('amount', 0)
-        monthly_amount = round(total_amount / total_months, 2)
+        monthly_amount = _round(total_amount / total_months)
         # Distribute any rounding to first month
-        rounding_adj = round(total_amount - monthly_amount * total_months, 2)
+        rounding_adj = _round(total_amount - monthly_amount * total_months)
 
         vendor = inv.get('vendor', '')
         inv_num = inv.get('invoice_number', '')

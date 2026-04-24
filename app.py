@@ -19,7 +19,7 @@ pipeline_dir = Path(__file__).parent / "pipeline"
 if str(pipeline_dir) not in sys.path:
     sys.path.insert(0, str(pipeline_dir))
 
-from engine import run_pipeline, EngineResult
+from engine import run_pipeline, EngineResult, Exception_
 from report_generator import generate_report, generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
@@ -1043,6 +1043,7 @@ if run_button:
             _period_str  = engine_result.period or ''
             _prop_str    = engine_result.property_name or 'Revolution Labs Owner, LLC'
 
+            _api_fallback_reason = None  # set below if API was requested but failed
             if _bc_for_vc:
                 comments_map = generate_variance_comments_grp(
                     budget_rows=_bc_for_vc,
@@ -1052,8 +1053,24 @@ if run_button:
                     property_name=_prop_str,
                     api_key=api_key,
                 )
-                # Store list format for dashboard (backwards-compatible)
-                method = 'api' if api_key else 'data-driven'
+                # Detect silent API fallback — surface before user sees outputs
+                _fallback_reasons = {
+                    entry.get('_api_fallback')
+                    for entry in comments_map.values()
+                    if entry.get('_api_fallback')
+                }
+                _api_fallback_reason = next(iter(_fallback_reasons), None)
+                if api_key and _api_fallback_reason:
+                    st.warning(
+                        f"⚠️ **Variance commentary fallback:** API was requested but failed. "
+                        f"Comments were generated from data-driven templates, not AI. "
+                        f"**Do not sign off on commentary until this is resolved.**\n\n"
+                        f"Reason: {_api_fallback_reason}"
+                    )
+                    method = 'data-driven (API FALLBACK)'
+                else:
+                    method = 'api' if api_key else 'data-driven'
+
                 var_comments = [
                     {
                         'account_code': code,
@@ -1063,6 +1080,7 @@ if run_button:
                         'mtd_tier': entry.get('mtd_tier', 'tier_3'),
                         'ytd_tier': entry.get('ytd_tier', 'tier_3'),
                         'method': method,
+                        'api_fallback_reason': _api_fallback_reason,
                     }
                     for code, entry in comments_map.items()
                     if entry.get('mtd_tier') != 'tier_3' or entry.get('ytd_tier') != 'tier_3'
@@ -1087,6 +1105,21 @@ if run_button:
             # Step 8: Generate exception report
             status_text.text("Step 7/7: Generating validation report...")
             progress_bar.progress(96)
+
+            # Inject API fallback into exception list so it appears in the Excel report
+            if api_key and _api_fallback_reason:
+                engine_result.exceptions.append(Exception_(
+                    severity='warning',
+                    category='commentary',
+                    source='variance_comments',
+                    description=(
+                        'Variance commentary API fallback: AI commentary was requested but '
+                        'the API call failed. Comments in the Budget Comparison are '
+                        f'data-driven templates, NOT AI-generated. '
+                        f'Reason: {_api_fallback_reason}'
+                    ),
+                    details={'api_fallback_reason': _api_fallback_reason},
+                ))
 
             exception_path = os.path.join(st.session_state.temp_dir, "GA_Exceptions_Report.xlsx")
             generate_exception_report(engine_result, exception_path)

@@ -4,9 +4,14 @@ Variance Comment Generator — GRP Standards
 Applies Greatland Realty Partners' 3-tier variance threshold and generates
 narrative commentary conforming to the Variance Commentary Standards document.
 
-Tier 1  ≥$5,000 OR ≥5% of budget (AND ≥$2,500 absolute)  → Full 1–2 sentence comment
-Tier 2  $2,500–$4,999 AND <5%                             → Flag phrase only
-Tier 3  <$2,500 absolute                                  → No action required
+Tier classification (first-match, no overlap):
+  Tier 3  abs < $2,500                           → No action required
+  Tier 1  abs ≥ $5,000  OR  pct ≥ 5%            → Full 1–2 sentence comment
+  Tier 2  $2,500 ≤ abs < $5,000  AND  pct < 5%  → Flag phrase only
+
+Note: first-match precedence is enforced in classify_tier(). A variance that
+hits the Tier 1 pct condition (≥5%) will never be classified Tier 2 even if
+its dollar amount falls in the Tier 2 range ($2,500–$4,999).
 
 Output is written directly into the budget comparison Excel file:
   Column L = MTD Variance Notes  (Tahoma 10, wrap_text, vertical top)
@@ -123,7 +128,15 @@ _SKIP_NAMES = {
 
 def classify_tier(actual: float, budget: float) -> Tuple[str, float, float]:
     """
-    Apply GRP 3-tier threshold logic.
+    Apply GRP 3-tier threshold logic with explicit first-match precedence.
+
+    Rules (evaluated in order — first match wins, no overlap):
+      Tier 3  abs_var < $2,500
+      Tier 1  abs_var ≥ $5,000  OR  |pct_var| ≥ 5 %
+      Tier 2  $2,500 ≤ abs_var < $5,000  AND  |pct_var| < 5 %
+
+    A $3,000 variance at 10% → Tier 1 (pct condition fires first).
+    A $3,000 variance at 3%  → Tier 2 (dollar in range, pct below threshold).
 
     Returns:
         (tier, abs_variance, pct_variance)
@@ -132,13 +145,18 @@ def classify_tier(actual: float, budget: float) -> Tuple[str, float, float]:
     abs_var = actual - budget
     abs_var_dollar = abs(abs_var)
     pct_var = (abs_var / abs(budget) * 100) if budget and budget != 0 else 0.0
+    abs_pct = abs(pct_var)
 
+    # ── Step 1: below floor → Tier 3 (no action) ──
     if abs_var_dollar < TIER2_MIN:
         return 'tier_3', abs_var, pct_var
 
-    if abs_var_dollar >= TIER1_ABS or abs(pct_var) >= (TIER1_PCT * 100):
+    # ── Step 2: Tier 1 — large dollar OR significant pct ──
+    if abs_var_dollar >= TIER1_ABS or abs_pct >= (TIER1_PCT * 100):
         return 'tier_1', abs_var, pct_var
 
+    # ── Step 3: Tier 2 — mid-range dollar AND sub-threshold pct ──
+    # Reached only when: $2,500 ≤ abs < $5,000 AND pct < 5%
     return 'tier_2', abs_var, pct_var
 
 
@@ -687,8 +705,11 @@ def generate_variance_comments_grp(
         return all_results
 
     # ── Pass 2: generate comments ─────────────────────────────
+    api_fallback_reason: Optional[str] = None   # set if API was requested but failed
     if api_key:
-        comments_map = _call_api(accounts_data, period, property_name, api_key)
+        comments_map, api_fallback_reason = _call_api(
+            accounts_data, period, property_name, api_key
+        )
     else:
         comments_map = _generate_data_driven(accounts_data, period)
 
@@ -707,14 +728,27 @@ def generate_variance_comments_grp(
             'mtd_budget': entry['mtd_budget'],
             'ytd_actual': entry['ytd_actual'],
             'ytd_budget': entry['ytd_budget'],
+            # Visible signal for downstream consumers (app.py, qc_engine.py)
+            '_api_fallback': api_fallback_reason,
         }
 
     return all_results
 
 
-def _call_api(accounts_data: List[dict], period: str,
-              property_name: str, api_key: str) -> Dict[str, dict]:
-    """Call Claude API and parse JSON response."""
+def _call_api(
+    accounts_data: List[dict],
+    period: str,
+    property_name: str,
+    api_key: str,
+) -> Tuple[Dict[str, dict], Optional[str]]:
+    """
+    Call Claude API and parse JSON response.
+
+    Returns:
+        (comments_map, fallback_reason)
+        fallback_reason is None on success; a human-readable string when the API
+        was requested but failed and data-driven mode was used instead.
+    """
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
@@ -738,21 +772,31 @@ def _call_api(accounts_data: List[dict], period: str,
             raw = raw.strip()
 
         items = json.loads(raw)
-        return {
-            item['account_code']: {
-                'mtd_comment': item.get('mtd_comment', ''),
-                'ytd_comment': item.get('ytd_comment', ''),
-            }
-            for item in items
-            if 'account_code' in item
-        }
+        return (
+            {
+                item['account_code']: {
+                    'mtd_comment': item.get('mtd_comment', ''),
+                    'ytd_comment': item.get('ytd_comment', ''),
+                }
+                for item in items
+                if 'account_code' in item
+            },
+            None,   # success — no fallback
+        )
 
     except ImportError:
-        pass  # fall through to data-driven
-    except Exception:
-        pass  # fall through to data-driven
+        reason = (
+            'Anthropic SDK not installed — variance commentary generated from '
+            'data-driven templates, not AI. Install `anthropic` to enable API mode.'
+        )
+    except Exception as exc:
+        reason = (
+            f'Anthropic API call failed ({type(exc).__name__}: {exc}) — '
+            f'variance commentary generated from data-driven templates, not AI. '
+            f'Review API key and connectivity before sign-off.'
+        )
 
-    return _generate_data_driven(accounts_data, period)
+    return _generate_data_driven(accounts_data, period), reason
 
 
 def _generate_data_driven(accounts_data: List[dict],
@@ -914,7 +958,21 @@ def generate_variance_comments(engine_result, api_key: Optional[str] = None) -> 
         api_key=api_key,
     )
 
-    method = 'api' if api_key else 'data-driven'
+    # Detect whether API was requested but silently fell back to data-driven
+    fallback_reasons = {
+        entry.get('_api_fallback')
+        for entry in comments_map.values()
+        if entry.get('_api_fallback')
+    }
+    api_fallback_reason: Optional[str] = next(iter(fallback_reasons), None)
+
+    if api_key and api_fallback_reason:
+        # API was requested but failed — mark method so UI and reports surface it
+        method = 'data-driven (API FALLBACK)'
+    elif api_key:
+        method = 'api'
+    else:
+        method = 'data-driven'
 
     results = []
     for code, entry in comments_map.items():
@@ -935,6 +993,8 @@ def generate_variance_comments(engine_result, api_key: Optional[str] = None) -> 
             'mtd_tier': entry.get('mtd_tier', 'tier_3'),
             'ytd_tier': entry.get('ytd_tier', 'tier_3'),
             'method': method,
+            # Carry the fallback reason so app.py / qc_engine can surface it
+            'api_fallback_reason': api_fallback_reason,
         })
 
     return results

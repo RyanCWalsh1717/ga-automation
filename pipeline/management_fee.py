@@ -33,6 +33,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from accounting_utils import _round
+
 
 # ── Account codes ──────────────────────────────────────────────────────────────
 _CASH_OPERATING = '111100'   # Cash - Operating (PNC)
@@ -283,7 +285,7 @@ def build_management_fee_je(
             'account_name': 'Admin-Management Fees',
             'description': desc,
             'reference': 'MGMT-FEE',
-            'debit': round(total, 2),
+            'debit': _round(total),
             'credit': 0.0,
             'vendor': 'Management Fee Accrual',
             'invoice_number': '',
@@ -298,7 +300,7 @@ def build_management_fee_je(
             'description': desc,
             'reference': 'MGMT-FEE',
             'debit': 0.0,
-            'credit': round(total, 2),
+            'credit': _round(total),
             'vendor': 'Management Fee Accrual',
             'invoice_number': '',
             'source': 'management_fee',
@@ -378,7 +380,7 @@ def detect_prior_period_catchup(gl_data) -> Optional[float]:
 
         # Return the catch-up amount only when material (> $100)
         if net_credit > 100.0:
-            return round(net_credit, 2)
+            return _round(net_credit)
 
         return None   # account found but no catch-up needed
 
@@ -422,7 +424,7 @@ def build_catchup_je(
             'account_name':   'Admin-Management Fees',
             'description':    desc,
             'reference':      'MGMT-CATCHUP',
-            'debit':          round(catchup_amount, 2),
+            'debit':          _round(catchup_amount),
             'credit':         0.0,
             'vendor':         'Management Fee Catch-up',
             'invoice_number': '',
@@ -437,7 +439,7 @@ def build_catchup_je(
             'description':    desc,
             'reference':      'MGMT-CATCHUP',
             'debit':          0.0,
-            'credit':         round(catchup_amount, 2),
+            'credit':         _round(catchup_amount),
             'vendor':         'Management Fee Catch-up',
             'invoice_number': '',
             'source':         'management_fee_catchup',
