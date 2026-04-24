@@ -1164,6 +1164,36 @@ if st.session_state.processing_complete and st.session_state.engine_result:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Period-state indicator ─────────────────────────────────────
+    _ps = result.period_state
+    if _ps and _ps.get('state') != 'unknown':
+        _state_labels = {
+            'pre_close':  ('🟡 Pre-Close', '#f39c12',
+                           'GL is for the current period — books still open. '
+                           'Accruals are provisional until final close.'),
+            'at_close':   ('🟢 At Close', '#2ecc71',
+                           'Month-end close window. Final accruals are being posted.'),
+            'post_close': ('🔵 Post-Close', '#3498db',
+                           'Running retrospective analysis on a closed period. '
+                           'Accruals and reports are final for this month.'),
+        }
+        _label, _color, _desc = _state_labels.get(
+            _ps['state'], ('⚪ Unknown', '#95a5a6', '')
+        )
+        _promo = ' _(promoted by 213100 GL signal)_' if _ps.get('promoted') else ''
+        _days = _ps.get('days_since_close', 0)
+        _day_str = (f'{abs(_days)} day{"s" if abs(_days) != 1 else ""} until close'
+                    if _days < 0 else
+                    f'{_days} day{"s" if _days != 1 else ""} since close'
+                    if _days > 0 else 'closes today')
+        with st.expander(f"{_label} — {_day_str}{_promo}", expanded=False):
+            st.markdown(_desc)
+            if _ps.get('gl_signal_detected'):
+                st.info(
+                    f"213100 GL signal detected: net credit ${_ps['gl_signal_amount']:,.2f} "
+                    f"— prior-period auto-reversals have posted."
+                )
+
     # ── QC Summary Panel ──────────────────────────────────────────
     qc_report = st.session_state.output_files.get("qc_report")
     if qc_report:

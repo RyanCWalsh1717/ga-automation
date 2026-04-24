@@ -81,6 +81,9 @@ class EngineResult:
     # Bank reconciliation detail (computed once, consumed by workpaper)
     bank_recon_detail: Optional['BankReconDetail'] = None
 
+    # Period-state detection result (set after GL is parsed)
+    period_state: Optional[dict] = None
+
     @property
     def status(self):
         if self.error_count > 0:
@@ -88,6 +91,119 @@ class EngineResult:
         if self.warning_count > 0:
             return "WARNINGS"
         return "CLEAN"
+
+
+# ── Period-state detection ────────────────────────────────────────────────────
+
+# Account 213100 — typically "Prepaid Rents / Security Deposits Held" in Yardi.
+# During Yardi's month-end close cycle, auto-reversals of prior-period accruals
+# temporarily create a net-credit position in this account before the new period's
+# entries are posted.  A material net credit (> $100) signals that the close
+# sequence has started even if the calendar date hasn't passed the period end.
+_PERIOD_SIGNAL_ACCOUNT = '213100'
+_PERIOD_SIGNAL_THRESHOLD = 100.0   # minimum net credit to register as "close started"
+
+# Calendar-based windows (days after period end)
+_AT_CLOSE_WINDOW_DAYS = 10    # 0–10 days after period end = "at close"
+# > 10 days = "post close"
+
+
+def detect_period_state(
+    period: str,
+    gl_data=None,
+    reference_date: Optional[date] = None,
+) -> dict:
+    """
+    Determine where we are in the monthly close cycle.
+
+    Combines two independent signals:
+      1. Calendar signal — compare ``reference_date`` (default: today) to the last
+         day of the GL period.
+      2. GL 213100 balance signal — in Yardi's close cycle, auto-reversals of
+         prior-period accruals temporarily create a net-credit position in account
+         213100.  A net credit > $100 promotes ``pre_close`` to ``at_close`` even
+         when the calendar date hasn't crossed the period end yet (early-close detection).
+
+    Returns
+    -------
+    dict with keys:
+      ``state`` : 'pre_close' | 'at_close' | 'post_close'
+      ``close_date`` : date (last calendar day of the GL period)
+      ``days_since_close`` : int (negative = days until close; 0 = close day;
+                                  positive = days since close)
+      ``calendar_state`` : 'pre_close' | 'at_close' | 'post_close'
+                           (the raw calendar-only classification)
+      ``gl_signal_detected`` : bool (True if 213100 net credit > threshold)
+      ``gl_signal_amount`` : float (213100 net credit amount; 0 if not detected)
+      ``promoted`` : bool (True if GL signal promoted pre_close → at_close)
+
+    State definitions
+    -----------------
+    ``pre_close``   : Today is before the last day of the period.
+                      Books are still open; accruals are provisional.
+    ``at_close``    : Today is within 0–{_AT_CLOSE_WINDOW_DAYS} days after period end,
+                      OR pre_close was promoted by the 213100 GL signal.
+    ``post_close``  : Today is >{_AT_CLOSE_WINDOW_DAYS} days after period end.
+                      Running retrospective analysis on a closed month.
+    """
+    result = {
+        'state': 'unknown',
+        'close_date': None,
+        'days_since_close': 0,
+        'calendar_state': 'unknown',
+        'gl_signal_detected': False,
+        'gl_signal_amount': 0.0,
+        'promoted': False,
+    }
+
+    # ── Parse period string to close date ──────────────────────────────────────
+    close_date: Optional[date] = None
+    try:
+        _pd = datetime.strptime(period.strip(), '%b-%Y')
+        # Last calendar day of the month: go to next month's 1st, back 1 day
+        _next = _pd.replace(day=28) + timedelta(days=4)
+        close_date = (_next - timedelta(days=_next.day)).date()
+    except (ValueError, AttributeError):
+        result['state'] = 'unknown'
+        return result
+
+    result['close_date'] = close_date
+
+    # ── Calendar signal ────────────────────────────────────────────────────────
+    today = reference_date or date.today()
+    days_since = (today - close_date).days
+    result['days_since_close'] = days_since
+
+    if days_since < 0:
+        cal_state = 'pre_close'
+    elif days_since <= _AT_CLOSE_WINDOW_DAYS:
+        cal_state = 'at_close'
+    else:
+        cal_state = 'post_close'
+    result['calendar_state'] = cal_state
+
+    # ── GL 213100 balance signal ───────────────────────────────────────────────
+    gl_net_credit = 0.0
+    if gl_data and hasattr(gl_data, 'accounts'):
+        for acct in gl_data.accounts:
+            if str(acct.account_code).strip() == _PERIOD_SIGNAL_ACCOUNT:
+                period_debits  = sum(float(t.debit  or 0) for t in acct.transactions)
+                period_credits = sum(float(t.credit or 0) for t in acct.transactions)
+                gl_net_credit = period_credits - period_debits
+                break
+
+    gl_signal = gl_net_credit > _PERIOD_SIGNAL_THRESHOLD
+    result['gl_signal_detected'] = gl_signal
+    result['gl_signal_amount'] = round(gl_net_credit, 2)
+
+    # ── Combine: GL signal promotes pre_close → at_close ──────────────────────
+    if cal_state == 'pre_close' and gl_signal:
+        result['state'] = 'at_close'
+        result['promoted'] = True
+    else:
+        result['state'] = cal_state
+
+    return result
 
 
 @dataclass
@@ -1253,6 +1369,10 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
                     result.property_name = (_cfg.property_name if _cfg else '') or '[Property Name]'
                 except Exception:
                     result.property_name = '[Property Name]'
+
+            # Period-state detection — run after period and GL are known
+            if result.period:
+                result.period_state = detect_period_state(result.period, gl_data=gl)
         except Exception as e:
             result.add_exception("error", "parse", "yardi_gl", f"GL parse failed: {e}")
 
