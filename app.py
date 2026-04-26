@@ -179,7 +179,7 @@ if "manual_accruals_df" not in st.session_state:
 # ── Header ───────────────────────────────────────────────────
 st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
 st.markdown("### GA Automation — Monthly Close Pipeline")
-st.markdown("**Revolution Labs — 275 Grove St, Newton, MA**")
+st.markdown("**Revolution Labs — 1050 Waltham St, Lexington, MA**")
 st.divider()
 
 
