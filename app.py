@@ -30,9 +30,8 @@ from report_generator import generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
 from accrual_entry_generator import (
-    build_accrual_entries, generate_yardi_je_import, generate_yardi_je_csv,
-    build_prepaid_amortization, write_prepaid_amortization_tab,
-    build_prepaid_release_je,
+    build_accrual_entries, generate_yardi_je_csv,
+    build_prepaid_amortization, build_prepaid_release_je,
 )
 import prepaid_ledger
 import bs_workpaper_generator
