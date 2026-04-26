@@ -1082,9 +1082,6 @@ with tab2:
     QC checklist, variance comments, and exception report.
 
     *(The Singerman monthly report is downloaded directly from Yardi — no need to generate it here.)*
-
-    **Pre-requisite:** Complete Pass 1 first, upload the JE CSVs to Yardi, and re-export
-    the final GL before running this tab.
     """)
 
     if not st.session_state.pass1_complete:
@@ -1096,12 +1093,52 @@ with tab2:
 
     st.divider()
 
+    # ── Pass 2: Final GL upload ───────────────────────────────────────────────
+    st.markdown("#### Final GL — Post-Close")
+    st.caption(
+        "Export a fresh GL from Yardi **after** the Pass 1 JE CSVs have been uploaded and posted. "
+        "All other files (bank statements, trial balance, budget comparison, loan statements) "
+        "are reused from the sidebar — only the GL needs to be re-exported."
+    )
+
+    _p2_gl_col1, _p2_gl_col2 = st.columns([5, 1])
+    with _p2_gl_col1:
+        _p2_gl_upload = st.file_uploader(
+            "Yardi GL Detail — Final Close (.xlsx)",
+            type="xlsx",
+            key="uploader_gl_pass2",
+            help="Post-close GL export from Yardi (after all accrual JEs are posted). "
+                 "This replaces the pre-close GL uploaded in the sidebar for Pass 2 only.",
+        )
+    with _p2_gl_col2:
+        if _p2_gl_upload is not None:
+            st.markdown("✅")
+
+    if _p2_gl_upload is not None:
+        _p2_gl_path = os.path.join(st.session_state.temp_dir, f"gl_pass2_{_p2_gl_upload.name}")
+        if not os.path.exists(_p2_gl_path) or os.path.getsize(_p2_gl_path) != _p2_gl_upload.size:
+            with open(_p2_gl_path, "wb") as _f:
+                _f.write(_p2_gl_upload.getbuffer())
+        st.session_state.uploaded_files["gl_pass2"] = _p2_gl_path
+        st.caption(f"✓ Final GL ready: **{_p2_gl_upload.name}**")
+    else:
+        if "gl_pass2" not in st.session_state.uploaded_files:
+            st.caption("⬆️ Upload the post-close GL to enable Pass 2")
+
+    # Pass 2 requires either a dedicated post-close GL or at minimum the sidebar GL
+    _p2_gl_ready = (
+        "gl_pass2" in st.session_state.uploaded_files
+        or gl_uploaded
+    )
+
+    st.divider()
+
     # ── Pass 2 Run Button ─────────────────────────────────────────────────────
     col_p2a, col_p2b = st.columns([3, 1])
     with col_p2a:
         pass2_button = st.button(
             "📊 Generate Reports",
-            disabled=not gl_uploaded,
+            disabled=not _p2_gl_ready,
             use_container_width=True,
             key="pass2_run_btn",
             help="Parse final post-close GL and generate all workpapers and reports",
@@ -1111,14 +1148,20 @@ with tab2:
             st.session_state.pass2_complete = False
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
+            if "gl_pass2" in st.session_state.uploaded_files:
+                del st.session_state.uploaded_files["gl_pass2"]
             st.rerun()
 
     # ── Pass 2 Processing ─────────────────────────────────────────────────────
     if pass2_button:
         with st.spinner("Generating reports from final GL..."):
             try:
+                # Build files dict from shared sidebar uploads, then override GL
+                # with the dedicated post-close GL if one was uploaded.
                 files_dict = {key: st.session_state.uploaded_files.get(key)
                               for key in file_config.keys()}
+                if st.session_state.uploaded_files.get("gl_pass2"):
+                    files_dict["gl"] = st.session_state.uploaded_files["gl_pass2"]
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
