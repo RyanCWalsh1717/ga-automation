@@ -5,8 +5,8 @@ Pass 1 (Pre-Close):  Upload pre-close Yardi GL + supporting files → detect
                      accruals → export 3 JE CSVs for Yardi upload.
 
 Pass 2 (Post-Close): After JEs are posted to Yardi, upload final GL →
-                     generate Singerman workbook, BS workpaper, QC, variance
-                     comments, exception report.
+                     generate BS workpaper, QC, variance comments, exception
+                     report. (Singerman workbook is downloaded directly from Yardi.)
 """
 
 import streamlit as st
@@ -26,7 +26,7 @@ if str(pipeline_dir) not in sys.path:
 
 from engine import run_pipeline, EngineResult, Exception_
 from property_config import is_revenue_account, is_income_statement_account
-from report_generator import generate_report, generate_exception_report
+from report_generator import generate_exception_report
 from workpaper_generator import generate_workpapers
 import traceback
 from accrual_entry_generator import (
@@ -1068,7 +1068,7 @@ with tab1:
         st.info(
             "📌 **Next step:** Upload the JE CSVs to Yardi and run the final close. "
             "Then switch to the **Pass 2 — Generate Reports** tab to produce the "
-            "Singerman workbook, BS workpaper, QC, and variance comments.",
+            "BS workpaper, QC checklist, and variance comments.",
             icon="➡️",
         )
 
@@ -1079,8 +1079,10 @@ with tab1:
 with tab2:
     st.markdown("""
     **What this does:** Reads the final post-close Yardi GL (after all JEs have been posted)
-    and generates the complete set of deliverables — Singerman workbook, Balance Sheet
-    workpaper, institutional workpapers, QC checklist, variance comments, and exception report.
+    and generates the GRP review deliverables — Balance Sheet workpaper, institutional workpapers,
+    QC checklist, variance comments, and exception report.
+
+    *(The Singerman monthly report is downloaded directly from Yardi — no need to generate it here.)*
 
     **Pre-requisite:** Complete Pass 1 first, upload the JE CSVs to Yardi, and re-export
     the final GL before running this tab.
@@ -1123,8 +1125,8 @@ with tab2:
                 status_text  = st.empty()
 
                 # Step 1: Parse final (post-close) GL
-                status_text.text("Step 1/7: Parsing final GL...")
-                progress_bar.progress(8)
+                status_text.text("Step 1/6: Parsing final GL...")
+                progress_bar.progress(10)
                 engine_result = run_pipeline(
                     files_dict,
                     prior_period_outstanding=prior_period_outstanding,
@@ -1135,15 +1137,10 @@ with tab2:
                 bc_parsed    = engine_result.parsed.get('budget_comparison') or []
                 close_period = engine_result.period or ''
 
-                # Step 2: Singerman 8-tab workbook
-                status_text.text("Step 2/7: Generating Singerman workbook...")
-                progress_bar.progress(20)
-                report_path = os.path.join(st.session_state.temp_dir, "GA_Monthly_Report.xlsx")
-                generate_report(engine_result, report_path)
-
-                # Step 3: Parse trial balance + BS workpaper (no je_adjustments — GL is final)
-                status_text.text("Step 3/7: Generating BS workpaper...")
-                progress_bar.progress(35)
+                # Step 2: Parse trial balance + BS workpaper (no je_adjustments — GL is final)
+                # Note: Singerman monthly report is downloaded directly from Yardi by Ryan.
+                status_text.text("Step 2/6: Generating BS workpaper...")
+                progress_bar.progress(25)
 
                 tb_result = None
                 if "trial_balance" in st.session_state.uploaded_files:
@@ -1202,9 +1199,9 @@ with tab2:
                     if not tb_result:
                         st.info("Upload a Trial Balance file to enable the BS Workpaper.", icon="ℹ️")
 
-                # Step 4: Institutional workpapers (bank rec, debt service, rent roll)
-                status_text.text("Step 4/7: Generating institutional workpapers...")
-                progress_bar.progress(50)
+                # Step 3: Institutional workpapers (bank rec, debt service, rent roll)
+                status_text.text("Step 3/6: Generating institutional workpapers...")
+                progress_bar.progress(42)
                 workpaper_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
                 try:
                     generate_workpapers(engine_result, workpaper_path)
@@ -1212,9 +1209,9 @@ with tab2:
                 except Exception as _e:
                     st.warning(f"Workpapers skipped: {_e}")
 
-                # Step 5: Management fee (informational — already in GL)
-                status_text.text("Step 5/7: Verifying management fee...")
-                progress_bar.progress(62)
+                # Step 4: Management fee (informational — already in GL)
+                status_text.text("Step 4/6: Verifying management fee...")
+                progress_bar.progress(58)
                 try:
                     fee_result = calculate_mgmt_fee(
                         gl_parsed=gl_parsed,
@@ -1227,9 +1224,9 @@ with tab2:
                     fee_result = None
                     st.session_state.pass2_output_files["fee_result"] = None
 
-                # Step 6: QC engine
-                status_text.text("Step 6/7: Running QC checks...")
-                progress_bar.progress(74)
+                # Step 5: QC engine
+                status_text.text("Step 5/6: Running QC checks...")
+                progress_bar.progress(72)
 
                 kardin_records = engine_result.parsed.get("kardin_budget") or []
                 _period_month = 1
@@ -1261,10 +1258,10 @@ with tab2:
                     st.warning(f"QC engine skipped: {_e}")
                     st.session_state.pass2_output_files["qc_report"] = None
 
-                # Step 7: Variance comments + annotated BC
+                # Step 6: Variance comments + annotated BC
                 # No je_adjustments — the final GL already reflects all posted JEs.
-                status_text.text("Step 7/7: Generating variance comments...")
-                progress_bar.progress(88)
+                status_text.text("Step 6/6: Generating variance comments...")
+                progress_bar.progress(87)
 
                 api_key = None
                 try:
@@ -1353,7 +1350,6 @@ with tab2:
                     st.warning(f"Exception report skipped: {_e}")
 
                 # Store auxiliary pass2 data for dashboard
-                st.session_state.pass2_output_files["monthly_report"]    = report_path
                 st.session_state.pass2_output_files["tb_result"]         = tb_result
                 st.session_state.pass2_output_files["bank_rec_data"]     = bank_rec_data
                 st.session_state.pass2_output_files["daca_bank_data"]    = daca_bank_data
@@ -1649,7 +1645,6 @@ with tab2:
         period_label = (result.period or 'Period').replace('-', '_')
 
         p2_zip_files = {
-            f"RevLabs_{period_label}_Monthly_Report.xlsx":  p2.get("monthly_report"),
             f"RevLabs_{period_label}_BS_Workpaper.xlsx":    p2.get("bs_workpaper"),
             f"RevLabs_{period_label}_Workpapers.xlsx":      p2.get("workpapers"),
             f"RevLabs_{period_label}_QC_Workbook.xlsx":     p2.get("qc_workbook"),
@@ -1670,7 +1665,7 @@ with tab2:
                 file_name=f"RevLabs_{period_label}_Reports_{datetime.now().strftime('%Y%m%d')}.zip",
                 mime="application/zip",
                 use_container_width=True,
-                help="Singerman workbook, BS Workpaper, Institutional Workpapers, QC, Exceptions, Annotated BC",
+                help="BS Workpaper, Institutional Workpapers, QC Workbook, Exception Report, Annotated BC",
             )
 
         st.divider()
@@ -1678,8 +1673,6 @@ with tab2:
         col1, col2 = st.columns(2)
 
         _dl_items = [
-            ("monthly_report",  "📊 Singerman Monthly Report",
-             f"GA_Monthly_Report_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("bs_workpaper",    "📋 BS Workpaper",
              f"GA_BS_Workpaper_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("workpapers",      "📁 Institutional Workpapers",
