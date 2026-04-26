@@ -1125,6 +1125,103 @@ with tab2:
         if "gl_pass2" not in st.session_state.uploaded_files:
             st.caption("⬆️ Upload the post-close GL to enable Pass 2")
 
+    # ── Pass 2: Trial Balance upload ─────────────────────────────────────────
+    st.markdown("#### Trial Balance — Final Close")
+    st.caption(
+        "Export the Trial Balance from Yardi after the close is complete. "
+        "Used for the GL↔TB tie-out in the BS workpaper."
+    )
+    _p2_tb_col1, _p2_tb_col2 = st.columns([5, 1])
+    with _p2_tb_col1:
+        _p2_tb_upload = st.file_uploader(
+            "Yardi Trial Balance (.xlsx)",
+            type="xlsx",
+            key="uploader_trial_balance_pass2",
+            help="Post-close Trial Balance export. Overrides the sidebar Trial Balance for Pass 2.",
+        )
+    with _p2_tb_col2:
+        if _p2_tb_upload is not None:
+            st.markdown("✅")
+    if _p2_tb_upload is not None:
+        _p2_tb_path = os.path.join(st.session_state.temp_dir, f"tb_pass2_{_p2_tb_upload.name}")
+        if not os.path.exists(_p2_tb_path) or os.path.getsize(_p2_tb_path) != _p2_tb_upload.size:
+            with open(_p2_tb_path, "wb") as _f:
+                _f.write(_p2_tb_upload.getbuffer())
+        st.session_state.uploaded_files["trial_balance_pass2"] = _p2_tb_path
+        st.caption(f"✓ Final TB ready: **{_p2_tb_upload.name}**")
+    else:
+        if "trial_balance_pass2" not in st.session_state.uploaded_files:
+            if "trial_balance" in st.session_state.uploaded_files:
+                st.caption("↳ Using Trial Balance from sidebar (upload final version above to override)")
+            else:
+                st.caption("⬆️ Upload final Trial Balance to enable BS workpaper tie-out")
+
+    # ── Pass 2: Bank Rec upload ───────────────────────────────────────────────
+    st.markdown("#### Yardi Bank Rec — Final Close")
+    st.caption(
+        "Export the Bank Rec PDF from Yardi after the close posts. "
+        "Used for the Operating account reconciliation tab in the workpapers."
+    )
+    _p2_br_col1, _p2_br_col2 = st.columns([5, 1])
+    with _p2_br_col1:
+        _p2_br_upload = st.file_uploader(
+            "Yardi Bank Rec PDF (.pdf)",
+            type="pdf",
+            key="uploader_bank_rec_pass2",
+            help="Post-close Bank Rec PDF. Overrides the sidebar Bank Rec for Pass 2.",
+        )
+    with _p2_br_col2:
+        if _p2_br_upload is not None:
+            st.markdown("✅")
+    if _p2_br_upload is not None:
+        _p2_br_path = os.path.join(st.session_state.temp_dir, f"br_pass2_{_p2_br_upload.name}")
+        if not os.path.exists(_p2_br_path) or os.path.getsize(_p2_br_path) != _p2_br_upload.size:
+            with open(_p2_br_path, "wb") as _f:
+                _f.write(_p2_br_upload.getbuffer())
+        st.session_state.uploaded_files["bank_rec_pass2"] = _p2_br_path
+        st.caption(f"✓ Final Bank Rec ready: **{_p2_br_upload.name}**")
+    else:
+        if "bank_rec_pass2" not in st.session_state.uploaded_files:
+            if "bank_rec" in st.session_state.uploaded_files:
+                st.caption("↳ Using Bank Rec from sidebar (upload final version above to override)")
+            else:
+                st.caption("⬆️ Upload final Bank Rec PDF to enable bank reconciliation workpaper")
+
+    # ── Pass 2: Loan Statements upload ───────────────────────────────────────
+    st.markdown("#### Berkadia Loan Statements — Final Close")
+    st.caption(
+        "Upload the final month's loan billing statements. "
+        "Used for the debt service workpaper tab."
+    )
+    _p2_loan_col1, _p2_loan_col2 = st.columns([5, 1])
+    with _p2_loan_col1:
+        _p2_loan_upload = st.file_uploader(
+            "Berkadia Loan Statements (.pdf)",
+            type="pdf",
+            accept_multiple_files=True,
+            key="uploader_loan_pass2",
+            help="Post-close loan billing PDFs (up to 3). Overrides the sidebar loan files for Pass 2.",
+        )
+    with _p2_loan_col2:
+        if _p2_loan_upload:
+            st.markdown("✅")
+    if _p2_loan_upload:
+        _p2_loan_paths = []
+        for _lf in _p2_loan_upload:
+            _lp = os.path.join(st.session_state.temp_dir, f"loan_pass2_{_lf.name}")
+            if not os.path.exists(_lp) or os.path.getsize(_lp) != _lf.size:
+                with open(_lp, "wb") as _f:
+                    _f.write(_lf.getbuffer())
+            _p2_loan_paths.append(_lp)
+        st.session_state.uploaded_files["loan_pass2"] = _p2_loan_paths
+        st.caption(f"✓ {len(_p2_loan_paths)} loan statement(s) ready")
+    else:
+        if "loan_pass2" not in st.session_state.uploaded_files:
+            if "loan" in st.session_state.uploaded_files:
+                st.caption("↳ Using loan statements from sidebar (upload final versions above to override)")
+            else:
+                st.caption("⬆️ Upload loan statements to enable debt service workpaper")
+
     # Pass 2 requires either a dedicated post-close GL or at minimum the sidebar GL
     _p2_gl_ready = (
         "gl_pass2" in st.session_state.uploaded_files
@@ -1148,20 +1245,26 @@ with tab2:
             st.session_state.pass2_complete = False
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
-            if "gl_pass2" in st.session_state.uploaded_files:
-                del st.session_state.uploaded_files["gl_pass2"]
+            for _k in ("gl_pass2", "trial_balance_pass2", "bank_rec_pass2", "loan_pass2"):
+                st.session_state.uploaded_files.pop(_k, None)
             st.rerun()
 
     # ── Pass 2 Processing ─────────────────────────────────────────────────────
     if pass2_button:
         with st.spinner("Generating reports from final GL..."):
             try:
-                # Build files dict from shared sidebar uploads, then override GL
-                # with the dedicated post-close GL if one was uploaded.
+                # Build files dict from shared sidebar uploads, then override
+                # with any Pass 2-specific files that were uploaded above.
                 files_dict = {key: st.session_state.uploaded_files.get(key)
                               for key in file_config.keys()}
                 if st.session_state.uploaded_files.get("gl_pass2"):
                     files_dict["gl"] = st.session_state.uploaded_files["gl_pass2"]
+                if st.session_state.uploaded_files.get("trial_balance_pass2"):
+                    files_dict["trial_balance"] = st.session_state.uploaded_files["trial_balance_pass2"]
+                if st.session_state.uploaded_files.get("bank_rec_pass2"):
+                    files_dict["bank_rec"] = st.session_state.uploaded_files["bank_rec_pass2"]
+                if st.session_state.uploaded_files.get("loan_pass2"):
+                    files_dict["loan"] = st.session_state.uploaded_files["loan_pass2"]
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
