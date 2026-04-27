@@ -1509,7 +1509,6 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'source':         'manual',
             'confidence':     'high',
         })
-        _manual_accounts.add(acct_code)
         je_num += 1
 
     # ── Tenant utility billing (meter read JE) ─────────────────────────────────
