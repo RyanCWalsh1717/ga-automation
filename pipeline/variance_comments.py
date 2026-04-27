@@ -640,6 +640,13 @@ def generate_variance_comments_grp(
             'ytd_actual': float,  'ytd_budget': float,
           }
     """
+    # Pass 2 safety guard — GL is already final; je_adjustments must not be used.
+    if je_adjustments is not None:
+        raise ValueError(
+            "je_adjustments must not be passed to generate_variance_comments_grp() in Pass 2. "
+            "The GL is already final after the close — read actuals directly from GL."
+        )
+
     # Determine reporting month from period string (e.g. "Apr 2026" → 4)
     period_month = 1
     if period:

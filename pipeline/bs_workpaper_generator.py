@@ -20,6 +20,7 @@ but not yet in the GL — surfacing exactly what still needs to be posted.
 from datetime import datetime, date
 from typing import List, Dict, Optional
 from openpyxl import Workbook
+from property_config import is_balance_sheet_account
 from openpyxl.styles import (
     Font, PatternFill, Alignment, Border, Side
 )
@@ -93,7 +94,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            bank_rec_data: dict = None,
                            gl_cash_balance: float = None,
                            daca_bank_data: dict = None,
-                           daca_gl_balance: float = None) -> str:
+                           daca_gl_balance: float = None,
+                           je_adjustments: Optional[Dict[str, float]] = None) -> str:
     """
     Generate the balance sheet reconciliation workpaper.
 
@@ -112,6 +114,13 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     Returns:
         output_path
     """
+    # Pass 2 safety guard — GL is already final; je_adjustments must not be used.
+    if je_adjustments is not None:
+        raise ValueError(
+            "je_adjustments must not be passed to generate_bs_workpaper() in Pass 2. "
+            "The GL is already final after the close — read actuals directly from GL."
+        )
+
     wb = Workbook()
 
     # Build TB lookup: account_code -> TBAccount
@@ -126,10 +135,11 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     ]
 
     # ── Build workpaper tabs ──────────────────────────────────
-    _write_summary_tab(wb, bs_accounts, tb_map, period, property_name)
+    _write_summary_tab(wb, bs_accounts, tb_map, period, property_name, je_adjustments)
     _write_tb_tab(wb, tb_result, period, property_name)
     for acct in bs_accounts:
-        _write_account_tab(wb, acct, tb_map.get(acct.account_code), period, property_name)
+        _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
+                           property_name, je_adjustments)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
@@ -174,7 +184,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
 # ── Summary tab ───────────────────────────────────────────────
 
-def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name):
+def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name, je_adjustments=None):
     ws = wb.create_sheet('Summary')
     ws.sheet_properties.tabColor = COLOR_SUMMARY
 
@@ -195,10 +205,11 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name):
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
     row += 2
 
-    # Column headers
-    headers = ['Account', 'Account Name', 'GL Ending Balance', 'TB Ending Balance',
+    # Column headers — show projected label when JE adjustments are applied
+    gl_col_label = 'GL Projected Balance' if je_adjustments else 'GL Ending Balance'
+    headers = ['Account', 'Account Name', gl_col_label, 'TB Ending Balance',
                'Variance', 'Status']
-    widths  = [12, 40, 20, 20, 16, 10]
+    widths  = [12, 40, 22, 20, 16, 10]
     for ci, (h, w) in enumerate(zip(headers, widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
@@ -233,7 +244,7 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name):
 
         for acct in group_accts:
             tb_acct = tb_map.get(acct.account_code)
-            gl_end  = acct.ending_balance
+            gl_end  = acct.ending_balance + (je_adjustments or {}).get(acct.account_code, 0.0)
             tb_end  = tb_acct.ending_balance if tb_acct else None
             variance = (gl_end - tb_end) if tb_end is not None else None
             status   = '✓' if (variance is not None and abs(variance) < 0.02) else ('⚠' if tb_end is None else '✗')
@@ -295,8 +306,13 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name):
     row += 2
 
     # Note about variances
-    note = ('Note: Non-zero variances indicate accrual journal entries posted in Yardi (visible in TB) '
-            'but not yet reflected in the GL detail file. These are expected for period-end accruals.')
+    if je_adjustments:
+        note = ('Note: GL Projected Balance = GL ending balance + pipeline JE adjustments (accruals, '
+                'management fee, prepaid amortization). Non-zero variances vs TB indicate JEs not yet '
+                'posted to Yardi — expected at pre-close. Post all JEs and re-run for final tie-out.')
+    else:
+        note = ('Note: Non-zero variances indicate accrual journal entries posted in Yardi (visible in TB) '
+                'but not yet reflected in the GL detail file. These are expected for period-end accruals.')
     c = ws.cell(row=row, column=_B, value=note)
     c.font = _font(italic=True, size=10, color='595959')
     c.alignment = Alignment(wrap_text=True)
@@ -422,7 +438,7 @@ def _write_tb_tab(wb, tb_result, period, property_name):
 
 # ── Account reconciliation tab ────────────────────────────────
 
-def _write_account_tab(wb, gl_acct, tb_acct, period, property_name):
+def _write_account_tab(wb, gl_acct, tb_acct, period, property_name, je_adjustments=None):
     """One tab per balance sheet account."""
     tab_name = f'{gl_acct.account_code}'
     ws = wb.create_sheet(tab_name)
@@ -549,10 +565,11 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name):
 
     # ── Tie-out section ──────────────────────────────────────
     row += 1
-    _write_tieout(ws, row, gl_acct, tb_acct, period)
+    _je_delta = (je_adjustments or {}).get(gl_acct.account_code, 0.0)
+    _write_tieout(ws, row, gl_acct, tb_acct, period, je_delta=_je_delta)
 
 
-def _write_tieout(ws, row, gl_acct, tb_acct, period):
+def _write_tieout(ws, row, gl_acct, tb_acct, period, je_delta: float = 0.0):
     """Write the GL ending / TB balance / Variance tie-out block (Hartwell inline style)."""
 
     # Separator line
@@ -560,7 +577,7 @@ def _write_tieout(ws, row, gl_acct, tb_acct, period):
         ws.cell(row=row, column=col).border = THICK_BOTTOM
     row += 1
 
-    gl_ending = gl_acct.ending_balance
+    gl_ending = gl_acct.ending_balance + je_delta   # projected post-close if je_delta != 0
     tb_ending = tb_acct.ending_balance if tb_acct else None
     variance  = (gl_ending - tb_ending) if tb_ending is not None else None
 
@@ -569,8 +586,9 @@ def _write_tieout(ws, row, gl_acct, tb_acct, period):
 
     # GL ending balance — Hartwell inline style
     # Label in _D (description col), value in _I (balance col), bold, light blue fill across data cols
-    label_gl = ws.cell(row=row, column=_D,
-                       value=f'Ending Balance per GL as of {period}')
+    _gl_label = (f'Projected Balance per GL as of {period} (incl. pipeline JEs)'
+                 if je_delta != 0.0 else f'Ending Balance per GL as of {period}')
+    label_gl = ws.cell(row=row, column=_D, value=_gl_label)
     label_gl.font = _font(bold=True)
     c_gl = ws.cell(row=row, column=_I, value=gl_ending)
     _apply(c_gl, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
@@ -1168,9 +1186,11 @@ def generate(gl_result, tb_result, output_path: str,
              bank_rec_data: dict = None,
              gl_cash_balance: float = None,
              daca_bank_data: dict = None,
-             daca_gl_balance: float = None) -> str:
+             daca_gl_balance: float = None,
+             je_adjustments: Optional[Dict[str, float]] = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
                                   bank_rec_data, gl_cash_balance,
-                                  daca_bank_data, daca_gl_balance)
+                                  daca_bank_data, daca_gl_balance,
+                                  je_adjustments)

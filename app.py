@@ -143,11 +143,11 @@ if "tenant_billing_df" not in st.session_state:
 if "manual_je_df" not in st.session_state:
     import pandas as pd
     st.session_state.manual_je_df = pd.DataFrame({
-        "JE #":             ["OOE-0001", "OOE-0001"],
-        "Description":      ["",          ""],
-        "Account Code":     ["",          ""],
-        "Amount":           [0.0,         0.0],
-        "Line Description": ["",          ""],
+        "JE #":             ["", ""],
+        "Description":      ["", ""],
+        "Account Code":     ["", ""],
+        "Amount":           [0.0, 0.0],
+        "Line Description": ["", ""],
     })
 
 if "manual_accruals_df" not in st.session_state:
@@ -826,20 +826,23 @@ with tab1:
 
                 _accrual_csv_path = _prepaid_csv_path = _manual_csv_path = None
 
+                _prop_code = (engine_result.parsed.get('gl') and
+                              engine_result.parsed['gl'].metadata.property_code) or 'revlabpm'
+
                 if _accrual_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
                     generate_yardi_je_csv(_accrual_lines, _accrual_csv_path,
-                                          period=close_period, property_code='revlabpm')
+                                          period=close_period, property_code=_prop_code)
 
                 if _prepaid_lines:
                     _prepaid_csv_path = os.path.join(st.session_state.temp_dir, "GA_Prepaid_JE.csv")
                     generate_yardi_je_csv(_prepaid_lines, _prepaid_csv_path,
-                                          period=close_period, property_code='revlabpm')
+                                          period=close_period, property_code=_prop_code)
 
                 if _manual_lines:
                     _manual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Manual_JE.csv")
                     generate_yardi_je_csv(_manual_lines, _manual_csv_path,
-                                          period=close_period, property_code='revlabpm')
+                                          period=close_period, property_code=_prop_code)
 
                 # Persist Pass 1 outputs
                 p1 = st.session_state.pass1_output_files
