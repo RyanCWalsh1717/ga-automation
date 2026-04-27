@@ -1467,8 +1467,16 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         amount    = float(override.get('amount', 0) or 0)
         desc      = str(override.get('description', '') or
                         f'Manual accrual — {acct_name}')
-        if not acct_code or amount <= 0:
+        if not acct_code:
             continue
+
+        # Register the account as manually handled BEFORE the amount check so
+        # that app.py's dedup pattern (amount=0, non-empty account_code) correctly
+        # suppresses Layers 1-4 for this account even when no JE is being generated.
+        _manual_accounts.add(acct_code)
+
+        if amount <= 0:
+            continue  # account registered for dedup; no JE generated
 
         je_id = f'MAN-{je_num:04d}'
         je_lines.append({
@@ -1662,6 +1670,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         amount = inv.get('amount', 0) or 0
 
         if amount == 0:
+            continue
+
+        # Skip if user has manually specified this account in the One-Off table —
+        # their override (with amount > 0) or suppression (amount = 0) takes precedence.
+        if gl_account in _manual_accounts:
             continue
 
         # Dedup — two strategies, first-match wins:

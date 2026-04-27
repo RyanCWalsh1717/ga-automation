@@ -1345,6 +1345,19 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         property_name="",
     )
 
+    def _warn_empty(key: str, data, source: str) -> None:
+        """Emit a warning exception when a parser succeeds but returns no data."""
+        empty = (
+            data is None
+            or (isinstance(data, list) and len(data) == 0)
+            or (isinstance(data, dict) and len(data) == 0)
+        )
+        if empty:
+            result.add_exception(
+                "warning", "parse", source,
+                f"{key} file was parsed but returned no data — check file format or contents",
+            )
+
     # ── Step 1: Parse all files ──────────────────────────────
     gl = None
     if "gl" in files and files["gl"]:
@@ -1377,6 +1390,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             is_data = parse_is(files["income_statement"])
             result.parsed["income_statement"] = is_data
+            _warn_empty("Income Statement", is_data, "yardi_is")
         except Exception as e:
             result.add_exception("error", "parse", "yardi_is", f"IS parse failed: {e}")
 
@@ -1385,6 +1399,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             bc_data = parse_bc(files["budget_comparison"])
             result.parsed["budget_comparison"] = bc_data
+            _warn_empty("Budget Comparison", bc_data, "yardi_bc")
         except Exception as e:
             result.add_exception("error", "parse", "yardi_bc", f"Budget parse failed: {e}")
 
@@ -1393,6 +1408,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             rr_data = parse_rr(files["rent_roll"])
             result.parsed["rent_roll"] = rr_data
+            _warn_empty("Rent Roll", rr_data, "yardi_rr")
         except Exception as e:
             result.add_exception("error", "parse", "yardi_rr", f"Rent Roll parse failed: {e}")
 
@@ -1401,6 +1417,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             nexus_data = parse_nexus(files["nexus_accrual"])
             result.parsed["nexus_accrual"] = nexus_data
+            _warn_empty("Nexus Accrual Detail", nexus_data, "nexus")
         except Exception as e:
             result.add_exception("error", "parse", "nexus", f"Nexus parse failed: {e}")
 
@@ -1454,6 +1471,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             kardin_data = parse_kardin(files["kardin_budget"])
             result.parsed["kardin_budget"] = kardin_data
+            _warn_empty("Kardin Budget", kardin_data, "kardin")
         except Exception as e:
             result.add_exception("error", "parse", "kardin", f"Kardin parse failed: {e}")
 

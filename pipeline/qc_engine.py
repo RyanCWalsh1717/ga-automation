@@ -290,8 +290,8 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
                     note=f'GL ending ${gl_end:,.2f} ≠ TB ending ${tb_end:,.2f}',
                 ))
 
-    # 3c: TB totals summary as info finding
-    findings.insert(0, QCFinding(
+    # 3c: TB totals summary — appended last so mismatches appear first
+    findings.append(QCFinding(
         account_code='TB-TOTAL',
         account_name='TB Totals',
         value_a=tb_result.total_debits,
@@ -656,7 +656,7 @@ def check_7_misc(budget_rows: List[dict],
     ins_code = '639110'
     if ins_code in bc_map and kardin_records:
         from variance_comments import build_kardin_enrichment
-        kardin = build_kardin_enrichment(kardin_records, ins_code, 1)
+        kardin = build_kardin_enrichment(kardin_records, ins_code, period_month)
         annual_budget = kardin.get('annual_budget', 0)
         expected_monthly = annual_budget / 12 if annual_budget else 0
         ptd_actual = abs(_safe_float(bc_map[ins_code].get('ptd_actual', 0)))
