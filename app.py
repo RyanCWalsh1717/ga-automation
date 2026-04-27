@@ -452,7 +452,7 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
     import pandas as _pd
     st.session_state.manual_je_df = _pd.DataFrame({
-        "JE #": ["OOE-0001", "OOE-0001"], "Description": ["", ""],
+        "JE #": ["", ""], "Description": ["", ""],
         "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
     })
     if "manual_accruals_df" in st.session_state:
