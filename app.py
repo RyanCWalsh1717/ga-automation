@@ -1125,6 +1125,38 @@ with tab2:
         if "gl_pass2" not in st.session_state.uploaded_files:
             st.caption("⬆️ Upload the post-close GL to enable Pass 2")
 
+    # ── Pass 2: Budget Comparison upload ─────────────────────────────────────
+    st.markdown("#### Budget Comparison — Final Close")
+    st.caption(
+        "Re-export the Budget Comparison from Yardi after the close posts. "
+        "Once accrual JEs are in Yardi the actuals column updates, which gives "
+        "variance comments and the annotated BC the correct final numbers."
+    )
+    _p2_bc_col1, _p2_bc_col2 = st.columns([5, 1])
+    with _p2_bc_col1:
+        _p2_bc_upload = st.file_uploader(
+            "Yardi Budget Comparison (.xlsx)",
+            type="xlsx",
+            key="uploader_budget_comparison_pass2",
+            help="Post-close Budget Comparison export. Overrides the sidebar Budget Comparison for Pass 2.",
+        )
+    with _p2_bc_col2:
+        if _p2_bc_upload is not None:
+            st.markdown("✅")
+    if _p2_bc_upload is not None:
+        _p2_bc_path = os.path.join(st.session_state.temp_dir, f"bc_pass2_{_p2_bc_upload.name}")
+        if not os.path.exists(_p2_bc_path) or os.path.getsize(_p2_bc_path) != _p2_bc_upload.size:
+            with open(_p2_bc_path, "wb") as _f:
+                _f.write(_p2_bc_upload.getbuffer())
+        st.session_state.uploaded_files["budget_comparison_pass2"] = _p2_bc_path
+        st.caption(f"✓ Final BC ready: **{_p2_bc_upload.name}**")
+    else:
+        if "budget_comparison_pass2" not in st.session_state.uploaded_files:
+            if "budget_comparison" in st.session_state.uploaded_files:
+                st.caption("↳ Using Budget Comparison from sidebar (upload final version above to override)")
+            else:
+                st.caption("⬆️ Upload final Budget Comparison to enable variance comments on final actuals")
+
     # ── Pass 2: Trial Balance upload ─────────────────────────────────────────
     st.markdown("#### Trial Balance — Final Close")
     st.caption(
@@ -1245,7 +1277,7 @@ with tab2:
             st.session_state.pass2_complete = False
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
-            for _k in ("gl_pass2", "trial_balance_pass2", "bank_rec_pass2", "loan_pass2"):
+            for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2", "bank_rec_pass2", "loan_pass2"):
                 st.session_state.uploaded_files.pop(_k, None)
             st.rerun()
 
@@ -1259,6 +1291,8 @@ with tab2:
                               for key in file_config.keys()}
                 if st.session_state.uploaded_files.get("gl_pass2"):
                     files_dict["gl"] = st.session_state.uploaded_files["gl_pass2"]
+                if st.session_state.uploaded_files.get("budget_comparison_pass2"):
+                    files_dict["budget_comparison"] = st.session_state.uploaded_files["budget_comparison_pass2"]
                 if st.session_state.uploaded_files.get("trial_balance_pass2"):
                     files_dict["trial_balance"] = st.session_state.uploaded_files["trial_balance_pass2"]
                 if st.session_state.uploaded_files.get("bank_rec_pass2"):
