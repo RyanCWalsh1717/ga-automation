@@ -587,8 +587,8 @@ def check_7_misc(budget_rows: List[dict],
     7a. Management fee accrual vs calculated fee (cash received × rate)
     7b. Interest expense — verify accrual exists and is non-zero
     7c. Insurance-Property (639110) — verify monthly charge matches expected amortization
-    7d. Prepaid accounts (135100 insurance, 135110/120/150 RE Tax) — fwd + DR - CR = ending
-    7e. Insurance Escrow (115300) — GL ending balance ties to Berkadia loan statement
+    7d. Prepaid accounts (135110 insurance, 135120 RE Tax prepaid, 135150 Prepaid Other) — fwd + DR - CR = ending
+    7e. Berkadia insurance escrow — should be $0 for Rev Labs (Berkadia no longer handles insurance)
     """
     findings: List[QCFinding] = []
     kardin_records = kardin_records or []

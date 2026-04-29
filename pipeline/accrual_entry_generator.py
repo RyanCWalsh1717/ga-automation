@@ -164,8 +164,8 @@ TENANT_UTILITY_ACCOUNTS: dict = {
     '440700': {'label': 'Tenant Gas Recovery',          'budget_key': '440700'},
 }
 
-PREPAID_ASSET_ACCOUNT = '130000'
-PREPAID_ASSET_NAME    = 'Prepaid Expenses'
+PREPAID_ASSET_ACCOUNT = '135150'
+PREPAID_ASSET_NAME    = 'Prepaid Other'
 
 # ── Payroll bonus accounts ───────────────────────────────────────────────────
 # Bonuses post to the same account codes as regular payroll.  The annual bonus
@@ -1833,8 +1833,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             je_desc += f" — {description[:50]}"
 
         # ── Prepaid split: accrue only current-month portion to expense;
-        #    remaining future months go to prepaid asset (130000).
-        #    Month 1 of N: DR expense (1/N) + DR prepaid (N-1/N) / CR 211200 (full)
+        #    remaining future months go to Prepaid Other (135150).
+        #    Month 1 of N: DR expense (1/N) + DR 135150 (N-1/N) / CR 211200 (full)
         is_prepaid = inv.get('is_prepaid', False)
         prepaid_months = int(inv.get('prepaid_months', 1) or 1)
 
@@ -1887,7 +1887,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         je_num += 1
 
-        # Second JE: book future months to prepaid asset (130000)
+        # Second JE: book future months to Prepaid Other (135150)
         if future_amt > 0:
             je_id_ppd = f"ACC-{je_num:04d}"
             ppd_desc = f"Prepaid booking — {vendor} #{inv_num} ({prepaid_months - 1} future mo)"
@@ -2359,7 +2359,7 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
 
     Each entry:
       DR  [expense account]       monthly_amount   (releasing prepaid to expense)
-      CR  130000 Prepaid Expenses monthly_amount
+      CR  135150 Prepaid Other    monthly_amount
 
     Args:
         ledger_amort_lines: from prepaid_ledger.get_current_amortization()
