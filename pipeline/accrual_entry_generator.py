@@ -2631,19 +2631,14 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
             batch_map[je_num] = batch_counter
             batch_counter += 1
 
-    def _clean(text: str) -> str:
-        """Remove commas from text fields — Yardi's importer does not handle
-        quoted CSV fields, so any comma inside a field shifts all subsequent
-        columns and causes an index-out-of-range error on import."""
-        return str(text or '').replace(',', ' ').strip()
-
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         for line in je_lines:
             je_num  = line.get('je_number', '')
             batch   = batch_map.get(je_num, 1)
-            desc    = _clean(line.get('description', ''))[:60]
-            gl_acct = _clean(line.get('account_code', ''))
+            desc    = str(line.get('description', '') or '')[:60]
+            gl_acct = str(line.get('account_code', '') or '')
+            ref     = str(line.get('reference', '') or je_num)
             debit   = line.get('debit', 0) or 0
             credit  = line.get('credit', 0) or 0
             # Signed amount: positive = DR, negative = CR
@@ -2657,14 +2652,14 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
                 period_date,                     # col 5:  reference date
                 period_date,                     # col 6:  period date
                 '',                              # col 7:  empty
-                desc,                            # col 8:  description
+                desc,                            # col 8:  description (quoted by csv.writer if contains comma — Yardi accepts this)
                 property_code,                   # col 9:  property code
                 amount,                          # col 10: signed amount
                 gl_acct,                         # col 11: GL account
                 '',                              # col 12: empty
                 '',                              # col 13: empty
-                batch,                           # col 14: reference number (numeric)
-                '',                              # col 15: empty
+                1000,                            # col 14: fixed numeric reference (Yardi requirement)
+                ref,                             # col 15: text reference code (e.g. INS-AMORT, BUDGET-GAP)
                 '',                              # col 16: empty
                 'Standard Journal Display Type', # col 17: required by Yardi
             ])

@@ -257,15 +257,15 @@ def build_management_fee_je(
     fee_result: ManagementFeeResult,
     period: str = '',
     property_code: str = 'revlabpm',
-    ap_account: str = '211300',        # Accrued Expenses — management fees
-    ap_account_name: str = 'Accrued Expenses',
+    ap_account: str = '213100',        # Accrued Management Fees payable
+    ap_account_name: str = 'Accrued Management Fees',
     je_number: str = 'MGT-001',
 ) -> list[dict]:
     """
     Build the two-line journal entry for the management fee accrual.
 
     Debit  637130  Admin-Management Fees     (total fee)
-    Credit 211300  Accrued Expenses          (total fee)
+    Credit 213100  Accrued Management Fees   (total fee)
 
     Returns a list of dicts matching the format expected by
     generate_yardi_je_import() in accrual_entry_generator.py.
