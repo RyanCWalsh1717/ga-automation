@@ -406,12 +406,15 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
     monthly_amt   = _round(beg_bal / prior_months)
 
     if period_month in _RETAX_PAYMENT_MONTHS:
-        # Full quarterly accrual — Berkadia hasn't posted yet
-        quarterly_amt = _round(monthly_amt * 3)
+        # 2-month accrual — Berkadia hasn't posted yet.
+        # We accrue 2 months (current + next) because when the actual
+        # Berkadia payment hits in the third month it already includes
+        # that month's expense — no separate accrual needed for month 3.
+        two_month_amt = _round(monthly_amt * 2)
         return {
             'account_code':   _RETAX_EXPENSE_ACCT,
             'account_name':   'Real Estate Taxes',
-            'amount':         quarterly_amt,
+            'amount':         two_month_amt,
             'credit_account': _RETAX_PREPAID_ACCT,
             'credit_name':    'Prepaid RE Taxes',
             'source':         'prepaid_amortization',
@@ -419,9 +422,10 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
             'auto_reverse':   True,
             'description': (
                 f'** AUTO-REVERSE NEXT PERIOD ** '
-                f'RE Tax quarterly accrual — Berkadia payment not yet posted. '
-                f'${quarterly_amt:,.2f} (${beg_bal:,.2f} YTD ÷ {prior_months} months × 3; '
-                f'escrow ${escrow_balance:,.2f}). Set auto-reversal in Yardi.'
+                f'RE Tax 2-month accrual — Berkadia payment not yet posted. '
+                f'${two_month_amt:,.2f} (${monthly_amt:,.2f}/mo × 2; actual payment '
+                f'will include 3rd month. Escrow ${escrow_balance:,.2f}). '
+                f'Set auto-reversal in Yardi.'
             ),
         }
     else:
