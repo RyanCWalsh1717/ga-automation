@@ -679,9 +679,11 @@ def check_7_misc(budget_rows: List[dict],
             ))
 
     # ── 7d: Prepaid accounts math (fwd + DR - CR = ending) ────
-    # 135100 = Insurance Prepaid; 135110/135120/135150 = RE Tax Prepaid
+    # 135110 = Restricted Insurance / Prepaid Insurance (single insurance account)
+    # 135120/135150 = RE Tax Prepaid variants
+    # 135110 also checked in 7e against Berkadia statement
     if tb_result:
-        for code in ('135100', '135110', '135120', '135150'):
+        for code in ('135110', '135120', '135150'):
             if code in tb_map:
                 acct = tb_map[code]
                 expected_end = acct.forward_balance + acct.debit - acct.credit
@@ -707,8 +709,12 @@ def check_7_misc(budget_rows: List[dict],
                         note=f'Prepaid math ties: fwd {acct.forward_balance:,.2f} + debit {acct.debit:,.2f} - credit {acct.credit:,.2f} = {acct.ending_balance:,.2f}.',
                     ))
 
-    # ── 7e: Insurance Escrow (115300) GL vs Berkadia statement ─
-    ins_escrow_code = '115300'
+    # ── 7e: Restricted Insurance (135110) GL vs Berkadia statement ─
+    # 135110 mirrors the lender-held insurance escrow balance.
+    # A monthly JE keeps the GL in sync with the Berkadia loan statement.
+    # For months with no escrow activity (e.g. no premium drawn) the balances
+    # should be equal; any difference flags for manual reconciliation.
+    ins_escrow_code = '135110'
     if loan_data and tb_result and ins_escrow_code in tb_map:
         # Sum insurance_escrow_balance across all Berkadia loans
         loans = loan_data if isinstance(loan_data, list) else [loan_data]
@@ -719,21 +725,20 @@ def check_7_misc(budget_rows: List[dict],
             else:
                 loan_ins_escrow += _safe_float(getattr(ln, 'insurance_escrow_balance', 0))
 
-        if loan_ins_escrow > 0:
-            acct = tb_map[ins_escrow_code]
-            gl_bal = acct.ending_balance
-            diff = abs(gl_bal - loan_ins_escrow)
-            flag = 'INFO' if diff < 1.0 else 'FLAG'
-            findings.append(QCFinding(
-                account_code=ins_escrow_code,
-                account_name='Insurance Escrow (Lender)',
-                value_a=gl_bal,
-                value_b=loan_ins_escrow,
-                difference=gl_bal - loan_ins_escrow,
-                flag=flag,
-                note=(f'GL 115300: ${gl_bal:,.2f} | Berkadia statement: ${loan_ins_escrow:,.2f}. '
-                      + ('Ties.' if diff < 1.0 else f'Difference ${diff:,.2f} — reconcile escrow vs loan statement.')),
-            ))
+        acct = tb_map[ins_escrow_code]
+        gl_bal = acct.ending_balance
+        diff = abs(gl_bal - loan_ins_escrow)
+        flag = 'INFO' if diff < 1.0 else 'FLAG'
+        findings.append(QCFinding(
+            account_code=ins_escrow_code,
+            account_name='Restricted Insurance (Lender Escrow)',
+            value_a=gl_bal,
+            value_b=loan_ins_escrow,
+            difference=gl_bal - loan_ins_escrow,
+            flag=flag,
+            note=(f'GL 135110: ${gl_bal:,.2f} | Berkadia statement: ${loan_ins_escrow:,.2f}. '
+                  + ('Ties.' if diff < 1.0 else f'Difference ${diff:,.2f} — post reconciling JE to 135110.')),
+        ))
 
     flags = [f for f in findings if f.flag == 'FLAG']
     if not flags:

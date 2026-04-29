@@ -232,7 +232,7 @@ def _subhdr_fill():
 # ── Layer 1b: Insurance prepaid amortization ─────────────────
 
 # Insurance prepaid account and expense accounts
-_PREPAID_INSURANCE_ACCT = '135110'
+_PREPAID_INSURANCE_ACCT = '135110'   # Restricted Insurance / Prepaid Insurance
 _INSURANCE_EXPENSE_ACCTS = {'639110', '639120'}
 
 def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
