@@ -315,7 +315,8 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
 # ── Layer 1c: Real Estate Tax amortization ───────────────────
 
 _RETAX_EXPENSE_ACCT    = '641110'   # Real Estate Taxes (income statement)
-_RETAX_ESCROW_ACCT     = '115200'   # Restricted Cash - RE Tax Escrow (balance sheet)
+_RETAX_PREPAID_ACCT    = '135120'   # Prepaid RE Taxes (balance sheet — credit for monthly JE)
+_RETAX_ESCROW_ACCT     = '115200'   # RE Tax Escrow — Berkadia-held; ties to loan statement
 
 # Lexington tax bills due Feb, May, Aug, Nov — Berkadia pays the month prior.
 # Payment months: Jan (for Feb bill), Apr (for May bill),
@@ -411,8 +412,8 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
             'account_code':   _RETAX_EXPENSE_ACCT,
             'account_name':   'Real Estate Taxes',
             'amount':         quarterly_amt,
-            'credit_account': _RETAX_ESCROW_ACCT,
-            'credit_name':    'Restricted Cash - RE Tax Escrow',
+            'credit_account': _RETAX_PREPAID_ACCT,
+            'credit_name':    'Prepaid RE Taxes',
             'source':         'prepaid_amortization',
             'confidence':     'high',
             'auto_reverse':   True,
@@ -429,8 +430,8 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
             'account_code':   _RETAX_EXPENSE_ACCT,
             'account_name':   'Real Estate Taxes',
             'amount':         monthly_amt,
-            'credit_account': _RETAX_ESCROW_ACCT,
-            'credit_name':    'Restricted Cash - RE Tax Escrow',
+            'credit_account': _RETAX_PREPAID_ACCT,
+            'credit_name':    'Prepaid RE Taxes',
             'source':         'prepaid_amortization',
             'confidence':     'high',
             'auto_reverse':   False,
