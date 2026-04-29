@@ -219,13 +219,6 @@ FILE_CONFIG = {
         "Enables AP accrual detection (Layer 1 — open invoices not yet posted to GL). "
         "Without it: invoice-proration (Layer 2), budget gap (Layer 3), and historical (Layer 4) still run.",
     ),
-    "nexus_paid": (
-        "Nexus Invoice Detail — Paid (.xls/.xlsx)", ["xls", "xlsx"], False, "core",
-        "Paid invoices export from Nexus. Pipeline auto-detects multi-period (prepaid) invoices "
-        "by scanning the line description for service-period date ranges. Detected prepaids are "
-        "added to the Prepaid Ledger and amortized month-by-month. "
-        "Without it: no new prepaids detected from paid invoices this month.",
-    ),
     # ── Bank ──────────────────────────────────────────────────
     "bank_rec": (
         "Yardi Bank Rec PDF — Operating (.pdf)", "pdf", False, "bank",
@@ -680,30 +673,15 @@ with tab1:
                 ledger_path = st.session_state.uploaded_files.get("prepaid_ledger")
                 ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
 
-                # Parse paid invoices for new prepaid detection
-                nexus_paid_path = st.session_state.uploaded_files.get("nexus_paid")
-                nexus_paid_records = []
-                if nexus_paid_path:
-                    try:
-                        from parsers.nexus_paid_invoices import parse as parse_nexus_paid
-                        nexus_paid_records = parse_nexus_paid(nexus_paid_path)
-                        if nexus_paid_records and '_parse_error' in nexus_paid_records[0]:
-                            st.warning(f"Nexus Paid file parse error: {nexus_paid_records[0]['_parse_error']}")
-                            nexus_paid_records = []
-                    except Exception as _e:
-                        st.warning(f"Could not parse Nexus Paid file: {_e}")
-
-                ledger_active, newly_added_paid = prepaid_ledger.merge_nexus(
-                    ledger_active, nexus_paid_records, close_period
-                )
-                ledger_active, newly_added_accrual = prepaid_ledger.merge_nexus(
+                # Merge Nexus Invoice Detail into ledger — status filtering in the
+                # parser ensures only In Progress / Pending / Submitted / Completed
+                # invoices reach this point; Rejected, Void, and On Hold are dropped.
+                ledger_active, newly_added = prepaid_ledger.merge_nexus(
                     ledger_active, nexus_data or [], close_period
                 )
-                newly_added = newly_added_paid + newly_added_accrual
 
                 # Build visual amortization schedule
-                _all_nexus_for_amort = nexus_paid_records + (nexus_data or [])
-                amort_lines = build_prepaid_amortization(_all_nexus_for_amort, close_period=close_period)
+                amort_lines = build_prepaid_amortization(nexus_data or [], close_period=close_period)
 
                 # Generate prepaid release JEs (months 2+ from ledger)
                 ledger_release_lines = prepaid_ledger.get_current_amortization(ledger_active, close_period)
