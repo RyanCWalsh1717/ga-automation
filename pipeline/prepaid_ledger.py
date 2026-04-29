@@ -339,15 +339,23 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
         # calendar-day amount for each month (partial first, full middle, partial last).
         if svc_start and svc_end and _is_partial_period(svc_start, svc_end):
             daily_rate = _calc_daily_rate(total_amount, svc_start, svc_end)
-            # For the first (partial) month the Nexus accrual JE handles the expense;
-            # the prepaid ledger tracks months 2+ from the FIRST FULL month onward.
-            # Shift first_added_period to the first full month so the anchor is
-            # a calendar month boundary (avoids fractional-month anchor arithmetic).
-            first_full = date(svc_start.year, svc_start.month, 1) + relativedelta(months=1)
-            first_added = _date_to_period(first_full)
+            # Anchor = service_start month (e.g. Oct for an Oct 20 start).
+            # months_amortized=0 → get_current_amortization() skips month 0
+            # (the partial first month is handled by the Nexus accrual JE).
+            # months_amortized=1 → amort_month = Oct+1 = Nov (first full month) ✓
+            # months_amortized=N → amort_month = Oct+N, using daily_rate for
+            # partial last month and full days for all middle months.
+            first_added = _date_to_period(date(svc_start.year, svc_start.month, 1))
         else:
             daily_rate   = 0.0
             first_added  = close_period
+
+        # For partial-period items the anchor month (service_start month) is
+        # slot 0 and is skipped by get_current_amortization() — but advance_period()
+        # still increments months_amortized, consuming one slot.  To ensure all
+        # total_months JEs fire we start remaining_months at total_months + 1 so
+        # the skip slot doesn't eat one of the real release periods.
+        init_remaining = float(total_months + 1) if daily_rate > 0 else float(total_months)
 
         active.append({
             'vendor':            inv.get('vendor', ''),
@@ -362,7 +370,7 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
             'service_end':       svc_end,
             'total_months':      float(total_months),
             'months_amortized':  0.0,
-            'remaining_months':  float(total_months),
+            'remaining_months':  init_remaining,
             'first_added_period': first_added,
             'daily_rate':        daily_rate,
         })
@@ -463,10 +471,14 @@ def advance_period(active: List[Dict], completed: List[Dict],
     for item in active:
         item = dict(item)  # copy
         months_done = int(item.get('months_amortized', 0) or 0)
-        total       = int(item.get('total_months', 1) or 1)
+        remaining   = int(item.get('remaining_months', 0) or 0)
 
         item['months_amortized'] = months_done + 1
-        item['remaining_months'] = max(0, total - item['months_amortized'])
+        # Decrement directly from remaining_months rather than recomputing from
+        # total_months.  This preserves the +1 init for partial-period items
+        # (where slot 0 is the anchor-skip month) and is also more robust for
+        # manually-adjusted ledger values.
+        item['remaining_months'] = max(0, remaining - 1)
 
         if item['remaining_months'] <= 0:
             item['completed_period'] = close_period
