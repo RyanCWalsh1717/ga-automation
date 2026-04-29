@@ -2679,13 +2679,19 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
             batch_map[je_num] = batch_counter
             batch_counter += 1
 
+    def _clean(text: str) -> str:
+        """Remove commas from text fields — Yardi's importer does not handle
+        quoted CSV fields, so any comma inside a field shifts all subsequent
+        columns and causes an index-out-of-range error on import."""
+        return str(text or '').replace(',', ' ').strip()
+
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         for line in je_lines:
             je_num  = line.get('je_number', '')
             batch   = batch_map.get(je_num, 1)
-            desc    = line.get('description', '')[:60]
-            gl_acct = line.get('account_code', '')
+            desc    = _clean(line.get('description', ''))[:60]
+            gl_acct = _clean(line.get('account_code', ''))
             debit   = line.get('debit', 0) or 0
             credit  = line.get('credit', 0) or 0
             # Signed amount: positive = DR, negative = CR
