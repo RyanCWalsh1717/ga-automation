@@ -1511,7 +1511,13 @@ with tab2:
                     )
                     st.session_state.pass2_output_files["qc_report"] = qc_report
                     qc_path = os.path.join(st.session_state.temp_dir, "GA_QC_Workbook.xlsx")
-                    generate_qc_workbook(qc_report, qc_path)
+                    generate_qc_workbook(
+                        qc_report, qc_path,
+                        tb_result=tb_result,
+                        budget_rows=bc_parsed or [],
+                        gl_parsed=gl_parsed,
+                        loan_data=engine_result.parsed.get('loan'),
+                    )
                     st.session_state.pass2_output_files["qc_workbook"] = qc_path
                 except Exception as _e:
                     st.warning(f"QC engine skipped: {_e}")
