@@ -2621,23 +2621,38 @@ def generate_yardi_je_import(je_lines: List[Dict], output_path: str,
 
 def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
                            period: str = '', property_code: str = 'revlabpm',
-                           book: str = '1') -> str:
+                           book: str = '') -> str:
     """
     Generate a Yardi-compatible journal entry import CSV.
 
-    Format (no headers, comma-delimited, 15 columns):
-      J, batch#, book, , date, date, , description, property_code, signed_amount,
-      gl_account, , , , reference
+    17-column format confirmed from working Yardi import example:
+      J, batch#, , , date, date, , description, property_code, signed_amount,
+      gl_account, , , ref_num, , , Standard Journal Display Type
 
-    Positive amount = Debit, Negative amount = Credit.
-    Each unique je_number gets its own sequential batch number.
+    Col  1: J (transaction type)
+    Col  2: batch number (sequential integer per unique JE)
+    Col  3: empty (book — blank uses Yardi default)
+    Col  4: empty
+    Col  5: period end date (MM/DD/YYYY)
+    Col  6: period end date (MM/DD/YYYY)
+    Col  7: empty
+    Col  8: description (max 60 chars)
+    Col  9: property code
+    Col 10: signed amount (positive = DR, negative = CR)
+    Col 11: GL account code
+    Col 12: empty
+    Col 13: empty
+    Col 14: reference number (numeric — same as batch)
+    Col 15: empty
+    Col 16: empty
+    Col 17: Standard Journal Display Type
 
     Args:
         je_lines:      List of JE line dicts from build_accrual_entries()
         output_path:   Where to write the .csv file
         period:        Accounting period label (e.g. 'Mar-2026') — used to derive date
         property_code: Yardi property code (default 'revlabpm')
-        book:          Yardi accounting book code (default '1' — standard accrual book)
+        book:          Unused — kept for signature compatibility (Yardi uses blank)
 
     Returns:
         output_path
@@ -2667,32 +2682,33 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         for line in je_lines:
-            je_num   = line.get('je_number', '')
-            batch    = batch_map.get(je_num, 1)
-            desc     = line.get('description', '')[:60]
-            ref      = line.get('reference', '') or je_num
-            gl_acct  = line.get('account_code', '')
-            debit    = line.get('debit', 0) or 0
-            credit   = line.get('credit', 0) or 0
+            je_num  = line.get('je_number', '')
+            batch   = batch_map.get(je_num, 1)
+            desc    = line.get('description', '')[:60]
+            gl_acct = line.get('account_code', '')
+            debit   = line.get('debit', 0) or 0
+            credit  = line.get('credit', 0) or 0
             # Signed amount: positive = DR, negative = CR
-            amount   = debit - credit
+            amount  = round(debit - credit, 2)
 
             writer.writerow([
-                'J',            # col 1:  type
-                batch,          # col 2:  batch/JE number
-                book,           # col 3:  accounting book (e.g. '1')
-                '',             # col 4:  empty
-                period_date,    # col 5:  reference date
-                period_date,    # col 6:  period date
-                '',             # col 7:  empty
-                desc,           # col 8:  description
-                property_code,  # col 9:  property code
-                amount,         # col 10: signed amount (positive=DR, negative=CR)
-                gl_acct,        # col 11: GL account
-                '',             # col 12: empty
-                '',             # col 13: empty
-                '',             # col 14: empty
-                ref,            # col 15: reference
+                'J',                             # col 1:  transaction type
+                batch,                           # col 2:  batch number (integer)
+                '',                              # col 3:  book (blank = Yardi default)
+                '',                              # col 4:  empty
+                period_date,                     # col 5:  reference date
+                period_date,                     # col 6:  period date
+                '',                              # col 7:  empty
+                desc,                            # col 8:  description
+                property_code,                   # col 9:  property code
+                amount,                          # col 10: signed amount
+                gl_acct,                         # col 11: GL account
+                '',                              # col 12: empty
+                '',                              # col 13: empty
+                batch,                           # col 14: reference number (numeric)
+                '',                              # col 15: empty
+                '',                              # col 16: empty
+                'Standard Journal Display Type', # col 17: required by Yardi
             ])
 
     return output_path
