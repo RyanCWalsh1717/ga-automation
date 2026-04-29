@@ -333,10 +333,10 @@ def detect_prior_period_catchup(gl_data) -> Optional[float]:
     vendor hasn't cashed the check by month-end, the bank close captures it
     as an outstanding item.  Meanwhile, Yardi's accrual cycle runs:
 
-      Month N close  : DR 637130 / CR 211200  (accrual posted)
-      Month N+1 Day 1: DR 211200 / CR 637130  (auto-reversal)
-      Month N+1      : DR 637130 / CR 211200  (invoice entry) — if check clears
-      Month N+1 close: DR 637130 / CR 211200  (current-month new accrual)
+      Month N close  : DR 637130 / CR 211300  (accrual posted)
+      Month N+1 Day 1: DR 211300 / CR 637130  (auto-reversal)
+      Month N+1      : DR 637130 / CR 211300  (invoice entry) — if check clears
+      Month N+1 close: DR 637130 / CR 211300  (current-month new accrual)
 
     The CURRENT month's new accrual is generated separately by build_management_
     fee_je() and should NOT be factored into this catch-up calculation — it
@@ -391,7 +391,7 @@ def build_catchup_je(
     catchup_amount: float,
     period: str = '',
     property_code: str = 'revlabpm',
-    ap_account: str = '211200',
+    ap_account: str = '211300',
     ap_account_name: str = 'Accrued Expenses',
     je_number: str = 'MGT-002',
 ) -> list[dict]:
@@ -400,7 +400,7 @@ def build_catchup_je(
     management fee auto-reversal.
 
     Debit  637130  Admin-Management Fees     (catch-up amount)
-    Credit 211200  Accrued Expenses          (catch-up amount)
+    Credit 211300  Accrued Expenses          (catch-up amount)
 
     This entry offsets the credit left in 637130 by the auto-reversal and
     re-establishes the management fee expense for the prior period.

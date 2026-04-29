@@ -506,11 +506,11 @@ with tab1:
     st.divider()
 
     # ── One-Off Accruals Table ────────────────────────────────────────────────
-    with st.expander("🧾 One-Off Accruals  (DR expense → CR 211200 auto)", expanded=False):
+    with st.expander("🧾 One-Off Accruals  (DR expense → CR 211300 auto)", expanded=False):
         st.caption(
             "Use this for known invoices not yet in Nexus or Yardi — quarterly contracts, "
             "seasonal items, recurring retainers, semi-annual billings, etc. "
-            "Enter the **debit side only** — the credit to **211200 Accrued Expenses** is generated automatically. "
+            "Enter the **debit side only** — the credit to **211300 Accrued Expenses** is generated automatically. "
             "Leave Amount at $0 to skip a row this month. Add new rows at the bottom for anything not pre-seeded. "
             "These export in the Accruals JE CSV alongside the pipeline's auto-detected entries."
         )
@@ -550,7 +550,7 @@ with tab1:
     with st.expander("📝 Manual Journal Entries & Reclasses  (fully balanced)", expanded=False):
         st.caption(
             "Use this for reclasses between accounts, true-up entries, or any adjustment where you control "
-            "both the debit and credit sides (i.e., the offset is not 211200 Accrued Expenses). "
+            "both the debit and credit sides (i.e., the offset is not 211300 Accrued Expenses). "
             "Positive Amount = Debit, Negative = Credit. Group lines with the same **JE #** — they must net to $0. "
             "Exports as a separate Manual JE CSV (not mixed with accruals)."
         )
@@ -761,7 +761,7 @@ with tab1:
                         "date":         close_period,
                     })
 
-                # One-Off Accruals → DR expense / CR 211200
+                # One-Off Accruals → DR expense / CR 211300
                 _supplement_je_lines = []
                 _periodic_supplement_rows = []
                 _sup_base = len(je_lines) // 2 + len(prepaid_release_je) // 2 + len(fee_je) // 2
@@ -799,7 +799,7 @@ with tab1:
                         },
                         {
                             'je_number': _sje_id, 'line': 2, 'date': close_period,
-                            'account_code': '211200', 'account_name': 'Accrued Expenses',
+                            'account_code': '211300', 'account_name': 'Accrued Expenses',
                             'description': _sup_desc, 'reference': 'ONE-OFF-ACCRUAL',
                             'debit': 0, 'credit': _sup_amt, 'vendor': _sup_vendor,
                             'invoice_number': '', 'source': 'contract_supplement', 'confidence': 'high',
@@ -907,7 +907,7 @@ with tab1:
                     f"Account 637130 shows a net credit (auto-reversal of prior month accrual with "
                     f"no matching invoice). A catch-up entry **(MGT-002)** has been included in the "
                     f"Accruals CSV. **Verify before posting:** confirm the prior month check is still "
-                    f"outstanding in AP (211200) before uploading.",
+                    f"outstanding in AP (211300) before uploading.",
                 )
             st.divider()
 

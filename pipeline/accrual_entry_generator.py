@@ -12,7 +12,7 @@ Outputs:
 
 Each accrual generates a two-line entry:
   DR  [Expense GL Account]
-  CR  211200 Accrued Expenses (standard accrual liability)
+  CR  211300 Accrued Expenses (standard accrual liability)
 """
 
 import os
@@ -132,7 +132,7 @@ def _is_in_gl_by_vendor_amount(
 
 # ── Constants ────────────────────────────────────────────────
 
-AP_ACCRUAL_ACCOUNT    = '211200'
+AP_ACCRUAL_ACCOUNT    = '211300'
 AP_ACCRUAL_NAME       = 'Accrued Expenses'
 
 # Known periodic-billing contract accounts.
@@ -256,7 +256,7 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     Returns a list of dicts: one per expense account line, with
     'credit_account' / 'credit_name' keys so build_accrual_entries() can
-    generate the correct CR 135110 offset instead of the default 211200.
+    generate the correct CR 135110 offset instead of the default 211300.
     """
     results: List[Dict[str, Any]] = []
 
@@ -1731,7 +1731,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
     # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
     # Entries that draw down a balance sheet asset/escrow rather than creating
-    # a new liability (211200).  Each generates DR expense / CR asset account.
+    # a new liability (211300).  Each generates DR expense / CR asset account.
     #
     #   Insurance:     DR 639110/639120  /  CR 135110  Prepaid Insurance
     #   RE Taxes:      DR 641110         /  CR 135120  Prepaid RE Taxes
@@ -1841,7 +1841,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         # ── Prepaid split: accrue only current-month portion to expense;
         #    remaining future months go to Prepaid Other (135150).
-        #    Month 1 of N: DR expense (1/N) + DR 135150 (N-1/N) / CR 211200 (full)
+        #    Month 1 of N: DR expense (1/N) + DR 135150 (N-1/N) / CR 211300 (full)
         is_prepaid = inv.get('is_prepaid', False)
         prepaid_months = int(inv.get('prepaid_months', 1) or 1)
 
@@ -1876,7 +1876,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'source':         'nexus',
         })
 
-        # CR line: AP Accrual (211200) — current month
+        # CR line: AP Accrual (211300) — current month
         je_lines.append({
             'je_number':      je_id,
             'line':           2,

@@ -391,7 +391,7 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
       CR  135150 Prepaid Other  amount_for_this_month
 
     Items with months_amortized == 0 are the FIRST month:
-      those are expensed via the normal Nexus accrual JE (DR expense / CR 211200)
+      those are expensed via the normal Nexus accrual JE (DR expense / CR 211300)
       and should NOT generate a duplicate here.
     We only generate prepaid-release JEs for months 2+ (months_amortized >= 1).
 

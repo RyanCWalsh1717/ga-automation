@@ -46,7 +46,7 @@ class PropertyConfig:
     # Set these only when a property uses non-standard chart-of-accounts numbering.
     cash_operating_account: Optional[str] = None    # default: '111100'
     mgmt_fee_expense_account: Optional[str] = None  # default: '637130'
-    ap_accrual_account: Optional[str] = None        # default: '211200'
+    ap_accrual_account: Optional[str] = None        # default: '211300'
 
     # Accrual engine settings
     accrual_materiality_floor: float = 500.00   # suppress entries below this dollar amount
