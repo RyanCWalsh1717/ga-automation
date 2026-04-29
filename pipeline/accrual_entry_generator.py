@@ -2290,6 +2290,101 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
     return je_lines
 
 
+# ── Insurance escrow reconciliation JE ───────────────────────
+
+def build_insurance_escrow_je(
+    gl_data,
+    loan_data,
+    period: str = '',
+) -> List[Dict]:
+    """
+    Generate a reconciling JE to bring GL 135110 (Restricted Insurance) in line
+    with the Berkadia loan statement insurance escrow balance.
+
+    If the Berkadia statement shows a different balance than the GL ending balance
+    for 135110, this entry adjusts the GL to match.
+
+    JE (GL < Berkadia, escrow grew):   DR 135110 Restricted Insurance / CR 201000 Accrued Liabilities
+    JE (GL > Berkadia, escrow shrank): DR 201000 Accrued Liabilities / CR 135110 Restricted Insurance
+
+    Suppressed if |difference| < $1.00 (no material reconciling item).
+    For months with no escrow activity (e.g. March) this returns [].
+
+    Args:
+        gl_data:   GLParseResult from yardi_gl parser
+        loan_data: Parsed Berkadia loan data (list of dicts or single dict)
+        period:    Close period string e.g. 'Apr-2026'
+
+    Returns list of JE line dicts compatible with generate_yardi_je_csv()
+    """
+    if not gl_data or not loan_data:
+        return []
+
+    # Get GL ending balance for 135110
+    gl_bal = 0.0
+    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+        if str(acct.account_code).strip() == '135110':
+            gl_bal = acct.ending_balance
+            break
+
+    # Sum insurance_escrow_balance across all Berkadia loans
+    loans = loan_data if isinstance(loan_data, list) else [loan_data]
+    berkadia_bal = 0.0
+    for ln in loans:
+        if isinstance(ln, dict):
+            berkadia_bal += _safe_float(ln.get('insurance_escrow_balance', 0))
+        else:
+            berkadia_bal += _safe_float(getattr(ln, 'insurance_escrow_balance', 0))
+
+    diff = berkadia_bal - gl_bal   # positive = GL needs to go up; negative = GL needs to go down
+
+    if abs(diff) < 1.0:
+        return []
+
+    amount = _round(abs(diff))
+    je_id  = 'INS-001'
+    je_desc = (
+        f'Insurance escrow recon — GL 135110 ${gl_bal:,.2f} vs '
+        f'Berkadia ${berkadia_bal:,.2f} (adj ${diff:+,.2f})'
+    )
+
+    if diff > 0:
+        # GL ending balance too low — debit 135110, credit 201000
+        dr_acct, dr_name = '135110', 'Restricted Insurance'
+        cr_acct, cr_name = '201000', 'Accrued Liabilities'
+    else:
+        # GL ending balance too high — debit 201000, credit 135110
+        dr_acct, dr_name = '201000', 'Accrued Liabilities'
+        cr_acct, cr_name = '135110', 'Restricted Insurance'
+
+    return [
+        {
+            'je_number':      je_id,
+            'line':           1,
+            'date':           period,
+            'account_code':   dr_acct,
+            'account_name':   dr_name,
+            'description':    je_desc,
+            'reference':      'INS-ESCROW',
+            'debit':          amount,
+            'credit':         0,
+            'source':         'insurance_escrow',
+        },
+        {
+            'je_number':      je_id,
+            'line':           2,
+            'date':           period,
+            'account_code':   cr_acct,
+            'account_name':   cr_name,
+            'description':    je_desc,
+            'reference':      'INS-ESCROW',
+            'debit':          0,
+            'credit':         amount,
+            'source':         'insurance_escrow',
+        },
+    ]
+
+
 # ── Generate Yardi JE import file ────────────────────────────
 
 def generate_yardi_je_import(je_lines: List[Dict], output_path: str,

@@ -32,6 +32,7 @@ import traceback
 from accrual_entry_generator import (
     build_accrual_entries, generate_yardi_je_csv,
     build_prepaid_amortization, build_prepaid_release_je,
+    build_insurance_escrow_je,
 )
 import prepaid_ledger
 import bs_workpaper_generator
@@ -803,6 +804,16 @@ with tab1:
                 status_text.text("Step 6/6: Exporting JE CSVs...")
                 progress_bar.progress(88)
 
+                # Insurance escrow reconciliation JE (INS-001)
+                # Compares GL 135110 ending balance to Berkadia insurance_escrow_balance.
+                # Generates DR/CR adjustment only if difference >= $1; zero for months
+                # with no escrow activity (e.g. March).
+                _ins_escrow_je = build_insurance_escrow_je(
+                    gl_data=engine_result.parsed.get('gl'),
+                    loan_data=engine_result.parsed.get('loan'),
+                    period=close_period,
+                )
+
                 all_je_lines = (
                     je_lines
                     + prepaid_release_je
@@ -810,12 +821,14 @@ with tab1:
                     + _catchup_je
                     + manual_je_lines
                     + _supplement_je_lines
+                    + _ins_escrow_je
                 )
 
                 _accrual_sources = {
                     'nexus', 'budget_gap', 'historical', 'management_fee',
                     'management_fee_catchup', 'invoice_proration', 'prepaid_amortization',
                     'contract_supplement', 'tenant_utility_billing', 'bonus_accrual',
+                    'insurance_escrow',
                 }
                 _prepaid_sources = {'prepaid_ledger'}
                 _manual_sources  = {'manual'}
