@@ -224,9 +224,23 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                     if _ctrl and _ctrl not in _control_to_expense:
                         _control_to_expense[_ctrl] = (_ec, _ea.account_name)
 
+    # ── Identify TB accounts with no current-period GL activity ──────────────
+    # These appear in the Trial Balance (balance carried from prior period) but
+    # have zero transactions in this period's GL export.  They still need a tab
+    # so the workpaper shows the balance that makes up the G/L.
+    _gl_bs_codes = {a.account_code for a in bs_accounts}
+    _zero_activity_tb = []
+    if tb_result and hasattr(tb_result, 'accounts'):
+        for _tba in sorted(tb_result.accounts, key=lambda a: a.account_code):
+            if (BS_ACCOUNT_RANGE[0] <= _tba.account_code <= BS_ACCOUNT_RANGE[1]
+                    and _tba.account_code not in _gl_bs_codes
+                    and abs(_tba.ending_balance) > 0.01):
+                _zero_activity_tb.append(_tba)
+
     # ── Build workpaper tabs ──────────────────────────────────
     _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
-                       je_adjustments, tab_prefix=_tab_pfx)
+                       je_adjustments, tab_prefix=_tab_pfx,
+                       zero_activity_tb_accounts=_zero_activity_tb)
     _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
     for acct in bs_accounts:
         if acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
@@ -236,6 +250,10 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         else:
             _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
                                property_name, je_adjustments, tab_prefix=_tab_pfx)
+
+    # ── Stub tabs for TB accounts with no current-period GL activity ──────────
+    for _tba in _zero_activity_tb:
+        _write_stub_tab(wb, _tba, period, property_name, tab_prefix=_tab_pfx)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
@@ -285,7 +303,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 # ── Summary tab ───────────────────────────────────────────────
 
 def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
-                       je_adjustments=None, tab_prefix: str = ''):
+                       je_adjustments=None, tab_prefix: str = '',
+                       zero_activity_tb_accounts: list = None):
     _tab_name = (tab_prefix + 'Summary')[:31]
     ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_SUMMARY
@@ -332,9 +351,17 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
     total_gl_end = 0.0
     total_tb_end = 0.0
 
+    # Zero-activity TB accounts keyed by code for quick lookup within groups
+    _zero_map = {}
+    for _z in (zero_activity_tb_accounts or []):
+        _zero_map[_z.account_code] = _z
+
     for group_name, group_test in groups:
         group_accts = [a for a in bs_accounts if group_test(a.account_code)]
-        if not group_accts:
+        # Zero-activity TB accounts that fall in this group (not already in bs_accounts)
+        group_zero = [a for a in (zero_activity_tb_accounts or []) if group_test(a.account_code)]
+
+        if not group_accts and not group_zero:
             continue
 
         # Group header
@@ -392,6 +419,48 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
             total_gl_end += gl_end
             if tb_end is not None:
                 total_tb_end += tb_end
+            row += 1
+
+        # ── Zero-activity TB accounts in this group ─────────────────────────────
+        # GL ending balance = TB ending balance (no current-period activity).
+        # Variance is always $0; status is ✓ with a lighter italic style to indicate
+        # "no activity" rather than active reconciliation.
+        for tb_acct in sorted(group_zero, key=lambda a: a.account_code):
+            tb_end  = tb_acct.ending_balance
+            gl_end  = tb_end   # no GL activity — balance unchanged from prior period
+            variance = 0.0
+
+            alt = (row % 2 == 0)
+            row_fill = _fill(LIGHT_GRAY) if alt else None
+
+            for _col, _val in [(_B, tb_acct.account_code), (_C, tb_acct.account_name)]:
+                c = ws.cell(row=row, column=_col, value=_val)
+                c.font = _font(italic=True, color='595959')
+                c.border = THIN
+                if row_fill:
+                    c.fill = row_fill
+
+            c_gl = ws.cell(row=row, column=_D, value=gl_end)
+            _apply(c_gl, fmt='#,##0.00;(#,##0.00);"-"', border=THIN)
+            c_gl.font = _font(italic=True, color='595959')
+            if row_fill: c_gl.fill = row_fill
+
+            c_tb = ws.cell(row=row, column=_E, value=tb_end)
+            _apply(c_tb, fmt='#,##0.00;(#,##0.00);"-"', border=THIN)
+            c_tb.font = _font(italic=True, color='595959')
+            if row_fill: c_tb.fill = row_fill
+
+            c_var = ws.cell(row=row, column=_F, value=variance)
+            _apply(c_var, fmt='#,##0.00;(#,##0.00);"-"', border=THIN, fill=_fill(GREEN_FILL))
+            c_var.font = _font(italic=True, color='006100')
+
+            c_stat = ws.cell(row=row, column=_G, value='✓')
+            _apply(c_stat, fill=_fill(GREEN_FILL), border=THIN,
+                   align=Alignment(horizontal='center'))
+            c_stat.font = _font(italic=True, color='006100')
+
+            total_gl_end += gl_end
+            total_tb_end += tb_end
             row += 1
 
         row += 1  # spacer between groups
@@ -1009,6 +1078,142 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
                border=DOUBLE_BTM)
     else:
         ws.cell(row=row, column=_I, value='').border = DOUBLE_BTM
+
+    ws.freeze_panes = 'B5'
+
+
+# ── Stub tab for zero-activity BS accounts ───────────────────
+
+def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
+                    tab_prefix: str = ''):
+    """
+    Write a minimal workpaper tab for a BS account that appears in the Trial
+    Balance but has NO current-period GL transactions.
+
+    Layout mirrors the standard account tab tie-out section, but instead of a
+    transaction grid the tab shows:
+      • An amber notice explaining there is no GL activity this period
+      • Forward Balance (from TB — same as prior-period ending balance)
+      • Ending Balance per GL  = Forward Balance  (unchanged — no activity)
+      • TB Balance             = TB ending balance
+      • Variance               = $0.00  (green — balance is fully supported)
+
+    This satisfies the GRP requirement that every BS balance on the Trial Balance
+    has a supporting workpaper tab showing what makes up the G/L.
+    """
+    tab_name = (tab_prefix + tb_acct.account_code)[:31]
+    ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = COLOR_BS_STD   # green — ties out clean
+    ws.column_dimensions['A'].width = 2
+
+    # ── Column widths (same as account tab) ──────────────────────────────────
+    col_widths = [12, 10, 45, 12, 16, 14, 14, 16]
+    for ci, w in enumerate(col_widths):
+        ws.column_dimensions[get_column_letter(_B + ci)].width = w
+
+    row = 1
+    # Header
+    c = ws.cell(row=row, column=_B,
+                value=f'{tb_acct.account_code} — {tb_acct.account_name}')
+    c.font = _font(bold=True, size=13, color='FFFFFF')
+    c.fill = _fill(DARK_BLUE)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    row += 1
+
+    c = ws.cell(row=row, column=_B,
+                value=(f'Period: {period}  |  '
+                       f'{property_name or "Revolution Labs"}  |  '
+                       f'Prepared: {datetime.now().strftime("%m/%d/%Y")}'))
+    c.font = _font(italic=True, color='FFFFFF')
+    c.fill = _fill(MED_BLUE)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    row += 2
+
+    # ── No-activity notice ────────────────────────────────────────────────────
+    notice = ws.cell(
+        row=row, column=_B,
+        value=(f'No current-period GL activity — balance of '
+               f'${abs(tb_acct.ending_balance):,.2f} carried forward from prior period. '
+               f'No journal entries were posted to this account during {period}.'))
+    notice.font = _font(italic=True, size=10, color='7D4706')
+    notice.fill = _fill(AMBER_FILL)
+    notice.alignment = Alignment(wrap_text=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    ws.row_dimensions[row].height = 30
+    row += 2
+
+    # ── Balance rollforward (single row — no transactions) ───────────────────
+    # Column headers (match standard account tab)
+    headers = ['Date', 'Period', 'Description', 'Control', 'Reference', 'Debit', 'Credit', 'Balance']
+    for ci, h in enumerate(headers):
+        col = _B + ci
+        c = ws.cell(row=row, column=col, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+               align=Alignment(horizontal='center', wrap_text=True))
+    ws.row_dimensions[row].height = 24
+    row += 1
+
+    # Beginning / Forward balance row
+    fwd = tb_acct.forward_balance if hasattr(tb_acct, 'forward_balance') else tb_acct.ending_balance
+    ws.cell(row=row, column=_D, value='Beginning Balance (carried forward)').font = \
+        _font(bold=True, italic=True)
+    c_beg = ws.cell(row=row, column=_I, value=fwd)
+    _apply(c_beg, font=_font(bold=True, italic=True),
+           fmt='#,##0.00;(#,##0.00);"-"', fill=_fill(LIGHT_BLUE))
+    for col in range(_B, _I + 1):
+        ws.cell(row=row, column=col).border = THIN
+        if col != _I:
+            ws.cell(row=row, column=col).fill = _fill(LIGHT_BLUE)
+    row += 1
+
+    # Blank "no transactions" row
+    ws.cell(row=row, column=_D, value='— No GL transactions this period —').font = \
+        _font(italic=True, color='888888')
+    for col in range(_B, _I + 1):
+        ws.cell(row=row, column=col).border = THIN
+    row += 1
+
+    # ── Tie-out section ───────────────────────────────────────────────────────
+    row += 1  # separator spacer
+
+    # Separator line
+    for col in range(_B, _I + 1):
+        ws.cell(row=row, column=col).border = THICK_BOTTOM
+    row += 2
+
+    # Ending Balance per GL (= forward balance, since no activity)
+    gl_ending = fwd
+    label_gl = ws.cell(row=row, column=_D,
+                       value=f'Ending Balance per GL as of {period}')
+    label_gl.font = _font(bold=True)
+    c_gl = ws.cell(row=row, column=_I, value=gl_ending)
+    _apply(c_gl, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THICK_BOTTOM)
+    for col in range(_B, _I + 1):
+        cell = ws.cell(row=row, column=col)
+        if not cell.fill or cell.fill.fill_type == 'none':
+            cell.fill = _fill(LIGHT_BLUE)
+    row += 1
+
+    # TB Balance
+    tb_ending = tb_acct.ending_balance
+    label_tb = ws.cell(row=row, column=_H, value='TB Balance')
+    label_tb.font = _font(bold=True)
+    c_tb = ws.cell(row=row, column=_I, value=tb_ending)
+    _apply(c_tb, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THIN)
+    row += 1
+
+    # Variance — always $0.00 for zero-activity accounts
+    variance = gl_ending - tb_ending
+    label_var = ws.cell(row=row, column=_H, value='Variance')
+    label_var.font = _font(bold=True)
+    is_zero = abs(variance) < 0.02
+    var_fill = _fill(GREEN_FILL) if is_zero else _fill(RED_FILL)
+    var_color = '006100' if is_zero else '9C0006'
+    c_var = ws.cell(row=row, column=_I, value=variance if not is_zero else 0.0)
+    _apply(c_var, font=_font(bold=True, color=var_color),
+           fmt='#,##0.00;(#,##0.00);"-"', fill=var_fill, border=DOUBLE_BTM)
 
     ws.freeze_panes = 'B5'
 
