@@ -579,13 +579,16 @@ def check_7_misc(budget_rows: List[dict],
                  kardin_records: List[dict] = None,
                  cash_received: float = None,
                  jll_rate: float = 0.0125,
-                 grp_rate: float = 0.0175) -> QCResult:
+                 grp_rate: float = 0.0175,
+                 loan_data=None,
+                 period_month: int = 1) -> QCResult:
     """
     Spot-checks for:
     7a. Management fee accrual vs calculated fee (cash received × rate)
     7b. Interest expense — verify accrual exists and is non-zero
-    7c. Insurance-Property — verify monthly charge matches expected amortization
-    7d. Prepaid accounts — forward balance + debit - credit = ending balance
+    7c. Insurance-Property (639110) — verify monthly charge matches expected amortization
+    7d. Prepaid accounts (135100 insurance, 135110/120/150 RE Tax) — fwd + DR - CR = ending
+    7e. Insurance Escrow (115300) — GL ending balance ties to Berkadia loan statement
     """
     findings: List[QCFinding] = []
     kardin_records = kardin_records or []
@@ -675,9 +678,10 @@ def check_7_misc(budget_rows: List[dict],
                       + ('On track.' if diff < 500 else f'Difference ${diff:,.2f} — verify prepaid schedule.')),
             ))
 
-    # ── 7d: Prepaid RE Tax math ────────────────────────────────
+    # ── 7d: Prepaid accounts math (fwd + DR - CR = ending) ────
+    # 135100 = Insurance Prepaid; 135110/135120/135150 = RE Tax Prepaid
     if tb_result:
-        for code in ('135110', '135120', '135150'):
+        for code in ('135100', '135110', '135120', '135150'):
             if code in tb_map:
                 acct = tb_map[code]
                 expected_end = acct.forward_balance + acct.debit - acct.credit
@@ -692,6 +696,44 @@ def check_7_misc(budget_rows: List[dict],
                         flag='FLAG',
                         note=f'Prepaid math error: fwd {acct.forward_balance:,.2f} + debit {acct.debit:,.2f} - credit {acct.credit:,.2f} = {expected_end:,.2f} ≠ ending {acct.ending_balance:,.2f}',
                     ))
+                else:
+                    findings.append(QCFinding(
+                        account_code=code,
+                        account_name=acct.account_name,
+                        value_a=acct.ending_balance,
+                        value_b=expected_end,
+                        difference=0.0,
+                        flag='INFO',
+                        note=f'Prepaid math ties: fwd {acct.forward_balance:,.2f} + debit {acct.debit:,.2f} - credit {acct.credit:,.2f} = {acct.ending_balance:,.2f}.',
+                    ))
+
+    # ── 7e: Insurance Escrow (115300) GL vs Berkadia statement ─
+    ins_escrow_code = '115300'
+    if loan_data and tb_result and ins_escrow_code in tb_map:
+        # Sum insurance_escrow_balance across all Berkadia loans
+        loans = loan_data if isinstance(loan_data, list) else [loan_data]
+        loan_ins_escrow = 0.0
+        for ln in loans:
+            if isinstance(ln, dict):
+                loan_ins_escrow += _safe_float(ln.get('insurance_escrow_balance', 0))
+            else:
+                loan_ins_escrow += _safe_float(getattr(ln, 'insurance_escrow_balance', 0))
+
+        if loan_ins_escrow > 0:
+            acct = tb_map[ins_escrow_code]
+            gl_bal = acct.ending_balance
+            diff = abs(gl_bal - loan_ins_escrow)
+            flag = 'INFO' if diff < 1.0 else 'FLAG'
+            findings.append(QCFinding(
+                account_code=ins_escrow_code,
+                account_name='Insurance Escrow (Lender)',
+                value_a=gl_bal,
+                value_b=loan_ins_escrow,
+                difference=gl_bal - loan_ins_escrow,
+                flag=flag,
+                note=(f'GL 115300: ${gl_bal:,.2f} | Berkadia statement: ${loan_ins_escrow:,.2f}. '
+                      + ('Ties.' if diff < 1.0 else f'Difference ${diff:,.2f} — reconcile escrow vs loan statement.')),
+            ))
 
     flags = [f for f in findings if f.flag == 'FLAG']
     if not flags:
@@ -719,9 +761,10 @@ def run_qc(
     property_name: str = 'Revolution Labs Owner, LLC',
     period_month: int = 1,
     cash_received: float = None,
+    loan_data=None,
 ) -> QCReport:
     """
-    Run all 8 QC checks and return a QCReport.
+    Run all 7 QC checks and return a QCReport.
 
     Args:
         budget_rows:     Parsed budget comparison rows.
@@ -733,6 +776,8 @@ def run_qc(
         property_name:   Property display name.
         period_month:    Reporting month number (1=Jan … 12=Dec).
         cash_received:   Total cash received for the month (for mgmt fee check).
+        loan_data:       Parsed Berkadia loan data (list of dicts or LoanResult).
+                         Used for Check 7e: GL 115300 vs lender insurance escrow balance.
     """
     kardin_records = kardin_records or []
 
@@ -743,7 +788,8 @@ def run_qc(
         check_4_mom_swings(budget_rows),
         check_5_gl_vs_workpapers(gl_parsed, tb_result),
         check_6_accruals_vs_budget(budget_rows, kardin_records, accrual_entries, period_month),
-        check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received),
+        check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received,
+                     loan_data=loan_data, period_month=period_month),
     ]
 
     return QCReport(

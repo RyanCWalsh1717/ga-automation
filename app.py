@@ -1431,6 +1431,7 @@ with tab2:
                         property_name=engine_result.property_name or 'Revolution Labs Owner, LLC',
                         period_month=_period_month,
                         cash_received=fee_result.cash_received if fee_result and fee_result.cash_received > 0 else None,
+                        loan_data=engine_result.parsed.get('loan'),
                     )
                     st.session_state.pass2_output_files["qc_report"] = qc_report
                     qc_path = os.path.join(st.session_state.temp_dir, "GA_QC_Workbook.xlsx")
