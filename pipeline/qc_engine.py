@@ -605,7 +605,7 @@ def check_7_misc(budget_rows: List[dict],
         expected_total = expected_jll + expected_grp
         diff = abs(ptd_actual - expected_total)
 
-        flag = 'PASS_INFO' if diff < 500 else 'FLAG'
+        flag = 'INFO' if diff < 500 else 'FLAG'
         findings.append(QCFinding(
             account_code=mgmt_fee_code,
             account_name='Admin-Management Fees',

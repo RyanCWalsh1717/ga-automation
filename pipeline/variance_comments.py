@@ -609,7 +609,8 @@ def _data_driven_comment(account_name: str, var_dollar: float, var_pct: float,
     abs_var = abs(var_dollar)
 
     # Directional flags
-    expense_over  = (not is_revenue) and (var_dollar > 0)  # actual > budget
+    # expense_under gates Pattern 2 (timing). Revenue accounts (both over and under)
+    # fall through to Patterns 3/4 which produce neutral "Variance due to [cause]" text.
     expense_under = (not is_revenue) and (var_dollar < 0)  # actual < budget
 
     # ── Tier 2: short flag phrase only (5–10 words) ───────────

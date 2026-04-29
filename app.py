@@ -1434,7 +1434,7 @@ with tab2:
                                 import calendar as _cal
                                 _mo_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
                                                Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
-                                _m2 = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{4})', close_period)
+                                _m2 = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](\d{4})', close_period)
                                 if _m2:
                                     _mo = _mo_map[_m2.group(1)]
                                     _yr = int(_m2.group(2))
@@ -1576,8 +1576,11 @@ with tab2:
                         ]
                         st.session_state.pass2_output_files["variance_comments"] = var_comments
 
-                        # Annotated BC (GRP internal)
-                        _bc_file = st.session_state.uploaded_files.get("budget_comparison")
+                        # Annotated BC (GRP internal) — prefer Pass 2 final-close BC over sidebar
+                        _bc_file = (
+                            st.session_state.uploaded_files.get("budget_comparison_pass2")
+                            or st.session_state.uploaded_files.get("budget_comparison")
+                        )
                         if _bc_file and os.path.exists(_bc_file):
                             _annotated_bc_path = os.path.join(
                                 st.session_state.temp_dir, "GA_Budget_Comparison_Internal.xlsx"
