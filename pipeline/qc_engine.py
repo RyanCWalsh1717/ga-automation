@@ -709,14 +709,10 @@ def check_7_misc(budget_rows: List[dict],
                         note=f'Prepaid math ties: fwd {acct.forward_balance:,.2f} + debit {acct.debit:,.2f} - credit {acct.credit:,.2f} = {acct.ending_balance:,.2f}.',
                     ))
 
-    # ── 7e: Restricted Insurance (135110) GL vs Berkadia statement ─
-    # 135110 mirrors the lender-held insurance escrow balance.
-    # A monthly JE keeps the GL in sync with the Berkadia loan statement.
-    # For months with no escrow activity (e.g. no premium drawn) the balances
-    # should be equal; any difference flags for manual reconciliation.
-    ins_escrow_code = '135110'
-    if loan_data and tb_result and ins_escrow_code in tb_map:
-        # Sum insurance_escrow_balance across all Berkadia loans
+    # ── 7e: Berkadia insurance escrow should be $0 for Rev Labs ──
+    # Insurance is paid via prepaid (135110), not through Berkadia lender escrow.
+    # A non-zero Berkadia insurance_escrow_balance is unexpected and flags for review.
+    if loan_data:
         loans = loan_data if isinstance(loan_data, list) else [loan_data]
         loan_ins_escrow = 0.0
         for ln in loans:
@@ -725,20 +721,28 @@ def check_7_misc(budget_rows: List[dict],
             else:
                 loan_ins_escrow += _safe_float(getattr(ln, 'insurance_escrow_balance', 0))
 
-        acct = tb_map[ins_escrow_code]
-        gl_bal = acct.ending_balance
-        diff = abs(gl_bal - loan_ins_escrow)
-        flag = 'INFO' if diff < 1.0 else 'FLAG'
-        findings.append(QCFinding(
-            account_code=ins_escrow_code,
-            account_name='Restricted Insurance (Lender Escrow)',
-            value_a=gl_bal,
-            value_b=loan_ins_escrow,
-            difference=gl_bal - loan_ins_escrow,
-            flag=flag,
-            note=(f'GL 135110: ${gl_bal:,.2f} | Berkadia statement: ${loan_ins_escrow:,.2f}. '
-                  + ('Ties.' if diff < 1.0 else f'Difference ${diff:,.2f} — post reconciling JE to 135110.')),
-        ))
+        if loan_ins_escrow > 1.0:
+            findings.append(QCFinding(
+                account_code='135110',
+                account_name='Restricted Insurance (Lender Escrow)',
+                value_a=loan_ins_escrow,
+                value_b=0,
+                difference=loan_ins_escrow,
+                flag='FLAG',
+                note=(f'Berkadia shows insurance escrow balance of ${loan_ins_escrow:,.2f}. '
+                      f'Expected $0 — insurance is handled via prepaid (135110), not lender escrow. '
+                      f'Verify with Berkadia.'),
+            ))
+        else:
+            findings.append(QCFinding(
+                account_code='135110',
+                account_name='Restricted Insurance (Lender Escrow)',
+                value_a=loan_ins_escrow,
+                value_b=0,
+                difference=0,
+                flag='INFO',
+                note='Berkadia insurance escrow: $0 — confirmed. Insurance handled via prepaid (135110).',
+            ))
 
     flags = [f for f in findings if f.flag == 'FLAG']
     if not flags:
