@@ -1298,6 +1298,28 @@ with tab2:
             else:
                 st.caption("⬆️ Upload loan statements to enable debt service workpaper")
 
+    # ── Prior Month Workpaper (optional — for historical carry-forward) ────────
+    st.markdown("**Prior Month Workpaper** *(optional — for historical carry-forward)*")
+    _p2_wp_col1, _p2_wp_col2 = st.columns([5, 1])
+    with _p2_wp_col1:
+        _p2_wp_upload = st.file_uploader(
+            "Prior Month Workpaper (.xlsx)",
+            type="xlsx",
+            key="uploader_prior_workpaper",
+            help="Upload the workpaper from last month. The pipeline will copy all prior sheets "
+                 "and append the current period's sheets so the file builds history over time.",
+        )
+    with _p2_wp_col2:
+        if _p2_wp_upload:
+            st.markdown("✅")
+    if _p2_wp_upload is not None:
+        _p2_wp_path = os.path.join(st.session_state.temp_dir, f"prior_workpaper_{_p2_wp_upload.name}")
+        if not os.path.exists(_p2_wp_path) or os.path.getsize(_p2_wp_path) != _p2_wp_upload.size:
+            with open(_p2_wp_path, "wb") as _f:
+                _f.write(_p2_wp_upload.getbuffer())
+        st.session_state.uploaded_files["prior_workpaper"] = _p2_wp_path
+        st.caption(f"✓ Prior workpaper ready: **{_p2_wp_upload.name}**")
+
     # Pass 2 requires either a dedicated post-close GL or at minimum the sidebar GL
     _p2_gl_ready = (
         "gl_pass2" in st.session_state.uploaded_files
@@ -1321,7 +1343,8 @@ with tab2:
             st.session_state.pass2_complete = False
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
-            for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2", "bank_rec_pass2", "loan_pass2"):
+            for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
+                       "bank_rec_pass2", "loan_pass2", "prior_workpaper"):
                 st.session_state.uploaded_files.pop(_k, None)
             st.rerun()
 
@@ -1400,9 +1423,27 @@ with tab2:
 
                 if tb_result and gl_parsed:
                     try:
-                        bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_BS_Workpaper.xlsx")
+                        bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
                         # GL is final — no je_adjustments needed. The GL already reflects
-                        # all posted JEs from Pass 1, so the BS workpaper ties clean.
+                        # all posted JEs from Pass 1, so the workpaper ties clean.
+                        _prior_wp_path = st.session_state.uploaded_files.get("prior_workpaper")
+                        # Infer prior_period label: one month before close_period
+                        _prior_period = None
+                        try:
+                            if close_period:
+                                import calendar as _cal
+                                _mo_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                                               Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+                                _m2 = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{4})', close_period)
+                                if _m2:
+                                    _mo = _mo_map[_m2.group(1)]
+                                    _yr = int(_m2.group(2))
+                                    _prev_mo = _mo - 1 if _mo > 1 else 12
+                                    _prev_yr = _yr if _mo > 1 else _yr - 1
+                                    _mo_names = {v: k for k, v in _mo_map.items()}
+                                    _prior_period = f"{_mo_names[_prev_mo]}-{_prev_yr}"
+                        except Exception:
+                            _prior_period = None
                         bs_workpaper_generator.generate(
                             gl_result=gl_parsed,
                             tb_result=tb_result,
@@ -1414,13 +1455,15 @@ with tab2:
                             gl_cash_balance=gl_cash_balance,
                             daca_bank_data=daca_bank_data,
                             daca_gl_balance=daca_gl_balance,
+                            prior_workpaper_path=_prior_wp_path,
+                            prior_period=_prior_period,
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:
-                        st.warning(f"BS Workpaper generation skipped: {_e}")
+                        st.warning(f"Workpaper generation skipped: {_e}")
                 else:
                     if not tb_result:
-                        st.info("Upload a Trial Balance file to enable the BS Workpaper.", icon="ℹ️")
+                        st.info("Upload a Trial Balance file to enable the Workpaper.", icon="ℹ️")
 
                 # Step 3: (Institutional workpapers removed — not needed)
 
@@ -1861,8 +1904,7 @@ with tab2:
         period_label = (result.period or 'Period').replace('-', '_')
 
         p2_zip_files = {
-            f"RevLabs_{period_label}_BS_Workpaper.xlsx":    p2.get("bs_workpaper"),
-            f"RevLabs_{period_label}_Workpapers.xlsx":      p2.get("workpapers"),
+            f"RevLabs_{period_label}_Workpapers.xlsx":      p2.get("bs_workpaper"),
             f"RevLabs_{period_label}_QC_Workbook.xlsx":     p2.get("qc_workbook"),
             f"RevLabs_{period_label}_Exceptions.xlsx":      p2.get("exception_report"),
             f"RevLabs_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
@@ -1881,7 +1923,7 @@ with tab2:
                 file_name=f"RevLabs_{period_label}_Reports_{datetime.now().strftime('%Y%m%d')}.zip",
                 mime="application/zip",
                 use_container_width=True,
-                help="BS Workpaper, Institutional Workpapers, QC Workbook, Exception Report, Annotated BC",
+                help="Workpapers, QC Workbook, Exception Report, Annotated BC",
             )
 
         st.divider()
@@ -1889,8 +1931,8 @@ with tab2:
         col1, col2 = st.columns(2)
 
         _dl_items = [
-            ("bs_workpaper",    "📋 BS Workpaper",
-             f"GA_BS_Workpaper_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+            ("bs_workpaper",    "📋 Workpapers",
+             f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("qc_workbook",     "✅ QC Workbook",
              f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("exception_report","⚠️ Exception Report",

@@ -1,10 +1,29 @@
 """
-Balance Sheet Workpaper Generator — Phase 3
-=============================================
-Generates the monthly close workpaper for Revolution Labs with:
+Workpaper Generator — Revolution Labs Monthly Close
+====================================================
+Generates the monthly close workpaper with:
   - Summary tab:      all BS accounts, GL ending vs TB ending, variance status
   - Trial Balance tab: direct from Yardi TB export
   - One tab per balance sheet account: transactions + GL ending + TB tie-out
+  - Prepaid Schedule tab (if ledger data available)
+  - Bank Rec tabs (PNC Operating + DACA)
+
+Historical carry-forward
+------------------------
+If ``prior_workpaper_path`` is supplied the generator loads the prior
+month's workpaper and renames every existing sheet with the
+``prior_period`` label (e.g. "Feb-2026 Summary").  The current-period
+sheets are then appended with the current ``period`` label (e.g.
+"Mar-2026 Summary").  Over time the file accumulates a full history:
+
+    Feb-2026 Summary
+    Feb-2026 Trial Balance
+    Feb-2026 111100
+    …
+    Mar-2026 Summary   ← current period (most recent tabs at end)
+    Mar-2026 Trial Balance
+    Mar-2026 111100
+    …
 
 Structure mirrors the Hartwell workpaper pattern:
   [transactions / rollforward]
@@ -17,14 +36,21 @@ The Variance will be non-zero for accounts where accrual JEs are in the TB
 but not yet in the GL — surfacing exactly what still needs to be posted.
 """
 
+import os
+import re
 from datetime import datetime, date
 from typing import List, Dict, Optional
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook as _load_workbook
 from property_config import is_balance_sheet_account
 from openpyxl.styles import (
     Font, PatternFill, Alignment, Border, Side
 )
 from openpyxl.utils import get_column_letter
+
+# Regex to detect already-prefixed sheet names like "Mar-2026 Summary"
+_PERIOD_PREFIX_RE = re.compile(
+    r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4} '
+)
 
 
 # ── Constants ────────────────────────────────────────────────
@@ -95,21 +121,29 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            gl_cash_balance: float = None,
                            daca_bank_data: dict = None,
                            daca_gl_balance: float = None,
-                           je_adjustments: Optional[Dict[str, float]] = None) -> str:
+                           je_adjustments: Optional[Dict[str, float]] = None,
+                           prior_workpaper_path: str = None,
+                           prior_period: str = None) -> str:
     """
-    Generate the balance sheet reconciliation workpaper.
+    Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
     Args:
-        gl_result:            GLParseResult from parsers.yardi_gl.parse_gl()
-        tb_result:            TBResult from parsers.yardi_trial_balance.parse()
-        output_path:          Where to write the .xlsx file
-        period:               Period label e.g. 'Mar-2026'
-        property_name:        Property display name
+        gl_result:             GLParseResult from parsers.yardi_gl.parse_gl()
+        tb_result:             TBResult from parsers.yardi_trial_balance.parse()
+        output_path:           Where to write the .xlsx file
+        period:                Period label e.g. 'Mar-2026'
+        property_name:         Property display name
         prepaid_ledger_active: Active prepaid items from prepaid_ledger.py (optional)
-        bank_rec_data:        Parsed Yardi Bank Rec dict (from parsers.yardi_bank_rec.parse)
-        gl_cash_balance:      GL ending balance for account 111100 (PNC Operating)
-        daca_bank_data:       Parsed KeyBank DACA statement dict (from parsers.keybank_daca.parse)
-        daca_gl_balance:      GL ending balance for account 115100 (DACA)
+        bank_rec_data:         Parsed Yardi Bank Rec dict
+        gl_cash_balance:       GL ending balance for account 111100 (PNC Operating)
+        daca_bank_data:        Parsed KeyBank DACA statement dict
+        daca_gl_balance:       GL ending balance for account 115100 (DACA)
+        prior_workpaper_path:  Path to the prior month's workpaper .xlsx for
+                               historical carry-forward.  All existing sheets are
+                               renamed with the prior_period prefix so current-period
+                               sheets can be appended without name collisions.
+        prior_period:          Period label of the prior workpaper, e.g. 'Feb-2026'.
+                               Used to prefix the copied sheets.
 
     Returns:
         output_path
@@ -121,7 +155,33 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             "The GL is already final after the close — read actuals directly from GL."
         )
 
-    wb = Workbook()
+    # ── Load prior workpaper (if provided) or start fresh ─────────────────────
+    if prior_workpaper_path and os.path.exists(prior_workpaper_path):
+        try:
+            wb = _load_workbook(prior_workpaper_path)
+            # Rename all existing sheets with prior_period prefix
+            _pfx = (prior_period or 'Prior') + ' '
+            for _name in list(wb.sheetnames):
+                _ws = wb[_name]
+                # Skip if already prefixed (e.g. re-uploading a carry-forward file)
+                if _PERIOD_PREFIX_RE.match(_name):
+                    continue
+                # Trim to Excel's 31-char tab limit
+                _new = (_pfx + _name)[:31]
+                # If the new name already exists, append a counter
+                _counter = 1
+                _candidate = _new
+                while _candidate in wb.sheetnames:
+                    _candidate = (_pfx + _name)[:28] + f'_{_counter}'
+                    _counter += 1
+                _ws.title = _candidate
+        except Exception:
+            wb = Workbook()
+    else:
+        wb = Workbook()
+
+    # Tab prefix for all current-period sheets
+    _tab_pfx = (period + ' ') if period else ''
 
     # Build TB lookup: account_code -> TBAccount
     tb_map = {}
@@ -135,15 +195,17 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     ]
 
     # ── Build workpaper tabs ──────────────────────────────────
-    _write_summary_tab(wb, bs_accounts, tb_map, period, property_name, je_adjustments)
-    _write_tb_tab(wb, tb_result, period, property_name)
+    _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
+                       je_adjustments, tab_prefix=_tab_pfx)
+    _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
     for acct in bs_accounts:
         _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
-                           property_name, je_adjustments)
+                           property_name, je_adjustments, tab_prefix=_tab_pfx)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
-        _write_prepaid_schedule_tab(wb, prepaid_ledger_active, period, property_name)
+        _write_prepaid_schedule_tab(wb, prepaid_ledger_active, period,
+                                    property_name, tab_prefix=_tab_pfx)
 
     # ── Bank Rec tab (PNC Operating — account 111100) ──────────────────────────
     if bank_rec_data:
@@ -159,6 +221,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             wb, bank_rec_data, _gl_cash, period, property_name,
             account_label='PNC Operating (x3993)',
             gl_account_code='111100',
+            tab_prefix=_tab_pfx,
         )
 
     # ── DACA Bank Rec tab (KeyBank x5132 — account 115100) ────────────────────
@@ -172,11 +235,13 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _gl_daca = _gl_daca or 0.0
         _write_daca_bank_rec_tab(
             wb, daca_bank_data, _gl_daca, period, property_name,
+            tab_prefix=_tab_pfx,
         )
 
-    # Remove default sheet
-    if 'Sheet' in wb.sheetnames:
-        del wb['Sheet']
+    # Remove the blank default sheet openpyxl creates for new workbooks
+    for _default in ('Sheet', 'Sheet1'):
+        if _default in wb.sheetnames:
+            del wb[_default]
 
     wb.save(output_path)
     return output_path
@@ -184,8 +249,10 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
 # ── Summary tab ───────────────────────────────────────────────
 
-def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name, je_adjustments=None):
-    ws = wb.create_sheet('Summary')
+def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
+                       je_adjustments=None, tab_prefix: str = ''):
+    _tab_name = (tab_prefix + 'Summary')[:31]
+    ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_SUMMARY
 
     # Blank col A — narrow
@@ -193,7 +260,7 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name, je_adjust
 
     row = 1
     # Title block
-    c = ws.cell(row=row, column=_B, value=f'{property_name or "Revolution Labs"} — Balance Sheet Workpaper')
+    c = ws.cell(row=row, column=_B, value=f'{property_name or "Revolution Labs"} — Workpaper')
     c.font = _font(bold=True, size=14, color='FFFFFF')
     c.fill = _fill(DARK_BLUE)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
@@ -324,8 +391,9 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name, je_adjust
 
 # ── Trial Balance tab ─────────────────────────────────────────
 
-def _write_tb_tab(wb, tb_result, period, property_name):
-    ws = wb.create_sheet('Trial Balance')
+def _write_tb_tab(wb, tb_result, period, property_name, tab_prefix: str = ''):
+    _tab_name = (tab_prefix + 'Trial Balance')[:31]
+    ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_TB
 
     # Blank col A — narrow
@@ -438,9 +506,10 @@ def _write_tb_tab(wb, tb_result, period, property_name):
 
 # ── Account reconciliation tab ────────────────────────────────
 
-def _write_account_tab(wb, gl_acct, tb_acct, period, property_name, je_adjustments=None):
+def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
+                       je_adjustments=None, tab_prefix: str = ''):
     """One tab per balance sheet account."""
-    tab_name = f'{gl_acct.account_code}'
+    tab_name = (tab_prefix + gl_acct.account_code)[:31]
     ws = wb.create_sheet(tab_name)
 
     is_complex = gl_acct.account_code in COMPLEX_ACCOUNTS
@@ -638,7 +707,8 @@ def _write_tieout(ws, row, gl_acct, tb_acct, period, je_delta: float = 0.0):
 
 # ── Prepaid amortization schedule tab ────────────────────────
 
-def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_name: str):
+def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_name: str,
+                                 tab_prefix: str = ''):
     """
     Adds a 'Prepaid Schedule' tab using the Hartwell 13-column format.
     Tied to accounts 135xxx.
@@ -667,7 +737,8 @@ def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_na
     _M = 13
     _N = 14
 
-    ws = wb.create_sheet('Prepaid Schedule')
+    _tab_name = (tab_prefix + 'Prepaid Schedule')[:31]
+    ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_PREPAID
 
     # Blank col A — narrow
@@ -867,7 +938,8 @@ COLOR_BANK_REC = '375623'   # dark green tab
 def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
                         period: str, property_name: str,
                         account_label: str = 'PNC Operating (x3993)',
-                        gl_account_code: str = '111100'):
+                        gl_account_code: str = '111100',
+                        tab_prefix: str = ''):
     """
     Writes one Bank Rec tab showing:
       Balance per Bank Statement
@@ -875,7 +947,8 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
       = Reconciled Bank Balance  →  must equal GL cash account
     Then lists outstanding checks and cleared checks for reference.
     """
-    tab_name = f'Bank Rec - {account_label.split("(")[0].strip()[:20]}'
+    _base_name = f'Bank Rec - {account_label.split("(")[0].strip()[:20]}'
+    tab_name = (tab_prefix + _base_name)[:31]
     ws = wb.create_sheet(tab_name)
     ws.sheet_properties.tabColor = COLOR_BANK_REC
 
@@ -1030,7 +1103,8 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
 # ── DACA Bank Rec tab ────────────────────────────────────────
 
 def _write_daca_bank_rec_tab(wb, daca_bank_data: dict, gl_daca_balance: float,
-                              period: str, property_name: str):
+                              period: str, property_name: str,
+                              tab_prefix: str = ''):
     """
     Writes the DACA Bank Rec tab for KeyBank x5132 (GL account 115100).
 
@@ -1049,7 +1123,8 @@ def _write_daca_bank_rec_tab(wb, daca_bank_data: dict, gl_daca_balance: float,
     """
     COLOR_DACA = '375623'   # same dark green family as Operating rec
 
-    ws = wb.create_sheet('Bank Rec - DACA')
+    _tab_name = (tab_prefix + 'Bank Rec - DACA')[:31]
+    ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_DACA
 
     # Blank col A — narrow
@@ -1187,10 +1262,14 @@ def generate(gl_result, tb_result, output_path: str,
              gl_cash_balance: float = None,
              daca_bank_data: dict = None,
              daca_gl_balance: float = None,
-             je_adjustments: Optional[Dict[str, float]] = None) -> str:
+             je_adjustments: Optional[Dict[str, float]] = None,
+             prior_workpaper_path: str = None,
+             prior_period: str = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
                                   bank_rec_data, gl_cash_balance,
                                   daca_bank_data, daca_gl_balance,
-                                  je_adjustments)
+                                  je_adjustments,
+                                  prior_workpaper_path=prior_workpaper_path,
+                                  prior_period=prior_period)
