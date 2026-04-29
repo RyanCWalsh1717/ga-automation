@@ -863,6 +863,8 @@ with tab1:
                 p1["ledger_completed"]      = ledger_completed
                 p1["newly_added_prepaids"]  = newly_added
                 p1["prepaid_ledger_updated"]= updated_ledger_path
+                p1["prepaid_released_count"]= len(prepaid_release_je) // 2
+                p1["prepaid_release_lines"] = ledger_release_lines
 
                 progress_bar.progress(100)
                 status_text.text("✓ JEs ready for Yardi upload!")
@@ -995,15 +997,51 @@ with tab1:
         ledger_active    = p1.get("ledger_active", [])
         ledger_completed = p1.get("ledger_completed", [])
         newly_added      = p1.get("newly_added_prepaids", [])
+        released_count   = p1.get("prepaid_released_count", 0)
+        release_lines    = p1.get("prepaid_release_lines", [])
         if ledger_active or ledger_completed or newly_added:
             st.markdown("### Prepaid Ledger")
-            col_l1, col_l2, col_l3 = st.columns(3)
+            col_l1, col_l2, col_l3, col_l4 = st.columns(4)
             with col_l1:
                 st.metric("Active Prepaid Items", len(ledger_active))
             with col_l2:
-                st.metric("New This Month", len(newly_added))
+                st.metric("Released This Month", released_count)
             with col_l3:
+                st.metric("New This Month", len(newly_added))
+            with col_l4:
                 st.metric("Completed This Month", len(ledger_completed))
+
+            # Diagnostic: active items but nothing released → period mismatch
+            if ledger_active and released_count == 0:
+                from dateutil.relativedelta import relativedelta as _rdelta
+                import re as _re
+                next_fires = []
+                for _item in ledger_active:
+                    _fap = _item.get('first_added_period', '')
+                    _ma  = int(_item.get('months_amortized', 0) or 0)
+                    _rem = int(_item.get('remaining_months', 0) or 0)
+                    if _rem > 0 and _fap:
+                        _m = _re.search(
+                            r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ]?(\d{4})',
+                            _fap, _re.IGNORECASE)
+                        if _m:
+                            _mo = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
+                                   'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}.get(
+                                _m.group(1).lower(), 0)
+                            if _mo:
+                                from datetime import date as _date
+                                _anchor = _date(int(_m.group(2)), _mo, 1)
+                                _nf = _anchor + _rdelta(months=_ma)
+                                next_fires.append(
+                                    f"{_item.get('vendor','?')} — next: {_nf.strftime('%b-%Y')}"
+                                )
+                st.warning(
+                    f"⚠️ **{len(ledger_active)} active prepaid item(s) but 0 released for "
+                    f"{close_period}.** The ledger's `months_amortized` values don't match "
+                    f"the current period — the uploaded ledger may be from a prior month. "
+                    f"Upload the **updated Prepaid Ledger** from the previous close.\n\n"
+                    + ("\n".join(f"• {f}" for f in next_fires[:8]) if next_fires else "")
+                )
             if ledger_active:
                 ledger_rows = [{
                     "Vendor": item.get('vendor', ''),
