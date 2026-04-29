@@ -447,6 +447,84 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
         }
 
 
+
+def detect_retax_escrow_je(
+    gl_data,
+    loan_data,
+    period: str = '',
+    re_tax_bill_amount: float = 0.0,
+) -> Optional[Dict[str, Any]]:
+    """
+    Generate the RE Tax payment-month JE (DR 641110 / CR 115200).
+
+    Non-payment months: NO JE generated here.
+        - DR 641110 / CR 135120 (monthly accrual) is handled by detect_retax_amortization().
+        - DR 115200 / CR 111100 (escrow funding) posts automatically in Yardi
+          as part of the Berkadia loan payment entry — no pipeline entry needed.
+
+    Payment months (Jan / Apr / Jul / Oct):
+        DR 641110  Real Estate Taxes        ← actual quarterly tax bill recognised
+        CR 115200  RE Tax Escrow (Berkadia) ← Berkadia pays from escrow to town
+        Amount = re_tax_bill_amount (user-entered from the quarterly tax bill).
+
+        Prior months' DR 641110 / CR 135120 accruals auto-reverse in Yardi,
+        netting both 641110 and 135120 back to zero before this entry posts.
+
+    Returns None when no entry is needed or re_tax_bill_amount is not provided.
+    """
+    if not gl_data or not hasattr(gl_data, 'accounts'):
+        return None
+    if not loan_data:
+        return None
+
+    # Parse period month
+    _MONTH_MAP = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    }
+    period_month = 0
+    for abbr, num in _MONTH_MAP.items():
+        if abbr in (period or '').lower():
+            period_month = num
+            break
+
+    # Only generate in payment months
+    if period_month not in _RETAX_PAYMENT_MONTHS:
+        return None
+
+    # Need the user-provided quarterly bill amount
+    if re_tax_bill_amount <= 0:
+        return None
+
+    # Berkadia escrow balance for informational note
+    loans = loan_data if isinstance(loan_data, list) else [loan_data]
+    berkadia_escrow = 0.0
+    for ln in loans:
+        if isinstance(ln, dict):
+            berkadia_escrow += float(ln.get('tax_escrow_balance', 0) or 0)
+        else:
+            berkadia_escrow += float(getattr(ln, 'tax_escrow_balance', 0) or 0)
+
+    return {
+        'account_code':   _RETAX_EXPENSE_ACCT,
+        'account_name':   'Real Estate Taxes',
+        'amount':         _round(re_tax_bill_amount),
+        'credit_account': _RETAX_ESCROW_ACCT,
+        'credit_name':    'RE Tax Escrow',
+        'source':         'prepaid_amortization',
+        'confidence':     'high',
+        'auto_reverse':   False,
+        'description': (
+            f'RE Tax quarterly bill — Berkadia pays from escrow to town. '
+            f'${re_tax_bill_amount:,.2f} '
+            f'(DR {_RETAX_EXPENSE_ACCT} / CR {_RETAX_ESCROW_ACCT}; '
+            f'Berkadia escrow balance ${berkadia_escrow:,.2f}). '
+            f'Prior-month accruals auto-reverse this period — 641110 and 135120 net to zero.'
+        ),
+    }
+
+
 # ── Tenant utility billing detection ────────────────────────
 
 def detect_tenant_utility_billing(gl_data, budget_data) -> List[Dict[str, Any]]:
@@ -1436,6 +1514,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           tenant_utility_rows: Optional[List[Dict]] = None,
                           kardin_records: Optional[List[Dict]] = None,
                           bonus_overrides: Optional[Dict[str, float]] = None,
+                          loan_data=None,
+                          re_tax_bill_amount: float = 0.0,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from six sources:
@@ -1647,7 +1727,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # a new liability (211200).  Each generates DR expense / CR asset account.
     #
     #   Insurance:     DR 639110/639120  /  CR 135110  Prepaid Insurance
-    #   RE Taxes:      DR 641110         /  CR 115200  RE Tax Escrow
+    #   RE Taxes:      DR 641110         /  CR 135120  Prepaid RE Taxes
+    #
+    # RE Tax Escrow (115200) is handled separately:
+    #   Non-payment months: Berkadia loan payment entry in Yardi already
+    #     debits 115200 / credits 111100 — no pipeline JE needed.
+    #   Payment months (Jan/Apr/Jul/Oct): pipeline generates DR 641110 / CR 115200
+    #     for the quarterly bill amount (user-entered from the town's tax bill).
     #
     # Generated whenever the asset account has a balance and the expense account
     # has no current-period activity (normal for the pre-close GL from JLL).
@@ -1688,11 +1774,21 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         for ins in detect_insurance_amortization(gl_data, budget_data):
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
 
-    # RE Taxes: DR 641110 / CR 115200
+    # RE Taxes (expense accrual): DR 641110 / CR 135120
     if gl_data:
         retax = detect_retax_amortization(gl_data, period=period)
         if retax:
             _post_amort(retax, 'TAX', 'TAX-AMORT', '[RE Tax Amortization]')
+
+    # RE Tax Escrow — payment months only (Jan/Apr/Jul/Oct): DR 641110 / CR 115200
+    # Amount = user-entered quarterly bill. Only fires when re_tax_bill_amount > 0.
+    if gl_data and loan_data:
+        retax_esc = detect_retax_escrow_je(
+            gl_data, loan_data, period=period,
+            re_tax_bill_amount=re_tax_bill_amount,
+        )
+        if retax_esc:
+            _post_amort(retax_esc, 'TAX', 'TAX-ESC', '[RE Tax Escrow]')
 
     for inv in invoices:
         vendor = str(inv.get('vendor', '') or '')

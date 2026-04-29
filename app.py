@@ -438,6 +438,33 @@ if _admin_bonus_amt > 0:
 
 st.sidebar.divider()
 
+# ── RE Tax Bill (Pass 1 — payment months only) ───────────────────────────────
+st.sidebar.markdown("## RE Tax Bill")
+st.sidebar.caption(
+    "Payment months only: Jan / Apr / Jul / Oct. "
+    "Enter the quarterly RE Tax bill amount from the town. "
+    "Posts as: DR 641110 Real Estate Taxes / CR 115200 RE Tax Escrow. "
+    "Leave $0 in non-payment months — the monthly DR 641110 / CR 135120 "
+    "accrual runs automatically."
+)
+_re_tax_bill_amount = st.sidebar.number_input(
+    "Quarterly RE Tax Bill ($)",
+    min_value=0.0,
+    value=0.0,
+    step=1000.0,
+    format="%.2f",
+    key="widget_re_tax_bill",
+    help=(
+        "Enter the actual quarterly real estate tax bill from the town. "
+        "Only relevant in January, April, July, and October. "
+        "Prior-month accruals (DR 641110 / CR 135120) will auto-reverse "
+        "in Yardi, netting both accounts to zero."
+    ),
+)
+_re_tax_bill_amount = _re_tax_bill_amount if _re_tax_bill_amount > 0 else 0.0
+
+st.sidebar.divider()
+
 # ── Reset (sidebar) ───────────────────────────────────────────
 if st.sidebar.button("🔄 Reset All", use_container_width=True,
                      help="Clear all results and uploaded files"):
@@ -642,6 +669,8 @@ with tab1:
                     tenant_utility_rows=_tenant_utility_rows or None,
                     kardin_records=engine_result.parsed.get('kardin_budget') or [],
                     bonus_overrides=_bonus_overrides or None,
+                    loan_data=engine_result.parsed.get('loan'),
+                    re_tax_bill_amount=_re_tax_bill_amount,
                 )
 
                 # Step 3: Prepaid ledger — load → merge → release JEs → advance
