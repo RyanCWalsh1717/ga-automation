@@ -324,43 +324,33 @@ _RETAX_ESCROW_ACCT     = '115200'   # RE Tax Escrow — Berkadia-held; ties to l
 _RETAX_PAYMENT_MONTHS  = frozenset({1, 4, 7, 10})
 
 
-def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, Any]]:
+def detect_retax_amortization(gl_data, period: str = '',
+                               re_tax_bill_amount: float = 0.0) -> Optional[Dict[str, Any]]:
     """
-    Generate the monthly RE tax expense entry (DR 641110 / CR 115200).
+    Generate the monthly RE tax expense accrual (DR 641110 / CR 135120).
 
-    Lexington tax bills are due February, May, August, and November.
-    Berkadia pays from the escrow the month prior (Jan, Apr, Jul, Oct).
-    Each quarterly payment is split evenly across the 3 months it covers.
+    The quarterly tax bill is split evenly across 3 months.  The pipeline
+    accrues 1/3 of the bill in each of the 2 non-payment months; the payment
+    month is covered by detect_retax_escrow_je() (DR 641110 / CR 115200).
 
-    Behaviour by period type
-    ─────────────────────────
-    Payment month (Jan, Apr, Jul, Oct) — Berkadia payment not yet in GL:
-        → Full quarterly accrual.  Amount = beg_bal × 3 / (period_month − 1).
-          Description includes "** AUTO-REVERSE NEXT PERIOD **" — set the
-          auto-reversal flag in Yardi before posting so it clears when the
-          actual Berkadia payment lands.
+    Behaviour
+    ─────────
+    Payment months (Jan/Apr/Jul/Oct):
+        → Suppressed here — detect_retax_escrow_je() handles those.
 
-    Payment month — Berkadia payment already in GL (641110 has net_change > 0):
-        → Suppressed (already posted, no accrual needed).
+    Non-payment months, re_tax_bill_amount provided (> 0):
+        → Monthly accrual = re_tax_bill_amount / 3
+          DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes
 
-    January specifically:
-        → Always suppressed.  Jan is the first payment month of the year;
-          641110 has no prior-year beginning balance to derive from,
-          so we cannot estimate the quarterly amount.  If Berkadia has not
-          yet posted, enter the amount manually via the One-Off Accruals table.
-
-    Non-payment month — 641110 has no current-period activity:
-        → Monthly proration.  Amount = beg_bal / (period_month − 1).
-
-    Non-payment month — 641110 already has activity:
-        → Suppressed (already posted).
+    Non-payment months, re_tax_bill_amount = 0 (not entered):
+        → Suppressed — cannot derive amount without the quarterly bill.
 
     Returns None when no entry is needed.
     """
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return None
 
-    # Parse period month from period string ("Apr-2026" → 4)
+    # Parse period month ("Apr-2026" → 4)
     _MONTH_MAP = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
         'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
@@ -372,78 +362,37 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
             period_month = num
             break
 
-    # January: no prior-year history to derive quarterly amount from
-    if period_month <= 1:
+    # Payment months are handled by detect_retax_escrow_je — nothing to do here
+    if period_month in _RETAX_PAYMENT_MONTHS:
         return None
 
-    # Find 641110 in GL
-    retax_acct = None
+    # Need the quarterly bill to compute 1/3
+    if re_tax_bill_amount <= 0:
+        return None
+
+    # Suppress if 641110 already has current-period activity (already posted)
     for acct in gl_data.accounts:
         if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
-            retax_acct = acct
+            if abs(acct.net_change) > 0.01:
+                return None
             break
 
-    if retax_acct is None:
-        return None
+    monthly_amt = _round(re_tax_bill_amount / 3)
 
-    # Need YTD history to derive the rate
-    beg_bal = abs(retax_acct.beginning_balance)
-    if beg_bal < 1.0:
-        return None
-
-    # Suppress if already posted this period (Berkadia payment landed)
-    if abs(retax_acct.net_change) > 0.01:
-        return None
-
-    # Escrow balance for informational note
-    escrow_balance = 0.0
-    for acct in gl_data.accounts:
-        if str(acct.account_code).strip() == _RETAX_ESCROW_ACCT:
-            escrow_balance = acct.ending_balance
-            break
-
-    prior_months  = period_month - 1
-    monthly_amt   = _round(beg_bal / prior_months)
-
-    if period_month in _RETAX_PAYMENT_MONTHS:
-        # 2-month accrual — Berkadia hasn't posted yet.
-        # We accrue 2 months (current + next) because when the actual
-        # Berkadia payment hits in the third month it already includes
-        # that month's expense — no separate accrual needed for month 3.
-        two_month_amt = _round(monthly_amt * 2)
-        return {
-            'account_code':   _RETAX_EXPENSE_ACCT,
-            'account_name':   'Real Estate Taxes',
-            'amount':         two_month_amt,
-            'credit_account': _RETAX_PREPAID_ACCT,
-            'credit_name':    'Prepaid RE Taxes',
-            'source':         'prepaid_amortization',
-            'confidence':     'high',
-            'auto_reverse':   True,
-            'description': (
-                f'** AUTO-REVERSE NEXT PERIOD ** '
-                f'RE Tax 2-month accrual — Berkadia payment not yet posted. '
-                f'${two_month_amt:,.2f} (${monthly_amt:,.2f}/mo × 2; actual payment '
-                f'will include 3rd month. Escrow ${escrow_balance:,.2f}). '
-                f'Set auto-reversal in Yardi.'
-            ),
-        }
-    else:
-        # Normal monthly proration
-        return {
-            'account_code':   _RETAX_EXPENSE_ACCT,
-            'account_name':   'Real Estate Taxes',
-            'amount':         monthly_amt,
-            'credit_account': _RETAX_PREPAID_ACCT,
-            'credit_name':    'Prepaid RE Taxes',
-            'source':         'prepaid_amortization',
-            'confidence':     'high',
-            'auto_reverse':   False,
-            'description': (
-                f'RE Tax monthly allocation — ${monthly_amt:,.2f}/month '
-                f'(${beg_bal:,.2f} YTD ÷ {prior_months} prior months; '
-                f'escrow ${escrow_balance:,.2f})'
-            ),
+    return {
+        'account_code':   _RETAX_EXPENSE_ACCT,
+        'account_name':   'Real Estate Taxes',
+        'amount':         monthly_amt,
+        'credit_account': _RETAX_PREPAID_ACCT,
+        'credit_name':    'Prepaid RE Taxes',
+        'source':         'prepaid_amortization',
+        'confidence':     'high',
+        'auto_reverse':   False,
+        'description': (
+            f'RE Tax monthly accrual — ${monthly_amt:,.2f} '
+            f'(${re_tax_bill_amount:,.2f} quarterly bill / 3; '
+            f'DR {_RETAX_EXPENSE_ACCT} / CR {_RETAX_PREPAID_ACCT})'
+        ),
         }
 
 
@@ -1782,8 +1731,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
 
     # RE Taxes (expense accrual): DR 641110 / CR 135120
+    # Monthly amount = quarterly bill / 3. Only fires in non-payment months
+    # and only when re_tax_bill_amount is provided in the sidebar.
     if gl_data:
-        retax = detect_retax_amortization(gl_data, period=period)
+        retax = detect_retax_amortization(gl_data, period=period,
+                                           re_tax_bill_amount=re_tax_bill_amount)
         if retax:
             _post_amort(retax, 'TAX', 'TAX-AMORT', '[RE Tax Amortization]')
 
