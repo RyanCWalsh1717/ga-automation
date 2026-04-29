@@ -839,17 +839,20 @@ with tab1:
                 if _accrual_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
                     generate_yardi_je_csv(_accrual_lines, _accrual_csv_path,
-                                          period=close_period, property_code=_prop_code)
+                                          period=close_period, property_code=_prop_code,
+                                          book='1')
 
                 if _prepaid_lines:
                     _prepaid_csv_path = os.path.join(st.session_state.temp_dir, "GA_Prepaid_JE.csv")
                     generate_yardi_je_csv(_prepaid_lines, _prepaid_csv_path,
-                                          period=close_period, property_code=_prop_code)
+                                          period=close_period, property_code=_prop_code,
+                                          book='1')
 
                 if _manual_lines:
                     _manual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Manual_JE.csv")
                     generate_yardi_je_csv(_manual_lines, _manual_csv_path,
-                                          period=close_period, property_code=_prop_code)
+                                          period=close_period, property_code=_prop_code,
+                                          book='1')
 
                 # Persist Pass 1 outputs
                 p1 = st.session_state.pass1_output_files

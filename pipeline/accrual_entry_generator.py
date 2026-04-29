@@ -2620,12 +2620,13 @@ def generate_yardi_je_import(je_lines: List[Dict], output_path: str,
 # ── Generate Yardi CSV import (exact Yardi format) ────────────
 
 def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
-                           period: str = '', property_code: str = 'revlabpm') -> str:
+                           period: str = '', property_code: str = 'revlabpm',
+                           book: str = '1') -> str:
     """
     Generate a Yardi-compatible journal entry import CSV.
 
     Format (no headers, comma-delimited, 15 columns):
-      J, batch#, , , date, date, , description, property_code, signed_amount,
+      J, batch#, book, , date, date, , description, property_code, signed_amount,
       gl_account, , , , reference
 
     Positive amount = Debit, Negative amount = Credit.
@@ -2636,6 +2637,7 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
         output_path:   Where to write the .csv file
         period:        Accounting period label (e.g. 'Mar-2026') — used to derive date
         property_code: Yardi property code (default 'revlabpm')
+        book:          Yardi accounting book code (default '1' — standard accrual book)
 
     Returns:
         output_path
@@ -2678,7 +2680,7 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
             writer.writerow([
                 'J',            # col 1:  type
                 batch,          # col 2:  batch/JE number
-                '',             # col 3:  empty
+                book,           # col 3:  accounting book (e.g. '1')
                 '',             # col 4:  empty
                 period_date,    # col 5:  reference date
                 period_date,    # col 6:  period date
