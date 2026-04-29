@@ -27,7 +27,6 @@ if str(pipeline_dir) not in sys.path:
 from engine import run_pipeline, EngineResult, Exception_
 from property_config import is_revenue_account, is_income_statement_account
 from report_generator import generate_exception_report
-from workpaper_generator import generate_workpapers
 import traceback
 from accrual_entry_generator import (
     build_accrual_entries, generate_yardi_je_csv,
@@ -1423,15 +1422,7 @@ with tab2:
                     if not tb_result:
                         st.info("Upload a Trial Balance file to enable the BS Workpaper.", icon="ℹ️")
 
-                # Step 3: Institutional workpapers (bank rec, debt service, rent roll)
-                status_text.text("Step 3/6: Generating institutional workpapers...")
-                progress_bar.progress(42)
-                workpaper_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
-                try:
-                    generate_workpapers(engine_result, workpaper_path)
-                    st.session_state.pass2_output_files["workpapers"] = workpaper_path
-                except Exception as _e:
-                    st.warning(f"Workpapers skipped: {_e}")
+                # Step 3: (Institutional workpapers removed — not needed)
 
                 # Step 4: Management fee (informational — already in GL)
                 status_text.text("Step 4/6: Verifying management fee...")
@@ -1900,8 +1891,6 @@ with tab2:
         _dl_items = [
             ("bs_workpaper",    "📋 BS Workpaper",
              f"GA_BS_Workpaper_{datetime.now().strftime('%Y%m%d')}.xlsx"),
-            ("workpapers",      "📁 Institutional Workpapers",
-             f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("qc_workbook",     "✅ QC Workbook",
              f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("exception_report","⚠️ Exception Report",
