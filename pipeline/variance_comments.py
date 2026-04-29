@@ -376,37 +376,48 @@ def build_gl_context(gl_parsed, account_code: str) -> dict:
 
 _SYSTEM_PROMPT = """\
 You are a CRE finance analyst at Greatland Realty Partners (GRP) writing monthly \
-variance commentary for the Revolution Labs property (275 Grove Street, Newton MA). \
+variance commentary for the Revolution Labs property (1050 Waltham St, Lexington MA). \
 The audience is GRP management and the institutional investor Singerman Real Estate.
 
 COMMENTARY STANDARDS — follow exactly:
 
-FORMAT: [Line item] was [$amount / %] [favorable/unfavorable] due to [specific cause]. \
-[Timing context or forward-looking statement.]
+FORMAT: Start with "Variance due to [specific cause]." — not with the account name or dollar amount.
 
 REQUIRED ELEMENTS IN EVERY TIER 1 COMMENT:
-1. CAUSE — Name the specific vendor, event, contract, or accrual. Never use a category.
-2. MAGNITUDE — Reference dollar or % variance. Do not restate the cell value.
-3. TIMING/NATURE — State whether one-time, recurring, timing/accrual difference, or deferred.
-4. OUTLOOK — For ongoing variances, state whether it will continue, resolve, or need a budget revision.
+1. CAUSE — Name the specific vendor, invoice, event, pay period, billing period, or GL entry. Never say "costs increased."
+2. DOLLAR AMOUNT — Use K notation: $10K not $10,000. Include the specific amount driving the variance.
+3. TIMING — Use M.YY date format: "3.26" = March 2026, "1.26-3.26" = Jan–Mar 2026. State whether the expense is a reversal, timing difference, or genuine overage.
+4. OUTLOOK — If under-budget due to timing, say "expected to be paid in [M.YY]" or "expected to hit GL next period." For ongoing variances, flag for budget revision.
 
-LENGTH: 1 sentence preferred. 2 sentences maximum.
+LENGTH: 1 sentence preferred. 2 sentences max.
 
-TIER 2 ACCOUNTS: Write a short flag phrase only (e.g., "Timing — invoices expected Q2").
+TIER 2 ACCOUNTS: Write a short flag phrase only (5–10 words). Example: "Timing — invoices expected 4.26."
 
 NEVER:
+- Start a comment with the account name or a number.
+- Use "favorable" or "unfavorable" — the reader sees the sign already.
+- Say "activity via accrual" or echo an accrual entry description as the cause.
 - Comment on Total, Subtotal, NOI, or Net Income rows.
-- Restate numbers already visible in the table.
-- Use categories instead of specific causes ("costs increased" is not a cause).
-- Copy prior-period comments unchanged.
-- Leave favorable (under-budget) variances unexplained.
-- Speculate beyond what GL data shows. If unclear, write: "Cause requires Finance review."
+- Speculate beyond what GL data shows. If unclear, write: "Cause requires Finance review — see GL detail."
 
-DIRECTION CONVENTION:
-- Revenue account over budget = favorable to NOI
-- Expense account over budget = unfavorable to NOI
-- Revenue account under budget = unfavorable to NOI
-- Expense account under budget = favorable to NOI
+REAL EXAMPLES (match this style exactly):
+- "Variance due to over accrual for 2.26 gas bills reversing in 3.26."
+- "High accrual per most recent water and sewer bill for 3.25-9.25."
+- "Variance due to large RM OT payment in 3.13 pay period leading to a high accrual. Additionally, 2025 RM Bonus accrual was increased by $10K in alignment with actuals which will hit GL next period."
+- "Variance due to mechanical service contract for $8.4K budgeted in 3.26 and expected to be paid in 4.26."
+- "Variance is due to a series of unbudgeted critical HVAC repairs. These stemmed from freezing temperatures freezing pipes and cracking cooling tower."
+- "High snow removal costs and accruals in 1.26-3.26 due to several snowstorms hitting the region."
+- "Variance due to $17K reduction in 2025 admin bonus accrual to reflect actuals which will hit the GL next period."
+- "Variance due to $30K mgmt. fee and subsidy accrual for Craft Food Hall that has been dropped as it is no longer paid."
+- "RET lower than budget due to successful appeal to Town of Lexington by GRP."
+- "Variance due to $4K budgeted for Garage Cameras which have not been purchased."
+- "Variance due to expense for JLL MU expected to hit GL next period and budgeted in 3.26 for $5.6K."
+
+DIRECTION CONVENTION (for your internal reasoning — do NOT write these words):
+- Revenue over budget = favorable to NOI
+- Expense over budget = unfavorable to NOI
+- Revenue under budget = unfavorable to NOI
+- Expense under budget = favorable to NOI
 """
 
 
@@ -500,81 +511,201 @@ def _build_api_prompt(accounts_data: List[dict], period: str, property_name: str
 # 5. DATA-DRIVEN FALLBACK COMMENT
 # ══════════════════════════════════════════════════════════════
 
+# Prefixes that identify pipeline-generated accrual entries (not real vendor spend)
+_ACCRUAL_DESC_PREFIXES = (
+    'accrual', 'budget gap', 'invoice proration', 'historical pattern',
+    'recurring pattern', 'prepaid', 'manual je', 'je-', 'journal entry',
+    'sup-', 'mgt-', 'catch-up', 'payroll bonus',
+)
+
+
+def _is_accrual_entry(desc: str) -> bool:
+    """Return True if this GL description looks like a pipeline-generated accrual."""
+    d = desc.lower().strip()
+    if ':reversal' in d or 'auto-reversal' in d or 'auto reversal' in d:
+        return True
+    return any(d.startswith(p) for p in _ACCRUAL_DESC_PREFIXES)
+
+
+def _period_code(period: str) -> str:
+    """Convert 'Mar-2026' or 'Mar 2026' to '3.26'."""
+    if not period:
+        return ''
+    for sep in ('-', ' '):
+        parts = period.strip().split(sep)
+        if len(parts) >= 2:
+            month_num = MONTH_MAP.get(parts[0][:3].title(), 0)
+            year = parts[-1].strip()
+            if month_num and len(year) == 4 and year.isdigit():
+                return f"{month_num}.{year[2:]}"
+    return period.strip()
+
+
+def _next_period_code(period: str) -> str:
+    """Return the next month as M.YY (e.g. 'Mar 2026' → '4.26')."""
+    if not period:
+        return ''
+    for sep in ('-', ' '):
+        parts = period.strip().split(sep)
+        if len(parts) >= 2:
+            month_num = MONTH_MAP.get(parts[0][:3].title(), 0)
+            year = parts[-1].strip()
+            if month_num and len(year) == 4 and year.isdigit():
+                nm = month_num + 1
+                ny = int(year)
+                if nm > 12:
+                    nm = 1
+                    ny += 1
+                return f"{nm}.{str(ny)[2:]}"
+    return ''
+
+
+def _prev_period_code(period: str) -> str:
+    """Return the previous month as M.YY (e.g. 'Mar 2026' → '2.26')."""
+    if not period:
+        return ''
+    for sep in ('-', ' '):
+        parts = period.strip().split(sep)
+        if len(parts) >= 2:
+            month_num = MONTH_MAP.get(parts[0][:3].title(), 0)
+            year = parts[-1].strip()
+            if month_num and len(year) == 4 and year.isdigit():
+                pm = month_num - 1
+                py = int(year)
+                if pm < 1:
+                    pm = 12
+                    py -= 1
+                return f"{pm}.{str(py)[2:]}"
+    return ''
+
+
+def _k_fmt(amount: float) -> str:
+    """Format a dollar amount in K notation: '$8.4K', '$10K', '$125K'."""
+    a = abs(float(amount))
+    if a < 1_000:
+        return f"${a:,.0f}"
+    k = a / 1_000.0
+    rounded = round(k, 1)
+    if rounded == int(rounded):
+        return f"${int(rounded)}K"
+    return f"${rounded}K"
+
+
 def _data_driven_comment(account_name: str, var_dollar: float, var_pct: float,
                           tier: str, gl: dict, kardin: dict,
                           is_revenue: bool, period: str) -> str:
     """
-    Generate a structured comment without the API.
-    Follows GRP format as closely as possible from available data.
+    Generate a GRP-style variance comment without the API.
+
+    Format: "Variance due to [specific cause]." with M.YY dates and $K amounts.
+    Matches the style of human-reviewed GRP comments:
+      - "Variance due to over accrual for 2.26 gas bills reversing in 3.26."
+      - "Variance due to mechanical service contract for $8.4K budgeted in 3.26
+         and expected to be paid in 4.26."
     """
-    direction = 'favorable' if (
-        (is_revenue and var_dollar > 0) or (not is_revenue and var_dollar < 0)
-    ) else 'unfavorable'
+    cur_code = _period_code(period)
+    nxt_code = _next_period_code(period)
+    prv_code = _prev_period_code(period)
     abs_var = abs(var_dollar)
-    abs_pct = abs(var_pct)
 
+    # Directional flags
+    expense_over  = (not is_revenue) and (var_dollar > 0)  # actual > budget
+    expense_under = (not is_revenue) and (var_dollar < 0)  # actual < budget
+
+    # ── Tier 2: short flag phrase only (5–10 words) ───────────
     if tier == 'tier_2':
-        if kardin.get('is_seasonal'):
-            return f"Timing — {kardin.get('seasonality_note', 'seasonal account')}"
-        return f'Timing — see GL detail for support.'
+        if gl.get('has_reversals'):
+            return f"Timing — prior-period accrual reversal."
+        if expense_under and nxt_code:
+            return f"Timing — expected to be paid in {nxt_code}."
+        kardin_descs = kardin.get('descriptions') or []
+        kd = next((d.strip()[:40] for d in kardin_descs if d.strip()), '')
+        if kd and expense_under:
+            return f"Timing — {kd} expected {nxt_code or 'next period'}."
+        return "See GL detail for variance support."
 
-    # ── Determine primary cause from GL ──
-    # Separate reversal entries from real spend
+    # ── Classify GL transactions ───────────────────────────────
     txns = gl.get('transactions', [])
-    reversal_net = sum(abs(t['net']) for t in txns if t.get('is_reversal'))
-    real_net = sum(abs(t['net']) for t in txns if not t.get('is_reversal'))
-    total_gross = reversal_net + real_net
+    reversal_txns = [t for t in txns if t.get('is_reversal')]
+    real_txns     = [t for t in txns if not t.get('is_reversal')]
 
-    # Reversals are "pure timing" only if they dominate gross activity
-    # and real spend is small relative to the variance
-    pure_timing = (
+    reversal_gross = sum(abs(t['net']) for t in reversal_txns)
+    real_gross     = sum(abs(t['net']) for t in real_txns)
+    total_gross    = reversal_gross + real_gross
+
+    # Pure reversal: reversal transactions dominate and real spend is small
+    pure_reversal = (
         gl.get('has_reversals')
         and total_gross > 0
-        and (reversal_net / total_gross) > 0.70
-        and real_net < abs_var * 0.40
+        and (reversal_gross / total_gross) > 0.60
+        and real_gross < abs_var * 0.50
     )
 
-    # Top non-reversal vendor
-    top_vendor = None
-    non_reversal_vendors = sorted(
-        [(k, v) for k, v in gl.get('vendor_summary', {}).items()
-         if ':Reversal' not in k and 'Accrual' not in k[:10]],
-        key=lambda x: abs(x[1]['total']),
-        reverse=True,
-    )
-    if non_reversal_vendors:
-        top_vendor = non_reversal_vendors[0][0][:50]
+    # Filter vendor summary — strip pipeline-generated accrual entries
+    real_vendors: List[Tuple[str, float]] = []
+    for k, v in gl.get('vendor_summary', {}).items():
+        if not _is_accrual_entry(k):
+            real_vendors.append((k.strip()[:60], abs(v['total'])))
+    real_vendors.sort(key=lambda x: x[1], reverse=True)
 
-    # Fall back to Kardin descriptions if no GL vendor
-    kardin_desc = kardin.get('descriptions', [''])[0][:50] if kardin.get('descriptions') else None
+    top_vendor     = real_vendors[0][0] if real_vendors else None
+    top_vendor_amt = real_vendors[0][1] if real_vendors else 0.0
 
-    if pure_timing:
-        cause = 'accrual reversal / re-accrual timing'
-    elif top_vendor:
-        cause = f"activity via {top_vendor}"
-    elif kardin_desc:
-        cause = f"charges related to {kardin_desc}"
-    else:
-        cause = 'cause requires Finance review — see GL detail'
+    # First meaningful Kardin description (skip accrual-type entries)
+    kardin_desc: Optional[str] = None
+    for d in (kardin.get('descriptions') or []):
+        d = d.strip()
+        if d and len(d) > 3 and not _is_accrual_entry(d):
+            kardin_desc = d[:60]
+            break
 
-    comment = (
-        f"{account_name} was ${abs_var:,.0f} ({abs_pct:.0f}%) {direction} "
-        f"due to {cause}."
-    )
+    # ── PATTERN 1: Prior-period accrual reversing this month ──
+    if pure_reversal:
+        subj = kardin_desc.lower() if kardin_desc else account_name.lower()
+        if prv_code and cur_code:
+            return (f"Variance due to over accrual for {prv_code} "
+                    f"{subj} reversing in {cur_code}.")
+        return (f"Variance due to prior-period accrual reversal "
+                f"for {account_name.lower()}.")
 
-    # Timing / outlook suffix
-    if pure_timing:
-        comment += " Prior-month accrual reversal and re-accrual; review GL for net new spend."
-    elif gl.get('has_reversals') and not pure_timing:
-        comment += " Contains accrual reversals — net variance reflects actual spend above/(below) budget."
-    elif kardin.get('is_seasonal') and kardin.get('seasonality_note'):
-        comment += f" {kardin['seasonality_note']}"
+    # ── PATTERN 2: Expense under budget — timing / not yet incurred ──
+    if expense_under:
+        amt_str = _k_fmt(abs_var)
+        if top_vendor and top_vendor_amt >= 500:
+            if cur_code and nxt_code:
+                return (f"Variance due to {top_vendor} ({amt_str}) budgeted in "
+                        f"{cur_code} and expected to be paid in {nxt_code}.")
+            return f"Variance due to {top_vendor} of {amt_str} not yet incurred."
+        if kardin_desc:
+            if cur_code and nxt_code:
+                return (f"Variance due to {kardin_desc} of {amt_str} budgeted in "
+                        f"{cur_code} and expected to be paid in {nxt_code}.")
+            return f"Variance due to {kardin_desc} of {amt_str} not yet incurred."
+        if cur_code and nxt_code:
+            return (f"Variance due to expense budgeted in {cur_code} "
+                    f"not yet incurred; expected to be paid in {nxt_code}.")
+        return "Variance due to timing — expense not yet incurred this period."
 
-    annual = kardin.get('annual_budget')
-    if annual and annual != 0 and not pure_timing:
-        comment += f" Annual budget: ${abs(annual):,.0f}."
+    # ── PATTERN 3: Over budget — GL vendor identified ──────────
+    if top_vendor and top_vendor_amt >= 500:
+        amt_str = _k_fmt(top_vendor_amt)
+        if cur_code:
+            return f"Variance due to {top_vendor} of {amt_str} in {cur_code}."
+        return f"Variance due to {top_vendor} of {amt_str}."
 
-    return comment
+    # ── PATTERN 4: Over budget — fall back to Kardin intent ───
+    if kardin_desc:
+        amt_str = _k_fmt(abs_var)
+        if cur_code:
+            return f"Variance due to {kardin_desc} of {amt_str} in {cur_code}."
+        return f"Variance due to {kardin_desc} of {amt_str}."
+
+    # ── PATTERN 5: Seasonal note ───────────────────────────────
+    if kardin.get('is_seasonal') and kardin.get('seasonality_note'):
+        return kardin['seasonality_note']
+
+    # ── PATTERN 6: Finance review required ────────────────────
+    return "Cause requires Finance review — see GL detail."
 
 
 # ══════════════════════════════════════════════════════════════
