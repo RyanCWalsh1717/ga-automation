@@ -744,10 +744,39 @@ def check_7_misc(budget_rows: List[dict],
                 note='Berkadia insurance escrow: $0 — confirmed. Insurance handled via prepaid (135110).',
             ))
 
+    # ── 7f: RE Tax Escrow (115200) GL vs Berkadia statement ───────
+    # Berkadia manages RE Tax escrow — GL 115200 should tie to
+    # tax_escrow_balance on the loan statement each month.
+    retax_escrow_code = '115200'
+    if loan_data and tb_result and retax_escrow_code in tb_map:
+        loans = loan_data if isinstance(loan_data, list) else [loan_data]
+        berkadia_tax_escrow = 0.0
+        for ln in loans:
+            if isinstance(ln, dict):
+                berkadia_tax_escrow += _safe_float(ln.get('tax_escrow_balance', 0))
+            else:
+                berkadia_tax_escrow += _safe_float(getattr(ln, 'tax_escrow_balance', 0))
+
+        acct = tb_map[retax_escrow_code]
+        gl_bal = acct.ending_balance
+        diff = abs(gl_bal - berkadia_tax_escrow)
+        flag = 'INFO' if diff < 1.0 else 'FLAG'
+        findings.append(QCFinding(
+            account_code=retax_escrow_code,
+            account_name='RE Tax Escrow (115200)',
+            value_a=gl_bal,
+            value_b=berkadia_tax_escrow,
+            difference=gl_bal - berkadia_tax_escrow,
+            flag=flag,
+            note=(f'GL 115200: ${gl_bal:,.2f} | Berkadia statement: ${berkadia_tax_escrow:,.2f}. '
+                  + ('Ties.' if diff < 1.0
+                     else f'Difference ${diff:,.2f} — post reconciling JE to 115200.')),
+        ))
+
     flags = [f for f in findings if f.flag == 'FLAG']
     if not flags:
         status = 'PASS'
-        summary = 'Miscellaneous checks passed — management fee, interest, insurance, prepaid math.'
+        summary = 'Miscellaneous checks passed — management fee, interest, insurance, prepaid math, RE tax escrow.'
     else:
         status = 'FLAG'
         items = ', '.join(f.account_name for f in flags[:3])

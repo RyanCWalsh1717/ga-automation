@@ -314,42 +314,52 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
 
 # ── Layer 1c: Real Estate Tax amortization ───────────────────
 
-_RETAX_EXPENSE_ACCT = '641110'   # Real Estate Taxes (income statement)
-_RETAX_ESCROW_ACCT  = '115200'   # Restricted Cash - RE Tax Escrow (balance sheet)
+_RETAX_EXPENSE_ACCT    = '641110'   # Real Estate Taxes (income statement)
+_RETAX_ESCROW_ACCT     = '115200'   # Restricted Cash - RE Tax Escrow (balance sheet)
+
+# Lexington tax bills due Feb, May, Aug, Nov — Berkadia pays the month prior.
+# Payment months: Jan (for Feb bill), Apr (for May bill),
+#                 Jul (for Aug bill), Oct (for Nov bill).
+_RETAX_PAYMENT_MONTHS  = frozenset({1, 4, 7, 10})
+
 
 def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, Any]]:
     """
-    Generate the monthly real estate tax expense entry.
+    Generate the monthly RE tax expense entry (DR 641110 / CR 115200).
 
-    JLL method: Lexington taxes are paid quarterly (due Jan 1, Apr 1, Jul 1,
-    Oct 1).  Each quarter's payment draws from the RE Tax Escrow (115200) and
-    is split evenly across the three months it covers:
+    Lexington tax bills are due February, May, August, and November.
+    Berkadia pays from the escrow the month prior (Jan, Apr, Jul, Oct).
+    Each quarterly payment is split evenly across the 3 months it covers.
 
-        DR 641110  Real Estate Taxes      (1/3 of quarterly payment)
-        CR 115200  RE Tax Escrow          (draws down escrow balance)
+    Behaviour by period type
+    ─────────────────────────
+    Payment month (Jan, Apr, Jul, Oct) — Berkadia payment not yet in GL:
+        → Full quarterly accrual.  Amount = beg_bal × 3 / (period_month − 1).
+          Description includes "** AUTO-REVERSE NEXT PERIOD **" — set the
+          auto-reversal flag in Yardi before posting so it clears when the
+          actual Berkadia payment lands.
 
-    The pre-close GL we receive has the Jan and Feb entries already posted but
-    is missing the March entry — JLL posts it at month-end close.
+    Payment month — Berkadia payment already in GL (641110 has net_change > 0):
+        → Suppressed (already posted, no accrual needed).
 
-    Monthly amount derivation:
-        beginning_balance(641110) ÷ (period_month − 1)
+    January specifically:
+        → Always suppressed.  Jan is the first payment month of the year;
+          641110 has no prior-year beginning balance to derive from,
+          so we cannot estimate the quarterly amount.  If Berkadia has not
+          yet posted, enter the amount manually via the One-Off Accruals table.
 
-    e.g. for March (period_month = 3):
-        $498,750.81 ÷ 2 = $249,375.40/month
+    Non-payment month — 641110 has no current-period activity:
+        → Monthly proration.  Amount = beg_bal / (period_month − 1).
 
-    This is more accurate than the budget because it reflects the actual
-    quarterly payment that Berkadia made to the town.
+    Non-payment month — 641110 already has activity:
+        → Suppressed (already posted).
 
-    Returns None if:
-      - 641110 has no beginning balance (no prior-period payments this year)
-      - 641110 already has current-period activity (already posted)
-      - period_month is 1 (January — no prior months to average from; the
-        full quarterly payment posts directly in January)
+    Returns None when no entry is needed.
     """
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return None
 
-    # Parse period month from period string ("Mar-2026" → 3)
+    # Parse period month from period string ("Apr-2026" → 4)
     _MONTH_MAP = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
         'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
@@ -361,7 +371,7 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
             period_month = num
             break
 
-    # January: the full quarterly payment is posted directly — no proration needed
+    # January: no prior-year history to derive quarterly amount from
     if period_month <= 1:
         return None
 
@@ -375,40 +385,61 @@ def detect_retax_amortization(gl_data, period: str = '') -> Optional[Dict[str, A
     if retax_acct is None:
         return None
 
-    # Need prior-period history to derive the monthly rate
+    # Need YTD history to derive the rate
     beg_bal = abs(retax_acct.beginning_balance)
     if beg_bal < 1.0:
         return None
 
-    # Skip if already posted this period
+    # Suppress if already posted this period (Berkadia payment landed)
     if abs(retax_acct.net_change) > 0.01:
         return None
 
-    # Derive monthly amount: beginning balance covers months 1 → (period_month − 1)
-    prior_months = period_month - 1
-    monthly_amt  = _round(beg_bal / prior_months)
-
-    # Verify escrow account exists and has a balance to draw from
+    # Escrow balance for informational note
     escrow_balance = 0.0
     for acct in gl_data.accounts:
         if str(acct.account_code).strip() == _RETAX_ESCROW_ACCT:
             escrow_balance = acct.ending_balance
             break
 
-    return {
-        'account_code':   _RETAX_EXPENSE_ACCT,
-        'account_name':   'Real Estate Taxes',
-        'amount':         monthly_amt,
-        'credit_account': _RETAX_ESCROW_ACCT,
-        'credit_name':    'Restricted Cash - RE Tax Escrow',
-        'source':         'prepaid_amortization',
-        'confidence':     'high',
-        'description': (
-            f'RE Tax monthly allocation — ${monthly_amt:,.2f}/month '
-            f'(${beg_bal:,.2f} YTD ÷ {prior_months} prior months; '
-            f'escrow balance ${escrow_balance:,.2f})'
-        ),
-    }
+    prior_months  = period_month - 1
+    monthly_amt   = _round(beg_bal / prior_months)
+
+    if period_month in _RETAX_PAYMENT_MONTHS:
+        # Full quarterly accrual — Berkadia hasn't posted yet
+        quarterly_amt = _round(monthly_amt * 3)
+        return {
+            'account_code':   _RETAX_EXPENSE_ACCT,
+            'account_name':   'Real Estate Taxes',
+            'amount':         quarterly_amt,
+            'credit_account': _RETAX_ESCROW_ACCT,
+            'credit_name':    'Restricted Cash - RE Tax Escrow',
+            'source':         'prepaid_amortization',
+            'confidence':     'high',
+            'auto_reverse':   True,
+            'description': (
+                f'** AUTO-REVERSE NEXT PERIOD ** '
+                f'RE Tax quarterly accrual — Berkadia payment not yet posted. '
+                f'${quarterly_amt:,.2f} (${beg_bal:,.2f} YTD ÷ {prior_months} months × 3; '
+                f'escrow ${escrow_balance:,.2f}). Set auto-reversal in Yardi.'
+            ),
+        }
+    else:
+        # Normal monthly proration
+        return {
+            'account_code':   _RETAX_EXPENSE_ACCT,
+            'account_name':   'Real Estate Taxes',
+            'amount':         monthly_amt,
+            'credit_account': _RETAX_ESCROW_ACCT,
+            'credit_name':    'Restricted Cash - RE Tax Escrow',
+            'source':         'prepaid_amortization',
+            'confidence':     'high',
+            'auto_reverse':   False,
+            'description': (
+                f'RE Tax monthly allocation — ${monthly_amt:,.2f}/month '
+                f'(${beg_bal:,.2f} YTD ÷ {prior_months} prior months; '
+                f'escrow ${escrow_balance:,.2f})'
+            ),
+        }
 
 
 # ── Tenant utility billing detection ────────────────────────
