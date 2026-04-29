@@ -1,5 +1,5 @@
 """
-Parser for Nexus invoice detail reports (.xls format).
+Parser for Nexus invoice detail reports (.xls or .xlsx format).
 
 Accepts either the "Accrual Detail" or the full "Invoice Detail" export from
 Nexus.  When using the full detail, status filtering is applied automatically
@@ -34,11 +34,44 @@ The parser handles:
 - Date parsing (M/D/YYYY format)
 """
 
+import os
 import re
 import xlrd
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Tuple, Any, Optional
+
+
+# ── Workbook loader (handles both .xls and .xlsx) ────────────
+
+def _load_sheet(filepath: str) -> Tuple[List[List[Any]], str]:
+    """
+    Load the first sheet from an .xls or .xlsx file.
+
+    Returns (rows, sheet_name) where rows is a list of lists of raw cell
+    values.  Callers iterate over rows without knowing the underlying library.
+
+    .xls  → xlrd  (legacy Excel 97-2003 binary format)
+    .xlsx → openpyxl with data_only=True (Excel 2007+ XML format)
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if ext == '.xlsx':
+        from openpyxl import load_workbook as _openpyxl_load
+        wb = _openpyxl_load(filepath, data_only=True)
+        ws = wb.worksheets[0]
+        rows = [list(row) for row in ws.iter_rows(values_only=True)]
+        # Pad short rows so every row has the same width
+        ncols = max((len(r) for r in rows), default=0)
+        rows = [r + [None] * (ncols - len(r)) for r in rows]
+        return rows, ws.title
+
+    # Default: .xls via xlrd
+    wb = xlrd.open_workbook(filepath)
+    ws = wb.sheet_by_index(0)
+    rows = [[ws.cell_value(r, c) for c in range(ws.ncols)]
+            for r in range(ws.nrows)]
+    return rows, ws.name
 
 
 # ── Status filtering ─────────────────────────────────────────
@@ -86,16 +119,15 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
         - is_prepaid: True if service period spans > 35 days
         - prepaid_months: Number of months spanned (1 if not prepaid)
     """
-    workbook = xlrd.open_workbook(filepath)
-    worksheet = workbook.sheet_by_index(0)
+    rows, _sheet_name = _load_sheet(filepath)
 
     records = []
     current_vendor = None
 
     # Find header row (typically row 3)
     header_row_idx = None
-    for row_idx in range(min(10, worksheet.nrows)):
-        row = [worksheet.cell_value(row_idx, col_idx) for col_idx in range(worksheet.ncols)]
+    for row_idx in range(min(10, len(rows))):
+        row = rows[row_idx]
         if row_idx > 0 and 'Vendor' in str(row):
             header_row_idx = row_idx
             break
@@ -104,8 +136,8 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
         return records
 
     # Parse data rows
-    for row_idx in range(header_row_idx + 1, worksheet.nrows):
-        row = [worksheet.cell_value(row_idx, col_idx) for col_idx in range(worksheet.ncols)]
+    for row_idx in range(header_row_idx + 1, len(rows)):
+        row = rows[row_idx]
 
         # Skip empty rows
         if all(cell == '' or cell is None for cell in row):
@@ -184,25 +216,22 @@ def validate(filepath: str) -> Tuple[bool, List[str]]:
     issues = []
 
     try:
-        workbook = xlrd.open_workbook(filepath)
+        rows, sheet_name = _load_sheet(filepath)
     except Exception as e:
         return False, [f"Cannot open file: {str(e)}"]
 
-    if not workbook.sheet_names():
+    if not rows:
         issues.append("No sheets found in workbook")
         return False, issues
 
-    worksheet = workbook.sheet_by_index(0)
-
     # Check basic structure
-    if worksheet.nrows < 5:
+    if len(rows) < 5:
         issues.append("File has fewer than 5 rows - might be empty or wrong format")
 
     # Check for header row with expected columns
     found_header = False
-    for row_idx in range(min(10, worksheet.nrows)):
-        row = [worksheet.cell_value(row_idx, col_idx) for col_idx in range(worksheet.ncols)]
-        row_str = ' '.join(str(cell) for cell in row)
+    for row_idx in range(min(10, len(rows))):
+        row_str = ' '.join(str(cell) for cell in rows[row_idx])
         if 'Vendor' in row_str and 'Invoice' in row_str:
             found_header = True
             break
@@ -213,10 +242,10 @@ def validate(filepath: str) -> Tuple[bool, List[str]]:
     # Check sheet name — accept both Accrual Detail and Invoice Detail exports
     _accepted_sheet_names = {'accrual detail', 'invoice detail', 'ap invoice detail',
                               'nexus invoice detail', 'nexus accrual detail'}
-    if worksheet.name.strip().lower() not in _accepted_sheet_names:
+    if sheet_name.strip().lower() not in _accepted_sheet_names:
         # Warn but don't hard-fail — Nexus sometimes uses custom sheet names
         issues.append(
-            f"Sheet name is '{worksheet.name}' — expected 'Accrual Detail' or "
+            f"Sheet name is '{sheet_name}' — expected 'Accrual Detail' or "
             f"'Invoice Detail'. File may still parse correctly."
         )
 
@@ -310,8 +339,12 @@ def _parse_date(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.date()
 
+    # openpyxl (data_only=True) may return a bare date object for date-only cells
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+
     if isinstance(value, float):
-        # Excel date serial number
+        # Excel date serial number (xlrd format)
         try:
             return xlrd.xldate.xldate_as_datetime(value, 0).date()
         except Exception:
