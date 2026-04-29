@@ -16,6 +16,7 @@ The ledger is a single Excel file with two sheets:
 """
 
 import re
+from calendar import monthrange
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -31,6 +32,7 @@ ACTIVE_COLS = [
     'gl_account_number', 'gl_account', 'total_amount', 'monthly_amount',
     'service_start', 'service_end', 'total_months',
     'months_amortized', 'remaining_months', 'first_added_period',
+    'daily_rate',
 ]
 
 COMPLETED_COLS = ACTIVE_COLS + ['completed_period']
@@ -109,6 +111,95 @@ def _invoice_key(vendor: str, invoice_number: str) -> str:
     return f"{str(vendor).strip().lower()}||{str(invoice_number).strip().lower()}"
 
 
+# ── Day-based proration helpers ──────────────────────────────
+
+def _is_partial_period(service_start: date, service_end: date) -> bool:
+    """True if either the start or end date is mid-month."""
+    if service_start is None or service_end is None:
+        return False
+    _, last_day_start = monthrange(service_start.year, service_start.month)
+    _, last_day_end   = monthrange(service_end.year,   service_end.month)
+    return service_start.day > 1 or service_end.day != last_day_end
+
+
+def _calc_daily_rate(total_amount: float, service_start: date, service_end: date) -> float:
+    """
+    Daily rate for a mid-month service period.
+
+    Convention (matches standard CRE practice):
+      First month: days = days_in_month − start_day
+        e.g. Oct 20 → 31 − 20 = 11 days
+      Last month:  days = end_day
+        e.g. Oct 19 → 19 days
+      Middle months: full calendar days in that month
+
+    Total service days computed the same way:
+      sum of (days in each calendar month spanned by the period)
+      using the same partial-month convention above.
+    """
+    if service_start is None or service_end is None or total_amount == 0:
+        return 0.0
+    total_days = _count_service_days(service_start, service_end)
+    return round(total_amount / total_days, 6) if total_days > 0 else 0.0
+
+
+def _count_service_days(service_start: date, service_end: date) -> int:
+    """
+    Count total service days using partial-month convention:
+      first month: days_in_month − start_day
+      last month:  end_day
+      middle months: full days_in_month
+    """
+    if service_start is None or service_end is None:
+        return 0
+    total = 0
+    cur = date(service_start.year, service_start.month, 1)
+    end_month = date(service_end.year, service_end.month, 1)
+    while cur <= end_month:
+        _, days_in_month = monthrange(cur.year, cur.month)
+        if cur.year == service_start.year and cur.month == service_start.month:
+            # First month — partial
+            total += days_in_month - service_start.day
+        elif cur.year == service_end.year and cur.month == service_end.month:
+            # Last month — partial
+            total += service_end.day
+        else:
+            total += days_in_month
+        cur = (cur + relativedelta(months=1))
+    return total
+
+
+def _month_amount(item: dict, amort_date: date) -> float:
+    """
+    Return the correct amortization amount for a given calendar month.
+
+    If daily_rate is set (mid-month invoice): compute from daily rate × days.
+    Otherwise: return monthly_amount (standard equal-monthly).
+    """
+    daily_rate = float(item.get('daily_rate') or 0)
+    if daily_rate <= 0:
+        return float(item.get('monthly_amount', 0) or 0)
+
+    service_start = _ensure_date(item.get('service_start'))
+    service_end   = _ensure_date(item.get('service_end'))
+    _, days_in_month = monthrange(amort_date.year, amort_date.month)
+
+    # First month of service
+    if service_start and amort_date.year == service_start.year \
+            and amort_date.month == service_start.month:
+        days = days_in_month - service_start.day
+
+    # Last month of service
+    elif service_end and amort_date.year == service_end.year \
+            and amort_date.month == service_end.month:
+        days = service_end.day
+
+    else:
+        days = days_in_month
+
+    return round(daily_rate * days, 2)
+
+
 # ── Load ─────────────────────────────────────────────────────
 
 def load(path: Optional[str]) -> Tuple[List[Dict], List[Dict]]:
@@ -145,6 +236,7 @@ _DISPLAY_TO_INTERNAL = {
     'months posted':        'months_amortized',
     'months left':          'remaining_months',
     'first added':          'first_added_period',
+    'daily rate':           'daily_rate',
     'completed period':     'completed_period',
 }
 
@@ -197,7 +289,7 @@ def _read_sheet(wb: Workbook, sheet_name: str, expected_cols: List[str]) -> List
 
         # Coerce numeric fields
         for nf in ('total_amount', 'monthly_amount', 'total_months',
-                   'months_amortized', 'remaining_months'):
+                   'months_amortized', 'remaining_months', 'daily_rate'):
             v = rec.get(nf)
             try:
                 rec[nf] = float(v) if v is not None and str(v).strip() != '' else 0.0
@@ -239,6 +331,24 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
         total_amount = inv.get('amount', 0)
         monthly_amount = round(total_amount / total_months, 2)
 
+        svc_start = _ensure_date(inv.get('service_start'))
+        svc_end   = _ensure_date(inv.get('service_end'))
+
+        # Day-based proration: auto-detect mid-month start or end.
+        # Sets daily_rate so get_current_amortization() can compute the exact
+        # calendar-day amount for each month (partial first, full middle, partial last).
+        if svc_start and svc_end and _is_partial_period(svc_start, svc_end):
+            daily_rate = _calc_daily_rate(total_amount, svc_start, svc_end)
+            # For the first (partial) month the Nexus accrual JE handles the expense;
+            # the prepaid ledger tracks months 2+ from the FIRST FULL month onward.
+            # Shift first_added_period to the first full month so the anchor is
+            # a calendar month boundary (avoids fractional-month anchor arithmetic).
+            first_full = date(svc_start.year, svc_start.month, 1) + relativedelta(months=1)
+            first_added = _date_to_period(first_full)
+        else:
+            daily_rate   = 0.0
+            first_added  = close_period
+
         active.append({
             'vendor':            inv.get('vendor', ''),
             'invoice_number':    inv.get('invoice_number', ''),
@@ -248,12 +358,13 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
             'gl_account':        inv.get('gl_account', ''),
             'total_amount':      total_amount,
             'monthly_amount':    monthly_amount,
-            'service_start':     inv.get('service_start'),
-            'service_end':       inv.get('service_end'),
+            'service_start':     svc_start,
+            'service_end':       svc_end,
             'total_months':      float(total_months),
             'months_amortized':  0.0,
             'remaining_months':  float(total_months),
-            'first_added_period': close_period,
+            'first_added_period': first_added,
+            'daily_rate':        daily_rate,
         })
         existing_keys.add(key)
         added.append(inv.get('invoice_number', ''))
@@ -268,13 +379,21 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
     Return one amortization record per active ledger item for the current period.
 
     Each record has enough info to build a JE:
-      DR  [gl_account_number]  monthly_amount
-      CR  130000 Prepaid Expenses  monthly_amount
+      DR  [gl_account_number]  amount_for_this_month
+      CR  135150 Prepaid Other  amount_for_this_month
 
     Items with months_amortized == 0 are the FIRST month:
       those are expensed via the normal Nexus accrual JE (DR expense / CR 211200)
       and should NOT generate a duplicate here.
     We only generate prepaid-release JEs for months 2+ (months_amortized >= 1).
+
+    Day-based proration: if the item has daily_rate > 0 (set automatically by
+    merge_nexus() when service_start is mid-month or service_end is mid-month),
+    the amount for each calendar month is computed as:
+      first month:  daily_rate × (days_in_month − service_start.day)
+      last month:   daily_rate × service_end.day
+      middle months: daily_rate × days_in_month
+    This matches the convention: 11 days for Oct 20 start (31 − 20 = 11).
     """
     close_date = _period_to_date(close_period)
     if close_date is None:
@@ -310,17 +429,21 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
                            amort_month.month != close_date.month):
             continue
 
+        # Amount: day-based if daily_rate set, otherwise fixed monthly_amount
+        amount = _month_amount(item, amort_month)
+
         results.append({
             'vendor':            item.get('vendor', ''),
             'invoice_number':    item.get('invoice_number', ''),
             'description':       item.get('description', ''),
             'gl_account_number': item.get('gl_account_number', ''),
             'gl_account':        item.get('gl_account', ''),
-            'monthly_amount':    item.get('monthly_amount', 0),
+            'monthly_amount':    amount,
             'period_label':      _date_to_period(amort_month),
             'month_index':       months_done + 1,
             'total_months':      int(item.get('total_months', 1) or 1),
             'source':            'prepaid_ledger',
+            'is_day_based':      float(item.get('daily_rate') or 0) > 0,
         })
 
     return results
@@ -400,6 +523,7 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
         'service_start': 'Service Start', 'service_end': 'Service End',
         'total_months': 'Total Months', 'months_amortized': 'Months Posted',
         'remaining_months': 'Months Left', 'first_added_period': 'First Added',
+        'daily_rate': 'Daily Rate',
         'completed_period': 'Completed Period',
     }
     hdr_row = 4
@@ -430,6 +554,8 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
             # Formatting by column type
             if col in ('total_amount', 'monthly_amount'):
                 c.number_format = '$#,##0.00'
+            elif col == 'daily_rate':
+                c.number_format = '$#,##0.000000'
             elif col in ('invoice_date', 'service_start', 'service_end'):
                 if isinstance(val, date):
                     c.number_format = 'MM/DD/YYYY'
@@ -467,7 +593,8 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
         'description': 38, 'gl_account_number': 14, 'gl_account': 32,
         'total_amount': 14, 'monthly_amount': 13, 'service_start': 13,
         'service_end': 13, 'total_months': 10, 'months_amortized': 12,
-        'remaining_months': 12, 'first_added_period': 13, 'completed_period': 14,
+        'remaining_months': 12, 'first_added_period': 13, 'daily_rate': 12,
+        'completed_period': 14,
     }
     for ci, col in enumerate(cols, 1):
         ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(col, 14)
