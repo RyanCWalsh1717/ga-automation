@@ -819,19 +819,20 @@ with tab1:
                     + _supplement_je_lines
                 )
 
+                # Accruals CSV = all auto-generated entries including prepaid releases
+                # Manual CSV   = user-entered manual JEs / reclasses only
                 _accrual_sources = {
                     'nexus', 'budget_gap', 'historical', 'management_fee',
                     'management_fee_catchup', 'invoice_proration', 'prepaid_amortization',
                     'contract_supplement', 'tenant_utility_billing', 'bonus_accrual',
+                    'prepaid_ledger',   # ← prepaid releases included in main accruals JE
                 }
-                _prepaid_sources = {'prepaid_ledger'}
-                _manual_sources  = {'manual'}
+                _manual_sources = {'manual'}
 
                 _accrual_lines = [l for l in all_je_lines if l.get('source') in _accrual_sources]
-                _prepaid_lines  = [l for l in all_je_lines if l.get('source') in _prepaid_sources]
-                _manual_lines   = [l for l in all_je_lines if l.get('source') in _manual_sources]
+                _manual_lines  = [l for l in all_je_lines if l.get('source') in _manual_sources]
 
-                _accrual_csv_path = _prepaid_csv_path = _manual_csv_path = None
+                _accrual_csv_path = _manual_csv_path = None
 
                 _prop_code = (engine_result.parsed.get('gl') and
                               engine_result.parsed['gl'].metadata.property_code) or 'revlabpm'
@@ -839,12 +840,6 @@ with tab1:
                 if _accrual_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
                     generate_yardi_je_csv(_accrual_lines, _accrual_csv_path,
-                                          period=close_period, property_code=_prop_code,
-                                          book='1')
-
-                if _prepaid_lines:
-                    _prepaid_csv_path = os.path.join(st.session_state.temp_dir, "GA_Prepaid_JE.csv")
-                    generate_yardi_je_csv(_prepaid_lines, _prepaid_csv_path,
                                           period=close_period, property_code=_prop_code,
                                           book='1')
 
@@ -858,7 +853,6 @@ with tab1:
                 p1 = st.session_state.pass1_output_files
                 p1["all_je_lines"]          = all_je_lines
                 p1["accrual_je_csv"]        = _accrual_csv_path
-                p1["prepaid_je_csv"]        = _prepaid_csv_path
                 p1["manual_je_csv"]         = _manual_csv_path
                 p1["fee_result"]            = fee_result
                 p1["catchup_amount"]        = _catchup_amount
@@ -1039,7 +1033,6 @@ with tab1:
         period_label = (result.period or 'Period').replace('-', '_')
         p1_zip_files = {
             f"RevLabs_{period_label}_Accruals_JE.csv":      p1.get("accrual_je_csv"),
-            f"RevLabs_{period_label}_Prepaid_JE.csv":       p1.get("prepaid_je_csv"),
             f"RevLabs_{period_label}_Manual_JE.csv":        p1.get("manual_je_csv"),
             f"RevLabs_{period_label}_Prepaid_Ledger.xlsx":  p1.get("prepaid_ledger_updated"),
         }
@@ -1058,12 +1051,11 @@ with tab1:
                 use_container_width=True,
             )
 
-        col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+        col_d1, col_d2, col_d3 = st.columns(3)
         for col, key, label, fname in [
             (col_d1, "accrual_je_csv",        "📄 Accruals JE",     f"GA_Accruals_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
-            (col_d2, "prepaid_je_csv",         "📄 Prepaid JE",      f"GA_Prepaid_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
-            (col_d3, "manual_je_csv",          "📄 Manual JE",       f"GA_Manual_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
-            (col_d4, "prepaid_ledger_updated", "📊 Prepaid Ledger",  f"GA_Prepaid_Ledger_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+            (col_d2, "manual_je_csv",          "📄 Manual JE",       f"GA_Manual_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
+            (col_d3, "prepaid_ledger_updated", "📊 Prepaid Ledger",  f"GA_Prepaid_Ledger_{datetime.now().strftime('%Y%m%d')}.xlsx"),
         ]:
             fpath = p1.get(key)
             if fpath and os.path.exists(fpath):
