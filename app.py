@@ -215,7 +215,7 @@ FILE_CONFIG = {
         "Without it: QC budget check and bonus accruals skipped.",
     ),
     "nexus_accrual": (
-        "Nexus Accrual Detail (.xls)", "xls", False, "core",
+        "Nexus Invoice Detail (.xls)", "xls", False, "core",
         "Enables AP accrual detection (Layer 1 — open invoices not yet posted to GL). "
         "Without it: invoice-proration (Layer 2), budget gap (Layer 3), and historical (Layer 4) still run.",
     ),

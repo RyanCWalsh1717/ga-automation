@@ -1561,10 +1561,17 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     """
     invoices = nexus_data if isinstance(nexus_data, list) else []
 
-    if status_filter:
-        invoices = [inv for inv in invoices
-                    if (inv.get('invoice_status', '') or '').lower()
-                    in [s.lower() for s in status_filter]]
+    # Status filtering — parser already applies _INCLUDE_STATUSES by default
+    # when parsing from the full Nexus Invoice Detail export.  This secondary
+    # filter catches any records passed in via other paths (e.g. test fixtures)
+    # and respects an explicit status_filter override if provided.
+    _default_statuses = {'in progress', 'pending approval',
+                         'submitted for payment', 'completed'}
+    _filter_set = {s.lower() for s in status_filter} if status_filter else _default_statuses
+    invoices = [inv for inv in invoices
+                if (inv.get('invoice_status', '') or '').strip().lower() in _filter_set
+                or not (inv.get('invoice_status', '') or '').strip()]
+    # Note: invoices with no status field are passed through (e.g. manual_accruals)
 
     # Build GL lookup for Layer 1 deduplication
     gl_lookup = _build_gl_invoice_lookup(gl_data) if gl_data else {'by_reference': {}, 'by_control': {}}

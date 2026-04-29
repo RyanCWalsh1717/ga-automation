@@ -1,9 +1,21 @@
 """
-Parser for Nexus invoice/accrual detail reports (.xls format).
+Parser for Nexus invoice detail reports (.xls format).
+
+Accepts either the "Accrual Detail" or the full "Invoice Detail" export from
+Nexus.  When using the full detail, status filtering is applied automatically
+so only accrual-worthy invoices reach the pipeline.
+
+Status filtering (case-insensitive)
+────────────────────────────────────
+INCLUDED (needs accrual):
+  In Progress, Pending Approval, Submitted for Payment, Completed
+
+EXCLUDED (no accrual needed):
+  Rejected, Void, On Hold  — and any other status not in the include list
 
 Expected file format:
 - Row 0: Empty
-- Row 1: Title with "Accrual Detail\nGenerated: ..." (may contain newlines)
+- Row 1: Title with report name + "Generated: ..." (may contain newlines)
 - Row 2: Empty
 - Row 3: Headers - ['', 'Vendor', 'Property', 'Received Date', 'Invoice Number',
                      'Invoice Date', 'Line Description', 'GL Category', 'GL Account #',
@@ -29,9 +41,30 @@ from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Tuple, Any, Optional
 
 
+# ── Status filtering ─────────────────────────────────────────
+# Invoices at these statuses represent work done or in-flight that needs to be
+# accrued.  Everything else (Rejected, Void, On Hold, unknown) is excluded.
+_INCLUDE_STATUSES = frozenset({
+    'in progress',
+    'pending approval',
+    'submitted for payment',
+    'completed',
+})
+
+
+def _status_included(status: str) -> bool:
+    """Return True if the invoice status should be included in accruals."""
+    return (status or '').strip().lower() in _INCLUDE_STATUSES
+
+
 def parse(filepath: str) -> List[Dict[str, Any]]:
     """
-    Parse a Nexus accrual detail report and return list of invoice records.
+    Parse a Nexus invoice detail report and return accrual-worthy records.
+
+    Accepts both the "Accrual Detail" and full "Invoice Detail" exports.
+    Invoices with status Rejected, Void, or On Hold are silently excluded.
+    Only In Progress, Pending Approval, Submitted for Payment, and Completed
+    invoices are returned.
 
     Args:
         filepath: Path to .xls file
@@ -46,8 +79,12 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
         - line_description: Description of invoice line
         - gl_category: GL Category
         - gl_account: GL Account number
-        - invoice_status: Status (e.g., "Pending Approval")
+        - gl_account_number: Numeric GL code extracted from gl_account
+        - invoice_status: Status string (already filtered to include list)
         - amount: Amount as float
+        - service_start / service_end: Parsed from description if present
+        - is_prepaid: True if service period spans > 35 days
+        - prepaid_months: Number of months spanned (1 if not prepaid)
     """
     workbook = xlrd.open_workbook(filepath)
     worksheet = workbook.sheet_by_index(0)
@@ -102,6 +139,13 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
                 svc_start, svc_end = _parse_service_period(line_desc)
                 is_prepaid = _is_prepaid(svc_start, svc_end)
 
+                invoice_status = str(row[9]).strip() if len(row) > 9 else ''
+
+                # Status gate — skip Rejected, Void, On Hold, and any other
+                # non-accrual status before adding to results.
+                if not _status_included(invoice_status):
+                    continue
+
                 record = {
                     'vendor': str(current_vendor),
                     'property': str(property_val),
@@ -112,7 +156,7 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
                     'gl_category': str(row[7]) if len(row) > 7 else '',
                     'gl_account': gl_account_raw,
                     'gl_account_number': _extract_gl_account_number(gl_account_raw),
-                    'invoice_status': str(row[9]) if len(row) > 9 else '',
+                    'invoice_status': invoice_status,
                     'amount': amount,
                     'service_start': svc_start,
                     'service_end': svc_end,
@@ -166,9 +210,15 @@ def validate(filepath: str) -> Tuple[bool, List[str]]:
     if not found_header:
         issues.append("Could not find expected header row with 'Vendor' and 'Invoice' columns")
 
-    # Check sheet name
-    if worksheet.name != 'Accrual Detail':
-        issues.append(f"Sheet name is '{worksheet.name}', expected 'Accrual Detail'")
+    # Check sheet name — accept both Accrual Detail and Invoice Detail exports
+    _accepted_sheet_names = {'accrual detail', 'invoice detail', 'ap invoice detail',
+                              'nexus invoice detail', 'nexus accrual detail'}
+    if worksheet.name.strip().lower() not in _accepted_sheet_names:
+        # Warn but don't hard-fail — Nexus sometimes uses custom sheet names
+        issues.append(
+            f"Sheet name is '{worksheet.name}' — expected 'Accrual Detail' or "
+            f"'Invoice Detail'. File may still parse correctly."
+        )
 
     return len(issues) == 0, issues
 
