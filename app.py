@@ -1319,6 +1319,16 @@ with tab2:
                 _f.write(_p2_wp_upload.getbuffer())
         st.session_state.uploaded_files["prior_workpaper"] = _p2_wp_path
         st.caption(f"✓ Prior workpaper ready: **{_p2_wp_upload.name}**")
+    st.text_input(
+        "Prior period label",
+        placeholder="e.g. Mar-2026  (leave blank to auto-detect)",
+        help=(
+            "The period that the uploaded prior workpaper covers. "
+            "Required when uploading a workpaper that doesn't have period-prefixed tabs. "
+            "Format: Mon-YYYY (e.g. Mar-2026, Feb-2026)."
+        ),
+        key="prior_period_label_input",
+    )
 
     # Pass 2 requires either a dedicated post-close GL or at minimum the sidebar GL
     _p2_gl_ready = (
@@ -1427,23 +1437,24 @@ with tab2:
                         # GL is final — no je_adjustments needed. The GL already reflects
                         # all posted JEs from Pass 1, so the workpaper ties clean.
                         _prior_wp_path = st.session_state.uploaded_files.get("prior_workpaper")
-                        # Infer prior_period label: one month before close_period
-                        _prior_period = None
-                        try:
-                            if close_period:
-                                import calendar as _cal
-                                _mo_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
-                                               Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
-                                _m2 = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](\d{4})', close_period)
-                                if _m2:
-                                    _mo = _mo_map[_m2.group(1)]
-                                    _yr = int(_m2.group(2))
-                                    _prev_mo = _mo - 1 if _mo > 1 else 12
-                                    _prev_yr = _yr if _mo > 1 else _yr - 1
-                                    _mo_names = {v: k for k, v in _mo_map.items()}
-                                    _prior_period = f"{_mo_names[_prev_mo]}-{_prev_yr}"
-                        except Exception:
-                            _prior_period = None
+                        # Prior period label: user override → auto-infer from close_period
+                        _user_label = st.session_state.get("prior_period_label_input", "").strip()
+                        _prior_period = _user_label if _user_label else None
+                        if not _prior_period:
+                            try:
+                                if close_period:
+                                    _mo_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                                                   Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+                                    _m2 = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](\d{4})', close_period)
+                                    if _m2:
+                                        _mo = _mo_map[_m2.group(1)]
+                                        _yr = int(_m2.group(2))
+                                        _prev_mo = _mo - 1 if _mo > 1 else 12
+                                        _prev_yr = _yr if _mo > 1 else _yr - 1
+                                        _mo_names = {v: k for k, v in _mo_map.items()}
+                                        _prior_period = f"{_mo_names[_prev_mo]}-{_prev_yr}"
+                            except Exception:
+                                _prior_period = None
                         bs_workpaper_generator.generate(
                             gl_result=gl_parsed,
                             tb_result=tb_result,

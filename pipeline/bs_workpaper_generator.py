@@ -66,6 +66,10 @@ COLOR_BS_COMPLEX = 'FF0000'   # red         — complex tabs (accrued exp, prepa
 
 COMPLEX_ACCOUNTS = {'213100', '135110', '135150', '213200', '221100'}
 
+# Accounts that use a JLL-style accrual schedule instead of raw GL transaction detail.
+# Each accrual line shows: Expense Acct # | Description | Vendor | FROM | TO | Amount | Notes
+_ACCRUAL_SCHEDULE_ACCOUNTS = {'211200', '211300', '213100', '201000'}
+
 # Styling helpers
 DARK_BLUE  = '1F4E78'
 MED_BLUE   = '2E75B6'
@@ -159,7 +163,17 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     if prior_workpaper_path and os.path.exists(prior_workpaper_path):
         try:
             wb = _load_workbook(prior_workpaper_path)
-            # Rename all existing sheets with prior_period prefix
+
+            # Auto-detect prior period from existing tab names when not specified.
+            # Example: if tabs are already "Mar-2026 Summary", extract "Mar-2026".
+            if not prior_period:
+                for _n in wb.sheetnames:
+                    _m = _PERIOD_PREFIX_RE.match(_n)
+                    if _m:
+                        prior_period = _m.group(0).strip()  # e.g. "Mar-2026"
+                        break
+
+            # Rename all existing sheets with prior_period prefix (unprefixed tabs only)
             _pfx = (prior_period or 'Prior') + ' '
             for _name in list(wb.sheetnames):
                 _ws = wb[_name]
@@ -194,13 +208,34 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         if BS_ACCOUNT_RANGE[0] <= a.account_code <= BS_ACCOUNT_RANGE[1]
     ]
 
+    # Pre-compute: journal control → (expense_code, expense_name) for accrual schedules.
+    # For each accrual JE, the credit side (211200/211300/213100) and the debit side
+    # (a P&L expense account) share the same journal control number.  We scan all
+    # expense-range GL accounts to build this lookup so the accrual schedule tab can
+    # show which expense account each accrual line offsets.
+    _control_to_expense: dict = {}
+    if gl_result:
+        for _ea in (gl_result.accounts or []):
+            _ec = _ea.account_code
+            # P&L accounts are 4xxxxx (revenue) through 8xxxxx (expense)
+            if _ec and '4' <= _ec[0] <= '8':
+                for _et in (_ea.transactions or []):
+                    _ctrl = str(getattr(_et, 'control', '') or '').strip()
+                    if _ctrl and _ctrl not in _control_to_expense:
+                        _control_to_expense[_ctrl] = (_ec, _ea.account_name)
+
     # ── Build workpaper tabs ──────────────────────────────────
     _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
                        je_adjustments, tab_prefix=_tab_pfx)
     _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
     for acct in bs_accounts:
-        _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
-                           property_name, je_adjustments, tab_prefix=_tab_pfx)
+        if acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
+            _write_accrual_schedule_tab(
+                wb, acct, tb_map.get(acct.account_code), period, property_name,
+                _control_to_expense, tab_prefix=_tab_pfx)
+        else:
+            _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
+                               property_name, je_adjustments, tab_prefix=_tab_pfx)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
@@ -703,6 +738,279 @@ def _write_tieout(ws, row, gl_acct, tb_acct, period, je_delta: float = 0.0):
             ws.row_dimensions[note_row].height = 28
     else:
         ws.cell(row=row, column=_I, value='').border = DOUBLE_BTM
+
+
+# ── Accrual schedule helpers ─────────────────────────────────
+
+def _parse_accrual_txn(desc: str, expense_name: str = '') -> dict:
+    """
+    Parse a pipeline-generated accrual description into structured fields for
+    the JLL-style accrual schedule tab.
+
+    Returns dict with keys:
+        acct_desc   — expense account name (from description or expense_name arg)
+        vendor      — vendor name if identifiable
+        period_from — billing/service period start (string)
+        period_to   — billing/service period end (string)
+        notes       — short description line (matches JLL "Acc …" style)
+    """
+    import re as _re
+    result = {
+        'acct_desc': expense_name or '',
+        'vendor': '',
+        'period_from': '',
+        'period_to': '',
+        'notes': (desc or '').strip(),
+    }
+    if not desc:
+        return result
+
+    # "Invoice proration — Account Name: last invoice MM/DD/YY-MM/DD/YY vendor..."
+    m = _re.match(
+        r'Invoice proration\s*[—\-]+\s*(.+?):\s*last invoice\s+([\d/][\d/\- ]+?)'
+        r'(?:\s+(.+?))?$', desc, _re.I)
+    if m:
+        if not result['acct_desc']:
+            result['acct_desc'] = m.group(1).strip()
+        dates_str = m.group(2).strip()
+        date_parts = _re.split(r'\s*[-–]\s*', dates_str)
+        if len(date_parts) >= 2:
+            result['period_from'] = date_parts[0].strip()
+            result['period_to']   = date_parts[1].strip()
+        vendor_extra = (m.group(3) or '').strip()
+        if vendor_extra:
+            result['vendor'] = vendor_extra[:40]
+        result['notes'] = (
+            f"Acc {result['period_from']} - {result['period_to']} "
+            f"{result['acct_desc']}"
+        ).strip()
+        return result
+
+    # "Payroll accrual — Account Name: last run MM/DD/YY (…)"
+    m = _re.match(
+        r'Payroll accrual\s*[—\-]+\s*(.+?):\s*last run\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+        desc, _re.I)
+    if m:
+        if not result['acct_desc']:
+            result['acct_desc'] = m.group(1).strip()
+        last_run = m.group(2).strip()
+        result['period_from'] = last_run
+        result['vendor'] = 'Payroll'
+        result['notes'] = f"Acc payroll last run {last_run} {result['acct_desc']}"
+        return result
+
+    # "Monthly bonus accrual — Account Name: Kardin annual…"
+    m = _re.match(r'Monthly bonus accrual\s*[—\-]+\s*(.+?):', desc, _re.I)
+    if m:
+        if not result['acct_desc']:
+            result['acct_desc'] = m.group(1).strip()
+        result['vendor'] = 'Bonus accrual'
+        result['notes'] = f"Acc bonus per Kardin {result['acct_desc']}"
+        return result
+
+    # "Recurring monthly accrual — Account Name: VENDOR"
+    m = _re.match(
+        r'Recurring monthly accrual\s*[—\-]+\s*(.+?):\s*(.+?)$', desc, _re.I)
+    if m:
+        if not result['acct_desc']:
+            result['acct_desc'] = m.group(1).strip()
+        result['vendor'] = m.group(2).strip()[:40]
+        result['notes'] = f"Acc {result['vendor']}"
+        return result
+
+    # "Budget gap accrual — Account Name: …"
+    m = _re.match(r'Budget gap accrual\s*[—\-]+\s*(.+?):\s*(.+?)$', desc, _re.I)
+    if m:
+        if not result['acct_desc']:
+            result['acct_desc'] = m.group(1).strip()
+        result['notes'] = m.group(2).strip()[:60]
+        return result
+
+    # "REVIEW REQUIRED — Account Name: …" / "REVIEW — …"
+    m = _re.match(r'REVIEW(?:\s+REQUIRED)?\s*[—\-]+\s*(.+?):', desc, _re.I)
+    if m:
+        if not result['acct_desc']:
+            result['acct_desc'] = m.group(1).strip()
+        result['vendor'] = '⚠ REVIEW'
+        result['notes'] = desc.strip()
+        return result
+
+    return result
+
+
+def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
+                                 control_to_expense: dict, tab_prefix: str = ''):
+    """
+    Write a JLL-style accrual schedule tab for 211200 / 211300 / 213100.
+
+    Layout matches '213100-Accrued Exp' in the JLL workpaper:
+      Col B  Account #         (expense account code from GL debit side)
+      Col C  Account Desc      (expense account name)
+      Col D  Vendor            (parsed from description)
+      Col E  FROM              (billing/service period start)
+      Col F  TO                (billing/service period end)
+      Col G  Accrual           (negative — credit to this liability account)
+      Col H  Description       (short note matching "Acc MM/YY Vendor" style)
+
+    Footer: total → GL balance → variance (should be ≤ $0.02 rounding)
+    TB tie-out row appended after the GL section.
+    """
+    tab_name = (tab_prefix + gl_acct.account_code)[:31]
+    ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = COLOR_BS_COMPLEX  # red — complex account
+    ws.column_dimensions['A'].width = 2
+
+    row = 1
+    # ── Header ───────────────────────────────────────────────────
+    c = ws.cell(row=row, column=_B,
+                value=f'{gl_acct.account_code} — {gl_acct.account_name}')
+    c.font = _font(bold=True, size=13, color='FFFFFF')
+    c.fill = _fill(DARK_BLUE)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    row += 1
+
+    c = ws.cell(row=row, column=_B,
+                value=(f'Period: {period}  |  '
+                       f'{property_name or "Revolution Labs"}  |  '
+                       f'Prepared: {datetime.now().strftime("%m/%d/%Y")}'))
+    c.font = _font(italic=True, color='FFFFFF')
+    c.fill = _fill(MED_BLUE)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    row += 3
+
+    # ── Column headers ────────────────────────────────────────────
+    col_specs = [
+        ('Account #',        10),
+        ('Account Description', 28),
+        ('Vendor',           24),
+        ('FROM',             14),
+        ('TO',               14),
+        ('Accrual',          14),
+        ('Description',      48),
+        ('',                  4),
+    ]
+    for ci, (h, w) in enumerate(col_specs):
+        col = _B + ci
+        ws.column_dimensions[get_column_letter(col)].width = w
+        if not h:
+            continue
+        c = ws.cell(row=row, column=col, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+               align=Alignment(horizontal='center', wrap_text=True))
+    ws.row_dimensions[row].height = 24
+    row += 1
+
+    # ── Data rows ─────────────────────────────────────────────────
+    total_accrual = 0.0
+    txns = gl_acct.transactions or []
+
+    for i, txn in enumerate(txns):
+        credit = float(txn.credit or 0)
+        debit  = float(txn.debit or 0)
+        # Net credit = how much is accrued into this liability account
+        net_credit = credit - debit
+
+        ctrl = str(getattr(txn, 'control', '') or '').strip()
+        expense_info = control_to_expense.get(ctrl, ('', ''))
+        expense_code = expense_info[0] if expense_info else ''
+        expense_name = expense_info[1] if expense_info else ''
+
+        parsed = _parse_accrual_txn(txn.description or '', expense_name)
+
+        alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+        is_review = parsed['vendor'] == '⚠ REVIEW'
+
+        # Accrual amount stored as negative (matching JLL's sign convention for credits)
+        accrual_amount = -net_credit if net_credit != 0 else None
+
+        row_data = [
+            (expense_code,                   'left',   False),
+            (parsed['acct_desc'] or expense_name or (txn.description or '')[:40],
+                                              'left',   False),
+            (parsed['vendor'],               'left',   False),
+            (parsed['period_from'],          'center',  False),
+            (parsed['period_to'],            'center',  False),
+            (accrual_amount,                 'right',   True),   # number format
+            (parsed['notes'][:65],           'left',   False),
+        ]
+
+        for ci, (val, align_h, is_num) in enumerate(row_data):
+            col = _B + ci
+            c = ws.cell(row=row, column=col, value=val)
+            c.alignment = Alignment(horizontal=align_h,
+                                    wrap_text=(ci == 6))
+            c.border = THIN
+            if alt_fill:
+                c.fill = alt_fill
+            if is_num and val is not None:
+                c.number_format = '#,##0.00;(#,##0.00);"-"'
+            if is_review:
+                c.font = _font(bold=True, color='9C0006')
+
+        if accrual_amount is not None:
+            total_accrual += accrual_amount
+        row += 1
+
+    # ── Total row ─────────────────────────────────────────────────
+    row += 1
+    ws.cell(row=row, column=_D, value='Rounding').font = _font(italic=True, color='888888')
+    row += 1
+    ws.cell(row=row, column=_D, value='Total').font = _font(bold=True)
+    c_tot = ws.cell(row=row, column=_G, value=total_accrual)
+    _apply(c_tot, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"', border=THIN)
+    row += 2
+
+    # ── GL balance + variance ─────────────────────────────────────
+    gl_ending = gl_acct.ending_balance
+    ws.cell(row=row, column=_D, value=str(gl_acct.account_code)).font = _font(bold=True, color=DARK_BLUE)
+    row += 2
+
+    ws.cell(row=row, column=_E, value='GL').font = _font(bold=True)
+    c_gl = ws.cell(row=row, column=_G, value=gl_ending)
+    _apply(c_gl, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THIN)
+    row += 1
+
+    # Variance between schedule total and GL ending balance
+    sched_variance = (total_accrual + abs(gl_ending)) if gl_ending is not None else None
+    ws.cell(row=row, column=_E, value='Variance').font = _font(bold=True)
+    if sched_variance is not None:
+        is_zero = abs(sched_variance) < 0.02
+        c_sv = ws.cell(row=row, column=_G, value=sched_variance if not is_zero else 0)
+        _apply(c_sv,
+               font=_font(bold=True, color='006100' if is_zero else '9C0006'),
+               fmt='#,##0.00;(#,##0.00);"-"',
+               fill=_fill(GREEN_FILL if is_zero else RED_FILL),
+               border=DOUBLE_BTM)
+    row += 2
+
+    # ── TB tie-out (below GL section) ─────────────────────────────
+    tb_ending = tb_acct.ending_balance if tb_acct else None
+    variance  = (gl_ending - tb_ending) if tb_ending is not None else None
+
+    ws.cell(row=row, column=_H, value='TB Balance').font = _font(bold=True)
+    if tb_ending is not None:
+        c_tb = ws.cell(row=row, column=_I, value=tb_ending)
+        _apply(c_tb, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+               fill=_fill(LIGHT_BLUE), border=THIN)
+    else:
+        c_tb = ws.cell(row=row, column=_I, value='Not in TB')
+        c_tb.font = _font(italic=True, color='888888')
+    row += 1
+
+    ws.cell(row=row, column=_H, value='Variance').font = _font(bold=True)
+    if variance is not None:
+        is_zero = abs(variance) < 0.02
+        c_var = ws.cell(row=row, column=_I, value=variance)
+        _apply(c_var,
+               font=_font(bold=True, color='006100' if is_zero else '9C0006'),
+               fmt='#,##0.00;(#,##0.00);"-"',
+               fill=_fill(GREEN_FILL if is_zero else RED_FILL),
+               border=DOUBLE_BTM)
+    else:
+        ws.cell(row=row, column=_I, value='').border = DOUBLE_BTM
+
+    ws.freeze_panes = 'B5'
 
 
 # ── Prepaid amortization schedule tab ────────────────────────
