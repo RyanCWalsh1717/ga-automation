@@ -2624,9 +2624,9 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
     """
     Generate a Yardi-compatible journal entry import CSV.
 
-    Format (no headers, comma-delimited):
+    Format (no headers, comma-delimited, 15 columns):
       J, batch#, , , date, date, , description, property_code, signed_amount,
-      gl_account, , , , reference, , , Standard Journal Display Type
+      gl_account, , , , reference
 
     Positive amount = Debit, Negative amount = Credit.
     Each unique je_number gets its own sequential batch number.
@@ -2676,24 +2676,21 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
             amount   = debit - credit
 
             writer.writerow([
-                'J',         # col 1: type
-                batch,       # col 2: batch/JE number
-                '',          # col 3: empty
-                '',          # col 4: empty
-                period_date, # col 5: reference date
-                period_date, # col 6: period date
-                '',          # col 7: empty
-                desc,        # col 8: description
-                property_code,  # col 9: property code
-                amount,      # col 10: signed amount
-                gl_acct,     # col 11: GL account
-                '',          # col 12: empty
-                '',          # col 13: empty
-                '',          # col 14: empty
-                ref,         # col 15: reference
-                '',          # col 16: empty
-                '',          # col 17: empty
-                'Standard Journal Display Type',  # col 18
+                'J',            # col 1:  type
+                batch,          # col 2:  batch/JE number
+                '',             # col 3:  empty
+                '',             # col 4:  empty
+                period_date,    # col 5:  reference date
+                period_date,    # col 6:  period date
+                '',             # col 7:  empty
+                desc,           # col 8:  description
+                property_code,  # col 9:  property code
+                amount,         # col 10: signed amount (positive=DR, negative=CR)
+                gl_acct,        # col 11: GL account
+                '',             # col 12: empty
+                '',             # col 13: empty
+                '',             # col 14: empty
+                ref,            # col 15: reference
             ])
 
     return output_path
