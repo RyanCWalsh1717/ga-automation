@@ -458,6 +458,21 @@ _re_tax_bill_amount = _re_tax_bill_amount if _re_tax_bill_amount > 0 else 0.0
 
 st.sidebar.divider()
 
+# ── Yardi Book Code ───────────────────────────────────────────────────────────
+st.sidebar.markdown("**Yardi Book**")
+_yardi_book = st.sidebar.text_input(
+    "Book Code",
+    value="1",
+    key="widget_yardi_book",
+    help=(
+        "Must match exactly what Yardi shows under Setup → Books for this property. "
+        "Common values: '1', 'Accrual', 'Cash'. "
+        "Error 'Invalid or missing Book' means this value doesn't match."
+    ),
+).strip() or "1"
+
+st.sidebar.divider()
+
 # ── Reset (sidebar) ───────────────────────────────────────────
 if st.sidebar.button("🔄 Reset All", use_container_width=True,
                      help="Clear all results and uploaded files"):
@@ -841,13 +856,13 @@ with tab1:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
                     generate_yardi_je_csv(_accrual_lines, _accrual_csv_path,
                                           period=close_period, property_code=_prop_code,
-                                          book='1')
+                                          book=_yardi_book)
 
                 if _manual_lines:
                     _manual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Manual_JE.csv")
                     generate_yardi_je_csv(_manual_lines, _manual_csv_path,
                                           period=close_period, property_code=_prop_code,
-                                          book='1')
+                                          book=_yardi_book)
 
                 # Persist Pass 1 outputs
                 p1 = st.session_state.pass1_output_files
