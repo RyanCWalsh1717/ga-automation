@@ -40,11 +40,8 @@ RCW_PATH = (
     r'\03.26 Workpapers REVLABS RCW.xlsx'
 )
 
-OUT_PATH = os.path.join(_HERE, 'GA_Prepaid_Ledger_Seed_Mar2026.xlsx')
-
-# As of the end of March 2026 — seed period
-SEED_PERIOD = 'Mar-2026'
-SEED_DATE   = date(2026, 3, 31)
+OUT_PATH_MAR = os.path.join(_HERE, 'GA_Prepaid_Ledger_Seed_Mar2026.xlsx')
+OUT_PATH_DEC = os.path.join(_HERE, 'GA_Prepaid_Ledger_Seed_Dec2025.xlsx')
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -72,58 +69,86 @@ def _ensure_date(v):
     return None
 
 
+def _parse_date_part(s: str):
+    """
+    Try to parse a single date token. Handles:
+      MM/DD/YYYY  MM/DD/YY  MM/YYYY  MM/YY  MM.DD.YY  MM.DD.YYYY
+      Special: 'MM/YY' and 'MM.YY' where YY is a 2-digit year
+    Returns date or None.
+    """
+    s = s.strip().replace('.', '/')   # normalise dots to slashes
+    import calendar as _cal
+    # Full date formats
+    for fmt in ('%m/%d/%Y', '%m/%d/%y'):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    # Month/Year only (return 1st of that month)
+    for fmt in ('%m/%Y', '%m/%y'):
+        try:
+            d = datetime.strptime(s, fmt).date()
+            return d.replace(day=1)
+        except ValueError:
+            pass
+    return None
+
+
 def _parse_term(term_str: str):
     """
-    Parse 'MM/DD/YY-MM/DD/YY' or 'MM/YY-MM/YY' or similar into (start, end) dates.
+    Parse a service-period string into (start_date, end_date).
+
+    Handles many JLL formats:
+      '6/12/2025- 6/12/2026'         slash full dates
+      '03/01/25-02/28/26'            slash 2-digit year
+      '12.19.25-12.18.26'            dot notation
+      '02.10.26 - 02.09.27'          dot with spaces
+      '01/26-06/26'                  month/year only
+      '12/25/11/26'                  JLL shorthand: MM/YY-MM/YY with no separator char
+      '9/2025-9/2026'                month/4-digit year
     Returns (None, None) if unparseable.
     """
     if not term_str:
         return None, None
-    # Normalise separators
-    term_str = str(term_str).strip().replace(' ', '')
-    # Split on dash-between-date-chunks
-    # Patterns to try:
-    patterns = [
-        # '6/12/2025-6/12/2026'
-        r'(\d{1,2}/\d{1,2}/\d{2,4})\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{2,4})',
-        # '03/01/25-02/28/26' (2-digit year)
-        r'(\d{1,2}/\d{1,2}/\d{2})\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{2})',
-        # '04/01/25-03/31/26' with spaces
-        r'(\d{1,2}/\d{2}/\d{2})\s*[-–]\s*(\d{1,2}/\d{2}/\d{2})',
-        # '01/26-06/26' (month/year only)
-        r'(\d{2}/\d{2})\s*[-–]\s*(\d{2}/\d{2})',
-        # '9/2025-9/2026'
-        r'(\d{1,2}/\d{4})\s*[-–]\s*(\d{1,2}/\d{4})',
-    ]
-    for pat in patterns:
-        m = re.search(pat, term_str)
-        if m:
-            s, e = m.group(1), m.group(2)
-            # Try to parse both
-            sd = _ensure_date(s)
-            ed = _ensure_date(e)
+
+    raw = str(term_str).strip()
+
+    # ── Normalise spaces around separator ─────────────────────────────────
+    # Replace en-dash with regular dash; collapse spaces around dashes
+    raw = raw.replace('–', '-').replace('–', '-')
+
+    # ── Special case: JLL 'MM/YY/MM/YY' with no separator (4 slash groups) ──
+    # e.g. '12/25/11/26' → start=12/25, end=11/26  (month/YY-month/YY)
+    # Detect: exactly 3 slashes, no dash
+    if raw.count('/') == 3 and '-' not in raw and ' ' not in raw:
+        parts = raw.split('/')
+        if all(len(p) <= 2 for p in parts) and len(parts) == 4:
+            # Treat as MM/YY - MM/YY
+            s_str = f'{parts[0]}/{parts[1]}'
+            e_str = f'{parts[2]}/{parts[3]}'
+            sd = _parse_date_part(s_str)
+            ed = _parse_date_part(e_str)
             if sd and ed:
                 return sd, ed
-            # Try month/year only patterns
-            try:
-                sd = datetime.strptime(s, '%m/%y').date().replace(day=1)
-                ed_raw = datetime.strptime(e, '%m/%y').date()
-                # end = last day of that month
-                import calendar
-                last = calendar.monthrange(ed_raw.year, ed_raw.month)[1]
-                ed = ed_raw.replace(day=last)
-                return sd, ed
-            except ValueError:
-                pass
-            try:
-                sd = datetime.strptime(s, '%m/%Y').date().replace(day=1)
-                ed_raw = datetime.strptime(e, '%m/%Y').date()
-                import calendar
-                last = calendar.monthrange(ed_raw.year, ed_raw.month)[1]
-                ed = ed_raw.replace(day=last)
-                return sd, ed
-            except ValueError:
-                pass
+
+    # ── General: split on the dash that separates start from end ─────────
+    # Tricky because dates themselves can contain dashes (they don't here,
+    # but dots and slashes can).  Strategy: find all dash positions and
+    # try every split point.
+    candidates = []
+    for i, ch in enumerate(raw):
+        if ch == '-':
+            s_part = raw[:i].strip()
+            e_part = raw[i+1:].strip()
+            if s_part and e_part:
+                candidates.append((s_part, e_part))
+
+    for s_str, e_str in candidates:
+        sd = _parse_date_part(s_str)
+        ed = _parse_date_part(e_str)
+        if sd and ed and sd <= ed:
+            return sd, ed
+
     return None, None
 
 
@@ -148,69 +173,93 @@ _GL_NAMES = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Read 135150 PPD Other tab
+# Main
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _read_135150(ws) -> list:
+def _build_for_seed_date(wb, seed_date: date, seed_period: str):
     """
-    Read the 135150 PPD Other tab from the RCW workpaper.
+    Build active / completed lists as of a given seed date.
+    Items whose service hasn't started yet are excluded from active.
+    Items fully amortized by seed_date go to completed.
+    """
+    from openpyxl import load_workbook as _lw  # already imported above
 
-    Column layout (rows 7–8 headers):
-      B  = Vendor
-      C  = G/L Account
-      D  = Payment Date
-      E  = Payment Amount
-      F  = Period Covered
-      G  = # Of Mos. Covered (total_months)
-      H  = Exp Per Month (monthly_amount)
-      I  = Months Elapsed (months_amortized)
-      J  = # Of Mos. Prepaid / remaining (remaining_months)
-      K  = Prepaid Balance
+    all_items = []
+    completed = []
+
+    if '135150 PPD Other' in wb.sheetnames:
+        raw = _read_135150_raw(wb['135150 PPD Other'], seed_date, seed_period)
+        for item in raw:
+            if item.get('_skip'):
+                continue
+            if item['remaining_months'] <= 0 and item['months_amortized'] > 0:
+                item['completed_period'] = seed_period
+                completed.append(item)
+            else:
+                all_items.append(item)
+        print(f'  135150 PPD Other: {len(all_items)} active, {len(completed)} completed')
+    else:
+        print('  WARNING: 135150 PPD Other tab not found')
+
+    if 'Insurance Analysis' in wb.sheetnames:
+        ins_items = _read_insurance_for(wb['Insurance Analysis'], seed_date, seed_period)
+        all_items.extend(ins_items)
+        print(f'  Insurance Analysis: {len(ins_items)} active policies')
+    else:
+        print('  WARNING: Insurance Analysis tab not found')
+
+    return all_items, completed
+
+
+def _read_135150_raw(ws, seed_date: date, seed_period: str) -> list:
+    """
+    Read 135150 tab and compute elapsed / remaining as of seed_date.
+    Items that haven't started yet get _skip=True.
     """
     items = []
     for row in ws.iter_rows(min_row=9, values_only=True):
-        vendor      = row[1]   # col B (0-indexed: index 1)
-        gl_acct_raw = row[2]   # col C
-        pay_date    = row[3]   # col D
-        total_amt   = row[4]   # col E
-        period_cov  = row[5]   # col F
-        tot_months  = row[6]   # col G
-        monthly_amt = row[7]   # col H
-        months_done = row[8]   # col I
-        months_left = row[9]   # col J
-        # col K = prepaid balance (index 10) — not needed, recomputed
+        vendor      = row[1]
+        gl_acct_raw = row[2]
+        pay_date    = row[3]
+        total_amt   = row[4]
+        period_cov  = row[5]
+        tot_months  = row[6]
+        monthly_amt = row[7]
+        # Ignore JLL's elapsed/remaining — recalculate from dates
 
-        # Skip blank / total / header rows
         if not vendor or not isinstance(vendor, str):
             continue
         vendor = vendor.strip()
         if not vendor or vendor.lower() in ('vendor', '\\', ''):
             continue
-        # Skip rows that look like summary/total lines
-        if str(vendor).startswith('Ending Balance') or str(vendor).startswith('Total'):
+        if str(vendor).startswith('Ending') or str(vendor).startswith('Total'):
+            continue
+        if not total_amt or not period_cov:
             continue
 
-        # Normalise GL account: integers/floats → plain 6-digit string
+        # GL account
         if isinstance(gl_acct_raw, (int, float)):
             gl_acct = str(int(gl_acct_raw))
         elif gl_acct_raw:
-            # String like '637370' or '637370.0' — strip whitespace and .0 suffix only
             s = str(gl_acct_raw).strip()
             gl_acct = s[:-2] if s.endswith('.0') else s
         else:
-            gl_acct = ''
+            continue  # no GL account = note/comment row
+
         total_months_v  = int(_safe_float(tot_months))  if tot_months  else 0
         monthly_amt_v   = _safe_float(monthly_amt)
-        months_amort    = int(_safe_float(months_done)) if months_done else 0
-        remaining       = int(_safe_float(months_left)) if months_left else 0
         total_amount_v  = _safe_float(total_amt)
+        invoice_date_v  = _ensure_date(pay_date)
 
-        # Parse service dates from period_covered string
         service_start, service_end = _parse_term(str(period_cov or ''))
-        invoice_date_v = _ensure_date(pay_date)
+        if not service_start:
+            continue
 
-        # Determine daily_rate: if total_months looks like days (>= 28 and
-        # period is < 2 months), treat as day-based
+        # Skip items that haven't started yet as of seed_date
+        if service_start > seed_date:
+            continue
+
+        # Determine daily_rate items
         daily_rate = 0.0
         if service_start and service_end and total_months_v >= 28:
             span_months = (
@@ -218,10 +267,32 @@ def _read_135150(ws) -> list:
                 + service_end.month - service_start.month
             )
             if span_months <= 1:
-                # day-based
                 if total_months_v > 0:
                     daily_rate = round(total_amount_v / total_months_v, 6)
-                total_months_v = total_months_v   # keep as days
+
+        # Compute months/days elapsed as of seed_date
+        if daily_rate > 0:
+            # Day-based: count days from service_start to seed_date (inclusive)
+            days_elapsed = (seed_date - service_start).days + 1
+            days_elapsed = min(days_elapsed, total_months_v)
+            days_remaining = max(0, total_months_v - days_elapsed)
+            months_amort = days_elapsed
+            remaining    = days_remaining
+        else:
+            seed_month_start = date(seed_date.year, seed_date.month, 1)
+            svc_month_start  = date(service_start.year, service_start.month, 1)
+            # months elapsed = difference in months.
+            # If service starts on day 1, the start month is a full amortization
+            # period so we add 1 (matches JLL convention).
+            # If service starts mid-month, the start month is partial / not counted.
+            offset = 1 if service_start.day == 1 else 0
+            months_amort = (
+                (seed_month_start.year - svc_month_start.year) * 12
+                + seed_month_start.month - svc_month_start.month
+                + offset
+            )
+            months_amort = max(0, min(months_amort, total_months_v))
+            remaining    = max(0, total_months_v - months_amort)
 
         item = {
             'vendor':             vendor,
@@ -237,56 +308,36 @@ def _read_135150(ws) -> list:
             'total_months':       total_months_v,
             'months_amortized':   months_amort,
             'remaining_months':   remaining,
-            'first_added_period': SEED_PERIOD,
+            'first_added_period': seed_period,
             'daily_rate':         daily_rate,
+            '_skip':              False,
         }
         items.append(item)
 
     return items
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Read Insurance Analysis tab
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _read_insurance(ws) -> list:
-    """
-    Extract the active insurance policies from the Insurance Analysis tab.
-
-    Row layout (cols B–G, row 7 is header with date cols):
-      col C  = Accrual marker (blank or 'Accr')
-      col D  = Policy type
-      col E  = Term (e.g. '6/12/2025- 6/12/2026')
-      col F  = Premium amount
-      col G  = Per Month amount
-
-    We only include rows where col F (premium) > 0 and col E (term) is parseable.
-    The service end must be AFTER the seed date to be 'active'.
-    """
+def _read_insurance_for(ws, seed_date: date, seed_period: str) -> list:
+    """Insurance Analysis reader parameterised on seed_date."""
     items = []
-    last_policy_type = ''   # carry-forward when col D is blank
+    last_policy_type = ''
 
-    # Scan rows 8–30
     for r in range(8, 35):
-        accrual_marker = ws.cell(row=r, column=3).value   # col C
-        policy_type    = ws.cell(row=r, column=4).value   # col D
-        term_str       = ws.cell(row=r, column=5).value   # col E
-        premium        = ws.cell(row=r, column=6).value   # col F
-        monthly        = ws.cell(row=r, column=7).value   # col G
+        accrual_marker = ws.cell(row=r, column=3).value
+        policy_type    = ws.cell(row=r, column=4).value
+        term_str       = ws.cell(row=r, column=5).value
+        premium        = ws.cell(row=r, column=6).value
+        monthly        = ws.cell(row=r, column=7).value
 
-        # Track the last non-blank policy type for blank-type active rows
         if policy_type and isinstance(policy_type, str) and policy_type.strip():
             last_policy_type = policy_type.strip()
 
-        # Skip blank rows, accrual sub-rows, and summary rows
         if not premium:
             continue
         if isinstance(accrual_marker, str) and accrual_marker.strip().lower() == 'accr':
             continue
         if not term_str:
             continue
-
-        # Use carried-forward policy type if this row's col D is blank
         if not policy_type or not str(policy_type).strip():
             policy_type = last_policy_type
 
@@ -298,46 +349,38 @@ def _read_insurance(ws) -> list:
         service_start, service_end = _parse_term(str(term_str or ''))
         if not service_start or not service_end:
             continue
-        if service_end <= SEED_DATE:
+        if service_start > seed_date:
+            continue  # not started yet
+        if service_end <= seed_date:
             continue  # already expired
 
-        # Map policy type to GL accounts
         pt = str(policy_type or '').strip().lower()
         if 'property' in pt:
-            gl_acct     = '639110'
-            gl_name     = 'Insurance-Property'
+            gl_acct, gl_name = '639110', 'Insurance-Property'
         elif 'umbrella' in pt:
-            gl_acct     = '639120'
-            gl_name     = 'Insurance-Liability (Umbrella)'
+            gl_acct, gl_name = '639120', 'Insurance-Liability (Umbrella)'
         elif 'general' in pt or 'liability' in pt:
-            gl_acct     = '639120'
-            gl_name     = 'Insurance-General Liability'
+            gl_acct, gl_name = '639120', 'Insurance-General Liability'
         else:
-            gl_acct     = '639120'
-            gl_name     = f'Insurance-{policy_type}'
+            gl_acct, gl_name = '639120', f'Insurance-{policy_type}'
 
-        # Compute months elapsed as of seed date
-        # months from service_start to end of SEED_DATE month
-        seed_end_month = date(SEED_DATE.year, SEED_DATE.month, 1)
-        svc_start_month = date(service_start.year, service_start.month, 1)
+        seed_mo   = date(seed_date.year, seed_date.month, 1)
+        svc_mo    = date(service_start.year, service_start.month, 1)
         months_elapsed = (
-            (seed_end_month.year - svc_start_month.year) * 12
-            + seed_end_month.month - svc_start_month.month
+            (seed_mo.year - svc_mo.year) * 12
+            + seed_mo.month - svc_mo.month
         )
-        # Total months in policy
         total_months = (
             (service_end.year - service_start.year) * 12
             + service_end.month - service_start.month
         )
         remaining = max(0, total_months - months_elapsed)
 
-        desc = str(policy_type or '').strip()
-
         item = {
             'vendor':             'Insurance',
             'invoice_number':     '',
             'invoice_date':       service_start,
-            'description':        desc,
+            'description':        str(policy_type or '').strip(),
             'gl_account_number':  gl_acct,
             'gl_account':         gl_name,
             'total_amount':       premium_v,
@@ -347,7 +390,7 @@ def _read_insurance(ws) -> list:
             'total_months':       total_months,
             'months_amortized':   months_elapsed,
             'remaining_months':   remaining,
-            'first_added_period': SEED_PERIOD,
+            'first_added_period': seed_period,
             'daily_rate':         0.0,
         }
         items.append(item)
@@ -355,9 +398,20 @@ def _read_insurance(ws) -> list:
     return items
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Main
-# ══════════════════════════════════════════════════════════════════════════════
+def _print_summary(label, active, completed):
+    print(f'\n{"="*60}')
+    print(f'  {label}')
+    print(f'{"="*60}')
+    print(f'Active items ({len(active)}):')
+    for item in active:
+        print(f"  {item['vendor'][:38]:38s}  GL {item['gl_account_number']}  "
+              f"${item['monthly_amount']:8.2f}/mo  "
+              f"{item['months_amortized']:3} elapsed / {item['remaining_months']:3} remaining")
+    print(f'\nCompleted items ({len(completed)}):')
+    for item in completed:
+        print(f"  {item['vendor'][:38]:38s}  GL {item['gl_account_number']}  "
+              f"${item['total_amount']:,.2f}")
+
 
 def main():
     print(f'Reading: {RCW_PATH}')
@@ -365,7 +419,6 @@ def main():
         print('ERROR: RCW file not found. Check the path.')
         sys.exit(1)
 
-    # Copy to temp to avoid OneDrive lock issues
     tmp = tempfile.mktemp(suffix='.xlsx')
     shutil.copy2(RCW_PATH, tmp)
 
@@ -373,51 +426,30 @@ def main():
         from openpyxl import load_workbook
         wb = load_workbook(tmp, data_only=True)
 
-        # ── Read 135150 PPD Other ──────────────────────────────────────────
-        all_items   = []
-        completed   = []
+        # ── Dec 31, 2025  (prior ledger for January 2026 Pass 1) ──────────
+        print('\n--- Building Dec 31, 2025 seed ---')
+        active_dec, comp_dec = _build_for_seed_date(wb, date(2025, 12, 31), 'Dec-2025')
+        _print_summary('Dec 31, 2025', active_dec, comp_dec)
+        _ledger_save(active_dec, comp_dec, OUT_PATH_DEC)
+        print(f'\nSaved: {OUT_PATH_DEC}')
 
-        if '135150 PPD Other' in wb.sheetnames:
-            raw = _read_135150(wb['135150 PPD Other'])
-            for item in raw:
-                if item['remaining_months'] <= 0:
-                    # Fully amortized — move to completed
-                    item['completed_period'] = SEED_PERIOD
-                    completed.append(item)
-                else:
-                    all_items.append(item)
-            print(f'  135150 PPD Other: {len(all_items)} active, {len(completed)} completed')
-        else:
-            print('  WARNING: 135150 PPD Other tab not found')
-
-        # ── Read Insurance Analysis ────────────────────────────────────────
-        if 'Insurance Analysis' in wb.sheetnames:
-            ins_items = _read_insurance(wb['Insurance Analysis'])
-            all_items.extend(ins_items)
-            print(f'  Insurance Analysis: {len(ins_items)} active policies')
-        else:
-            print('  WARNING: Insurance Analysis tab not found')
+        # ── Mar 31, 2026  (kept for reference / April use) ────────────────
+        print('\n--- Building Mar 31, 2026 seed ---')
+        active_mar, comp_mar = _build_for_seed_date(wb, date(2026, 3, 31), 'Mar-2026')
+        _print_summary('Mar 31, 2026', active_mar, comp_mar)
+        _ledger_save(active_mar, comp_mar, OUT_PATH_MAR)
+        print(f'\nSaved: {OUT_PATH_MAR}')
 
     finally:
         os.unlink(tmp)
 
-    # ── Summary ────────────────────────────────────────────────────────────
-    print(f'\nActive items ({len(all_items)}):')
-    for item in all_items:
-        print(f"  {item['vendor'][:35]:35s}  GL {item['gl_account_number']}  "
-              f"  ${item['monthly_amount']:8.2f}/mo  "
-              f"  {item['months_amortized']} elapsed / {item['remaining_months']} remaining")
-
-    print(f'\nCompleted items ({len(completed)}):')
-    for item in completed:
-        print(f"  {item['vendor'][:35]:35s}  GL {item['gl_account_number']}  "
-              f"  ${item['total_amount']:,.2f} total")
-
-    # ── Save ───────────────────────────────────────────────────────────────
-    _ledger_save(all_items, completed, OUT_PATH)
-    print(f'\nSaved: {OUT_PATH}')
-    print('\nNext step: upload this file as "Prior Prepaid Ledger" in Pass 1 for April.')
+    print('\n\nDone. Upload instructions:')
+    print('  Jan Pass 1: use GA_Prepaid_Ledger_Seed_Dec2025.xlsx as Prior Prepaid Ledger')
+    print('  Feb Pass 1: use the GA_Prepaid_Ledger_Updated.xlsx output from Jan Pass 1')
+    print('  Mar Pass 1: use the GA_Prepaid_Ledger_Updated.xlsx output from Feb Pass 1')
+    print('  Apr Pass 1: use the GA_Prepaid_Ledger_Updated.xlsx output from Mar Pass 1')
 
 
 if __name__ == '__main__':
     main()
+
