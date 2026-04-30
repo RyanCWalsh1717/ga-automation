@@ -188,13 +188,21 @@ def _find_insertion_point(ws, amount_col: int) -> Dict[str, Any]:
       2. As a fallback, look for a cell in any column containing the literal
          string pattern "='General " (the JLL "Ending Balance per GL" label row).
 
+    Handles both simple SUM formulas (=SUM(F8:F37)) and compound ones
+    (=SUM(F60:F75)+SUM(F96:F112)).  For compound formulas the insertion
+    point is the total row itself; new rows are inserted before it and a
+    new SUM component is appended rather than rewriting the entire formula.
+
     Returns dict with keys:
         insert_before_row   — row to insert new data BEFORE
-        sum_start_row       — first row of the existing SUM range
-        sum_end_row         — last  row of the existing SUM range
-        total_row           — same as insert_before_row (holds the SUM formula)
+        sum_start_row       — first row of the LAST SUM range (used for
+                              the new appended component)
+        sum_end_row         — last row of the LAST SUM range
+        total_row           — row holding the SUM formula
         gl_row              — row with 'GL' label (may be None)
         variance_row        — row with 'Variance' label (may be None)
+        compound_sum        — True if the formula is a multi-part SUM
+        original_formula    — the original formula string (for compound rebuild)
     """
     result: Dict[str, Any] = {
         'insert_before_row': None,
@@ -203,9 +211,10 @@ def _find_insertion_point(ws, amount_col: int) -> Dict[str, Any]:
         'total_row':         None,
         'gl_row':            None,
         'variance_row':      None,
+        'compound_sum':      False,
+        'original_formula':  None,
     }
 
-    col_letter = get_column_letter(amount_col)
     max_row = ws.max_row or 1
 
     for r in range(max_row, 0, -1):
@@ -221,16 +230,22 @@ def _find_insertion_point(ws, amount_col: int) -> Dict[str, Any]:
 
         # ── Check amount column for SUM formula ───────────────────────
         cell_val = ws.cell(row=r, column=amount_col).value
-        if isinstance(cell_val, str) and cell_val.strip().upper().startswith('=SUM('):
+        if isinstance(cell_val, str) and 'SUM(' in cell_val.upper():
             result['total_row'] = r
             result['insert_before_row'] = r
-            m = re.search(
-                r'=SUM\(\s*[A-Z]+(\d+)\s*:\s*[A-Z]+(\d+)\s*\)',
+            result['original_formula'] = cell_val
+
+            # Find ALL SUM ranges in the formula (handles compound formulas)
+            all_ranges = re.findall(
+                r'SUM\(\s*[A-Z]+(\d+)\s*:\s*[A-Z]+(\d+)\s*\)',
                 cell_val, re.I,
             )
-            if m:
-                result['sum_start_row'] = int(m.group(1))
-                result['sum_end_row']   = int(m.group(2))
+            if all_ranges:
+                # Store the LAST range's start/end — new rows go just before
+                # the total row, so the new component appends after the last range
+                result['sum_start_row'] = int(all_ranges[-1][0])
+                result['sum_end_row']   = int(all_ranges[-1][1])
+                result['compound_sum']  = len(all_ranges) > 1
             break
 
         # ── Fallback: JLL "='General '!A10" ending-balance label ───────
@@ -291,13 +306,29 @@ def _insert_rows_and_write(
                 cell.number_format = '#,##0.00;(#,##0.00);"-"'
 
     # ── 3. Update SUM formula ─────────────────────────────────────────
-    if ip.get('total_row') and ip.get('sum_start_row'):
-        new_total_row  = ip['total_row'] + n
-        new_sum_end    = (ip['sum_end_row'] or ip['total_row'] - 1) + n
-        col_l          = get_column_letter(amount_col)
-        ws.cell(row=new_total_row, column=amount_col).value = (
-            f'=SUM({col_l}{ip["sum_start_row"]}:{col_l}{new_sum_end})'
-        )
+    if ip.get('total_row'):
+        new_total_row = ip['total_row'] + n
+        col_l         = get_column_letter(amount_col)
+
+        if ip.get('compound_sum') and ip.get('original_formula'):
+            # Compound formula (e.g. =SUM(F60:F75)+SUM(F96:F112)).
+            # Preserve the original ranges exactly — they didn't shift because
+            # insertion happened AFTER them (before the total row).
+            # Append a new component for the rows we just inserted.
+            new_component_start = insert_at          # first new row
+            new_component_end   = insert_at + n - 1  # last new row
+            new_formula = (
+                ip['original_formula'].rstrip()
+                + f'+SUM({col_l}{new_component_start}:{col_l}{new_component_end})'
+            )
+            ws.cell(row=new_total_row, column=amount_col).value = new_formula
+
+        elif ip.get('sum_start_row'):
+            # Simple single-range SUM — extend the end row.
+            new_sum_end = (ip['sum_end_row'] or ip['total_row'] - 1) + n
+            ws.cell(row=new_total_row, column=amount_col).value = (
+                f'=SUM({col_l}{ip["sum_start_row"]}:{col_l}{new_sum_end})'
+            )
 
     # ── 4. Rebuild tie-out ────────────────────────────────────────────
     # Locate where the GL / Variance rows ended up after insertion
