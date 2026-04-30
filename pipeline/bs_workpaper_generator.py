@@ -57,6 +57,61 @@ _PERIOD_PREFIX_RE = re.compile(
     r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4} '
 )
 
+# Tab names (lowercase) that are always carried forward even though they
+# don't start with an account code digit.
+_PRIOR_TAB_WHITELIST = {
+    'xxxxxxx', 'general ', 'general',
+    'mgmt fee', 'tb', 'ts',
+    'rent roll rec', 'loan analysis',
+    're tax analysis', 'insurance analysis',
+    '135150 ppd other', 'accrued insurance',
+    'bank rec - operating', 'bank rec - daca',
+    'prepaid schedule', 'summary', 'trial balance',
+}
+
+# Tab names (lowercase) that are never carried forward — JLL working/utility sheets
+_PRIOR_TAB_BLOCKLIST = {
+    'sheet1', 'sheet2', 'sheet3',
+    'instructions', 'upload', 'input',
+    'mgmt fee back up', 'rs', 'deposit register',
+    'insu calc', 'accrual calc support',
+    'stx', 'stx gl', 'electric bb_recon',
+    'sq footage', 'sales tax rec',
+}
+
+
+def _should_carry_forward_tab(tab_name: str) -> bool:
+    """
+    Return True if a prior-workpaper tab should be renamed and kept.
+
+    Keeps:
+      • Account-code tabs — name (stripped) starts with a digit, e.g. '111100 PNC Cash'
+      • Known analysis / summary tab names (whitelist)
+      • Any tab whose name contains a 6-digit account code
+
+    Drops:
+      • Explicitly blocked JLL working / utility tabs
+      • Any other text-named tab not in the whitelist
+    """
+    stripped = tab_name.strip()
+    lower    = stripped.lower()
+
+    if lower in _PRIOR_TAB_BLOCKLIST:
+        return False
+
+    # Account-code tabs (may have a leading space in JLL files)
+    if stripped and stripped[0].isdigit():
+        return True
+
+    if lower in _PRIOR_TAB_WHITELIST:
+        return True
+
+    # Tab name contains a 6-digit account code anywhere (e.g. ' 2220-010')
+    if re.search(r'\b\d{6}\b', stripped):
+        return True
+
+    return False
+
 
 # ── Constants ────────────────────────────────────────────────
 
@@ -181,12 +236,18 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                         prior_period = _m.group(0).strip()  # e.g. "Mar-2026"
                         break
 
-            # Rename all existing sheets with prior_period prefix (unprefixed tabs only)
+            # Rename relevant sheets with prior_period prefix; delete working/utility tabs.
+            # This keeps only account-code tabs and known analysis tabs — dropping JLL
+            # working sheets (Deposit Register, MMA, Accrual Calc Support, etc.)
             _pfx = (prior_period or 'Prior') + ' '
             for _name in list(wb.sheetnames):
                 _ws = wb[_name]
                 # Skip if already prefixed (e.g. re-uploading a carry-forward file)
                 if _PERIOD_PREFIX_RE.match(_name):
+                    continue
+                # Drop JLL working / utility tabs — delete them entirely
+                if not _should_carry_forward_tab(_name):
+                    del wb[_name]
                     continue
                 # Trim to Excel's 31-char tab limit
                 _new = (_pfx + _name)[:31]
