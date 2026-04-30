@@ -129,13 +129,11 @@ pipeline/
 ### Sidebar (shared by both passes)
 - File upload widgets grouped: Core Close Files, Bank Statements, Reference
 - Bank Rec settings (prior period outstanding checks)
-- Management Fee override (cash received)
 - Tenant Utility Billing table (meter read JE entries)
-- Bonus Accrual overrides (615110 R&M, 637110 Admin)
 - Reset All button
 
 ### Pass 1 Tab — Generate JEs (Pre-Close)
-1. **One-Off Accruals table** (`st.data_editor`) — DR expense / CR 211200 auto. Pre-seeded with common monthly items (637150 Tenant Relations, 617110 HVAC quarterly, 619120 PPM, 627230 Fire Life Safety, 635110 Snow & Ice, 610140 Durkin, 610160 Casella extra, 637230 BlueTriton, 613310 Water/Sewer).
+1. **One-Off Accruals table** (`st.data_editor`) — DR expense / CR 213100 auto (or custom CR Account for AR Other / AP Other / Prepaid entries). Pre-seeded with common monthly items (637150 Tenant Relations, 617110 HVAC quarterly, 619120 PPM, 627230 Fire Life Safety, 635110 Snow & Ice, 610140 Durkin, 610160 Casella extra, 637230 BlueTriton, 613310 Water/Sewer).
 2. **Manual JEs & Reclasses table** (`st.data_editor`) — fully balanced JEs (positive = DR, negative = CR, must net to $0 per JE#).
 3. **Generate JEs** button
 
@@ -163,7 +161,7 @@ Then: **Generate Reports** button
 4. Bank reconciliation: Yardi Bank Rec PDF preferred; falls back to 3-pass PNC matching
 5. Accrual entries built via 5-layer detection (deduped against GL); $500 materiality floor
 6. Management fee calculated (DACA → GL 111100 → revenue proxy → manual); catch-up detected
-7. One-Off Accrual table rows → supplement JEs (DR expense / CR 211200, labeled SUP-XXXX)
+7. One-Off Accrual table rows → supplement JEs (DR expense / CR 213100 or custom CR Account, labeled SUP-XXXX)
 8. Manual JE table rows → balanced Yardi-import JEs
 9. Prepaid amortization schedule runs; release JEs generated from ledger
 10. Three Yardi-import CSVs exported:
@@ -206,9 +204,9 @@ Then: **Generate Reports** button
 
 - **JLL rate**: 1.25% | **GRP rate**: 1.75% | **Total**: 3.00%
 - **Base**: Cash received — DACA KeyBank x5132 additions (matches JLL's own basis)
-- **JE (Pass 1)**: DR 637130 Admin-Management Fees / CR 201000 Accrued Liabilities (JE# MGT-001)
+- **JE (Pass 1)**: DR 637130 Admin-Management Fees / CR 213100 Accrued Expenses (JE# MGT-001)
 - **Catch-up**: If 637130 has net credit from prior-period auto-reversal with no matching
-  invoice debit, a catch-up JE is generated (DR 637130 / CR 211200, JE# MGT-002)
+  invoice debit, a catch-up JE is generated (DR 637130 / CR 213100 Accrued Expenses, JE# MGT-002)
 - **Pass 2**: Re-computed for verification only — JE is already posted to GL
 
 ---
@@ -235,7 +233,8 @@ Escrow-funded accounts excluded from budget-gap (e.g., 641110 RE Tax via 115200,
 - P&L accounts: `4xxxxx` (revenue) through `8xxxxx` (expense)
 - Balance Sheet accounts: `1xxxxx` (assets) through `3xxxxx` (equity/liabilities)
 - Key accounts: `111100` Operating Cash, `115100` DACA, `115200` RE Tax Escrow,
-  `115300` Insurance Escrow, `201000` Accrued Liabilities, `211200` Accrued Expenses,
+  `115300` Insurance Escrow, `133110` Tenant AR Billback (Utility/Elec Recovery),
+  `135150` Prepaids, `213100` Accrued Expenses, `213200` Accrued Interest Payable,
   `637130` Admin-Management Fees
 
 ---

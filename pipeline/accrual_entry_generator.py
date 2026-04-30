@@ -16,7 +16,7 @@ Multi-layer detection is surfaced as a review flag on the first-layer entry.
 
 Each accrual generates a two-line entry:
   DR  [Expense GL Account]
-  CR  211300 Accrued Expenses (standard accrual liability)
+  CR  213100 Accrued Expenses (standard accrual liability)
 """
 
 import os
@@ -136,8 +136,24 @@ def _is_in_gl_by_vendor_amount(
 
 # ── Constants ────────────────────────────────────────────────
 
-AP_ACCRUAL_ACCOUNT    = '211300'
+AP_ACCRUAL_ACCOUNT    = '213100'
 AP_ACCRUAL_NAME       = 'Accrued Expenses'
+
+# Account-specific CR overrides: when the DR side is an interest expense account,
+# credit 213200 Accrued Interest Payable instead of the standard 213100.
+_CR_ACCOUNT_OVERRIDES: dict = {
+    '801': ('213200', 'Accrued Interest Payable'),   # 801110 Interest Expense → Accrued Interest
+}
+
+def _cr_for(dr_account_code: str):
+    """Return (cr_account, cr_name) for the given DR account code.
+    Falls back to (AP_ACCRUAL_ACCOUNT, AP_ACCRUAL_NAME) for standard expense accounts.
+    """
+    code = str(dr_account_code or '').strip()
+    for prefix, (cr_acct, cr_name) in _CR_ACCOUNT_OVERRIDES.items():
+        if code.startswith(prefix):
+            return cr_acct, cr_name
+    return AP_ACCRUAL_ACCOUNT, AP_ACCRUAL_NAME
 
 # Known periodic-billing contract accounts.
 # The pipeline auto-detects the monthly portion via partial-contract coverage,
@@ -260,7 +276,7 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     Returns a list of dicts: one per expense account line, with
     'credit_account' / 'credit_name' keys so build_accrual_entries() can
-    generate the correct CR 135110 offset instead of the default 211300.
+    generate the correct CR 135110 offset instead of the default 213100.
     """
     results: List[Dict[str, Any]] = []
 
@@ -1738,7 +1754,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
     # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
     # Entries that draw down a balance sheet asset/escrow rather than creating
-    # a new liability (211300).  Each generates DR expense / CR asset account.
+    # a new liability (213100).  Each generates DR expense / CR asset account.
     #
     #   Insurance:     DR 639110/639120  /  CR 135110  Prepaid Insurance
     #   RE Taxes:      DR 641110         /  CR 135120  Prepaid RE Taxes
@@ -1851,7 +1867,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         # ── Prepaid split: accrue only current-month portion to expense;
         #    remaining future months go to Prepaid Other (135150).
-        #    Month 1 of N: DR expense (1/N) + DR 135150 (N-1/N) / CR 211300 (full)
+        #    Month 1 of N: DR expense (1/N) + DR 135150 (N-1/N) / CR 213100 (full)
         is_prepaid = inv.get('is_prepaid', False)
         prepaid_months = int(inv.get('prepaid_months', 1) or 1)
 
@@ -1886,13 +1902,14 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'source':         'nexus',
         })
 
-        # CR line: AP Accrual (211300) — current month
+        # CR line: Accrued Expenses (213100) or Accrued Interest (213200) depending on DR account
+        _cr_acct, _cr_name = _cr_for(acct_code)
         je_lines.append({
             'je_number':      je_id,
             'line':           2,
             'date':           date_str,
-            'account_code':   AP_ACCRUAL_ACCOUNT,
-            'account_name':   AP_ACCRUAL_NAME,
+            'account_code':   _cr_acct,
+            'account_name':   _cr_name,
             'description':    je_desc,
             'reference':      inv_num,
             'debit':          0,
@@ -1987,12 +2004,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'invoice_number': '',
                 'source':         'invoice_proration',
             })
+            _cr_acct, _cr_name = _cr_for(pro['account_code'])
             je_lines.append({
                 'je_number':      je_id,
                 'line':           2,
                 'date':           _month_end.strftime('%m/%d/%Y') if _month_end else '',
-                'account_code':   AP_ACCRUAL_ACCOUNT,
-                'account_name':   AP_ACCRUAL_NAME,
+                'account_code':   _cr_acct,
+                'account_name':   _cr_name,
                 'description':    je_desc,
                 'reference':      'INV-PRORATION',
                 'debit':          0,
@@ -2033,12 +2051,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'invoice_number': '',
                 'source':         'historical',
             })
+            _cr_acct, _cr_name = _cr_for(hist['account_code'])
             je_lines.append({
                 'je_number':      je_id,
                 'line':           2,
                 'date':           '',
-                'account_code':   AP_ACCRUAL_ACCOUNT,
-                'account_name':   AP_ACCRUAL_NAME,
+                'account_code':   _cr_acct,
+                'account_name':   _cr_name,
                 'description':    je_desc,
                 'reference':      'RECURRING',
                 'debit':          0,
@@ -2092,12 +2111,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _gap_line['periodic_billing']   = gap.get('periodic_billing', '')
                 _gap_line['periodic_suggested'] = gap.get('periodic_suggested', 0.0)
             je_lines.append(_gap_line)
+            _cr_acct, _cr_name = _cr_for(gap['account_code'])
             je_lines.append({
                 'je_number':    je_id,
                 'line':         2,
                 'date':         '',
-                'account_code': AP_ACCRUAL_ACCOUNT,
-                'account_name': AP_ACCRUAL_NAME,
+                'account_code': _cr_acct,
+                'account_name': _cr_name,
                 'description':  je_desc,
                 'reference':    'BUDGET-GAP',
                 'debit':        0,
@@ -2400,8 +2420,8 @@ def build_insurance_escrow_je(
     If the Berkadia statement shows a different balance than the GL ending balance
     for 135110, this entry adjusts the GL to match.
 
-    JE (GL < Berkadia, escrow grew):   DR 135110 Restricted Insurance / CR 201000 Accrued Liabilities
-    JE (GL > Berkadia, escrow shrank): DR 201000 Accrued Liabilities / CR 135110 Restricted Insurance
+    JE (GL < Berkadia, escrow grew):   DR 135110 Restricted Insurance / CR 115300 Insurance Escrow
+    JE (GL > Berkadia, escrow shrank): DR 115300 Insurance Escrow / CR 135110 Restricted Insurance
 
     Suppressed if |difference| < $1.00 (no material reconciling item).
     For months with no escrow activity (e.g. March) this returns [].
@@ -2445,12 +2465,12 @@ def build_insurance_escrow_je(
     )
 
     if diff > 0:
-        # GL ending balance too low — debit 135110, credit 201000
+        # GL ending balance too low — debit 135110, credit 115300 Insurance Escrow
         dr_acct, dr_name = '135110', 'Restricted Insurance'
-        cr_acct, cr_name = '201000', 'Accrued Liabilities'
+        cr_acct, cr_name = '115300', 'Insurance Escrow'
     else:
-        # GL ending balance too high — debit 201000, credit 135110
-        dr_acct, dr_name = '201000', 'Accrued Liabilities'
+        # GL ending balance too high — debit 115300 Insurance Escrow, credit 135110
+        dr_acct, dr_name = '115300', 'Insurance Escrow'
         cr_acct, cr_name = '135110', 'Restricted Insurance'
 
     return [

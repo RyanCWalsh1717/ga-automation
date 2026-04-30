@@ -171,8 +171,13 @@ if "manual_accruals_df" not in st.session_state:
                          "Quarterly fire/life safety PM", "Pending storm invoices",
                          "Monthly cleaning supplies", "Service lines not yet in Yardi",
                          "Water delivery", ""],
+        "CR Account":   ["", "", "", "", "", "", "", "", "", "", ""],
         "Auto-Reverse": [True, True, True, True, True, True, True, True, True, True, True],
     })
+
+# Backfill CR Account column for sessions initialized before this column was added
+if "CR Account" not in st.session_state.manual_accruals_df.columns:
+    st.session_state.manual_accruals_df["CR Account"] = ""
 
 
 # ── Header ───────────────────────────────────────────────────
@@ -454,20 +459,21 @@ with tab1:
     st.divider()
 
     # ── One-Off Accruals Table ────────────────────────────────────────────────
-    with st.expander("🧾 One-Off Accruals  (DR expense → CR 211300 auto)", expanded=False):
+    with st.expander("🧾 One-Off Accruals  (DR expense → CR 213100 auto, or specify CR Account)", expanded=False):
         st.caption(
             "Use this for known invoices not yet in Nexus or Yardi — quarterly contracts, "
             "seasonal items, recurring retainers, semi-annual billings, etc. "
-            "Enter the **debit side only** — the credit to **211300 Accrued Expenses** is generated automatically. "
-            "Leave Amount at $0 to skip a row this month. Add new rows at the bottom for anything not pre-seeded. "
-            "These export in the Accruals JE CSV alongside the pipeline's auto-detected entries."
+            "Enter the **debit side** — credit defaults to **213100 Accrued Expenses**. "
+            "For AR Other / AP Other periodic entries with a different offset (e.g. 133110, 135150), "
+            "enter that account in the **CR Account** column — it will appear as its own section in the JE review. "
+            "Leave Amount at $0 to skip a row this month."
         )
         accruals_edited_df = st.data_editor(
             st.session_state.manual_accruals_df,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "Account Code":  st.column_config.TextColumn("Account", width="small",
+                "Account Code":  st.column_config.TextColumn("DR Account", width="small",
                                      help="6-digit Yardi GL account code (e.g. 613310)"),
                 "Account Name":  st.column_config.TextColumn("Account Name", width="medium"),
                 "Vendor":        st.column_config.TextColumn("Vendor", width="medium"),
@@ -476,6 +482,10 @@ with tab1:
                                      help="Positive amount — debit to expense account"),
                 "Description":   st.column_config.TextColumn("Description", width="large",
                                      help="Description for the Yardi JE line"),
+                "CR Account":    st.column_config.TextColumn("CR Account", width="small",
+                                     help="Leave blank to auto-credit 213100 Accrued Expenses. "
+                                          "Enter a different account code (e.g. 133110, 135150) "
+                                          "for AR Other / AP Other / Prepaid entries."),
                 "Auto-Reverse":  st.column_config.CheckboxColumn("Rev?", width="small",
                                      help="Check to auto-reverse next period"),
             },
@@ -498,7 +508,7 @@ with tab1:
     with st.expander("📝 Manual Journal Entries & Reclasses  (fully balanced)", expanded=False):
         st.caption(
             "Use this for reclasses between accounts, true-up entries, or any adjustment where you control "
-            "both the debit and credit sides (i.e., the offset is not 211300 Accrued Expenses). "
+            "both the debit and credit sides (i.e., the offset is not 213100 Accrued Expenses). "
             "Positive Amount = Debit, Negative = Credit. Group lines with the same **JE #** — they must net to $0. "
             "Exports as a separate Manual JE CSV (not mixed with accruals)."
         )
@@ -706,7 +716,7 @@ with tab1:
                         "date":         close_period,
                     })
 
-                # One-Off Accruals → DR expense / CR 211300
+                # One-Off Accruals → DR expense / CR 213100 (or custom CR Account if specified)
                 _supplement_je_lines = []
                 _periodic_supplement_rows = []
                 _sup_base = len(je_lines) // 2 + len(prepaid_release_je) // 2 + len(fee_je) // 2
@@ -717,16 +727,27 @@ with tab1:
                         _accruals_tbl["Account Code"].fillna("").str.strip().astype(bool) &
                         (_accruals_tbl["Amount ($)"].fillna(0) > 0)
                     ]
+                    _CR_ACCT_NAMES = {
+                        '115200': 'RE Tax Escrow',
+                        '115300': 'Insurance Escrow',
+                        '133110': 'Tenant AR Billback',
+                        '135150': 'Prepaids',
+                        '213100': 'Accrued Expenses',
+                    }
                     for _, _row in _active_accruals.iterrows():
+                        _cr_override = str(_row.get("CR Account", "") or "").strip()
                         _periodic_supplement_rows.append({
-                            'account_code': str(_row["Account Code"]).strip(),
-                            'account_name': str(_row.get("Account Name", "") or "").strip()
-                                            or str(_row["Account Code"]).strip(),
-                            'amount':       float(_row["Amount ($)"]),
-                            'description':  str(_row.get("Description", "") or "").strip()
-                                            or f'{_row.get("Vendor","") or ""} — one-off accrual',
-                            'vendor':       str(_row.get("Vendor", "") or "").strip(),
-                            'auto_reverse': bool(_row.get("Auto-Reverse", True)),
+                            'account_code':  str(_row["Account Code"]).strip(),
+                            'account_name':  str(_row.get("Account Name", "") or "").strip()
+                                             or str(_row["Account Code"]).strip(),
+                            'amount':        float(_row["Amount ($)"]),
+                            'description':   str(_row.get("Description", "") or "").strip()
+                                             or f'{_row.get("Vendor","") or ""} — one-off accrual',
+                            'vendor':        str(_row.get("Vendor", "") or "").strip(),
+                            'auto_reverse':  bool(_row.get("Auto-Reverse", True)),
+                            'cr_account':    _cr_override if _cr_override else '213100',
+                            'cr_account_name': _CR_ACCT_NAMES.get(_cr_override, _cr_override)
+                                               if _cr_override else 'Accrued Expenses',
                         })
 
                 for _si, _sup in enumerate(_periodic_supplement_rows):
@@ -734,6 +755,8 @@ with tab1:
                     _sup_amt = round(float(_sup['amount']), 2)
                     _sup_desc   = _sup.get('description') or f"{_sup['account_name']} — one-off accrual"
                     _sup_vendor = _sup.get('vendor') or _sup['account_name']
+                    _sup_cr_acct = _sup.get('cr_account', '213100')
+                    _sup_cr_name = _sup.get('cr_account_name', 'Accrued Expenses')
                     _supplement_je_lines.extend([
                         {
                             'je_number': _sje_id, 'line': 1, 'date': close_period,
@@ -744,7 +767,7 @@ with tab1:
                         },
                         {
                             'je_number': _sje_id, 'line': 2, 'date': close_period,
-                            'account_code': '211300', 'account_name': 'Accrued Expenses',
+                            'account_code': _sup_cr_acct, 'account_name': _sup_cr_name,
                             'description': _sup_desc, 'reference': 'ONE-OFF-ACCRUAL',
                             'debit': 0, 'credit': _sup_amt, 'vendor': _sup_vendor,
                             'invoice_number': '', 'source': 'contract_supplement', 'confidence': 'high',
@@ -851,14 +874,17 @@ with tab1:
                     f"Account 637130 shows a net credit (auto-reversal of prior month accrual with "
                     f"no matching invoice). A catch-up entry **(MGT-002)** has been included in the "
                     f"Accruals CSV. **Verify before posting:** confirm the prior month check is still "
-                    f"outstanding in AP (211300) before uploading.",
+                    f"outstanding in AP (213100) before uploading.",
                 )
             st.divider()
 
-        # ── JE Preview Table ───────────────────────────────────────────────
+        # ── JE Preview — Grouped by Credit (BS) Account ───────────────────
         dr_lines = [l for l in all_je_lines if (l.get('debit') or 0) > 0]
+        cr_lines = [l for l in all_je_lines if (l.get('credit') or 0) > 0]
+
         if dr_lines:
             st.markdown("### Accrual Journal Entries")
+
             source_labels = {
                 'nexus':                  'Nexus AP',
                 'invoice_proration':      'Invoice Proration',
@@ -872,44 +898,137 @@ with tab1:
                 'tenant_utility_billing': 'Tenant Utility',
                 'manual':                 'Manual JE',
             }
-            source_totals = {}
-            for l in dr_lines:
-                src = l.get('source', 'other')
-                source_totals[src] = source_totals.get(src, 0) + (l.get('debit') or 0)
 
-            cols = st.columns(len(source_totals) + 1)
-            with cols[0]:
-                st.metric("Total JEs", len(set(l.get('je_number', '') for l in dr_lines)))
-            for i, (src, total) in enumerate(source_totals.items(), 1):
-                with cols[i]:
-                    st.metric(source_labels.get(src, src), f"${total:,.2f}")
+            # ── Build CR lookup: je_number → (cr_account_code, cr_description) ──
+            _cr_lookup: dict = {}
+            for _cl in cr_lines:
+                _je = _cl.get('je_number', '')
+                if _je and _je not in _cr_lookup:
+                    _cr_lookup[_je] = {
+                        'code': str(_cl.get('account_code', '') or '').strip(),
+                        'desc': str(_cl.get('description') or '').strip(),
+                    }
 
-            accrual_rows = []
-            for l in dr_lines:
-                _src_label = source_labels.get(l.get('source', ''), l.get('source', ''))
-                _flag = ''
-                if l.get('review_flag'):
-                    _other = ', '.join(
-                        source_labels.get(s, s) for s in (l.get('review_sources') or [])
-                    )
-                    _flag = f'⚑ Also: {_other}'
-                accrual_rows.append({
-                    "JE #":        l.get('je_number', ''),
-                    "Source":      _src_label,
-                    "Review":      _flag,
-                    "GL Account":  l.get('account_code', ''),
-                    "Description": (l.get('description') or '')[:80],
-                    "Amount":      l.get('debit') or 0,
-                })
-            st.dataframe(accrual_rows, use_container_width=True, hide_index=True,
-                         column_config={
-                             "JE #":        st.column_config.TextColumn(width="small"),
-                             "Source":      st.column_config.TextColumn(width="small"),
-                             "Review":      st.column_config.TextColumn(width="medium"),
-                             "GL Account":  st.column_config.TextColumn(width="small"),
-                             "Description": st.column_config.TextColumn(width="large"),
-                             "Amount":      st.column_config.NumberColumn(format="$%,.2f"),
-                         })
+            # Friendly labels for well-known CR accounts
+            _CR_LABELS = {
+                '115200': 'RE Tax Escrow',
+                '115300': 'Insurance Escrow',
+                '133110': 'Tenant AR Billback (Utility / Elec Recovery)',
+                '135150': 'Prepaids',
+                '213100': 'Accrued Expenses',
+                '213200': 'Accrued Interest Payable',
+            }
+            def _cr_section_label(code: str) -> str:
+                if code in _CR_LABELS:
+                    return f"{code} — {_CR_LABELS[code]}"
+                if code.startswith('115'):
+                    return f"{code} — Escrow"
+                if code.startswith('133'):
+                    return f"{code} — Tenant AR Billback"
+                if code.startswith('135'):
+                    return f"{code} — Prepaids"
+                if code == '213100':
+                    return f"{code} — Accrued Expenses"
+                if code == '213200':
+                    return f"{code} — Accrued Interest Payable"
+                if code.startswith('213'):
+                    return f"{code} — Accrued"
+                return f"{code}"
+
+            # ── Sort order for BS sections ──────────────────────────────────
+            def _section_sort_key(code: str) -> int:
+                if code.startswith('115'):  return 1   # Escrow (RE Tax, Insurance)
+                if code.startswith('133'):  return 2   # Tenant AR Billback
+                if code.startswith('135'):  return 3   # Prepaids
+                if code == '213100':        return 4   # Accrued Expenses
+                if code == '213200':        return 5   # Accrued Interest Payable
+                if code.startswith('213'):  return 6   # Other accrued
+                return 9                                # Other
+
+            # ── Group DR lines by CR account ────────────────────────────────
+            _groups: dict = {}   # cr_code → list of DR lines
+            for _dl in dr_lines:
+                _je = _dl.get('je_number', '')
+                _cr_info = _cr_lookup.get(_je, {})
+                _cr_code = _cr_info.get('code', 'unknown')
+                _groups.setdefault(_cr_code, []).append(_dl)
+
+            _sorted_cr_codes = sorted(_groups.keys(), key=lambda c: (_section_sort_key(c), c))
+
+            # ── Summary metrics row (by source type) ────────────────────────
+            source_totals: dict = {}
+            for _l in dr_lines:
+                _src = _l.get('source', 'other')
+                source_totals[_src] = source_totals.get(_src, 0) + (_l.get('debit') or 0)
+
+            _total_je_count = len(set(_l.get('je_number', '') for _l in dr_lines))
+            _total_amount   = sum(_l.get('debit') or 0 for _l in dr_lines)
+
+            _metric_items = [('Total JEs', str(_total_je_count)),
+                             ('Total Amount', f"${_total_amount:,.0f}")] + \
+                            [(source_labels.get(s, s), f"${t:,.0f}") for s, t in source_totals.items()]
+            _n_cols = min(len(_metric_items), 6)
+            _metric_cols = st.columns(_n_cols)
+            for _mi, (_lbl, _val) in enumerate(_metric_items[:_n_cols]):
+                with _metric_cols[_mi]:
+                    st.metric(_lbl, _val)
+
+            st.write("")  # spacer
+
+            # ── One expander per CR (BS) account ────────────────────────────
+            _df_col_cfg = {
+                "JE #":        st.column_config.TextColumn(width="small"),
+                "Source":      st.column_config.TextColumn(width="small"),
+                "Review":      st.column_config.TextColumn(width="medium"),
+                "GL Account":  st.column_config.TextColumn(width="small"),
+                "Description": st.column_config.TextColumn(width="large"),
+                "Amount":      st.column_config.NumberColumn(format="$%,.2f"),
+            }
+
+            for _cr_code in _sorted_cr_codes:
+                _group_lines = _groups[_cr_code]
+                _group_total = sum(_l.get('debit') or 0 for _l in _group_lines)
+                _group_count = len(set(_l.get('je_number', '') for _l in _group_lines))
+                _section_title = _cr_section_label(_cr_code)
+                _expander_label = (
+                    f"CR {_section_title}  ·  {_group_count} JE{'s' if _group_count != 1 else ''}  "
+                    f"·  ${_group_total:,.0f}"
+                )
+
+                with st.expander(_expander_label, expanded=True):
+                    # Credit account summary line
+                    st.caption(f"Credit account: **{_cr_code}** — all entries below post to this BS account")
+
+                    _rows = []
+                    for _l in _group_lines:
+                        _src_label = source_labels.get(_l.get('source', ''), _l.get('source', ''))
+                        _flag = ''
+                        if _l.get('review_flag'):
+                            _other = ', '.join(
+                                source_labels.get(s, s) for s in (_l.get('review_sources') or [])
+                            )
+                            _flag = f'⚑ Also: {_other}'
+                        _rows.append({
+                            "JE #":        _l.get('je_number', ''),
+                            "Source":      _src_label,
+                            "Review":      _flag,
+                            "GL Account":  _l.get('account_code', ''),
+                            "Description": (_l.get('description') or '')[:80],
+                            "Amount":      _l.get('debit') or 0,
+                        })
+
+                    st.dataframe(_rows, use_container_width=True, hide_index=True,
+                                 column_config=_df_col_cfg)
+
+                    # Subtotal row
+                    _sub_cols = st.columns([4, 1])
+                    with _sub_cols[1]:
+                        st.markdown(
+                            f"<div style='text-align:right; font-weight:bold; "
+                            f"padding-top:4px'>Subtotal: ${_group_total:,.2f}</div>",
+                            unsafe_allow_html=True,
+                        )
+
             st.divider()
         else:
             st.info("No accrual entries generated. Upload a Nexus file, Budget Comparison, "
