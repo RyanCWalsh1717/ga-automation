@@ -1455,6 +1455,14 @@ with tab2:
                                         _prior_period = f"{_mo_names[_prev_mo]}-{_prev_yr}"
                             except Exception:
                                 _prior_period = None
+                        _berkadia_loan_data = engine_result.parsed.get('loan')
+                        _berkadia_loans = []
+                        if isinstance(_berkadia_loan_data, list):
+                            _berkadia_loans = _berkadia_loan_data
+                        elif isinstance(_berkadia_loan_data, dict):
+                            _berkadia_loans = _berkadia_loan_data.get('loans', [])
+                        elif hasattr(_berkadia_loan_data, 'loans'):
+                            _berkadia_loans = _berkadia_loan_data.loans
                         bs_workpaper_generator.generate(
                             gl_result=gl_parsed,
                             tb_result=tb_result,
@@ -1468,6 +1476,7 @@ with tab2:
                             daca_gl_balance=daca_gl_balance,
                             prior_workpaper_path=_prior_wp_path,
                             prior_period=_prior_period,
+                            berkadia_loans=_berkadia_loans,
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:

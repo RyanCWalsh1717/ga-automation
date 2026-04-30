@@ -47,6 +47,11 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 
+try:
+    from analysis_tab_builder import build_all_analysis_tabs as _build_analysis_tabs
+except ImportError:
+    _build_analysis_tabs = None
+
 # Regex to detect already-prefixed sheet names like "Mar-2026 Summary"
 _PERIOD_PREFIX_RE = re.compile(
     r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4} '
@@ -127,7 +132,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            daca_gl_balance: float = None,
                            je_adjustments: Optional[Dict[str, float]] = None,
                            prior_workpaper_path: str = None,
-                           prior_period: str = None) -> str:
+                           prior_period: str = None,
+                           berkadia_loans: list = None) -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
@@ -148,6 +154,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                                sheets can be appended without name collisions.
         prior_period:          Period label of the prior workpaper, e.g. 'Feb-2026'.
                                Used to prefix the copied sheets.
+        berkadia_loans:        List of loan dicts from parsers.berkadia_loan — used to
+                               populate Loan Analysis, RE Tax, and Insurance Escrow tabs.
 
     Returns:
         output_path
@@ -290,6 +298,26 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             wb, daca_bank_data, _gl_daca, period, property_name,
             tab_prefix=_tab_pfx,
         )
+
+    # ── Analysis tabs (Loan, RE Tax, Insurance, Escrow) ──────────────────────
+    # Copy-and-extend: copies the prior period's renamed tab, inserts new rows
+    # for current-period data, and rebuilds the GL/TB tie-out from live data.
+    if _build_analysis_tabs is not None:
+        try:
+            _build_analysis_tabs(
+                wb,
+                period=period,
+                current_prefix=_tab_pfx,
+                tab_prefix=_tab_pfx,
+                gl_result=gl_result,
+                tb_map=tb_map,
+                berkadia_loans=berkadia_loans or [],
+                prepaid_active=prepaid_ledger_active or [],
+            )
+        except Exception as _atb_exc:
+            import traceback
+            print(f"[bs_workpaper_generator] Analysis tab build warning: {_atb_exc}")
+            traceback.print_exc()
 
     # Remove the blank default sheet openpyxl creates for new workbooks
     for _default in ('Sheet', 'Sheet1'):
@@ -1777,7 +1805,8 @@ def generate(gl_result, tb_result, output_path: str,
              daca_gl_balance: float = None,
              je_adjustments: Optional[Dict[str, float]] = None,
              prior_workpaper_path: str = None,
-             prior_period: str = None) -> str:
+             prior_period: str = None,
+             berkadia_loans: list = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
@@ -1785,4 +1814,5 @@ def generate(gl_result, tb_result, output_path: str,
                                   daca_bank_data, daca_gl_balance,
                                   je_adjustments,
                                   prior_workpaper_path=prior_workpaper_path,
-                                  prior_period=prior_period)
+                                  prior_period=prior_period,
+                                  berkadia_loans=berkadia_loans)
