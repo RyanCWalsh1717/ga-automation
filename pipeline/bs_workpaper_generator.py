@@ -223,41 +223,77 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         )
 
     # ── Load prior workpaper (if provided) or start fresh ─────────────────────
+    # Strategy:
+    #   1. Extract historical per-period summary rows from prior account tabs.
+    #   2. Keep only analysis tabs (Loan, RE Tax, Insurance) — renamed with the
+    #      prior period prefix so analysis_tab_builder can copy-and-extend them.
+    #   3. Delete all other prior tabs (account tabs, Summary, TB, Bank Rec) —
+    #      they will be regenerated fresh below.
+    # Account tabs are rebuilt as rolling tables (one row per period) so the
+    # full balance history lives in a single tab per account.
+    _account_history: dict = {}   # {account_code: [sorted period row dicts]}
+
     if prior_workpaper_path and os.path.exists(prior_workpaper_path):
         try:
-            wb = _load_workbook(prior_workpaper_path)
+            _wb_prior = _load_workbook(prior_workpaper_path)
 
-            # Auto-detect prior period from existing tab names when not specified.
-            # Example: if tabs are already "Mar-2026 Summary", extract "Mar-2026".
+            # Auto-detect prior period label from prefixed tab names.
             if not prior_period:
-                for _n in wb.sheetnames:
+                for _n in _wb_prior.sheetnames:
                     _m = _PERIOD_PREFIX_RE.match(_n)
                     if _m:
-                        prior_period = _m.group(0).strip()  # e.g. "Mar-2026"
+                        prior_period = _m.group(0).strip()
                         break
 
-            # Rename relevant sheets with prior_period prefix; delete working/utility tabs.
-            # This keeps only account-code tabs and known analysis tabs — dropping JLL
-            # working sheets (Deposit Register, MMA, Accrual Calc Support, etc.)
+            # Extract historical balance data from all prior account tabs.
+            _account_history = _extract_account_history(_wb_prior)
+
+            # Determine which analysis tab names to carry forward (copy-and-extend).
+            # These are the only sheets we keep in the working wb.
+            _ANALYSIS_NAMES = {
+                'loan analysis', 're tax analysis', 'insurance analysis',
+                '135150 ppd other', 'accrued insurance',
+                'bank rec - operating', 'bank rec - daca',
+            }
+
+            # Build wb from analysis tabs only — start fresh then copy them in.
+            wb = Workbook()
             _pfx = (prior_period or 'Prior') + ' '
-            for _name in list(wb.sheetnames):
-                _ws = wb[_name]
-                # Skip if already prefixed (e.g. re-uploading a carry-forward file)
-                if _PERIOD_PREFIX_RE.match(_name):
-                    continue
-                # Drop JLL working / utility tabs — delete them entirely
-                if not _should_carry_forward_tab(_name):
-                    del wb[_name]
-                    continue
-                # Trim to Excel's 31-char tab limit
-                _new = (_pfx + _name)[:31]
-                # If the new name already exists, append a counter
-                _counter = 1
-                _candidate = _new
-                while _candidate in wb.sheetnames:
-                    _candidate = (_pfx + _name)[:28] + f'_{_counter}'
-                    _counter += 1
-                _ws.title = _candidate
+            for _name in _wb_prior.sheetnames:
+                _stripped_lower = _name.strip().lower()
+                # Already-prefixed analysis tabs carry straight through.
+                _already_pfx = _PERIOD_PREFIX_RE.match(_name)
+                _bare_lower  = _PERIOD_PREFIX_RE.sub('', _name).strip().lower()
+
+                is_analysis = (
+                    _bare_lower in _ANALYSIS_NAMES
+                    or _stripped_lower in _ANALYSIS_NAMES
+                )
+                if not is_analysis:
+                    continue  # skip — will be regenerated
+
+                # Copy sheet from prior wb into our working wb
+                from openpyxl import copy as _xl_copy
+                try:
+                    import copy as _copy
+                    _src = _wb_prior[_name]
+                    _dst = wb.copy_worksheet(_src) if hasattr(wb, 'copy_worksheet') else None
+                    if _dst is None:
+                        # openpyxl < 2.5 fallback — skip analysis copy
+                        continue
+                    # Rename with prior period prefix if not already prefixed
+                    if _already_pfx:
+                        _dst.title = _name[:31]
+                    else:
+                        _new_name = (_pfx + _name)[:31]
+                        _ctr = 1
+                        while _new_name in wb.sheetnames and wb[_new_name] is not _dst:
+                            _new_name = (_pfx + _name)[:28] + f'_{_ctr}'
+                            _ctr += 1
+                        _dst.title = _new_name
+                except Exception:
+                    pass  # if copy fails, analysis tab is skipped — non-fatal
+
         except Exception:
             wb = Workbook()
     else:
@@ -307,22 +343,31 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 _zero_activity_tb.append(_tba)
 
     # ── Build workpaper tabs ──────────────────────────────────
+    # Summary and Trial Balance keep the period prefix (current-period snapshots).
+    # Account tabs have NO period prefix — they grow as rolling history tables.
     _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
                        je_adjustments, tab_prefix=_tab_pfx,
                        zero_activity_tb_accounts=_zero_activity_tb)
     _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
     for acct in bs_accounts:
+        _hist = _account_history.get(acct.account_code, [])
         if acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
             _write_accrual_schedule_tab(
                 wb, acct, tb_map.get(acct.account_code), period, property_name,
-                _control_to_expense, tab_prefix=_tab_pfx)
+                _control_to_expense,
+                tab_prefix='',        # no period prefix — rolling table
+                history_rows=_hist)
         else:
             _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
-                               property_name, je_adjustments, tab_prefix=_tab_pfx)
+                               property_name, je_adjustments,
+                               tab_prefix='',   # no period prefix
+                               history_rows=_hist)
 
     # ── Stub tabs for TB accounts with no current-period GL activity ──────────
     for _tba in _zero_activity_tb:
-        _write_stub_tab(wb, _tba, period, property_name, tab_prefix=_tab_pfx)
+        _hist = _account_history.get(_tba.account_code, [])
+        _write_stub_tab(wb, _tba, period, property_name,
+                        tab_prefix='', history_rows=_hist)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
@@ -697,40 +742,221 @@ def _write_tb_tab(wb, tb_result, period, property_name, tab_prefix: str = ''):
     ws.freeze_panes = 'B5'
 
 
+# ── History-extraction helpers ───────────────────────────────
+
+def _safe_float(v):
+    """Return float(v) or None if v is None/non-numeric."""
+    try:
+        return float(v) if v is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_old_format_row(ws, period_label: str):
+    """
+    Extract a single-period summary dict from an old-format account tab
+    (transaction detail with GL/TB tie-out rows at the bottom).
+
+    Scans for rows whose text contains:
+      "ending balance per gl" → GL ending value (col _I)
+      "tb balance"            → TB ending value
+      "beginning balance"     → beginning balance value
+    """
+    gl_end   = None
+    tb_end   = None
+    beg_bal  = None
+
+    for row_vals in ws.iter_rows(values_only=True, max_row=ws.max_row):
+        row_str = ' '.join(str(c or '').lower() for c in row_vals)
+        if ('ending balance per gl' in row_str
+                or ('ending balance' in row_str and 'gl' in row_str
+                    and 'tb' not in row_str and 'projected' not in row_str)):
+            for c in row_vals:
+                v = _safe_float(c)
+                if v is not None:
+                    gl_end = v
+                    break
+        elif 'tb balance' in row_str and gl_end is not None:
+            for c in row_vals:
+                v = _safe_float(c)
+                if v is not None:
+                    tb_end = v
+                    break
+        elif 'beginning balance' in row_str and beg_bal is None:
+            for c in row_vals:
+                v = _safe_float(c)
+                if v is not None:
+                    beg_bal = v
+                    break
+
+    if gl_end is None:
+        return None
+
+    tb_val     = tb_end if tb_end is not None else gl_end
+    net_change = gl_end - (beg_bal or 0.0)
+    return {
+        'period':     period_label,
+        'beg_bal':    beg_bal or 0.0,
+        'net_change': round(net_change, 2),
+        'gl_end':     gl_end,
+        'tb_end':     tb_val,
+        'variance':   round(gl_end - tb_val, 2),
+    }
+
+
+def _extract_new_format_history(ws) -> list:
+    """
+    Extract all history rows from a new-format (rolling-table) account tab.
+
+    Looks for a header row containing "Period" in column _B; reads subsequent
+    rows until a blank period cell is found.
+
+    Columns (B..G): Period | Beg Balance | Net Activity | GL Ending | TB Ending | Variance
+    """
+    rows = []
+    header_row = None
+    for r in range(1, min(15, ws.max_row + 1)):
+        val = str(ws.cell(r, _B).value or '').strip().lower()
+        if val == 'period':
+            header_row = r
+            break
+    if not header_row:
+        return rows
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        period_val = str(ws.cell(r, _B).value or '').strip()
+        if not period_val or not re.match(
+                r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4}',
+                period_val):
+            break
+        beg  = _safe_float(ws.cell(r, _C).value)
+        net  = _safe_float(ws.cell(r, _D).value)
+        gl_e = _safe_float(ws.cell(r, _E).value)
+        tb_e = _safe_float(ws.cell(r, _F).value)
+        var  = _safe_float(ws.cell(r, _G).value)
+        if gl_e is not None:
+            rows.append({
+                'period':     period_val,
+                'beg_bal':    beg    if beg  is not None else 0.0,
+                'net_change': net    if net  is not None else 0.0,
+                'gl_end':     gl_e,
+                'tb_end':     tb_e   if tb_e is not None else gl_e,
+                'variance':   var    if var  is not None else 0.0,
+            })
+    return rows
+
+
+_MONTH_ORDER = dict(Jan=1, Feb=2, Mar=3, Apr=4, May=5, Jun=6,
+                    Jul=7, Aug=8, Sep=9, Oct=10, Nov=11, Dec=12)
+
+
+def _period_sort_key(row: dict):
+    parts = str(row.get('period', '')).split('-')
+    if len(parts) == 2:
+        mon = _MONTH_ORDER.get(parts[0], 0)
+        yr  = int(parts[1]) if parts[1].isdigit() else 0
+        return (yr, mon)
+    return (0, 0)
+
+
+def _extract_account_history(wb_prior) -> dict:
+    """
+    Extract per-period summary rows from any workpaper (old or new format).
+
+    Old format: tabs named "Jan-2026 111100" — one tab per period per account.
+    New format: tabs named "111100 PNC Cash" — one rolling-table tab per account.
+
+    Returns {account_code: [sorted list of period row dicts]}.
+    """
+    history: dict = {}
+
+    for sheet_name in (wb_prior.sheetnames if wb_prior else []):
+        stripped = sheet_name.strip()
+
+        # New format: tab starts with 6-digit account code, no period prefix
+        if re.match(r'^\d{6}', stripped) and not _PERIOD_PREFIX_RE.match(stripped):
+            acct_code = stripped[:6]
+            ws    = wb_prior[sheet_name]
+            rows  = _extract_new_format_history(ws)
+            if rows:
+                existing = history.get(acct_code, [])
+                existing_periods = {r['period'] for r in existing}
+                history[acct_code] = existing + [
+                    r for r in rows if r['period'] not in existing_periods
+                ]
+            continue
+
+        # Old format: "Period ACCTCODE [name]", e.g. "Jan-2026 111100"
+        pfx_m = _PERIOD_PREFIX_RE.match(stripped)
+        if pfx_m:
+            period_label = pfx_m.group(0).strip()   # "Jan-2026"
+            remainder    = stripped[pfx_m.end():].strip()
+            code_m       = re.match(r'^(\d{6})', remainder)
+            if code_m:
+                acct_code = code_m.group(1)
+                ws  = wb_prior[sheet_name]
+                row = _extract_old_format_row(ws, period_label)
+                if row:
+                    existing_periods = {r['period'] for r in history.get(acct_code, [])}
+                    if period_label not in existing_periods:
+                        history.setdefault(acct_code, []).append(row)
+
+    # Sort each account's history chronologically
+    for acct_code in history:
+        history[acct_code] = sorted(history[acct_code], key=_period_sort_key)
+
+    return history
+
+
 # ── Account reconciliation tab ────────────────────────────────
 
 def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
-                       je_adjustments=None, tab_prefix: str = ''):
-    """One tab per balance sheet account."""
-    tab_name = (tab_prefix + gl_acct.account_code)[:31]
-    ws = wb.create_sheet(tab_name)
+                       je_adjustments=None, tab_prefix: str = '',
+                       history_rows: list = None):
+    """
+    One tab per balance sheet account — rolling multi-period GL vs TB tie-out.
+
+    Tab name: no period prefix; just account code + truncated name.
+    Layout: header → rolling history table (one row per prior period, then
+    current period highlighted in blue).  Each row ties GL Ending to TB Ending.
+    The Variance column is green for $0, red for non-zero.
+    """
+    # Tab name: no period prefix — account stays in one place through all months
+    acct_label = f'{gl_acct.account_code} {gl_acct.account_name}'[:31]
+    ws = wb.create_sheet(acct_label)
 
     is_complex = gl_acct.account_code in COMPLEX_ACCOUNTS
     ws.sheet_properties.tabColor = COLOR_BS_COMPLEX if is_complex else COLOR_BS_STD
-
-    # Blank col A — narrow
     ws.column_dimensions['A'].width = 2
 
+    # ── Header block ─────────────────────────────────────────────────────────
     row = 1
-    # Account header
     c = ws.cell(row=row, column=_B,
                 value=f'{gl_acct.account_code} — {gl_acct.account_name}')
     c.font = _font(bold=True, size=13, color='FFFFFF')
     c.fill = _fill(DARK_BLUE)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
     row += 1
 
     c = ws.cell(row=row, column=_B,
-                value=f'Period: {period}  |  {property_name or "Revolution Labs"}  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+                value=f'{property_name or "Revolution Labs"}  |  '
+                      f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
     row += 2
 
-    # Column headers: Date, Period, Description, Control, Reference, Debit, Credit, Balance
-    headers = ['Date', 'Period', 'Description', 'Control', 'Reference', 'Debit', 'Credit', 'Balance']
-    widths  = [12, 10, 45, 12, 16, 14, 14, 16]
-    for ci, (h, w) in enumerate(zip(headers, widths)):
+    # ── Rolling-table column headers ────────────────────────────────────────
+    _COL_PERIOD   = _B
+    _COL_BEG      = _B + 1   # C
+    _COL_NET      = _B + 2   # D
+    _COL_GL_END   = _B + 3   # E
+    _COL_TB_END   = _B + 4   # F
+    _COL_VARIANCE = _B + 5   # G
+
+    tbl_headers = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
+    tbl_widths  = [12, 18, 16, 18, 18, 14]
+    for ci, (h, w) in enumerate(zip(tbl_headers, tbl_widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
         _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
@@ -739,96 +965,78 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     ws.row_dimensions[row].height = 24
     row += 1
 
-    # Beginning balance row
-    ws.cell(row=row, column=_D, value='Beginning Balance').font = _font(bold=True, italic=True)
-    c_beg = ws.cell(row=row, column=_I, value=gl_acct.beginning_balance)
-    _apply(c_beg, font=_font(bold=True, italic=True),
-           fmt='#,##0.00;(#,##0.00);"-"', fill=_fill(LIGHT_BLUE))
-    for col in range(_B, _I + 1):
-        ws.cell(row=row, column=col).border = THIN
-        if col != _I:
-            ws.cell(row=row, column=col).fill = _fill(LIGHT_BLUE)
-    row += 1
-
-    # Transactions
-    running_balance = gl_acct.beginning_balance
-    for i, txn in enumerate(gl_acct.transactions):
-        running_balance += (txn.debit or 0) - (txn.credit or 0)
+    # ── Historical rows (prior periods) ──────────────────────────────────────
+    for i, hist in enumerate(history_rows or []):
         alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+        _var     = hist.get('variance', 0.0) or 0.0
+        _vzero   = abs(_var) < 0.02
 
-        # Date
-        txn_date = txn.date
-        c = ws.cell(row=row, column=_B,
-                    value=txn_date.strftime('%m/%d/%Y') if txn_date else '')
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
+        row_data = [
+            (_COL_PERIOD,   hist.get('period', ''),           None),
+            (_COL_BEG,      hist.get('beg_bal', 0.0),         '#,##0.00;(#,##0.00);"-"'),
+            (_COL_NET,      hist.get('net_change', 0.0),      '#,##0.00;(#,##0.00);"-"'),
+            (_COL_GL_END,   hist.get('gl_end', 0.0),          '#,##0.00;(#,##0.00);"-"'),
+            (_COL_TB_END,   hist.get('tb_end', hist.get('gl_end', 0.0)),
+                                                               '#,##0.00;(#,##0.00);"-"'),
+            (_COL_VARIANCE, _var,                              '#,##0.00;(#,##0.00);"-"'),
+        ]
+        for col, val, fmt in row_data:
+            c = ws.cell(row=row, column=col, value=val)
+            if fmt:
+                c.number_format = fmt
+            if alt_fill:
+                c.fill = alt_fill
+            c.border = THIN
 
-        # Period — format as Mon-YYYY string (may be datetime obj or ISO string from GL parser)
-        period_val = ''
-        if hasattr(txn, 'period') and txn.period:
-            pv = txn.period
-            if hasattr(pv, 'strftime'):
-                period_val = pv.strftime('%b-%Y')
-            else:
-                pv_str = str(pv).strip()
-                # Parse ISO-style strings like '2026-03-01 00:00:00' or '2026-03-01'
-                try:
-                    from datetime import datetime as _dt
-                    if len(pv_str) >= 10 and pv_str[4] == '-':
-                        _parsed = _dt.fromisoformat(pv_str[:10])
-                        period_val = _parsed.strftime('%b-%Y')
-                    else:
-                        period_val = pv_str
-                except Exception:
-                    period_val = pv_str
-        c = ws.cell(row=row, column=_C, value=period_val)
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
-        # Description
-        c = ws.cell(row=row, column=_D, value=txn.description or '')
-        c.alignment = Alignment(wrap_text=False)
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
-        # Control
-        c = ws.cell(row=row, column=_E, value=txn.control or '')
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
-        # Reference
-        c = ws.cell(row=row, column=_F, value=txn.reference or '')
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
-        # Debit
-        debit_val = txn.debit if txn.debit else None
-        c = ws.cell(row=row, column=_G, value=debit_val)
-        if debit_val:
-            c.number_format = '#,##0.00'
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
-        # Credit
-        credit_val = txn.credit if txn.credit else None
-        c = ws.cell(row=row, column=_H, value=credit_val)
-        if credit_val:
-            c.number_format = '#,##0.00'
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
-        # Running balance
-        c = ws.cell(row=row, column=_I, value=running_balance)
-        c.number_format = '#,##0.00;(#,##0.00);"-"'
-        if alt_fill: c.fill = alt_fill
-        c.border = THIN
-
+        # Variance cell: green or red
+        vc = ws.cell(row=row, column=_COL_VARIANCE)
+        vc.fill  = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
+        vc.font  = _font(color='006100' if _vzero else '9C0006')
+        vc.border = THIN
         row += 1
 
-    # ── Tie-out section ──────────────────────────────────────
-    row += 1
+    # ── Current period row (always last, highlighted blue) ───────────────────
     _je_delta = (je_adjustments or {}).get(gl_acct.account_code, 0.0)
-    _write_tieout(ws, row, gl_acct, tb_acct, period, je_delta=_je_delta)
+    gl_end   = gl_acct.ending_balance + _je_delta
+    tb_end   = tb_acct.ending_balance if tb_acct else None
+    variance = round(gl_end - tb_end, 2) if tb_end is not None else None
+    _vzero   = variance is not None and abs(variance) < 0.02
+
+    cur_row_data = [
+        (_COL_PERIOD,   period,                     None),
+        (_COL_BEG,      gl_acct.beginning_balance,  '#,##0.00;(#,##0.00);"-"'),
+        (_COL_NET,      gl_acct.net_change,          '#,##0.00;(#,##0.00);"-"'),
+        (_COL_GL_END,   gl_end,                      '#,##0.00;(#,##0.00);"-"'),
+        (_COL_TB_END,   tb_end if tb_end is not None else '',
+                                                     '#,##0.00;(#,##0.00);"-"' if tb_end is not None else None),
+        (_COL_VARIANCE, variance if variance is not None else '',
+                                                     '#,##0.00;(#,##0.00);"-"' if variance is not None else None),
+    ]
+    for col, val, fmt in cur_row_data:
+        c = ws.cell(row=row, column=col, value=val)
+        if fmt:
+            c.number_format = fmt
+        c.fill   = _fill(LIGHT_BLUE)
+        c.font   = _font(bold=True)
+        c.border = THIN
+
+    if variance is not None:
+        vc = ws.cell(row=row, column=_COL_VARIANCE)
+        vc.fill  = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
+        vc.font  = _font(bold=True, color='006100' if _vzero else '9C0006')
+        vc.border = THIN
+        if not _vzero:
+            note_row = row + 2
+            note = ws.cell(row=note_row, column=_B,
+                           value=f'Variance ${abs(variance):,.2f} — accrual JEs in TB '
+                                 f'not yet in GL. Review accrual entries for {period}.')
+            note.font = _font(italic=True, color='9C0006', size=10)
+            note.alignment = Alignment(wrap_text=True)
+            ws.merge_cells(start_row=note_row, start_column=_B,
+                           end_row=note_row, end_column=_B + 5)
+            ws.row_dimensions[note_row].height = 28
+
+    ws.freeze_panes = 'B5'
 
 
 def _write_tieout(ws, row, gl_acct, tb_acct, period, je_delta: float = 0.0):
@@ -997,7 +1205,8 @@ def _parse_accrual_txn(desc: str, expense_name: str = '') -> dict:
 
 
 def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
-                                 control_to_expense: dict, tab_prefix: str = ''):
+                                 control_to_expense: dict, tab_prefix: str = '',
+                                 history_rows: list = None):
     """
     Write a JLL-style accrual schedule tab for 211200 / 211300 / 213100.
 
@@ -1013,8 +1222,8 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
     Footer: total → GL balance → variance (should be ≤ $0.02 rounding)
     TB tie-out row appended after the GL section.
     """
-    tab_name = (tab_prefix + gl_acct.account_code)[:31]
-    ws = wb.create_sheet(tab_name)
+    acct_label = f'{gl_acct.account_code} {gl_acct.account_name}'[:31]
+    ws = wb.create_sheet(acct_label)
     ws.sheet_properties.tabColor = COLOR_BS_COMPLEX  # red — complex account
     ws.column_dimensions['A'].width = 2
 
@@ -1168,141 +1377,164 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
     else:
         ws.cell(row=row, column=_I, value='').border = DOUBLE_BTM
 
+    # ── Historical rollforward (below tie-out) ────────────────────────────────
+    if history_rows:
+        row += 3
+        c = ws.cell(row=row, column=_B, value='Historical GL vs TB Rollforward')
+        c.font = _font(bold=True, color='FFFFFF')
+        c.fill = _fill(DARK_BLUE)
+        ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
+        row += 1
+
+        hist_hdrs = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
+        hist_wids = [12, 18, 16, 18, 18, 14]
+        for ci, (h, w) in enumerate(zip(hist_hdrs, hist_wids)):
+            col = _B + ci
+            c = ws.cell(row=row, column=col, value=h)
+            _apply(c, font=_hdr_font(), fill=_fill(MED_BLUE), border=THIN,
+                   align=Alignment(horizontal='center', wrap_text=True))
+        row += 1
+
+        for i, hist in enumerate(history_rows):
+            alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+            _var   = hist.get('variance', 0.0) or 0.0
+            _vzero = abs(_var) < 0.02
+            row_data = [
+                (_B,     hist.get('period', ''),      None),
+                (_B + 1, hist.get('beg_bal', 0.0),    '#,##0.00;(#,##0.00);"-"'),
+                (_B + 2, hist.get('net_change', 0.0), '#,##0.00;(#,##0.00);"-"'),
+                (_B + 3, hist.get('gl_end', 0.0),     '#,##0.00;(#,##0.00);"-"'),
+                (_B + 4, hist.get('tb_end', 0.0),     '#,##0.00;(#,##0.00);"-"'),
+                (_B + 5, _var,                         '#,##0.00;(#,##0.00);"-"'),
+            ]
+            for col, val, fmt in row_data:
+                c = ws.cell(row=row, column=col, value=val)
+                if fmt:
+                    c.number_format = fmt
+                if alt_fill:
+                    c.fill = alt_fill
+                c.border = THIN
+            vc = ws.cell(row=row, column=_B + 5)
+            vc.fill = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
+            vc.font = _font(color='006100' if _vzero else '9C0006')
+            row += 1
+
+        # Current period row in blue
+        cur_data = [
+            (_B,     period,            None),
+            (_B + 1, gl_acct.beginning_balance, '#,##0.00;(#,##0.00);"-"'),
+            (_B + 2, gl_acct.net_change,         '#,##0.00;(#,##0.00);"-"'),
+            (_B + 3, gl_ending,                  '#,##0.00;(#,##0.00);"-"'),
+            (_B + 4, tb_ending if tb_ending is not None else '', '#,##0.00;(#,##0.00);"-"' if tb_ending is not None else None),
+            (_B + 5, variance  if variance  is not None else '', '#,##0.00;(#,##0.00);"-"' if variance  is not None else None),
+        ]
+        for col, val, fmt in cur_data:
+            c = ws.cell(row=row, column=col, value=val)
+            if fmt:
+                c.number_format = fmt
+            c.fill = _fill(LIGHT_BLUE)
+            c.font = _font(bold=True)
+            c.border = THIN
+        if variance is not None:
+            _vzero = abs(variance) < 0.02
+            vc = ws.cell(row=row, column=_B + 5)
+            vc.fill = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
+            vc.font = _font(bold=True, color='006100' if _vzero else '9C0006')
+
     ws.freeze_panes = 'B5'
 
 
 # ── Stub tab for zero-activity BS accounts ───────────────────
 
 def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
-                    tab_prefix: str = ''):
+                    tab_prefix: str = '',
+                    history_rows: list = None):
     """
-    Write a minimal workpaper tab for a BS account that appears in the Trial
-    Balance but has NO current-period GL transactions.
-
-    Layout mirrors the standard account tab tie-out section, but instead of a
-    transaction grid the tab shows:
-      • An amber notice explaining there is no GL activity this period
-      • Forward Balance (from TB — same as prior-period ending balance)
-      • Ending Balance per GL  = Forward Balance  (unchanged — no activity)
-      • TB Balance             = TB ending balance
-      • Variance               = $0.00  (green — balance is fully supported)
-
-    This satisfies the GRP requirement that every BS balance on the Trial Balance
-    has a supporting workpaper tab showing what makes up the G/L.
+    Stub tab for a BS account in the TB with no current-period GL transactions.
+    Uses the same rolling-table format as _write_account_tab.
+    Current-period row: net activity = 0, GL ending = TB forward balance.
     """
-    tab_name = (tab_prefix + tb_acct.account_code)[:31]
-    ws = wb.create_sheet(tab_name)
-    ws.sheet_properties.tabColor = COLOR_BS_STD   # green — ties out clean
+    acct_label = f'{tb_acct.account_code} {tb_acct.account_name}'[:31]
+    ws = wb.create_sheet(acct_label)
+    ws.sheet_properties.tabColor = COLOR_BS_STD
     ws.column_dimensions['A'].width = 2
 
-    # ── Column widths (same as account tab) ──────────────────────────────────
-    col_widths = [12, 10, 45, 12, 16, 14, 14, 16]
-    for ci, w in enumerate(col_widths):
-        ws.column_dimensions[get_column_letter(_B + ci)].width = w
-
     row = 1
-    # Header
     c = ws.cell(row=row, column=_B,
                 value=f'{tb_acct.account_code} — {tb_acct.account_name}')
     c.font = _font(bold=True, size=13, color='FFFFFF')
     c.fill = _fill(DARK_BLUE)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
     row += 1
 
     c = ws.cell(row=row, column=_B,
-                value=(f'Period: {period}  |  '
-                       f'{property_name or "Revolution Labs"}  |  '
-                       f'Prepared: {datetime.now().strftime("%m/%d/%Y")}'))
+                value=f'{property_name or "Revolution Labs"}  |  '
+                      f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
     row += 2
 
-    # ── No-activity notice ────────────────────────────────────────────────────
-    notice = ws.cell(
-        row=row, column=_B,
-        value=(f'No current-period GL activity — balance of '
-               f'${abs(tb_acct.ending_balance):,.2f} carried forward from prior period. '
-               f'No journal entries were posted to this account during {period}.'))
-    notice.font = _font(italic=True, size=10, color='7D4706')
-    notice.fill = _fill(AMBER_FILL)
-    notice.alignment = Alignment(wrap_text=True)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
-    ws.row_dimensions[row].height = 30
-    row += 2
-
-    # ── Balance rollforward (single row — no transactions) ───────────────────
-    # Column headers (match standard account tab)
-    headers = ['Date', 'Period', 'Description', 'Control', 'Reference', 'Debit', 'Credit', 'Balance']
-    for ci, h in enumerate(headers):
+    tbl_headers = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
+    tbl_widths  = [12, 18, 16, 18, 18, 14]
+    for ci, (h, w) in enumerate(zip(tbl_headers, tbl_widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
         _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
                align=Alignment(horizontal='center', wrap_text=True))
+        ws.column_dimensions[get_column_letter(col)].width = w
     ws.row_dimensions[row].height = 24
     row += 1
 
-    # Beginning / Forward balance row
-    fwd = tb_acct.forward_balance if hasattr(tb_acct, 'forward_balance') else tb_acct.ending_balance
-    ws.cell(row=row, column=_D, value='Beginning Balance (carried forward)').font = \
-        _font(bold=True, italic=True)
-    c_beg = ws.cell(row=row, column=_I, value=fwd)
-    _apply(c_beg, font=_font(bold=True, italic=True),
-           fmt='#,##0.00;(#,##0.00);"-"', fill=_fill(LIGHT_BLUE))
-    for col in range(_B, _I + 1):
-        ws.cell(row=row, column=col).border = THIN
-        if col != _I:
-            ws.cell(row=row, column=col).fill = _fill(LIGHT_BLUE)
-    row += 1
+    for i, hist in enumerate(history_rows or []):
+        alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+        _var   = hist.get('variance', 0.0) or 0.0
+        _vzero = abs(_var) < 0.02
+        row_data = [
+            (_B,     hist.get('period', ''),      None),
+            (_B + 1, hist.get('beg_bal', 0.0),    '#,##0.00;(#,##0.00);"-"'),
+            (_B + 2, hist.get('net_change', 0.0), '#,##0.00;(#,##0.00);"-"'),
+            (_B + 3, hist.get('gl_end', 0.0),     '#,##0.00;(#,##0.00);"-"'),
+            (_B + 4, hist.get('tb_end', 0.0),     '#,##0.00;(#,##0.00);"-"'),
+            (_B + 5, _var,                         '#,##0.00;(#,##0.00);"-"'),
+        ]
+        for col, val, fmt in row_data:
+            c = ws.cell(row=row, column=col, value=val)
+            if fmt:
+                c.number_format = fmt
+            if alt_fill:
+                c.fill = alt_fill
+            c.border = THIN
+        vc = ws.cell(row=row, column=_B + 5)
+        vc.fill = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
+        vc.font = _font(color='006100' if _vzero else '9C0006')
+        row += 1
 
-    # Blank "no transactions" row
-    ws.cell(row=row, column=_D, value='— No GL transactions this period —').font = \
-        _font(italic=True, color='888888')
-    for col in range(_B, _I + 1):
-        ws.cell(row=row, column=col).border = THIN
-    row += 1
+    # Current period: no GL activity → ending = forward balance from TB
+    fwd      = getattr(tb_acct, 'forward_balance', None) or tb_acct.ending_balance
+    gl_end   = fwd
+    tb_end   = tb_acct.ending_balance
+    variance = round(gl_end - tb_end, 2)
+    _vzero   = abs(variance) < 0.02
 
-    # ── Tie-out section ───────────────────────────────────────────────────────
-    row += 1  # separator spacer
-
-    # Separator line
-    for col in range(_B, _I + 1):
-        ws.cell(row=row, column=col).border = THICK_BOTTOM
-    row += 2
-
-    # Ending Balance per GL (= forward balance, since no activity)
-    gl_ending = fwd
-    label_gl = ws.cell(row=row, column=_D,
-                       value=f'Ending Balance per GL as of {period}')
-    label_gl.font = _font(bold=True)
-    c_gl = ws.cell(row=row, column=_I, value=gl_ending)
-    _apply(c_gl, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
-           fill=_fill(LIGHT_BLUE), border=THICK_BOTTOM)
-    for col in range(_B, _I + 1):
-        cell = ws.cell(row=row, column=col)
-        if not cell.fill or cell.fill.fill_type == 'none':
-            cell.fill = _fill(LIGHT_BLUE)
-    row += 1
-
-    # TB Balance
-    tb_ending = tb_acct.ending_balance
-    label_tb = ws.cell(row=row, column=_H, value='TB Balance')
-    label_tb.font = _font(bold=True)
-    c_tb = ws.cell(row=row, column=_I, value=tb_ending)
-    _apply(c_tb, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
-           fill=_fill(LIGHT_BLUE), border=THIN)
-    row += 1
-
-    # Variance — always $0.00 for zero-activity accounts
-    variance = gl_ending - tb_ending
-    label_var = ws.cell(row=row, column=_H, value='Variance')
-    label_var.font = _font(bold=True)
-    is_zero = abs(variance) < 0.02
-    var_fill = _fill(GREEN_FILL) if is_zero else _fill(RED_FILL)
-    var_color = '006100' if is_zero else '9C0006'
-    c_var = ws.cell(row=row, column=_I, value=variance if not is_zero else 0.0)
-    _apply(c_var, font=_font(bold=True, color=var_color),
-           fmt='#,##0.00;(#,##0.00);"-"', fill=var_fill, border=DOUBLE_BTM)
+    cur_data = [
+        (_B,     period,  None),
+        (_B + 1, fwd,     '#,##0.00;(#,##0.00);"-"'),
+        (_B + 2, 0.0,     '#,##0.00;(#,##0.00);"-"'),
+        (_B + 3, gl_end,  '#,##0.00;(#,##0.00);"-"'),
+        (_B + 4, tb_end,  '#,##0.00;(#,##0.00);"-"'),
+        (_B + 5, variance,'#,##0.00;(#,##0.00);"-"'),
+    ]
+    for col, val, fmt in cur_data:
+        c = ws.cell(row=row, column=col, value=val)
+        if fmt:
+            c.number_format = fmt
+        c.fill = _fill(LIGHT_BLUE)
+        c.font = _font(bold=True)
+        c.border = THIN
+    vc = ws.cell(row=row, column=_B + 5)
+    vc.fill = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
+    vc.font = _font(bold=True, color='006100' if _vzero else '9C0006')
 
     ws.freeze_panes = 'B5'
 
