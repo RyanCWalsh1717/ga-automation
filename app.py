@@ -334,23 +334,6 @@ prior_period_outstanding = st.sidebar.number_input(
 prior_period_outstanding = prior_period_outstanding if prior_period_outstanding > 0 else 0.0
 st.sidebar.divider()
 
-# ── QC Settings (Pass 1: management fee basis) ────────────────────────────────
-st.sidebar.markdown("## Management Fee")
-cash_received_override = st.sidebar.number_input(
-    "Cash Received Override ($)",
-    min_value=0.0,
-    value=0.0,
-    step=1000.0,
-    format="%.2f",
-    help=(
-        "Override the auto-detected cash received used for the management fee calculation. "
-        "Auto-detect priority: DACA additions → GL 111100 debits → revenue proxy. "
-        "Only enter a value here if you know the correct amount and the auto-detection is wrong."
-    ),
-)
-cash_received_override = cash_received_override if cash_received_override > 0 else None
-st.sidebar.divider()
-
 # ── Tenant Utility Billing (Pass 1 only) ────────────────────────────────────
 st.sidebar.markdown("## Tenant Utility Billing")
 st.sidebar.caption(
@@ -391,42 +374,6 @@ if _tenant_utility_rows:
     )
 else:
     st.sidebar.caption("↳ No entries — will auto-accrue budget if meter read not in GL")
-
-st.sidebar.divider()
-
-# ── Bonus Accruals (Pass 1 only) ─────────────────────────────────────────────
-st.sidebar.markdown("**Bonus Accruals**")
-st.sidebar.caption(
-    "Auto-detected from Kardin when budget file is uploaded. "
-    "Enter an override only for special bonuses outside the Kardin schedule. "
-    "Leave $0 to use Kardin auto-detection."
-)
-
-_rm_bonus_amt = st.sidebar.number_input(
-    "R&M Bonus Override (615110)",
-    min_value=0.0, value=0.0, step=100.0, format="%.2f",
-    key="widget_bonus_615110",
-    help=(
-        "Engineering / maintenance staff bonus. "
-        "Posts to 615110 alongside regular payroll. "
-        "Leave $0 to auto-detect from Kardin."
-    ),
-)
-_admin_bonus_amt = st.sidebar.number_input(
-    "Admin Bonus Override (637110)",
-    min_value=0.0, value=0.0, step=100.0, format="%.2f",
-    key="widget_bonus_637110",
-    help=(
-        "Administrative staff bonus. "
-        "Posts to 637110 alongside regular payroll. "
-        "Leave $0 to auto-detect from Kardin."
-    ),
-)
-_bonus_overrides: dict = {}
-if _rm_bonus_amt > 0:
-    _bonus_overrides['615110'] = _rm_bonus_amt
-if _admin_bonus_amt > 0:
-    _bonus_overrides['637110'] = _admin_bonus_amt
 
 st.sidebar.divider()
 
@@ -632,8 +579,8 @@ with tab1:
                 nexus_data = engine_result.parsed.get('nexus_accrual')
                 close_period = engine_result.period or ''
 
-                # Step 2: Detect accrual entries (5-layer)
-                status_text.text("Step 2/6: Detecting accrual entries (5 layers)...")
+                # Step 2: Detect accrual entries (4-layer)
+                status_text.text("Step 2/6: Detecting accrual entries (4 layers)...")
                 progress_bar.progress(25)
 
                 # Build manual exclusion list (account codes with entries in the One-Off table)
@@ -661,8 +608,6 @@ with tab1:
                     budget_data=bc_parsed,
                     manual_accruals=_manual_accruals_input or [],
                     tenant_utility_rows=_tenant_utility_rows or None,
-                    kardin_records=engine_result.parsed.get('kardin_budget') or [],
-                    bonus_overrides=_bonus_overrides or None,
                     loan_data=engine_result.parsed.get('loan'),
                     re_tax_bill_amount=_re_tax_bill_amount,
                 )
@@ -718,7 +663,6 @@ with tab1:
                 fee_result = calculate_mgmt_fee(
                     gl_parsed=gl_parsed,
                     budget_rows=bc_parsed or [],
-                    manual_override=cash_received_override,
                     daca_parsed=_daca_parsed,
                 )
                 fee_je = build_management_fee_je(
@@ -918,13 +862,12 @@ with tab1:
             source_labels = {
                 'nexus':                  'Nexus AP',
                 'invoice_proration':      'Invoice Proration',
-                'budget_gap':             'Budget Gap',
                 'historical':             'Historical Pattern',
+                'budget_gap':             'Budget Gap',
                 'prepaid_amortization':   'Prepaid Amort.',
                 'prepaid_ledger':         'Prepaid Release',
                 'management_fee':         'Management Fee',
                 'management_fee_catchup': 'Mgmt Fee Catch-up',
-                'bonus_accrual':          'Payroll Bonus',
                 'contract_supplement':    'One-Off Accrual',
                 'tenant_utility_billing': 'Tenant Utility',
                 'manual':                 'Manual JE',
@@ -943,9 +886,17 @@ with tab1:
 
             accrual_rows = []
             for l in dr_lines:
+                _src_label = source_labels.get(l.get('source', ''), l.get('source', ''))
+                _flag = ''
+                if l.get('review_flag'):
+                    _other = ', '.join(
+                        source_labels.get(s, s) for s in (l.get('review_sources') or [])
+                    )
+                    _flag = f'⚑ Also: {_other}'
                 accrual_rows.append({
                     "JE #":        l.get('je_number', ''),
-                    "Source":      source_labels.get(l.get('source', ''), l.get('source', '')),
+                    "Source":      _src_label,
+                    "Review":      _flag,
                     "GL Account":  l.get('account_code', ''),
                     "Description": (l.get('description') or '')[:80],
                     "Amount":      l.get('debit') or 0,
@@ -954,6 +905,7 @@ with tab1:
                          column_config={
                              "JE #":        st.column_config.TextColumn(width="small"),
                              "Source":      st.column_config.TextColumn(width="small"),
+                             "Review":      st.column_config.TextColumn(width="medium"),
                              "GL Account":  st.column_config.TextColumn(width="small"),
                              "Description": st.column_config.TextColumn(width="large"),
                              "Amount":      st.column_config.NumberColumn(format="$%,.2f"),
@@ -1494,7 +1446,6 @@ with tab2:
                     fee_result = calculate_mgmt_fee(
                         gl_parsed=gl_parsed,
                         budget_rows=bc_parsed or [],
-                        manual_override=cash_received_override,
                         daca_parsed=daca_bank_data,
                     )
                     st.session_state.pass2_output_files["fee_result"] = fee_result

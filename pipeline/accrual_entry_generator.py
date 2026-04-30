@@ -1,14 +1,18 @@
 """
 Accrual Entry Generator for GA Automation Pipeline
 ====================================================
-Generates journal entries for accruals from three sources:
-  Layer 1: Nexus pending invoices (AP-side accruals)
-  Layer 2: Budget gap detection (accounts with budget but no GL activity)
-  Layer 3: Historical pattern detection (recurring expenses from prior months)
+Generates journal entries for accruals in priority layer order:
 
-Outputs:
-  1. Yardi JE import file (Excel) — ready for direct upload
-  2. Workpaper review schedule — DR/CR detail for review before posting
+  Layer 0: Manual overrides (user-entered one-off accruals)
+  Layer 1: Nexus open invoices (AP-side, deduped against GL)
+  Layer 2: Invoice-period proration (partial contract coverage from GL dates)
+  Layer 3: Historical recurring — BC YTD actual ÷ months elapsed
+           (accounts with prior-period spend but no current activity)
+  Layer 4: Budget gap — last resort for contract/service accounts ≥$5K
+           with no GL activity and no historical data
+
+First-layer-wins: each account is claimed by at most one layer.
+Multi-layer detection is surfaced as a review flag on the first-layer entry.
 
 Each accrual generates a two-line entry:
   DR  [Expense GL Account]
@@ -1068,8 +1072,10 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
         if not is_expense_account(code):
             continue
 
-        # Materiality: budget must exceed $500 with no GL activity
-        if abs(ptd_budget) <= 500 or abs(ptd_actual) >= 1:
+        # Materiality: budget must exceed $5,000 with no GL activity.
+        # Layer 3 (budget gap) is the last resort — only fire for high-value
+        # accounts that are clearly contracted or fixed-cost services.
+        if abs(ptd_budget) <= 5000 or abs(ptd_actual) >= 1:
             continue
 
         # Skip if YTD budget is zero but annual exists (not yet allocated)
@@ -1116,6 +1122,21 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
             confidence = 'high' if deviation <= 0.02 else 'medium'
         else:
             confidence = 'medium'
+
+        # ── Contract/service filter ────────────────────────────────────────
+        # Layer 3 (budget gap) fires only for accounts that are clearly
+        # contracted services or fixed-cost obligations (insurance, RE taxes).
+        # Repair/irregular accounts and general operating costs without a
+        # contract signal are better handled by Layer 4 (historical) or
+        # should not be accrued without an invoice in hand.
+        _CONTRACT_KW_L3 = (
+            'contract', 'contracted', 'agreement',
+            'janitorial', 'elevator', 'pest', 'extermina',
+            'hvac', 'fire', 'landscap', 'snow', 'trash', 'recycl',
+            'management', 'maintenance', 'parking', 'security',
+        )
+        if not is_fixed and not any(kw in name_lower for kw in _CONTRACT_KW_L3):
+            continue
 
         # ── Build human-readable description ──────────────────────────────
         if confidence == 'high':
@@ -1253,17 +1274,21 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
     return candidates
 
 
-# ── Layer 3: Historical pattern detection ────────────────────
+# ── Layer 4 (runs before budget gap): Historical pattern detection ────────────
 
-def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
+def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[Dict[str, Any]]:
     """
-    Identify recurring expense patterns by comparing GL beginning balance
-    (YTD proxy) to budget. If an account had YTD activity through the prior
-    month but nothing this month, it may need an accrual.
+    Identify recurring expense patterns using Budget Comparison YTD actual data.
 
-    Uses beginning_balance as a proxy for prior-month YTD activity.
-    If beginning_balance shows consistent prior activity but net_change is
-    zero, flag as a recurring accrual candidate.
+    Primary method: BC YTD actual ÷ months elapsed (months before current period).
+    This is more reliable than GL beginning balance because BC YTD actual reflects
+    clean closed prior-period activity without current-month noise.
+
+    Falls back to GL beginning_balance ÷ months_elapsed when BC YTD is unavailable
+    for an account.
+
+    January: always skipped — months_elapsed = 0, no prior data.
+    February and later: requires months_elapsed ≥ 1.
 
     Returns list of dicts: account_code, account_name, estimated_amount, source='historical'
     """
@@ -1272,36 +1297,49 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return candidates
 
-    # Determine current month number from period
-    period_str = getattr(gl_data.metadata, 'period', '') if hasattr(gl_data, 'metadata') else ''
-    month_num = 1
-    if '-' in period_str:
-        month_map = {
-            'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
-            'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
-        }
-        month_name = period_str.split('-')[0]
-        month_num = month_map.get(month_name, 1)
+    # Determine current month number — prefer explicit period arg, fall back to GL metadata
+    period_str = period or (
+        getattr(gl_data.metadata, 'period', '') if hasattr(gl_data, 'metadata') else ''
+    )
+    _MONTH_MAP_H = {
+        'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+        'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+    }
+    month_num = 0
+    for abbr, num in _MONTH_MAP_H.items():
+        if abbr in period_str:
+            month_num = num
+            break
 
-    # Require at least 2 prior months of data to extrapolate
-    prior_months = month_num - 1
-    if prior_months < 2:
+    # months_elapsed = full months closed before the current period
+    # Jan=1 → 0 prior months; Feb=2 → 1; Mar=3 → 2; etc.
+    months_elapsed = month_num - 1 if month_num > 0 else 0
+
+    # Require at least 1 prior closed month to extrapolate from
+    if months_elapsed < 1:
         return candidates
 
-    # Build budget lookup for cross-reference
-    budget_by_code = {}
+    # Build YTD actual and budget lookups from Budget Comparison data
+    ytd_actual_by_code: Dict[str, float] = {}
+    budget_by_code: Dict[str, Any] = {}
     if budget_data:
-        budget_items = budget_data if isinstance(budget_data, list) else getattr(budget_data, 'line_items', [])
+        budget_items = (
+            budget_data if isinstance(budget_data, list)
+            else getattr(budget_data, 'line_items', [])
+        )
         for item in budget_items:
             if isinstance(item, dict):
                 bcode = str(item.get('account_code', '') or '').strip()
-                budget_by_code[bcode] = item
+                ytd_a = abs(float(item.get('ytd_actual', 0) or 0))
             else:
                 bcode = str(getattr(item, 'account_code', '') or '').strip()
+                ytd_a = abs(float(getattr(item, 'ytd_actual', 0) or 0))
+            if bcode:
+                ytd_actual_by_code[bcode] = ytd_a
                 budget_by_code[bcode] = item
 
     for acct in gl_data.accounts:
-        code = acct.account_code
+        code = str(acct.account_code).strip()
         # Only expense accounts — uses per-property COA config (defaults to 5/6/7/8xxxxx)
         if not is_expense_account(code):
             continue
@@ -1310,12 +1348,17 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
         if abs(acct.net_change) > 0.01:
             continue
 
-        # Check if beginning balance suggests recurring prior activity
-        begin = abs(acct.beginning_balance)
-        if begin < 100:
+        # Try BC YTD actual first; fall back to GL beginning balance
+        ytd_prior = ytd_actual_by_code.get(code, 0.0)
+        use_gl_fallback = False
+        if ytd_prior < 100:
+            ytd_prior = abs(acct.beginning_balance)
+            use_gl_fallback = True
+
+        if ytd_prior < 100:
             continue
 
-        # Cross-reference against budget: zero budget + zero activity = likely discontinued
+        # Cross-reference against budget: zero budget everywhere = likely discontinued
         if code in budget_by_code:
             bi = budget_by_code[code]
             if isinstance(bi, dict):
@@ -1328,19 +1371,25 @@ def detect_historical_recurring(gl_data, budget_data) -> List[Dict[str, Any]]:
             if abs(bi_budget) < 1 and abs(bi_annual) < 1:
                 continue  # Zero budget everywhere — likely discontinued
 
-        # Estimate monthly amount from YTD / months elapsed
-        est_monthly = begin / prior_months
+        # Estimate monthly amount from YTD ÷ months elapsed
+        est_monthly = ytd_prior / months_elapsed
 
         # Only flag if estimated monthly > $500 (material recurring expense)
         if est_monthly >= 500:
+            source_note = 'BC YTD' if not use_gl_fallback else 'GL YTD (est.)'
             candidates.append({
                 'account_code': code,
                 'account_name': acct.account_name,
                 'estimated_amount': _round(est_monthly),
-                'ytd_prior': begin,
-                'months_prior': prior_months,
+                'ytd_prior': ytd_prior,
+                'months_prior': months_elapsed,
                 'source': 'historical',
-                'description': f'Recurring — {acct.account_name} avg ${est_monthly:,.0f}/mo ({prior_months} prior months), no activity this period',
+                'description': (
+                    f'Historical recurring — {acct.account_name}: '
+                    f'${est_monthly:,.0f}/mo avg '
+                    f'({source_note} ${ytd_prior:,.0f} ÷ {months_elapsed} mo), '
+                    f'no activity this period'
+                ),
             })
 
     return candidates
@@ -1467,17 +1516,26 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           re_tax_bill_amount: float = 0.0,
                           ) -> List[Dict[str, Any]]:
     """
-    Build accrual journal entry lines from six sources:
+    Build accrual journal entry lines from five sources (in priority order):
+
       Layer 0: Manual overrides — user-supplied amounts for accounts that
                cannot be auto-calculated (e.g., semi-annual water/sewer bills)
       Layer 1: Nexus pending invoices (AP-side, deduped against GL)
       Layer 2: Invoice-period proration (billing date ranges in GL descriptions)
-      Layer 3: Budget gap detection (accounts with budget but no GL activity)
-      Layer 4: Historical recurring detection (prior-month YTD extrapolation)
-      Layer 5: Payroll bonus accrual (Kardin annual ÷ 12 − standard month)
+      Layer 3: Historical recurring — BC YTD actual ÷ months elapsed.
+               Fires when an expense account had prior-period activity but is
+               silent this month. Skipped in January (no prior data).
+      Layer 4: Budget gap — last resort, only for contract/service accounts
+               with ≥$5K PTD budget and no GL activity. Requires a contract
+               keyword in the account name (e.g., "contract", "hvac", "snow").
 
-    Manual overrides take absolute priority and suppress all lower layers for
-    the same account.  Layers 1-2 are high-fidelity and suppress Layers 3-4.
+    First-layer-wins: an account claimed by an earlier layer is skipped by all
+    later layers. If multiple layers would have fired for the same account, a
+    review_flag=True / review_sources=[...] is added to the first-layer DR line
+    so the reviewer knows additional signals were also detected.
+
+    Manual overrides take absolute priority and suppress all automated layers
+    for the same account.
 
     Args:
         nexus_data:        List of invoice dicts from Nexus parser
@@ -1890,12 +1948,17 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             pass
 
     # Collect accounts already covered by Layers 0 (manual), 0b (amortization),
-    # and 1 (Nexus). Seeding _covered here prevents budget gap and historical
-    # layers from generating duplicate entries for the same account.
+    # and 1 (Nexus). Seeding _covered here prevents later layers from generating
+    # duplicate entries for the same account.
     _covered = _manual_accounts | _amort_accounts | set(
         l['account_code'] for l in je_lines
         if l.get('line') == 1 and l.get('source') == 'nexus'
     )
+
+    # Multi-layer review tracking: when a later layer detects an account that
+    # was already claimed by an earlier layer, the earlier entry is flagged for
+    # reviewer attention (first-layer-wins, but the reviewer knows why).
+    _other_claimants: Dict[str, List[str]] = {}
 
     # ── Layer 2: Invoice-period proration ──
     if gl_data:
@@ -1904,6 +1967,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         )
         for pro in prorations:
             if pro['account_code'] in _covered:
+                _other_claimants.setdefault(pro['account_code'], []).append('invoice_proration')
                 continue   # already handled by Nexus
 
             je_id   = f"IPR-{je_num:04d}"
@@ -1940,14 +2004,63 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _covered.add(pro['account_code'])
             je_num += 1
 
-    # ── Layer 3: Budget gap accruals ──
-    # Fallback for accounts with a budget but no GL activity AND no proration data.
+    # ── Layer 3 (new order): Historical recurring accruals ──────────────────
+    # Moved before budget gap: BC YTD ÷ months elapsed is more reliable than
+    # budget assumptions for accounts with prior spending history.
+    # Fires when an expense account had activity in prior months but is silent
+    # this period — the average prior month spend is used as the accrual estimate.
+    if gl_data:
+        historicals = detect_historical_recurring(gl_data, budget_data, period=period)
+        for hist in historicals:
+            if hist['account_code'] in _covered:
+                _other_claimants.setdefault(hist['account_code'], []).append('historical')
+                continue
+
+            je_id   = f"REC-{je_num:04d}"
+            je_desc = hist['description']
+
+            je_lines.append({
+                'je_number':      je_id,
+                'line':           1,
+                'date':           '',
+                'account_code':   hist['account_code'],
+                'account_name':   hist['account_name'],
+                'description':    je_desc,
+                'reference':      'RECURRING',
+                'debit':          hist['estimated_amount'],
+                'credit':         0,
+                'vendor':         '[Historical Recurring]',
+                'invoice_number': '',
+                'source':         'historical',
+            })
+            je_lines.append({
+                'je_number':      je_id,
+                'line':           2,
+                'date':           '',
+                'account_code':   AP_ACCRUAL_ACCOUNT,
+                'account_name':   AP_ACCRUAL_NAME,
+                'description':    je_desc,
+                'reference':      'RECURRING',
+                'debit':          0,
+                'credit':         hist['estimated_amount'],
+                'vendor':         '[Historical Recurring]',
+                'invoice_number': '',
+                'source':         'historical',
+            })
+            _covered.add(hist['account_code'])
+            je_num += 1
+
+    # ── Layer 4 (new order): Budget gap accruals ────────────────────────────
+    # Last resort: fires only for contract/service accounts with ≥$5K budget
+    # and no GL activity AND no historical data to draw from.
+    # The $5K threshold and contract keyword filter keep false positives minimal.
     if gl_data and budget_data:
         budget_gaps = detect_budget_gaps(gl_data, budget_data, period=period)
 
         for gap in budget_gaps:
             if gap['account_code'] in _covered:
-                continue   # already handled by Nexus or proration
+                _other_claimants.setdefault(gap['account_code'], []).append('budget_gap')
+                continue   # already handled by an earlier layer
 
             confidence = gap.get('confidence', 'medium')
             je_id   = f"BGA-{je_num:04d}"
@@ -1997,125 +2110,17 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _covered.add(gap['account_code'])
             je_num += 1
 
-    # ── Layer 4: Historical recurring accruals ──
-    if gl_data:
-        historicals = detect_historical_recurring(gl_data, budget_data)
-        for hist in historicals:
-            if hist['account_code'] in _covered:
-                continue
-
-            je_id = f"REC-{je_num:04d}"
-            je_desc = f"Recurring accrual — {hist['account_name']} (est. ${hist['estimated_amount']:,.0f}/mo)"
-
-            je_lines.append({
-                'je_number': je_id,
-                'line': 1,
-                'date': '',
-                'account_code': hist['account_code'],
-                'account_name': hist['account_name'],
-                'description': je_desc,
-                'reference': 'RECURRING',
-                'debit': hist['estimated_amount'],
-                'credit': 0,
-                'vendor': '[Historical Recurring]',
-                'invoice_number': '',
-                'source': 'historical',
-            })
-            je_lines.append({
-                'je_number': je_id,
-                'line': 2,
-                'date': '',
-                'account_code': AP_ACCRUAL_ACCOUNT,
-                'account_name': AP_ACCRUAL_NAME,
-                'description': je_desc,
-                'reference': 'RECURRING',
-                'debit': 0,
-                'credit': hist['estimated_amount'],
-                'vendor': '[Historical Recurring]',
-                'invoice_number': '',
-                'source': 'historical',
-            })
-            _covered.add(hist['account_code'])
-            je_num += 1
-
-    # ── Layer 5: Payroll bonus accruals (Kardin-driven) ─────────────────────
-    # Monthly bonus component = (Kardin annual ÷ 12) − standard payroll month.
-    # Posts every month UNLESS GL already shows the actual bonus payment.
-    if gl_data and kardin_records:
-        # Derive period month from period string (e.g., 'Mar-2026' -> 3)
-        _month_num = 0
-        _month_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
-                          Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
-        if period:
-            import re as _re
-            _m = _re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', period)
-            if _m:
-                _month_num = _month_map.get(_m.group(1), 0)
-
-        if _month_num:
-            bonus_candidates = detect_payroll_bonus_accrual(
-                gl_data, kardin_records, _month_num
-            )
-            # Apply sidebar overrides: replace Kardin amount for any account
-            # where the user supplied an explicit value.
-            _overrides = bonus_overrides or {}
-            _override_codes = set(_overrides.keys())
-            # Add override accounts that Kardin didn't detect (e.g. no Kardin file)
-            for _oc, _oa in _overrides.items():
-                if _oa > 0 and not any(b['account_code'] == _oc for b in bonus_candidates):
-                    bonus_candidates.append({
-                        'account_code':    _oc,
-                        'account_name':    PAYROLL_BONUS_ACCOUNTS.get(_oc, {}).get('label', _oc),
-                        'estimated_amount': _round(_oa),
-                        'source':          'bonus_accrual',
-                        'confidence':      'high',
-                        'description':     f'Bonus accrual override (manual) — ${_oa:,.2f}',
-                    })
-            for bonus in bonus_candidates:
-                # Replace Kardin amount with override if provided
-                if bonus['account_code'] in _override_codes:
-                    ovr = _overrides[bonus['account_code']]
-                    if ovr <= 0:
-                        continue  # Override explicitly set to $0 → skip
-                    bonus = {**bonus,
-                             'estimated_amount': _round(ovr),
-                             'description': f'Bonus accrual override (manual) — ${ovr:,.2f}',
-                             'confidence': 'high'}
-                # Bonus accounts are NOT suppressed by _covered — they coexist
-                # with the regular payroll proration for the same account.
-                je_id   = f'BON-{je_num:04d}'
-                je_desc = bonus['description']
-                je_lines.append({
-                    'je_number':      je_id,
-                    'line':           1,
-                    'date':           '',
-                    'account_code':   bonus['account_code'],
-                    'account_name':   bonus['account_name'],
-                    'description':    je_desc,
-                    'reference':      'BONUS-ACCRUAL',
-                    'debit':          bonus['estimated_amount'],
-                    'credit':         0,
-                    'vendor':         '[Bonus Accrual]',
-                    'invoice_number': '',
-                    'source':         'bonus_accrual',
-                    'confidence':     'high',
-                })
-                je_lines.append({
-                    'je_number':      je_id,
-                    'line':           2,
-                    'date':           '',
-                    'account_code':   AP_ACCRUAL_ACCOUNT,
-                    'account_name':   AP_ACCRUAL_NAME,
-                    'description':    je_desc,
-                    'reference':      'BONUS-ACCRUAL',
-                    'debit':          0,
-                    'credit':         bonus['estimated_amount'],
-                    'vendor':         '[Bonus Accrual]',
-                    'invoice_number': '',
-                    'source':         'bonus_accrual',
-                    'confidence':     'high',
-                })
-                je_num += 1
+    # ── Apply multi-layer review flags ──────────────────────────────────────
+    # When multiple layers detected the same account, we kept only the first-
+    # layer entry but want the reviewer to know that additional layers also
+    # triggered.  Add review_flag=True and review_sources=[...] to the DR line.
+    if _other_claimants:
+        for line in je_lines:
+            if line.get('line') == 1:
+                acct = str(line.get('account_code', '')).strip()
+                if acct in _other_claimants:
+                    line['review_flag']    = True
+                    line['review_sources'] = _other_claimants[acct]
 
     return je_lines
 
