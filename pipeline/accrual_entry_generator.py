@@ -1374,8 +1374,8 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
         # Estimate monthly amount from YTD ÷ months elapsed
         est_monthly = ytd_prior / months_elapsed
 
-        # Only flag if estimated monthly > $500 (material recurring expense)
-        if est_monthly >= 500:
+        # Only flag if estimated monthly > $5,000 (material recurring expense)
+        if est_monthly >= 5000:
             source_note = 'BC YTD' if not use_gl_fallback else 'GL YTD (est.)'
             candidates.append({
                 'account_code': code,
