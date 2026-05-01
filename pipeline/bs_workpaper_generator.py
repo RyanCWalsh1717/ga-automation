@@ -65,7 +65,7 @@ _PRIOR_TAB_WHITELIST = {
     'rent roll rec', 'loan analysis',
     're tax analysis', 'insurance analysis',
     '135150 ppd other', 'accrued insurance',
-    'bank rec - operating', 'bank rec - daca',
+    'bank rec - operating', 'bank rec - daca', 'bank rec - development',
     'prepaid schedule', 'summary', 'trial balance',
 }
 
@@ -188,7 +188,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            je_adjustments: Optional[Dict[str, float]] = None,
                            prior_workpaper_path: str = None,
                            prior_period: str = None,
-                           berkadia_loans: list = None) -> str:
+                           berkadia_loans: list = None,
+                           dev_bank_rec_data: dict = None) -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
@@ -253,7 +254,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             _ANALYSIS_NAMES = {
                 'loan analysis', 're tax analysis', 'insurance analysis',
                 '135150 ppd other', 'accrued insurance',
-                'bank rec - operating', 'bank rec - daca',
+                'bank rec - operating', 'bank rec - daca', 'bank rec - development',
             }
 
             # Build wb from analysis tabs only — start fresh then copy them in.
@@ -403,6 +404,19 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _write_daca_bank_rec_tab(
             wb, daca_bank_data, _gl_daca, period, property_name,
             tab_prefix=_tab_pfx,
+        )
+
+    # ── Development Bank Rec tab (revlabs entity) ─────────────────────────────
+    if dev_bank_rec_data is not None:
+        # GL balance comes directly from the Yardi bank rec PDF (revlabs has no
+        # activity in the revlabpm GL, so we read it from the rec report itself)
+        _gl_dev = float(dev_bank_rec_data.get('gl_balance') or 0)
+        _write_bank_rec_tab(
+            wb, dev_bank_rec_data, _gl_dev, period, 'Rev Labs (revlabs)',
+            account_label='Development Account (revlabs)',
+            gl_account_code='',
+            tab_prefix=_tab_pfx,
+            tab_name_override='Bank Rec - Development',
         )
 
     # ── Analysis tabs (Loan, RE Tax, Insurance, Escrow) ──────────────────────
@@ -1773,7 +1787,8 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
                         period: str, property_name: str,
                         account_label: str = 'PNC Operating (x3993)',
                         gl_account_code: str = '111100',
-                        tab_prefix: str = ''):
+                        tab_prefix: str = '',
+                        tab_name_override: str = None):
     """
     Writes one Bank Rec tab showing:
       Balance per Bank Statement
@@ -1781,7 +1796,10 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
       = Reconciled Bank Balance  →  must equal GL cash account
     Then lists outstanding checks and cleared checks for reference.
     """
-    _base_name = f'Bank Rec - {account_label.split("(")[0].strip()[:20]}'
+    if tab_name_override:
+        _base_name = tab_name_override
+    else:
+        _base_name = f'Bank Rec - {account_label.split("(")[0].strip()[:20]}'
     tab_name = (tab_prefix + _base_name)[:31]
     ws = wb.create_sheet(tab_name)
     ws.sheet_properties.tabColor = COLOR_BANK_REC
@@ -2099,7 +2117,8 @@ def generate(gl_result, tb_result, output_path: str,
              je_adjustments: Optional[Dict[str, float]] = None,
              prior_workpaper_path: str = None,
              prior_period: str = None,
-             berkadia_loans: list = None) -> str:
+             berkadia_loans: list = None,
+             dev_bank_rec_data: dict = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
@@ -2108,4 +2127,5 @@ def generate(gl_result, tb_result, output_path: str,
                                   je_adjustments,
                                   prior_workpaper_path=prior_workpaper_path,
                                   prior_period=prior_period,
-                                  berkadia_loans=berkadia_loans)
+                                  berkadia_loans=berkadia_loans,
+                                  dev_bank_rec_data=dev_bank_rec_data)

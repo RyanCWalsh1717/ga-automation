@@ -242,6 +242,12 @@ FILE_CONFIG = {
         "tenant credits excluded from the cash-received basis. Upload alongside the Receivable Detail. "
         "Without it: falls back to charge-code scan in the Receivable Detail (less reliable).",
     ),
+    "bank_rec_dev": (
+        "Yardi Bank Rec PDF — Development / revlabs (.pdf)", "pdf", False, "bank",
+        "Adds a 'Bank Rec - Development' tab to the Pass 2 workpaper for the revlabs entity. "
+        "Uses the same Yardi Bank Rec PDF format — parse with property code 'revlabs'. "
+        "Without it: development bank rec tab is omitted from the workpaper.",
+    ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
         "Fallback management fee basis when Receivable Detail is not uploaded. "
@@ -1547,6 +1553,15 @@ with tab2:
                             daca_gl_balance = _a.ending_balance
                             break
 
+                _dev_rec_file = st.session_state.uploaded_files.get("bank_rec_dev")
+                dev_bank_rec_data = None
+                if _dev_rec_file and os.path.exists(_dev_rec_file):
+                    try:
+                        from parsers.yardi_bank_rec import parse as _parse_dev_rec
+                        dev_bank_rec_data = _parse_dev_rec(_dev_rec_file, property_code='revlabs')
+                    except Exception:
+                        dev_bank_rec_data = None
+
                 if tb_result and gl_parsed:
                     try:
                         bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
@@ -1593,6 +1608,7 @@ with tab2:
                             prior_workpaper_path=_prior_wp_path,
                             prior_period=_prior_period,
                             berkadia_loans=_berkadia_loans,
+                            dev_bank_rec_data=dev_bank_rec_data,
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:
@@ -1778,6 +1794,7 @@ with tab2:
                 st.session_state.pass2_output_files["daca_bank_data"]    = daca_bank_data
                 st.session_state.pass2_output_files["gl_cash_balance"]   = gl_cash_balance
                 st.session_state.pass2_output_files["daca_gl_balance"]   = daca_gl_balance
+                st.session_state.pass2_output_files["dev_bank_rec_data"] = dev_bank_rec_data
 
                 progress_bar.progress(100)
                 status_text.text("✓ Reports complete!")
@@ -1931,11 +1948,12 @@ with tab2:
         # ── Bank Rec Summary Panel ─────────────────────────────────────────
         _bank_rec  = p2.get("bank_rec_data")
         _daca_data = p2.get("daca_bank_data")
+        _dev_rec   = p2.get("dev_bank_rec_data")
         _gl_111    = float(p2.get("gl_cash_balance") or 0)
         _daca_gl   = float(p2.get("daca_gl_balance") or 0)
-        if _bank_rec or _daca_data:
+        if _bank_rec or _daca_data or _dev_rec:
             st.markdown("### Bank Reconciliation Summary")
-            _rec_cols = st.columns(2)
+            _rec_cols = st.columns(3)
             with _rec_cols[0]:
                 if _bank_rec:
                     _bank_bal  = float(_bank_rec.get('bank_statement_balance') or 0)
@@ -1970,6 +1988,26 @@ with tab2:
 """)
                 else:
                     st.caption("Upload DACA Bank Statement to see DACA account rec summary")
+            with _rec_cols[2]:
+                if _dev_rec:
+                    _dev_bank_bal  = float(_dev_rec.get('bank_statement_balance') or 0)
+                    _dev_out_total = float(_dev_rec.get('total_outstanding_checks') or 0)
+                    _dev_rec_bal   = float(_dev_rec.get('reconciled_bank_balance') or 0)
+                    _dev_gl_bal    = float(_dev_rec.get('gl_balance') or 0)
+                    _dev_diff      = _dev_rec_bal - _dev_gl_bal
+                    _dev_icon      = "✅" if abs(_dev_diff) < 0.02 else "❌"
+                    st.markdown(f"""
+**Development Account — revlabs** {_dev_icon}
+| | |
+|---|---:|
+| Bank Statement Balance | ${_dev_bank_bal:,.2f} |
+| Less: Outstanding Checks ({len(_dev_rec.get('outstanding_checks') or [])}) | (${_dev_out_total:,.2f}) |
+| Reconciled Bank Balance | **${_dev_rec_bal:,.2f}** |
+| GL Balance (per Yardi rec) | ${_dev_gl_bal:,.2f} |
+| **Difference** | **${_dev_diff:+,.2f}** |
+""")
+                else:
+                    st.caption("Upload revlabs Bank Rec PDF to see Development account rec summary")
             st.divider()
 
         # ── Engine Bank Match Detail (collapsible) ─────────────────────────
