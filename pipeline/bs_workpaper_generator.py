@@ -406,10 +406,10 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             tab_prefix=_tab_pfx,
         )
 
-    # ── Development Bank Rec tab (revlabs entity) ─────────────────────────────
+    # ── Development Bank Rec tab (revlabs entity — BofA x3132) ───────────────
     if dev_bank_rec_data is not None:
-        # GL balance comes directly from the Yardi bank rec PDF (revlabs has no
-        # activity in the revlabpm GL, so we read it from the rec report itself)
+        # GL balance defaults to 0.0 — revlabs has no activity in the revlabpm
+        # GL export; the tab shows the BofA statement balance for reference.
         _gl_dev = float(dev_bank_rec_data.get('gl_balance') or 0)
         _write_bank_rec_tab(
             wb, dev_bank_rec_data, _gl_dev, period, 'Rev Labs (revlabs)',

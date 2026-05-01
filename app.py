@@ -243,9 +243,9 @@ FILE_CONFIG = {
         "Without it: falls back to charge-code scan in the Receivable Detail (less reliable).",
     ),
     "bank_rec_dev": (
-        "Yardi Bank Rec PDF — Development / revlabs (.pdf)", "pdf", False, "bank",
+        "Development Bank Statement — Bank of America (.pdf)", "pdf", False, "bank",
         "Adds a 'Bank Rec - Development' tab to the Pass 2 workpaper for the revlabs entity. "
-        "Uses the same Yardi Bank Rec PDF format — parse with property code 'revlabs'. "
+        "Upload the BofA Full Analysis Business Checking statement (account x3132). "
         "Without it: development bank rec tab is omitted from the workpaper.",
     ),
     "daca_bank": (
@@ -1518,8 +1518,8 @@ with tab2:
                 dev_bank_rec_data = None
                 if _dev_rec_file and os.path.exists(_dev_rec_file):
                     try:
-                        from parsers.yardi_bank_rec import parse as _parse_dev_rec
-                        dev_bank_rec_data = _parse_dev_rec(_dev_rec_file, property_code='revlabs')
+                        from parsers.bofa_statement import parse as _parse_bofa
+                        dev_bank_rec_data = _parse_bofa(_dev_rec_file)
                     except Exception:
                         dev_bank_rec_data = None
 
