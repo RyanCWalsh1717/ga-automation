@@ -8,19 +8,20 @@ the period and the agreed fee rates:
   GRP (replacement): 1.75% of cash received
   Total:             3.00% of cash received
 
-"Cash received" = gross tenant receipts deposited into the DACA sweep
-account for the period.  JLL (the current PM) explicitly uses the DACA
-deposit register — not the GL operating cash account — as the management fee
-basis.  For March 2026 this was $1,419,011.29 (the "4 Additions" line on the
-KeyBank x5132 statement).
+"Cash received" = gross tenant receipts per the Yardi Receivable Detail report,
+net of Prepayment receipts (advance deposits that are not earned income).
+JLL uses this same basis — the Receivable Detail is driven by Yardi's bank
+reconciliation, which must be completed first (by JLL or in-house) before
+the report can be exported.  For March 2026 this was $1,419,011.29.
 
 The pipeline derives cash received from one of four sources, in priority order:
 
-  1. DACA bank statement additions field — preferred (matches JLL's basis)
-  2. GL operating cash account (111100) — debit transactions for the period
-     (debit = cash in, in double-entry terms) — fallback when no DACA file
-  3. Budget Comparison revenue accounts — PTD Actual of income lines as a proxy
-  4. User-supplied override via the Streamlit sidebar
+  1. Yardi Receivable Detail report — preferred (JLL's exact method; excludes
+     Prepayment receipts automatically)
+  2. DACA bank statement additions — fallback when no Receivable Detail uploaded
+     (matches JLL's basis when Yardi bank rec has not yet been run)
+  3. GL operating cash account (111100) — debit transactions for the period
+  4. Budget Comparison revenue accounts — PTD Actual of income lines as a proxy
 
 The result is consumed by:
   - qc_engine.py check_7_misc (to verify the accrued fee vs. expected)
@@ -93,6 +94,31 @@ class ManagementFeeResult:
 
 
 # ── Cash-received extraction ───────────────────────────────────────────────────
+
+def _cash_from_receivable_detail(rd_parsed) -> Optional[float]:
+    """
+    Read net cash received from the Yardi Receivable Detail report.
+
+    Uses ReceivableDetailResult.net_receipts which is:
+        Grand Total Receipts − Prepayment receipts
+
+    Prepayment receipts (advance deposits / unapplied credits from tenants)
+    are excluded because they are not earned income and JLL excludes them
+    from the management fee basis.
+
+    Returns None if the report was not parsed or net_receipts is zero.
+    """
+    if rd_parsed is None:
+        return None
+    # Accept both the dataclass and a dict (engine may store as dict)
+    if hasattr(rd_parsed, 'net_receipts'):
+        val = rd_parsed.net_receipts
+    elif isinstance(rd_parsed, dict):
+        val = rd_parsed.get('net_receipts', 0)
+    else:
+        return None
+    return float(val) if val and float(val) > 0 else None
+
 
 def _cash_from_daca(daca_parsed: dict) -> Optional[float]:
     """
@@ -179,6 +205,7 @@ def calculate(
     budget_rows: list[dict] = None,
     manual_override: float = None,
     daca_parsed: dict = None,
+    receivable_detail=None,
     jll_rate: float = JLL_RATE,
     grp_rate: float = GRP_RATE,
 ) -> ManagementFeeResult:
@@ -186,35 +213,36 @@ def calculate(
     Compute the management fee accrual for the period.
 
     Priority:
-      1. manual_override (if provided and > 0)
-      2. DACA bank statement additions — preferred basis, matches JLL's method
-         (tenant rent receipts = gross deposits into KeyBank x5132)
+      1. Yardi Receivable Detail — preferred; net of Prepayment receipts (JLL's exact method)
+      2. DACA bank statement additions — fallback when Receivable Detail not uploaded
       3. GL operating cash account debit total — fallback when no DACA file
       4. Revenue account PTD actuals from budget comparison — last resort proxy
 
     Args:
-        gl_parsed:       GLParseResult from yardi_gl.parse_gl()
-        budget_rows:     List of BC row dicts from yardi_budget_comparison.parse()
-        manual_override: If supplied, skip auto-detection and use this number
-        daca_parsed:     Parsed KeyBank DACA statement dict (from parsers.keybank_daca.parse)
-        jll_rate:        JLL management fee rate (default 1.25%)
-        grp_rate:        GRP management fee rate (default 1.75%)
+        gl_parsed:         GLParseResult from yardi_gl.parse_gl()
+        budget_rows:       List of BC row dicts from yardi_budget_comparison.parse()
+        manual_override:   Deprecated — no longer used (kept for signature compatibility)
+        daca_parsed:       Parsed KeyBank DACA statement dict
+        receivable_detail: ReceivableDetailResult from parsers.yardi_receivable_detail.parse()
+        jll_rate:          JLL management fee rate (default 1.25%)
+        grp_rate:          GRP management fee rate (default 1.75%)
 
     Returns:
         ManagementFeeResult
     """
     budget_rows = budget_rows or []
 
-    # 1. Manual override
-    if manual_override is not None and manual_override > 0:
+    # 1. Receivable Detail — preferred (JLL's exact method, excludes prepayments)
+    rd_cash = _cash_from_receivable_detail(receivable_detail)
+    if rd_cash is not None:
         return ManagementFeeResult(
-            cash_received=float(manual_override),
-            cash_source='manual_override',
+            cash_received=rd_cash,
+            cash_source='receivable_detail',
             jll_rate=jll_rate,
             grp_rate=grp_rate,
         )
 
-    # 2. DACA additions — preferred (matches JLL's management fee basis)
+    # 2. DACA additions — fallback (matches JLL's basis when bank rec not yet run)
     daca_cash = _cash_from_daca(daca_parsed)
     if daca_cash is not None:
         return ManagementFeeResult(
@@ -224,7 +252,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 3. GL cash account — fallback when DACA statement not uploaded
+    # 3. GL cash account — fallback when neither Receivable Detail nor DACA uploaded
     gl_cash = _cash_from_gl(gl_parsed)
     if gl_cash is not None:
         return ManagementFeeResult(

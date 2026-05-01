@@ -230,9 +230,15 @@ FILE_CONFIG = {
         "outstanding checks, reconciled balance, and $0 difference. Enables Operating bank "
         "rec tab in the BS workpaper (PNC x3993 vs GL 111100). Without it: no bank rec tab.",
     ),
+    "receivable_detail": (
+        "Yardi Receivable Detail (.xlsx)", "xlsx", False, "bank",
+        "PRIMARY management fee basis — JLL's exact method. Export from Yardi after bank rec is complete. "
+        "Automatically excludes Prepayment receipts from the cash-received total. "
+        "Without it: falls back to DACA additions.",
+    ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
-        "Used as the management fee cash-received basis (matches JLL's methodology). "
+        "Fallback management fee basis when Receivable Detail is not uploaded. "
         "Also enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
         "Without it: management fee falls back to GL 111100 debits as the cash basis.",
     ),
@@ -670,10 +676,20 @@ with tab1:
                     except Exception:
                         _daca_parsed = None
 
+                _rd_file = st.session_state.uploaded_files.get("receivable_detail")
+                _rd_parsed = None
+                if _rd_file and os.path.exists(_rd_file):
+                    try:
+                        from parsers.yardi_receivable_detail import parse as _parse_rd
+                        _rd_parsed = _parse_rd(_rd_file)
+                    except Exception:
+                        _rd_parsed = None
+
                 fee_result = calculate_mgmt_fee(
                     gl_parsed=gl_parsed,
                     budget_rows=bc_parsed or [],
                     daca_parsed=_daca_parsed,
+                    receivable_detail=_rd_parsed,
                 )
                 fee_je = build_management_fee_je(
                     fee_result,
@@ -856,16 +872,28 @@ with tab1:
         # ── Management Fee ─────────────────────────────────────────────────
         if fee_result and fee_result.cash_received > 0:
             st.markdown("### Management Fee JE")
+            _src_labels = {
+                'receivable_detail': 'Receivable Detail (ex-Prepayments)',
+                'daca_additions':    'DACA Additions',
+                'gl_cash_account':   'GL 111100 Debits',
+                'revenue_proxy':     'Revenue Proxy',
+                'manual_override':   'Manual Override',
+            }
+            _src_label = _src_labels.get(fee_result.cash_source, fee_result.cash_source)
             col_f1, col_f2, col_f3, col_f4 = st.columns(4)
             with col_f1:
                 st.metric("Cash Received", f"${fee_result.cash_received:,.0f}",
-                          help=f"Source: {fee_result.cash_source}")
+                          help=f"Source: {_src_label}")
             with col_f2:
                 st.metric(f"JLL ({fee_result.jll_rate:.2%})", f"${fee_result.jll_fee:,.0f}")
             with col_f3:
                 st.metric(f"GRP ({fee_result.grp_rate:.2%})", f"${fee_result.grp_fee:,.0f}")
             with col_f4:
                 st.metric(f"Total ({fee_result.total_rate:.2%})", f"${fee_result.total_fee:,.0f}")
+            st.caption(f"Basis: {_src_label}"
+                       + (f"  ·  Prepayments excluded: ${_rd_parsed.prepayment_receipts:,.2f}"
+                          if '_rd_parsed' in dir() and _rd_parsed and
+                             getattr(_rd_parsed, 'prepayment_receipts', 0) > 0 else ""))
 
             _catchup_amt = p1.get("catchup_amount")
             if _catchup_amt and _catchup_amt > 0:
@@ -1562,10 +1590,19 @@ with tab2:
                 status_text.text("Step 4/6: Verifying management fee...")
                 progress_bar.progress(58)
                 try:
+                    _rd_file_p2 = st.session_state.uploaded_files.get("receivable_detail")
+                    _rd_parsed_p2 = None
+                    if _rd_file_p2 and os.path.exists(_rd_file_p2):
+                        try:
+                            from parsers.yardi_receivable_detail import parse as _parse_rd2
+                            _rd_parsed_p2 = _parse_rd2(_rd_file_p2)
+                        except Exception:
+                            _rd_parsed_p2 = None
                     fee_result = calculate_mgmt_fee(
                         gl_parsed=gl_parsed,
                         budget_rows=bc_parsed or [],
                         daca_parsed=daca_bank_data,
+                        receivable_detail=_rd_parsed_p2,
                     )
                     st.session_state.pass2_output_files["fee_result"] = fee_result
                 except Exception:
