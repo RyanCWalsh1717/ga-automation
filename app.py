@@ -250,14 +250,8 @@ FILE_CONFIG = {
     ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
-        "Fallback management fee basis when Receivable Detail is not uploaded. "
-        "Also enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
-        "Without it: management fee falls back to GL 111100 debits as the cash basis.",
-    ),
-    "pnc_bank": (
-        "PNC Bank Statement — raw (.pdf)", "pdf", False, "bank",
-        "Used for transaction-level GL↔bank matching when Yardi Bank Rec PDF is not uploaded. "
-        "If Yardi Bank Rec PDF is uploaded, that takes priority and this file is not used for reconciliation.",
+        "Enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
+        "Without it: DACA rec tab is omitted from the workpaper.",
     ),
     # ── Reference ─────────────────────────────────────────────
     "loan": (
@@ -1354,37 +1348,6 @@ with tab2:
             else:
                 st.caption("⬆️ Upload final Trial Balance to enable BS workpaper tie-out")
 
-    # ── Pass 2: Bank Rec upload ───────────────────────────────────────────────
-    st.markdown("#### Yardi Bank Rec — Final Close")
-    st.caption(
-        "Export the Bank Rec PDF from Yardi after the close posts. "
-        "Used for the Operating account reconciliation tab in the workpapers."
-    )
-    _p2_br_col1, _p2_br_col2 = st.columns([5, 1])
-    with _p2_br_col1:
-        _p2_br_upload = st.file_uploader(
-            "Yardi Bank Rec PDF (.pdf)",
-            type="pdf",
-            key="uploader_bank_rec_pass2",
-            help="Post-close Bank Rec PDF. Overrides the sidebar Bank Rec for Pass 2.",
-        )
-    with _p2_br_col2:
-        if _p2_br_upload is not None:
-            st.markdown("✅")
-    if _p2_br_upload is not None:
-        _p2_br_path = os.path.join(st.session_state.temp_dir, f"br_pass2_{_p2_br_upload.name}")
-        if not os.path.exists(_p2_br_path) or os.path.getsize(_p2_br_path) != _p2_br_upload.size:
-            with open(_p2_br_path, "wb") as _f:
-                _f.write(_p2_br_upload.getbuffer())
-        st.session_state.uploaded_files["bank_rec_pass2"] = _p2_br_path
-        st.caption(f"✓ Final Bank Rec ready: **{_p2_br_upload.name}**")
-    else:
-        if "bank_rec_pass2" not in st.session_state.uploaded_files:
-            if "bank_rec" in st.session_state.uploaded_files:
-                st.caption("↳ Using Bank Rec from sidebar (upload final version above to override)")
-            else:
-                st.caption("⬆️ Upload final Bank Rec PDF to enable bank reconciliation workpaper")
-
     # ── Pass 2: Loan Statements upload ───────────────────────────────────────
     st.markdown("#### Berkadia Loan Statements — Final Close")
     st.caption(
@@ -1476,7 +1439,7 @@ with tab2:
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
             for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
-                       "bank_rec_pass2", "loan_pass2", "prior_workpaper"):
+                       "loan_pass2", "prior_workpaper"):
                 st.session_state.uploaded_files.pop(_k, None)
             st.rerun()
 
@@ -1494,8 +1457,6 @@ with tab2:
                     files_dict["budget_comparison"] = st.session_state.uploaded_files["budget_comparison_pass2"]
                 if st.session_state.uploaded_files.get("trial_balance_pass2"):
                     files_dict["trial_balance"] = st.session_state.uploaded_files["trial_balance_pass2"]
-                if st.session_state.uploaded_files.get("bank_rec_pass2"):
-                    files_dict["bank_rec"] = st.session_state.uploaded_files["bank_rec_pass2"]
                 if st.session_state.uploaded_files.get("loan_pass2"):
                     files_dict["loan"] = st.session_state.uploaded_files["loan_pass2"]
 
