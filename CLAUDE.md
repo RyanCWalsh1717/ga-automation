@@ -51,16 +51,15 @@ pipeline/
                                   Also detects prior-period catch-up (unmatched auto-reversals
                                   in 637130) and generates MGT-002 catch-up JE.
 
-  accrual_entry_generator.py    ← 5-layer accrual entry detection (deduped against GL):
+  accrual_entry_generator.py    ← 4-layer accrual entry detection (deduped against GL):
                                   Layer 1: Nexus open invoices
                                   Layer 2: Invoice proration (cost-per-day × days remaining
                                            for recurring vendors already in GL)
-                                  Layer 3: Budget gap detection (with seasonality filters,
-                                           escrow exclusions, materiality floor $500)
-                                  Layer 4: Historical recurring pattern detection
-                                  Layer 5: Payroll bonus accruals (Kardin-driven:
-                                           annual ÷ 12 − min monthly; suppressed on
-                                           payment months when GL ≥ monthly avg)
+                                  Layer 3: Historical recurring (BC YTD actual ÷ months
+                                           elapsed; $5,000 materiality floor; skip Jan)
+                                  Layer 4: Budget gap detection (contract accounts only,
+                                           $5,000 materiality floor)
+                                  Interest expense (801xxx) auto-routes to CR 213200
 
   qc_engine.py                  ← 7-point QC checklist run in Pass 2:
                                   CHECK_1: TB → BC tie-out

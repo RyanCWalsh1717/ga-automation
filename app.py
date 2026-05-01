@@ -839,6 +839,7 @@ with tab1:
                 p1["accrual_je_csv"]        = _accrual_csv_path
                 p1["manual_je_csv"]         = _manual_csv_path
                 p1["fee_result"]            = fee_result
+                p1["rd_prepayment_amount"]  = getattr(_rd_parsed, 'prepayment_receipts', 0.0) if _rd_parsed else 0.0
                 p1["catchup_amount"]        = _catchup_amount
                 p1["amort_lines"]           = amort_lines
                 p1["ledger_active"]         = ledger_active
@@ -890,10 +891,9 @@ with tab1:
                 st.metric(f"GRP ({fee_result.grp_rate:.2%})", f"${fee_result.grp_fee:,.0f}")
             with col_f4:
                 st.metric(f"Total ({fee_result.total_rate:.2%})", f"${fee_result.total_fee:,.0f}")
+            _prepay_amt = p1.get("rd_prepayment_amount", 0.0) or 0.0
             st.caption(f"Basis: {_src_label}"
-                       + (f"  ·  Prepayments excluded: ${_rd_parsed.prepayment_receipts:,.2f}"
-                          if '_rd_parsed' in dir() and _rd_parsed and
-                             getattr(_rd_parsed, 'prepayment_receipts', 0) > 0 else ""))
+                       + (f"  ·  Prepayments excluded: ${_prepay_amt:,.2f}" if _prepay_amt > 0 else ""))
 
             _catchup_amt = p1.get("catchup_amount")
             if _catchup_amt and _catchup_amt > 0:
