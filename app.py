@@ -233,8 +233,14 @@ FILE_CONFIG = {
     "receivable_detail": (
         "Yardi Receivable Detail (.xlsx)", "xlsx", False, "bank",
         "PRIMARY management fee basis — JLL's exact method. Export from Yardi after bank rec is complete. "
-        "Automatically excludes Prepayment receipts from the cash-received total. "
+        "Pair with the AR Detail Aging for accurate prepayment exclusion. "
         "Without it: falls back to DACA additions.",
+    ),
+    "ar_aging": (
+        "Yardi AR Detail Aging (.xlsx)", "xlsx", False, "bank",
+        "Prepayment identification for the management fee — the Pre-payments column shows unapplied "
+        "tenant credits excluded from the cash-received basis. Upload alongside the Receivable Detail. "
+        "Without it: falls back to charge-code scan in the Receivable Detail (less reliable).",
     ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
@@ -685,11 +691,21 @@ with tab1:
                     except Exception:
                         _rd_parsed = None
 
+                _ar_aging_file = st.session_state.uploaded_files.get("ar_aging")
+                _ar_aging_parsed = None
+                if _ar_aging_file and os.path.exists(_ar_aging_file):
+                    try:
+                        from parsers.yardi_ar_aging import parse as _parse_ar_aging
+                        _ar_aging_parsed = _parse_ar_aging(_ar_aging_file)
+                    except Exception:
+                        _ar_aging_parsed = None
+
                 fee_result = calculate_mgmt_fee(
                     gl_parsed=gl_parsed,
                     budget_rows=bc_parsed or [],
                     daca_parsed=_daca_parsed,
                     receivable_detail=_rd_parsed,
+                    ar_aging=_ar_aging_parsed,
                 )
                 fee_je = build_management_fee_je(
                     fee_result,
@@ -839,7 +855,7 @@ with tab1:
                 p1["accrual_je_csv"]        = _accrual_csv_path
                 p1["manual_je_csv"]         = _manual_csv_path
                 p1["fee_result"]            = fee_result
-                p1["rd_prepayment_amount"]  = getattr(_rd_parsed, 'prepayment_receipts', 0.0) if _rd_parsed else 0.0
+                p1["rd_prepayment_amount"]  = getattr(fee_result, 'prepayment_excluded', 0.0)
                 p1["catchup_amount"]        = _catchup_amount
                 p1["amort_lines"]           = amort_lines
                 p1["ledger_active"]         = ledger_active
@@ -874,6 +890,7 @@ with tab1:
         if fee_result and fee_result.cash_received > 0:
             st.markdown("### Management Fee JE")
             _src_labels = {
+                'receivable_detail+ar_aging': 'Receivable Detail (ex-Prepayments via AR Aging)',
                 'receivable_detail': 'Receivable Detail (ex-Prepayments)',
                 'daca_additions':    'DACA Additions',
                 'gl_cash_account':   'GL 111100 Debits',
@@ -1598,11 +1615,22 @@ with tab2:
                             _rd_parsed_p2 = _parse_rd2(_rd_file_p2)
                         except Exception:
                             _rd_parsed_p2 = None
+
+                    _ar_aging_file_p2 = st.session_state.uploaded_files.get("ar_aging")
+                    _ar_aging_parsed_p2 = None
+                    if _ar_aging_file_p2 and os.path.exists(_ar_aging_file_p2):
+                        try:
+                            from parsers.yardi_ar_aging import parse as _parse_ar_aging2
+                            _ar_aging_parsed_p2 = _parse_ar_aging2(_ar_aging_file_p2)
+                        except Exception:
+                            _ar_aging_parsed_p2 = None
+
                     fee_result = calculate_mgmt_fee(
                         gl_parsed=gl_parsed,
                         budget_rows=bc_parsed or [],
                         daca_parsed=daca_bank_data,
                         receivable_detail=_rd_parsed_p2,
+                        ar_aging=_ar_aging_parsed_p2,
                     )
                     st.session_state.pass2_output_files["fee_result"] = fee_result
                 except Exception:
