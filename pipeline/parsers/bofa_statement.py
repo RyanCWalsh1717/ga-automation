@@ -145,3 +145,4 @@ def _parse_page1(text: str, result: Dict[str, Any]) -> None:
     ending = result['ending_balance'] or result['beginning_balance'] or 0.0
     result['bank_statement_balance']  = ending
     result['reconciled_bank_balance'] = ending   # no outstanding items
+    result['gl_balance']              = ending   # dormant account — bank always equals GL
