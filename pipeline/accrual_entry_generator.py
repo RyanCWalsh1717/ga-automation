@@ -1795,8 +1795,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         else:
             # Mode (b): auto-detect from GL + budget (aggregate budget accrual)
-            # Note: P&L reclassification (613115/613110) only fires in Mode (a)
-            # when actual per-tenant meter read amounts are available.
+            _budget_elec_total = 0.0
             for cand in detect_tenant_utility_billing(gl_data, budget_data):
                 cr_code = cand['account_code']
                 cr_name = 'Recovery - Electricity' if cr_code == '440500' else 'Recovery - Misc Utilities'
@@ -1806,6 +1805,40 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     cand['description'],
                 )
                 _tub_accounts.add(cr_code)
+                if cr_code == '440500':
+                    _budget_elec_total += cand['amount']
+
+            # P&L reclassification for budget electric (same as Mode a)
+            if _round(_budget_elec_total) > 0:
+                _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
+                if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
+                    _elec_je_id = f'TUB-{je_num:04d}'
+                    _elec_desc  = (f'Tenant electricity reclassification (budget) — '
+                                   f'${_budget_elec_total:,.2f} '
+                                   f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 1, 'date': '',
+                        'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
+                        'account_name':   ELEC_TENANT_REIMB_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          _round(_budget_elec_total), 'credit': 0,
+                        'vendor':         '[Budget Accrual]',
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': 'medium',
+                    })
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 2, 'date': '',
+                        'account_code':   ELEC_EXPENSE_ACCOUNT,
+                        'account_name':   ELEC_EXPENSE_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          0, 'credit': _round(_budget_elec_total),
+                        'vendor':         '[Budget Accrual]',
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': 'medium',
+                    })
+                    je_num += 1
 
     # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
     # Entries that draw down a balance sheet asset/escrow rather than creating
