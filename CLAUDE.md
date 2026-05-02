@@ -232,8 +232,7 @@ Escrow-funded accounts excluded from budget-gap (e.g., 641110 RE Tax via 115200,
 - P&L accounts: `4xxxxx` (revenue) through `8xxxxx` (expense)
 - Balance Sheet accounts: `1xxxxx` (assets) through `3xxxxx` (equity/liabilities)
 - Key accounts: `111100` Operating Cash, `115100` DACA, `115200` RE Tax Escrow,
-  `115300` Insurance Escrow, `131100` Accounts Receivable - Control,
-  `133110` Tenant AR Billback (Utility/Elec Recovery),
+  `115300` Insurance Escrow, `133110` Accounts Receivable Billback (Utility/Elec/Gas),
   `135150` Prepaids, `213100` Accrued Expenses, `213200` Accrued Interest Payable,
   `613110` Utilities - Electricity, `613115` Tenant Electric Reimbursement,
   `637130` Admin-Management Fees

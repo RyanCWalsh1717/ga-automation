@@ -172,9 +172,9 @@ PERIODIC_CONTRACT_ACCOUNTS: dict = {
 # The property manager posts TWO JEs:
 #
 #   (1) Per-tenant billing (AR / Recovery):
-#       DR 131100  Accounts Receivable - Control  (per tenant)
+#       DR 133110  Accounts Receivable Billback   (per tenant, electric and gas)
 #       CR 440500  Recovery - Electricity         (electric portion)
-#       CR 440700  Recovery - Misc Utilities      (gas portion, reclassed from 440500)
+#       CR 440700  Recovery - Misc Utilities      (gas portion)
 #
 #   (2) P&L reclassification (aggregate, electric only):
 #       DR 613115  Tenant Electric Reimbursement  (total electric billed to tenants)
@@ -186,8 +186,8 @@ PERIODIC_CONTRACT_ACCOUNTS: dict = {
 # If the meter read JE hasn't been posted yet at close, the pipeline accrues
 # the budget amount so NOI is not understated. When the actual meter read
 # data is available, the sidebar overrides with per-tenant actual amounts.
-TENANT_UTILITY_AR_ACCOUNT   = '131100'
-TENANT_UTILITY_AR_NAME      = 'Accounts Receivable - Control'
+TENANT_UTILITY_AR_ACCOUNT   = '133110'
+TENANT_UTILITY_AR_NAME      = 'Accounts Receivable Billback'
 ELEC_EXPENSE_ACCOUNT        = '613110'
 ELEC_EXPENSE_NAME           = 'Utilities - Electricity'
 ELEC_TENANT_REIMB_ACCOUNT   = '613115'
