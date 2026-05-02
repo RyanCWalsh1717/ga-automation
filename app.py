@@ -119,6 +119,8 @@ if "pass1_engine_result" not in st.session_state:
     st.session_state.pass1_engine_result = None
 if "pass1_output_files" not in st.session_state:
     st.session_state.pass1_output_files = {}
+if "pass1_run_count" not in st.session_state:
+    st.session_state.pass1_run_count = 0
 
 # Pass 2 — Report Generation
 if "pass2_complete" not in st.session_state:
@@ -868,6 +870,7 @@ with tab1:
                 progress_bar.progress(100)
                 status_text.text("✓ JEs ready for Yardi upload!")
                 st.session_state.pass1_complete = True
+                st.session_state.pass1_run_count = st.session_state.get('pass1_run_count', 0) + 1
                 st.success("Pass 1 complete! Download the JE CSVs below.", icon="✅")
 
             except Exception as e:
@@ -1183,8 +1186,57 @@ with tab1:
         st.markdown("### Download JE Files")
         st.caption("Upload these CSVs to Yardi, run the final close, then switch to **Pass 2** to generate reports.")
 
+        # ── Accruals CSV content breakdown ──────────────────────────────
+        _accrual_lines_display = [l for l in all_je_lines
+                                  if l.get('source') in {
+                                      'nexus', 'budget_gap', 'historical', 'management_fee',
+                                      'management_fee_catchup', 'invoice_proration',
+                                      'prepaid_amortization', 'contract_supplement',
+                                      'tenant_utility_billing', 'bonus_accrual', 'prepaid_ledger',
+                                  }]
+        _src_label_map = {
+            'nexus':                  'Nexus AP',
+            'invoice_proration':      'Invoice Proration',
+            'historical':             'Historical Pattern',
+            'budget_gap':             'Budget Gap',
+            'prepaid_amortization':   'Prepaid Amort.',
+            'prepaid_ledger':         'Prepaid Release',
+            'management_fee':         'Management Fee',
+            'management_fee_catchup': 'Mgmt Fee Catch-up',
+            'contract_supplement':    'One-Off Accrual',
+            'tenant_utility_billing': 'Tenant Utility',
+            'bonus_accrual':          'Bonus Accrual',
+        }
+        # Count unique JEs (not lines) per source — DR lines only to avoid double-count
+        _src_je_counts = {}
+        for _l in _accrual_lines_display:
+            if (_l.get('debit') or 0) > 0:
+                _src = _l.get('source', 'other')
+                _je_id = _l.get('je_number', '')
+                _src_je_counts.setdefault(_src, set()).add(_je_id)
+        _src_je_summary = {_src_label_map.get(s, s): len(ids)
+                           for s, ids in _src_je_counts.items() if ids}
+
+        if _src_je_summary:
+            _ppd_count = _src_je_counts.get('prepaid_ledger', set())
+            _total_je_in_csv = sum(len(v) for v in _src_je_counts.values())
+            _breakdown_parts = [f"{lbl}: {cnt}" for lbl, cnt in _src_je_summary.items()]
+            _breakdown_str = "  ·  ".join(_breakdown_parts)
+            if _ppd_count:
+                st.success(
+                    f"**Accruals CSV contains {_total_je_in_csv} JEs** — {_breakdown_str}",
+                    icon="✅",
+                )
+            else:
+                st.info(
+                    f"**Accruals CSV contains {_total_je_in_csv} JEs** — {_breakdown_str}  "
+                    f"*(No prepaid releases — upload prior-month ledger and re-run if expected)*",
+                    icon="📄",
+                )
+
         # Zip of all 3 CSVs + updated ledger
         import zipfile, io
+        _run_key = st.session_state.get('pass1_run_count', 0)
         period_label = (result.period or 'Period').replace('-', '_')
         p1_zip_files = {
             f"RevLabs_{period_label}_Accruals_JE.csv":      p1.get("accrual_je_csv"),
@@ -1203,6 +1255,7 @@ with tab1:
                 data=zip_buf,
                 file_name=f"RevLabs_{period_label}_JE_Package_{datetime.now().strftime('%Y%m%d')}.zip",
                 mime="application/zip",
+                key=f"dl_zip_{_run_key}",
                 use_container_width=True,
             )
 
@@ -1220,6 +1273,7 @@ with tab1:
                             label=label,
                             data=f.read(),
                             file_name=fname,
+                            key=f"dl_{key}_{_run_key}",
                             use_container_width=True,
                         )
 
