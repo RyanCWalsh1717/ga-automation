@@ -173,31 +173,51 @@ def _month_amount(item: dict, amort_date: date) -> float:
     """
     Return the correct amortization amount for a given calendar month.
 
-    If daily_rate is set (mid-month invoice): compute from daily rate × days.
-    Otherwise: return monthly_amount (standard equal-monthly).
-    """
-    daily_rate = float(item.get('daily_rate') or 0)
-    if daily_rate <= 0:
-        return float(item.get('monthly_amount', 0) or 0)
+    Standard mode (daily_rate == 0):
+      All months use monthly_amount EXCEPT the first and last service months
+      when the service period starts or ends mid-month.  Those are prorated
+      as a fraction of monthly_amount:
+        first month: monthly_amount × (days_in_month − start_day) / days_in_month
+        last month:  monthly_amount × end_day / days_in_month
+        middle months: monthly_amount (full)
 
-    service_start = _ensure_date(item.get('service_start'))
-    service_end   = _ensure_date(item.get('service_end'))
+    Day-rate mode (daily_rate > 0, legacy):
+      Each month = daily_rate × days in that calendar month, using partial-day
+      counts for the first and last service months.
+    """
+    monthly_amount = float(item.get('monthly_amount', 0) or 0)
+    daily_rate     = float(item.get('daily_rate') or 0)
+    service_start  = _ensure_date(item.get('service_start'))
+    service_end    = _ensure_date(item.get('service_end'))
     _, days_in_month = monthrange(amort_date.year, amort_date.month)
 
-    # First month of service
+    if daily_rate > 0:
+        # Legacy day-rate mode — kept for backward compatibility
+        if service_start and amort_date.year == service_start.year \
+                and amort_date.month == service_start.month:
+            days = days_in_month - service_start.day
+        elif service_end and amort_date.year == service_end.year \
+                and amort_date.month == service_end.month:
+            days = service_end.day
+        else:
+            days = days_in_month
+        return round(daily_rate * days, 2)
+
+    # Standard monthly mode — prorate first and last months if mid-month
+    # First month of service (starts after day 1)
     if service_start and amort_date.year == service_start.year \
-            and amort_date.month == service_start.month:
-        days = days_in_month - service_start.day
+            and amort_date.month == service_start.month \
+            and service_start.day > 1:
+        days_active = days_in_month - (service_start.day - 1)
+        return round(monthly_amount * days_active / days_in_month, 2)
 
-    # Last month of service
-    elif service_end and amort_date.year == service_end.year \
-            and amort_date.month == service_end.month:
-        days = service_end.day
+    # Last month of service (ends before last day of month)
+    if service_end and amort_date.year == service_end.year \
+            and amort_date.month == service_end.month \
+            and service_end.day < days_in_month:
+        return round(monthly_amount * service_end.day / days_in_month, 2)
 
-    else:
-        days = days_in_month
-
-    return round(daily_rate * days, 2)
+    return monthly_amount
 
 
 # ── Load ─────────────────────────────────────────────────────
