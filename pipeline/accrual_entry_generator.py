@@ -1760,11 +1760,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # Moves the tenant-reimbursable portion off the main electricity expense line.
             # Only generated when actual per-tenant amounts are provided (Mode a).
             if _round(_total_elec_billed) > 0:
-                _elec_gl = _tub_gl.get(ELEC_EXPENSE_ACCOUNT)
                 _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-                # Skip if either leg already has GL activity this period
-                if (_elec_gl is None or abs(_elec_gl.net_change) < 0.01) and \
-                   (_reimb_gl is None or abs(_reimb_gl.net_change) < 0.01):
+                # Skip only if 613115 already has GL activity — 613110 (electricity
+                # expense) routinely has activity from the real bill and should not
+                # suppress the reclassification.
+                if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
                     _elec_je_id = f'TUB-{je_num:04d}'
                     _elec_desc  = (f'Tenant electricity reclassification — '
                                    f'total billed ${_total_elec_billed:,.2f} '
