@@ -169,16 +169,29 @@ PERIODIC_CONTRACT_ACCOUNTS: dict = {
 }
 # Tenant sub-metered utility recovery accounts.
 # Each month the meter read company provides per-tenant consumption data.
-# The property manager posts a JE:
-#   DR 131100  Accounts Receivable - Control  (per tenant)
-#   CR 440500  Recovery - Electricity         (electric portion)
-#   CR 440700  Recovery - Misc Utilities      (gas portion, reclassed from 440500)
+# The property manager posts TWO JEs:
+#
+#   (1) Per-tenant billing (AR / Recovery):
+#       DR 131100  Accounts Receivable - Control  (per tenant)
+#       CR 440500  Recovery - Electricity         (electric portion)
+#       CR 440700  Recovery - Misc Utilities      (gas portion, reclassed from 440500)
+#
+#   (2) P&L reclassification (aggregate, electric only):
+#       DR 613115  Tenant Electric Reimbursement  (total electric billed to tenants)
+#       CR 613110  Utilities - Electricity        (offsets main electricity expense)
+#
+# JE (2) moves the tenant-reimbursable portion from the main electricity line
+# to a dedicated sub-account so the P&L shows landlord vs. tenant shares clearly.
 #
 # If the meter read JE hasn't been posted yet at close, the pipeline accrues
 # the budget amount so NOI is not understated. When the actual meter read
 # data is available, the sidebar overrides with per-tenant actual amounts.
 TENANT_UTILITY_AR_ACCOUNT   = '131100'
 TENANT_UTILITY_AR_NAME      = 'Accounts Receivable - Control'
+ELEC_EXPENSE_ACCOUNT        = '613110'
+ELEC_EXPENSE_NAME           = 'Utilities - Electricity'
+ELEC_TENANT_REIMB_ACCOUNT   = '613115'
+ELEC_TENANT_REIMB_NAME      = 'Tenant Electric Reimbursement'
 TENANT_UTILITY_ACCOUNTS: dict = {
     '440500': {'label': 'Tenant Electric Recovery',     'budget_key': '440500'},
     '440700': {'label': 'Tenant Gas Recovery',          'budget_key': '440700'},
@@ -1711,6 +1724,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         if tenant_utility_rows:
             # Mode (a): per-tenant actuals from sidebar
+            _total_elec_billed = 0.0   # accumulate for aggregate P&L JE below
+
             for row in (tenant_utility_rows or []):
                 tenant_name = str(row.get('tenant', '') or '').strip()
                 elec_amt    = float(row.get('electric', 0) or 0)
@@ -1728,6 +1743,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                             f'(per meter read) ${elec_amt:,.2f}',
                         )
                         _tub_accounts.add('440500')
+                        _total_elec_billed += elec_amt
 
                 if gas_amt > 0:
                     _acct = _tub_gl.get('440700')
@@ -1740,8 +1756,47 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         )
                         _tub_accounts.add('440700')
 
+            # P&L reclassification: DR 613115 Tenant Electric Reimb / CR 613110 Utilities - Electricity
+            # Moves the tenant-reimbursable portion off the main electricity expense line.
+            # Only generated when actual per-tenant amounts are provided (Mode a).
+            if _round(_total_elec_billed) > 0:
+                _elec_gl = _tub_gl.get(ELEC_EXPENSE_ACCOUNT)
+                _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
+                # Skip if either leg already has GL activity this period
+                if (_elec_gl is None or abs(_elec_gl.net_change) < 0.01) and \
+                   (_reimb_gl is None or abs(_reimb_gl.net_change) < 0.01):
+                    _elec_je_id = f'TUB-{je_num:04d}'
+                    _elec_desc  = (f'Tenant electricity reclassification — '
+                                   f'total billed ${_total_elec_billed:,.2f} '
+                                   f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 1, 'date': '',
+                        'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
+                        'account_name':   ELEC_TENANT_REIMB_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          _round(_total_elec_billed), 'credit': 0,
+                        'vendor':         '[Tenant Electric Billing]',
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': 'high',
+                    })
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 2, 'date': '',
+                        'account_code':   ELEC_EXPENSE_ACCOUNT,
+                        'account_name':   ELEC_EXPENSE_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          0, 'credit': _round(_total_elec_billed),
+                        'vendor':         '[Tenant Electric Billing]',
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': 'high',
+                    })
+                    je_num += 1
+
         else:
             # Mode (b): auto-detect from GL + budget (aggregate budget accrual)
+            # Note: P&L reclassification (613115/613110) only fires in Mode (a)
+            # when actual per-tenant meter read amounts are available.
             for cand in detect_tenant_utility_billing(gl_data, budget_data):
                 cr_code = cand['account_code']
                 cr_name = 'Recovery - Electricity' if cr_code == '440500' else 'Recovery - Misc Utilities'
