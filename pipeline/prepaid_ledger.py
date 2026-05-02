@@ -390,10 +390,14 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
       DR  [gl_account_number]  amount_for_this_month
       CR  135150 Prepaid Other  amount_for_this_month
 
-    Items with months_amortized == 0 are the FIRST month:
-      those are expensed via the normal Nexus accrual JE (DR expense / CR 211300)
-      and should NOT generate a duplicate here.
-    We only generate prepaid-release JEs for months 2+ (months_amortized >= 1).
+    Items with months_amortized == 0 added THIS period: first month is handled
+      by the Nexus accrual JE — skipped here to avoid a duplicate.
+    Items with months_amortized == 0 added in a PRIOR period (initial / legacy
+      ledger setup): rebased to release this period by treating close_period − 1
+      month as the new anchor. The item is updated in-place so advance_period
+      and all future closes chain forward correctly.
+    Items with months_amortized >= 1: normal release — fires when
+      anchor + months_amortized == close_period.
 
     Day-based proration: if the item has daily_rate > 0 (set automatically by
     merge_nexus() when service_start is mid-month or service_end is mid-month),
@@ -422,16 +426,33 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
         if remaining <= 0:
             continue
 
-        # Month 0 (first month) is covered by the Nexus accrual JE.
-        # Months 1+ are prepaid asset releases.
-        if months_done == 0:
-            continue
-
-        # Verify this item is due this period.
-        # Anchor from first_added_period (not service_start) because invoices
-        # are often received after service has already started.
+        # ── Determine anchor and handle first-month logic ────────────────────
         first_added = _period_to_date(item.get('first_added_period', ''))
         anchor = first_added or date(svc_start.year, svc_start.month, 1)
+
+        if months_done == 0:
+            # Items added this period: month 1 expense is covered by the Nexus
+            # accrual JE — skip to avoid a duplicate.
+            if (close_date and anchor.year == close_date.year
+                    and anchor.month == close_date.month):
+                continue
+
+            # Legacy / initial-setup item: months_amortized was never incremented
+            # (e.g. the prepaid ledger was created manually for the first time).
+            # Rebase anchor to (close_period − 1 month) so amort_month lands on
+            # close_period this run, and future months chain forward correctly.
+            # Also persist the new first_added_period so advance_period and the
+            # next close calculate correctly.
+            if close_date:
+                new_anchor = close_date - relativedelta(months=1)
+                item['first_added_period'] = _date_to_period(new_anchor)
+                item['months_amortized']   = 1
+                anchor      = new_anchor
+                months_done = 1
+            else:
+                continue   # can't determine period; skip
+
+        # Verify this item is due this period.
         amort_month = anchor + relativedelta(months=months_done)
         if close_date and (amort_month.year != close_date.year or
                            amort_month.month != close_date.month):

@@ -363,12 +363,12 @@ st.sidebar.caption(
 
 _tenant_billing_edited = st.sidebar.data_editor(
     st.session_state.tenant_billing_df,
-    num_rows="dynamic",
+    num_rows="fixed",
     use_container_width=True,
     column_config={
         "Tenant":       st.column_config.TextColumn("Tenant", width="medium"),
-        "Electric ($)": st.column_config.NumberColumn("Electric ($)", format="$%.2f", width="small"),
-        "Gas ($)":      st.column_config.NumberColumn("Gas ($)",      format="$%.2f", width="small"),
+        "Electric ($)": st.column_config.NumberColumn("Electric ($)", min_value=0.0, step=0.01, width="small"),
+        "Gas ($)":      st.column_config.NumberColumn("Gas ($)",      min_value=0.0, step=0.01, width="small"),
     },
     key="tenant_billing_editor",
 )
