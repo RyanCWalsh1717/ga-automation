@@ -1228,16 +1228,15 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
     # vendor's monthly payment received, another's March invoice not yet arrived).
     #
     # Detection criteria — ALL must be true:
-    #   1. Account name contains 'contract'
+    #   1. Account is a recurring obligation (keyword match OR 613/614/615 code range)
     #   2. ptd_actual > 0 (has some activity — distinguishes from zero-activity gaps)
-    #   3. ptd_actual < ptd_budget × 0.5 (below 50% of expected monthly spend)
+    #   3. ptd_actual < ptd_budget × 0.90 (below 90% of expected monthly spend)
     #   4. Gap (ptd_budget − ptd_actual) > $500 materiality
-    #   5. Has prior-period history (beginning_balance > 0)
-    #   6. Not already captured by the main gap loop (ptd_actual was > 0 so main loop skipped it)
+    #   5. Has prior-period history (beginning_balance > 0), OR it is January
+    #   6. Not already captured by the main gap loop (ptd_actual >= 1 so main loop skipped it)
     #
-    # Suggested amount: smallest debit from the current period — proxy for the
-    # missing monthly contract payment (e.g., DAC $1,000 within a $3,526 period).
-    # Confidence: always LOW — reviewer must confirm which invoice is missing.
+    # Accrual amount: budget gap (ptd_budget − ptd_actual).
+    # Confidence: 'medium' for utilities/payroll, 'low' for contract accounts.
 
     _partial_coded = {c['account_code'] for c in candidates}
 
@@ -1294,9 +1293,10 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
         if abs(ptd_a) >= abs(ptd_b) * 0.90:
             continue   # >= 90% covered — within normal invoice timing variation
 
-        # Check prior history
+        # Check prior history — P&L beginning balances are 0 in January
+        # (fiscal year reset), so skip this guard in month 1.
         has_history = abs(gl_beg_bal.get(code, 0.0)) > 50.0
-        if not has_history:
+        if not has_history and _period_month != 1:
             continue
 
         # Accrual amount = the budget gap (what hasn't been billed yet).
@@ -1354,8 +1354,10 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
     Falls back to GL beginning_balance ÷ months_elapsed when BC YTD is unavailable
     for an account.
 
-    January: always skipped — months_elapsed = 0, no prior data.
-    February and later: requires months_elapsed ≥ 1.
+    January fallback: when months_elapsed = 0, uses annual_budget ÷ 12 as
+    the monthly estimate for zero-activity accounts with annual budget ≥ $60K
+    (i.e. est_monthly ≥ $5,000). No YTD division needed.
+    February and later: uses BC YTD actual ÷ months_elapsed.
 
     Returns list of dicts: account_code, account_name, estimated_amount, source='historical'
     """
@@ -1420,11 +1422,9 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
                 continue
             bi = budget_by_code[code]
             if isinstance(bi, dict):
-                bi_annual  = abs(float(bi.get('annual', 0) or 0))
-                bi_ptd     = abs(float(bi.get('ptd_budget', 0) or 0))
+                bi_annual = abs(float(bi.get('annual', 0) or 0))
             else:
-                bi_annual  = abs(float(getattr(bi, 'annual', 0) or 0))
-                bi_ptd     = abs(float(getattr(bi, 'ptd_budget', 0) or 0))
+                bi_annual = abs(float(getattr(bi, 'annual', 0) or 0))
 
             if bi_annual < 1:
                 continue
