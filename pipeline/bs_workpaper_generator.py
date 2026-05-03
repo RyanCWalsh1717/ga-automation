@@ -118,6 +118,17 @@ def _should_carry_forward_tab(tab_name: str) -> bool:
 # Balance sheet account range (assets + liabilities + equity)
 BS_ACCOUNT_RANGE = ('100000', '399999')
 
+# Excel sheet names cannot contain: \ / * ? : [ ]
+# Any of these characters in account names or period labels will be replaced with '-'.
+_EXCEL_INVALID_CHARS = '\\/*?:[]'
+
+
+def _safe_sheet_name(name: str, max_len: int = 31) -> str:
+    """Return *name* with Excel-illegal characters replaced by '-', truncated to max_len."""
+    for ch in _EXCEL_INVALID_CHARS:
+        name = name.replace(ch, '-')
+    return name[:max_len]
+
 # Tab colors
 COLOR_SUMMARY    = '1F4E78'   # dark blue  — summary
 COLOR_TB         = '2E75B6'   # medium blue — trial balance
@@ -300,8 +311,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     else:
         wb = Workbook()
 
-    # Tab prefix for all current-period sheets
-    _tab_pfx = (period + ' ') if period else ''
+    # Tab prefix for all current-period sheets — sanitized for Excel.
+    _tab_pfx = (_safe_sheet_name(period) + ' ') if period else ''
 
     # Build TB lookup: account_code -> TBAccount
     tb_map = {}
@@ -936,7 +947,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     The Variance column is green for $0, red for non-zero.
     """
     # Tab name: no period prefix — account stays in one place through all months
-    acct_label = f'{gl_acct.account_code} {gl_acct.account_name}'[:31]
+    acct_label = _safe_sheet_name(f'{gl_acct.account_code} {gl_acct.account_name}')
     ws = wb.create_sheet(acct_label)
 
     is_complex = gl_acct.account_code in COMPLEX_ACCOUNTS
@@ -1236,7 +1247,7 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
     Footer: total → GL balance → variance (should be ≤ $0.02 rounding)
     TB tie-out row appended after the GL section.
     """
-    acct_label = f'{gl_acct.account_code} {gl_acct.account_name}'[:31]
+    acct_label = _safe_sheet_name(f'{gl_acct.account_code} {gl_acct.account_name}')
     ws = wb.create_sheet(acct_label)
     ws.sheet_properties.tabColor = COLOR_BS_COMPLEX  # red — complex account
     ws.column_dimensions['A'].width = 2
@@ -1468,7 +1479,7 @@ def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
     Uses the same rolling-table format as _write_account_tab.
     Current-period row: net activity = 0, GL ending = TB forward balance.
     """
-    acct_label = f'{tb_acct.account_code} {tb_acct.account_name}'[:31]
+    acct_label = _safe_sheet_name(f'{tb_acct.account_code} {tb_acct.account_name}')
     ws = wb.create_sheet(acct_label)
     ws.sheet_properties.tabColor = COLOR_BS_STD
     ws.column_dimensions['A'].width = 2
