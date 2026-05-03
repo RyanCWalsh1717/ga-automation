@@ -1536,10 +1536,13 @@ with tab2:
                 progress_bar.progress(25)
 
                 tb_result = None
-                if "trial_balance" in st.session_state.uploaded_files:
+                # Resolve TB path: Pass 2 upload takes priority over sidebar upload
+                _tb_file = (st.session_state.uploaded_files.get("trial_balance_pass2")
+                            or st.session_state.uploaded_files.get("trial_balance"))
+                if _tb_file:
                     try:
                         from parsers.yardi_trial_balance import parse as parse_tb
-                        tb_result = parse_tb(st.session_state.uploaded_files["trial_balance"])
+                        tb_result = parse_tb(_tb_file)
                     except Exception as _e:
                         st.warning(f"Could not parse Trial Balance: {_e}")
 
