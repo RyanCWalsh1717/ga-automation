@@ -2128,11 +2128,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             pass
 
     # Collect accounts already covered by Layers 0 (manual), 0b (amortization),
-    # and 1 (Nexus). Seeding _covered here prevents later layers from generating
-    # duplicate entries for the same account.
+    # 1 (Nexus), and TUB (tenant utility billing). Seeding _covered here prevents
+    # later layers from generating duplicate entries for the same account.
+    # TUB must be included: the P&L reclass (DR 613115 / CR 613110) touches
+    # expense accounts that budget gap would otherwise accrue a second time.
     _covered = _manual_accounts | _amort_accounts | set(
         l['account_code'] for l in je_lines
-        if l.get('line') == 1 and l.get('source') == 'nexus'
+        if l.get('line') == 1 and l.get('source') in ('nexus', 'tenant_utility_billing')
     )
 
     # Multi-layer review tracking: when a later layer detects an account that
