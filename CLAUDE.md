@@ -51,15 +51,21 @@ pipeline/
                                   Also detects prior-period catch-up (unmatched auto-reversals
                                   in 637130) and generates MGT-002 catch-up JE.
 
-  accrual_entry_generator.py    ← 4-layer accrual entry detection (deduped against GL):
+  accrual_entry_generator.py    ← 5-layer accrual entry detection (deduped against GL):
                                   Layer 1: Nexus open invoices
                                   Layer 2: Invoice proration (cost-per-day × days remaining
                                            for recurring vendors already in GL)
-                                  Layer 3: Historical recurring (BC YTD actual ÷ months
-                                           elapsed; $5,000 materiality floor; skip Jan)
-                                  Layer 4: Budget gap detection (contract accounts only,
-                                           $5,000 materiality floor)
+                                  Layer 3: Budget gap detection — PASS 1 (zero-activity accounts)
+                                           and PASS 2 (partially-covered accounts, <90% of budget).
+                                           Covers contracted services, utilities (613/614xxx),
+                                           payroll (615xxx), fixed costs, tenant amenities.
+                                           Materiality floor: $500.
+                                  Layer 4: Historical recurring (BC YTD actual ÷ months elapsed;
+                                           $5,000 materiality floor; January uses annual÷12 fallback)
+                                  Layer 5: Kardin payroll bonus accruals
                                   Interest expense (801xxx) auto-routes to CR 213200
+                                  TUB accounts added to _covered so budget gap never
+                                  double-counts utility accounts touched by meter-read JEs.
 
   qc_engine.py                  ← 7-point QC checklist run in Pass 2:
                                   CHECK_1: TB → BC tie-out
@@ -73,6 +79,11 @@ pipeline/
   prepaid_ledger.py             ← Prepaid amortization schedule. Tracks insurance and
                                   other prepaid items; generates monthly amortization JEs
                                   and release entries (Pass 1 only).
+                                  Endpoint proration: first and last months prorated by
+                                  actual days active; all middle months get full monthly amount.
+                                  Legacy rebase: if months_amortized=0 and first_added_period
+                                  != close_period, rebases anchor to close_period-1 so
+                                  the first pipeline release is the correct current month.
 
   report_generator.py           ← generate_exception_report() only — used in Pass 2.
                                   Note: The Singerman 8-tab workbook (BS, IS, T12, TB-MTD,
@@ -90,6 +101,9 @@ pipeline/
                                   its sheets with the prior period label so current
                                   period sheets can be appended — file grows monthly.
                                   No je_adjustments in Pass 2 — GL is already final.
+                                  Sheet names sanitized: all Excel-illegal characters
+                                  (\ / * ? : [ ]) replaced with '-' in account names
+                                  and period labels before tab creation.
 
   variance_comments.py          ← Variance commentary engine (Pass 2). Data-driven mode
                                   (no API) or Claude API mode (claude-3-5-haiku) with
@@ -119,6 +133,9 @@ pipeline/
     kardin_budget.py            ← Kardin Annual Budget (.xlsx) — used for QC tie-out
                                   and Kardin-driven payroll bonus accruals.
     monthly_report_template.py  ← Monthly Report Template (.xlsx) — Singerman format map.
+    bofa_statement.py           ← Bank of America Full Analysis Business Checking PDF —
+                                  Development account (revlabs entity). Dormant account;
+                                  returns ending balance, no outstanding items.
 ```
 
 ---
@@ -175,16 +192,16 @@ Then: **Generate Reports** button
 1. User re-exports final GL, BC, TB, Bank Rec, Loan Statements from Yardi
 2. User uploads final-close files in the Pass 2 tab
 3. `engine.run_pipeline()` parses final GL (all JEs already reflected)
-4. Workpaper generated — GL vs TB tie-out ties clean (no je_adjustments needed).
+4. Trial Balance resolved: Pass 2 upload takes priority over sidebar upload
+5. Workpaper generated — GL vs TB tie-out ties clean (no je_adjustments needed).
    If prior month's workpaper is uploaded, prior sheets are prefixed with the prior
    period label and current-period sheets are appended (historical carry-forward).
-5. Institutional workpapers generated (bank rec, debt service, rent roll)
-6. Management fee verified against GL (informational — JE already posted)
-7. QC engine runs 7 checks across final GL, TB, BC
-8. Variance comments generated against final GL actuals (API or data-driven)
-9. Annotated BC exported with comments in cols L/M
-10. Exception report generated
-11. Ryan and Natasha review all outputs before Lauren sees them
+   First month (January 2026): leave prior workpaper blank — file starts fresh.
+6. QC engine runs 7 checks across final GL, TB, BC
+7. Variance comments generated against final GL actuals (API or data-driven)
+8. Annotated BC exported with comments in cols L/M
+9. Exception report generated
+10. Ryan and Natasha review all outputs before Lauren sees them
 
 ---
 
@@ -216,13 +233,59 @@ Then: **Generate Reports** button
 |-------|--------|--------|
 | 1 | Nexus AP Accrual Detail | Open invoices not yet in GL (deduped by invoice number) |
 | 2 | GL recurring invoices | Cost-per-day × days remaining in period |
-| 3 | Yardi Budget Comparison | Budget − YTD Actual gap, with escrow/seasonal exclusions |
-| 4 | GL historical patterns | Average of prior months for accounts with no current activity |
+| 3 | Budget gap — PASS 1 | Zero-activity accounts: full ptd_budget when no GL activity |
+| 3 | Budget gap — PASS 2 | Partial coverage: gap (ptd_budget − ptd_actual) when <90% covered |
+| 4 | Historical (BC YTD) | Average of prior months; January fallback uses annual÷12 |
 | 5 | Kardin budget | Annual bonus ÷ 12 − min monthly; suppressed on payment months |
 
-Materiality floor: **$500** — entries below this are suppressed.
+**Materiality floors**: Layer 3 → $500 | Layer 4 → $5,000
 
-Escrow-funded accounts excluded from budget-gap (e.g., 641110 RE Tax via 115200, insurance via 115300).
+**Account coverage for Layer 3**:
+- Service contracts (janitorial, elevator, HVAC, fire life safety, landscaping, snow, trash, security, cleaning, maintenance, parking, etc.)
+- Utilities: `electric`, `gas`, `water`, `sewer`, `utilit` keywords + all 613xxx / 614xxx account codes
+- Payroll / HR: `payroll`, `wage`, `salary`, `labor`, `benefit` keywords + all 615xxx account codes
+- Tenant amenities: `food`, `catering`, `amenity`, `fitness`
+- Fixed obligations: `insurance`, `tax`, `license`
+- PASS 2 threshold: accounts ≥ 90% covered are skipped (normal invoice timing variation)
+
+**Escrow-funded accounts excluded from budget gap** (e.g., 641110 RE Tax via 115200, insurance via 115300).
+
+**`_covered` exclusion set** seeds from: manual JEs + amortization entries + Nexus invoices + TUB entries.
+TUB accounts included to prevent budget gap from double-counting utility expense accounts
+that are also touched by the meter-read P&L reclass (DR 613115 / CR 613110).
+
+---
+
+## Prepaid Ledger (prepaid_ledger.py)
+
+**Seed file**: `GA_Prepaid_Ledger_Seed_Dec2025.xlsx` — 12 items, all `months_amortized = 0`.
+Upload as the "prior month ledger" for the first January 2026 run.
+
+**Proration rules**:
+- First month of service (mid-month start): `monthly_amount × (days_in_month − (start_day−1)) / days_in_month`
+- Last month of service (mid-month end): `monthly_amount × end_day / days_in_month`
+- All middle months: full `monthly_amount`
+- Daily-rate items (legacy): `daily_rate × days_active_in_month`
+
+**Legacy rebase**: When `months_amortized = 0` and `first_added_period ≠ close_period`, the pipeline
+rebases the anchor to `close_period − 1` and sets `months_amortized = 1`, so the first release is
+the correct current month.
+
+**Output**: `GA_Prepaid_Ledger_Updated.xlsx` — upload next month as the prior-month ledger.
+
+---
+
+## Tenant Utility Billing (TUB)
+
+Two modes, mutually exclusive:
+- **Mode (a)**: User enters per-tenant electric/gas amounts in the sidebar TUB table.
+  Generates DR 133110 / CR 440500 (electric) and DR 133110 / CR 440700 (gas) per tenant.
+  Always fires regardless of GL activity — no guard.
+  Followed by aggregate P&L reclass: DR 613115 / CR 613110 (if 613115 not already in GL).
+- **Mode (b)**: No TUB rows provided — auto-detects from budget comparison.
+  Retains GL activity guard; skips if 440500/440700 already posted.
+
+TUB entries appear in `GA_Accruals_JE.csv`.
 
 ---
 
@@ -236,6 +299,18 @@ Escrow-funded accounts excluded from budget-gap (e.g., 641110 RE Tax via 115200,
   `135150` Prepaids, `213100` Accrued Expenses, `213200` Accrued Interest Payable,
   `613110` Utilities - Electricity, `613115` Tenant Electric Reimbursement,
   `637130` Admin-Management Fees
+
+---
+
+## Pass 2 Workpaper (bs_workpaper_generator.py)
+
+- **Trial Balance resolution**: `trial_balance_pass2` upload takes priority over sidebar `trial_balance`.
+  Both paths checked so the workpaper generates regardless of which upload slot is used.
+- **Sheet name sanitization**: all Excel-illegal characters (`\ / * ? : [ ]`) replaced with `-`
+  in both period labels and account names before any `wb.create_sheet()` call.
+- **Historical carry-forward**: first run (January 2026) — leave prior workpaper blank.
+  From February onward: upload prior month's `GA_Workpapers.xlsx` to append new period sheets.
+  File grows month-over-month; each account has a single rolling tab with one row per period.
 
 ---
 
@@ -258,6 +333,9 @@ Escrow-funded accounts excluded from budget-gap (e.g., 641110 RE Tax via 115200,
 - **Pass 2 file overrides**: `files_dict` is built from sidebar uploads then overridden by any
   Pass 2-specific uploads (`gl_pass2`, `budget_comparison_pass2`, `trial_balance_pass2`,
   `bank_rec_pass2`, `loan_pass2`). Sidebar files serve as fallback.
+- **Three separate output CSVs** (intentional — not combined):
+  `GA_Accruals_JE.csv`, `GA_Prepaid_JE.csv`, `GA_Manual_JE.csv`. Each maps to a separate
+  Yardi import batch for cleaner auditability and independent reversibility.
 
 ---
 
@@ -286,6 +364,7 @@ No CI/CD pipeline — Streamlit builds directly from `requirements.txt`.
 - **Ryan Walsh** — GRP accountant, primary pipeline operator. Reviews all outputs before sign-off.
 - **Natasha** — GRP accountant, co-reviewer. Reviews pipeline outputs alongside Ryan.
 - **Lauren Sullivan** — CFO. Final reviewer only — sees outputs after Ryan/Natasha complete review.
+- **Phil** — Technical collaborator / integration partner.
 
 ---
 
@@ -319,3 +398,30 @@ No CI/CD pipeline — Streamlit builds directly from `requirements.txt`.
 | File | Contents |
 |------|----------|
 | Singerman Monthly Report | 8-tab workbook (BS, IS, T12, TB-MTD, TB-YTD, GL-MTD, GL-YTD, Tenancy) — downloaded directly from Yardi |
+
+---
+
+## Recent Changes (May 2026)
+
+### Bug Fixes
+| Area | Issue | Fix |
+|------|-------|-----|
+| TUB block | Mode (a) meter-read JEs suppressed when 440500/440700 had any GL activity | Removed GL activity guard from Mode (a) — always generates when user fills TUB table |
+| Accruals `_covered` set | TUB accounts not marked as covered, causing budget gap to double-count 613110/613115 | Added `tenant_utility_billing` to `_covered` seed sources |
+| Budget gap — Layer 3 PASS 1 | `abs(ptd_actual) >= 1` guard suppressed ALL accounts with any existing GL activity | Restored guard with correct PASS 1 / PASS 2 separation |
+| Budget gap — Layer 3 keyword filter | Only narrow "contract" keywords; utilities and payroll excluded | Expanded to include utilities, payroll, amenities, fixed obligations + 613/614/615 account ranges |
+| Budget gap — Layer 3 PASS 2 | Only fired for `*contract*` names; threshold 50%; used smallest-invoice amount | Expanded to same keyword/range set as PASS 1; threshold raised to 90%; amount = full gap |
+| Budget gap — PASS 2 January | `has_history` guard (beginning_balance > $50) blocked all entries in January (P&L balances reset) | Skip `has_history` guard when period month = 1 |
+| Layer 4 historical — January | `months_elapsed < 1` returned empty immediately; no accruals in first close of fiscal year | Added January fallback: use `annual_budget ÷ 12` for zero-activity accounts with annual budget ≥ $60K |
+| Pass 2 workpaper | Workpaper skipped when TB uploaded in Pass 2 section only (sidebar TB absent) | TB resolution now checks `trial_balance_pass2` first, then falls back to sidebar `trial_balance` |
+| Workpaper sheet names | `Invalid Character / found in sheet title` — account names with `/` (e.g. `Notes Receivable / Related Party`) used raw as Excel tab names | Added `_safe_sheet_name()` helper; applied to all four `wb.create_sheet()` call sites |
+| Prepaid ledger | `_month_amount()` used flat daily rate for all months; no endpoint proration | Rewrote to prorate first/last months by actual days active; mid-months get full monthly amount |
+
+### Enhancements
+| Area | Enhancement |
+|------|-------------|
+| Prepaid ledger seed | Corrected `GA_Prepaid_Ledger_Seed_Dec2025.xlsx`: all 12 items at `months_amortized=0`; Openpath converted from daily-rate to monthly ($637.50/mo); Dynamic Media and GRP Dec service end dates corrected by 1 day |
+| Budget gap confidence | PASS 2 utility/payroll accounts get `confidence='medium'` (predictable recurring); contract accounts remain `'low'` |
+| Budget gap descriptions | PASS 2 descriptions accurately describe partial coverage with billed%, gap amount, and review instruction where needed |
+| Layer 4 docstring | Updated to reflect January fallback behavior (was "January: always skipped") |
+| PASS 2 comment block | Updated to reflect expanded keywords, 90% threshold, and gap-based amount |
