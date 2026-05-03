@@ -1101,10 +1101,8 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
         if not is_expense_account(code):
             continue
 
-        # Materiality: budget must exceed $5,000 with no GL activity.
-        # Layer 3 (budget gap) is the last resort — only fire for high-value
-        # accounts that are clearly contracted or fixed-cost services.
-        if abs(ptd_budget) <= 5000 or abs(ptd_actual) >= 1:
+        # Materiality floor: skip trivial amounts (matches overall pipeline floor).
+        if abs(ptd_budget) <= 500:
             continue
 
         # Skip if YTD budget is zero but annual exists (not yet allocated)
@@ -1152,19 +1150,41 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
         else:
             confidence = 'medium'
 
+        # ── PASS 1 only fires for zero-activity accounts ──────────────────
+        # Partial coverage (some GL activity, gap below budget) is handled
+        # by PASS 2 below so the accrual amount is correctly set to the gap.
+        if abs(ptd_actual) >= 1:
+            continue
+
         # ── Contract/service filter ────────────────────────────────────────
-        # Layer 3 (budget gap) fires only for accounts that are clearly
-        # contracted services or fixed-cost obligations (insurance, RE taxes).
-        # Repair/irregular accounts and general operating costs without a
-        # contract signal are better handled by Layer 4 (historical) or
-        # should not be accrued without an invoice in hand.
+        # Layer 3 (budget gap) fires for accounts that are clearly recurring
+        # obligations: contracted services, utilities, payroll, fixed costs.
+        # Repair/irregular accounts and truly discretionary spend without a
+        # prior-year signal are better handled by Layer 4 (historical).
         _CONTRACT_KW_L3 = (
+            # Service contracts
             'contract', 'contracted', 'agreement',
             'janitorial', 'elevator', 'pest', 'extermina',
             'hvac', 'fire', 'landscap', 'snow', 'trash', 'recycl',
             'management', 'maintenance', 'parking', 'security',
+            'cleaning', 'porter', 'engineer', 'technician',
+            # Utilities
+            'electric', 'gas', 'water', 'sewer', 'utilit',
+            # Payroll / HR
+            'payroll', 'wage', 'salary', 'labor', 'benefit',
+            # Tenant amenities / food service
+            'food', 'catering', 'amenity', 'fitness',
+            # Fixed obligations
+            'insurance', 'tax', 'license',
         )
-        if not is_fixed and not any(kw in name_lower for kw in _CONTRACT_KW_L3):
+        # Also allow utility (613xxx) and payroll-adjacent (615xxx) account ranges
+        # even if the account name doesn't contain a matching keyword
+        _is_utility_range  = code.startswith(('613', '614'))
+        _is_payroll_range  = code.startswith('615')
+        if (not is_fixed
+                and not any(kw in name_lower for kw in _CONTRACT_KW_L3)
+                and not _is_utility_range
+                and not _is_payroll_range):
             continue
 
         # ── Build human-readable description ──────────────────────────────
@@ -1241,8 +1261,29 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
             continue
         if code in _ESCROW_FUNDED:
             continue
-        if 'contract' not in name.lower():
+
+        # Keyword / account-range gate — same expanded set as PASS 1
+        _name_l = name.lower()
+        _is_fixed_p2      = any(kw in _name_l for kw in _FIXED_KW)
+        _EXPANDED_KW_P2 = (
+            'contract', 'contracted', 'agreement',
+            'janitorial', 'elevator', 'pest', 'extermina',
+            'hvac', 'fire', 'landscap', 'snow', 'trash', 'recycl',
+            'management', 'maintenance', 'parking', 'security',
+            'cleaning', 'porter', 'engineer', 'technician',
+            'electric', 'gas', 'water', 'sewer', 'utilit',
+            'payroll', 'wage', 'salary', 'labor', 'benefit',
+            'food', 'catering', 'amenity', 'fitness',
+            'insurance', 'tax', 'license',
+        )
+        _is_util_p2    = code.startswith(('613', '614'))
+        _is_payroll_p2 = code.startswith('615')
+        if (not _is_fixed_p2
+                and not any(kw in _name_l for kw in _EXPANDED_KW_P2)
+                and not _is_util_p2
+                and not _is_payroll_p2):
             continue
+
         if abs(ptd_a) < 1:
             continue   # zero-activity — already handled by main loop
         if abs(ptd_b) <= 500:
@@ -1250,53 +1291,50 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
         gap = abs(ptd_b) - abs(ptd_a)
         if gap < 500:
             continue
-        if abs(ptd_a) >= abs(ptd_b) * 0.5:
-            continue   # >= 50% covered — normal variation, not a missing invoice
+        if abs(ptd_a) >= abs(ptd_b) * 0.90:
+            continue   # >= 90% covered — within normal invoice timing variation
 
         # Check prior history
         has_history = abs(gl_beg_bal.get(code, 0.0)) > 50.0
         if not has_history:
             continue
 
-        # Suggested amount: smallest positive debit this period from GL
-        gl_acct = None
-        if hasattr(gl_data, 'accounts'):
-            for a in gl_data.accounts:
-                if str(a.account_code).strip() == code:
-                    gl_acct = a
-                    break
-        if gl_acct:
-            debits = [abs((t.debit or 0) - (t.credit or 0))
-                      for t in gl_acct.transactions
-                      if (t.debit or 0) - (t.credit or 0) > 0]
-            suggested = min(debits) if debits else gap
-        else:
-            suggested = gap
+        # Accrual amount = the budget gap (what hasn't been billed yet).
+        # For utilities / payroll accounts, the gap IS the right accrual amount.
+        # For traditional contract accounts, also use the gap; the smallest-invoice
+        # heuristic understated the accrual whenever multiple invoices are missing.
+        suggested = _round(gap)
+
+        # Confidence: medium for utilities/payroll (predictable recurring), low for others
+        _is_recurring_p2 = _is_util_p2 or _is_payroll_p2 or any(
+            kw in _name_l for kw in ('electric', 'gas', 'water', 'sewer', 'utilit',
+                                      'payroll', 'wage', 'salary', 'labor'))
+        _conf_p2 = 'medium' if _is_recurring_p2 else 'low'
 
         # Check if this is a known periodic-billing account (quarterly, etc.)
         _periodic_info = PERIODIC_CONTRACT_ACCOUNTS.get(code)
-        _periodic_gap  = _round(gap - suggested)   # estimated outstanding beyond min invoice
+        _review_prefix = '' if _is_recurring_p2 else 'REVIEW — '
 
         _entry: Dict[str, Any] = {
             'account_code':  code,
             'account_name':  name,
-            'budget_amount': _round(suggested),
+            'budget_amount': suggested,
             'source':        'budget_gap',
-            'confidence':    'low',
+            'confidence':    _conf_p2,
             'description': (
-                f'REVIEW — Partial contract coverage: {name} — '
+                f'{_review_prefix}Partial coverage: {name} — '
                 f'${abs(ptd_a):,.2f} billed of ${abs(ptd_b):,.2f} budget '
                 f'({abs(ptd_a)/abs(ptd_b)*100:.0f}% covered). '
-                f'Suggested accrual ${suggested:,.2f} (smallest invoice this period). '
-                f'Confirm which contract invoices are still outstanding.'
+                f'Accruing gap of ${suggested:,.2f}.'
+                + ('' if _is_recurring_p2 else
+                   ' Confirm outstanding invoices before posting.')
             ),
         }
 
         if _periodic_info:
-            _entry['periodic_flag']      = True
-            _entry['periodic_label']     = _periodic_info['label']
-            _entry['periodic_billing']   = _periodic_info['billing_cycle']
-            _entry['periodic_suggested'] = _periodic_gap  # remaining gap after min invoice
+            _entry['periodic_flag']    = True
+            _entry['periodic_label']   = _periodic_info['label']
+            _entry['periodic_billing'] = _periodic_info['billing_cycle']
 
         candidates.append(_entry)
 
@@ -1344,10 +1382,6 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
     # Jan=1 → 0 prior months; Feb=2 → 1; Mar=3 → 2; etc.
     months_elapsed = month_num - 1 if month_num > 0 else 0
 
-    # Require at least 1 prior closed month to extrapolate from
-    if months_elapsed < 1:
-        return candidates
-
     # Build YTD actual and budget lookups from Budget Comparison data
     ytd_actual_by_code: Dict[str, float] = {}
     budget_by_code: Dict[str, Any] = {}
@@ -1377,6 +1411,44 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
         if abs(acct.net_change) > 0.01:
             continue
 
+        # ── January fallback: no prior-year YTD data available ────────────────
+        # Use annual budget ÷ 12 as the monthly estimate.
+        # This prevents the historical layer from going dark in the first month
+        # of the fiscal year when BC YTD and GL beginning balance are both zero.
+        if months_elapsed < 1:
+            if code not in budget_by_code:
+                continue
+            bi = budget_by_code[code]
+            if isinstance(bi, dict):
+                bi_annual  = abs(float(bi.get('annual', 0) or 0))
+                bi_ptd     = abs(float(bi.get('ptd_budget', 0) or 0))
+            else:
+                bi_annual  = abs(float(getattr(bi, 'annual', 0) or 0))
+                bi_ptd     = abs(float(getattr(bi, 'ptd_budget', 0) or 0))
+
+            if bi_annual < 1:
+                continue
+
+            est_monthly = bi_annual / 12
+            if est_monthly < 5000:
+                continue
+
+            candidates.append({
+                'account_code': code,
+                'account_name': acct.account_name,
+                'estimated_amount': _round(est_monthly),
+                'ytd_prior': 0.0,
+                'months_prior': 0,
+                'source': 'historical',
+                'description': (
+                    f'Historical recurring (Jan est.) — {acct.account_name}: '
+                    f'${est_monthly:,.0f}/mo (annual budget ${bi_annual:,.0f} ÷ 12), '
+                    f'no activity this period'
+                ),
+            })
+            continue
+
+        # ── Feb+ normal path: BC YTD ÷ months elapsed ─────────────────────────
         # Try BC YTD actual first; fall back to GL beginning balance
         ytd_prior = ytd_actual_by_code.get(code, 0.0)
         use_gl_fallback = False
