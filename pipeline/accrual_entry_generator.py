@@ -1343,7 +1343,8 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
 
 # ── Layer 4 (runs before budget gap): Historical pattern detection ────────────
 
-def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[Dict[str, Any]]:
+def detect_historical_recurring(gl_data, budget_data, period: str = '',
+                                t12_result=None) -> List[Dict[str, Any]]:
     """
     Identify recurring expense patterns using Budget Comparison YTD actual data.
 
@@ -1354,10 +1355,14 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
     Falls back to GL beginning_balance ÷ months_elapsed when BC YTD is unavailable
     for an account.
 
-    January fallback: when months_elapsed = 0, uses annual_budget ÷ 12 as
-    the monthly estimate for zero-activity accounts with annual budget ≥ $60K
-    (i.e. est_monthly ≥ $5,000). No YTD division needed.
-    February and later: uses BC YTD actual ÷ months_elapsed.
+    January fallback (months_elapsed = 0):
+      - With T12: uses December actual from the 12-Month Statement (most accurate).
+      - Without T12: uses annual_budget ÷ 12 for accounts with annual budget ≥ $60K.
+    February and later: uses BC YTD actual ÷ months_elapsed (T12 not used).
+
+    Args:
+        t12_result: Optional T12Result from parsers.yardi_t12.  When provided and
+                    period is January, December actuals replace the annual÷12 fallback.
 
     Returns list of dicts: account_code, account_name, estimated_amount, source='historical'
     """
@@ -1414,10 +1419,30 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
             continue
 
         # ── January fallback: no prior-year YTD data available ────────────────
-        # Use annual budget ÷ 12 as the monthly estimate.
+        # Prefer T12 December actual when uploaded; otherwise use annual budget ÷ 12.
         # This prevents the historical layer from going dark in the first month
         # of the fiscal year when BC YTD and GL beginning balance are both zero.
         if months_elapsed < 1:
+            # Path A: T12 December actual (more accurate than annual/12)
+            if t12_result is not None and hasattr(t12_result, 'prior_month'):
+                dec_actual = abs(t12_result.prior_month(code, 1))  # Dec = prior to Jan
+                if dec_actual >= 5000:
+                    candidates.append({
+                        'account_code': code,
+                        'account_name': acct.account_name,
+                        'estimated_amount': _round(dec_actual),
+                        'ytd_prior': dec_actual,
+                        'months_prior': 1,
+                        'source': 'historical',
+                        'description': (
+                            f'Historical recurring (Jan — Dec actual) — {acct.account_name}: '
+                            f'${dec_actual:,.0f} (December 2025 actual from T12 statement), '
+                            f'no activity this period'
+                        ),
+                    })
+                continue  # whether used or not, don't fall through to annual/12
+
+            # Path B: annual budget ÷ 12 (no T12 available)
             if code not in budget_by_code:
                 continue
             bi = budget_by_code[code]
@@ -1443,7 +1468,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '') -> List[
                 'description': (
                     f'Historical recurring (Jan est.) — {acct.account_name}: '
                     f'${est_monthly:,.0f}/mo (annual budget ${bi_annual:,.0f} ÷ 12), '
-                    f'no activity this period'
+                    f'no T12 uploaded — upload for December actuals'
                 ),
             })
             continue
@@ -1615,6 +1640,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           bonus_overrides: Optional[Dict[str, float]] = None,
                           loan_data=None,
                           re_tax_bill_amount: float = 0.0,
+                          t12_result=None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from five sources (in priority order):
@@ -2193,7 +2219,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # Fires when an expense account had activity in prior months but is silent
     # this period — the average prior month spend is used as the accrual estimate.
     if gl_data:
-        historicals = detect_historical_recurring(gl_data, budget_data, period=period)
+        historicals = detect_historical_recurring(gl_data, budget_data, period=period,
+                                                    t12_result=t12_result)
         for hist in historicals:
             if hist['account_code'] in _covered:
                 _other_claimants.setdefault(hist['account_code'], []).append('historical')

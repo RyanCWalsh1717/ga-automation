@@ -220,6 +220,12 @@ FILE_CONFIG = {
         "annual budget ÷ 12, suppressed in payment months). "
         "Without it: QC budget check and bonus accruals skipped.",
     ),
+    "t12_statement": (
+        "12-Month Income Statement (.xlsx)", "xlsx", False, "core",
+        "Powers MoM Swings tab (Tab 4) in Pass 2 QC workbook with real prior-month actuals "
+        "instead of derived YTD-PTD. Critical for January (prior month = December actuals). "
+        "Also improves Layer 4 historical accrual detection in Pass 1.",
+    ),
     "nexus_accrual": (
         "Nexus Invoice Detail (.xls / .xlsx)", ["xls", "xlsx"], False, "core",
         "Enables AP accrual detection (Layer 1 — open invoices not yet posted to GL). "
@@ -624,6 +630,16 @@ with tab1:
                         and float(r.get("Amount ($)", 0) or 0) > 0
                     ]
 
+                # Parse T12 for Pass 1 (improves Layer 4 January historical accrual accuracy)
+                _t12_file_p1 = st.session_state.uploaded_files.get("t12_statement")
+                _t12_result_p1 = None
+                if _t12_file_p1 and os.path.exists(_t12_file_p1):
+                    try:
+                        from parsers.yardi_t12 import parse as parse_t12
+                        _t12_result_p1 = parse_t12(_t12_file_p1)
+                    except Exception as _e:
+                        st.warning(f"Could not parse 12-Month Statement for Pass 1: {_e}")
+
                 je_lines = build_accrual_entries(
                     nexus_data or [],
                     period=close_period,
@@ -634,6 +650,7 @@ with tab1:
                     tenant_utility_rows=_tenant_utility_rows or None,
                     loan_data=engine_result.parsed.get('loan'),
                     re_tax_bill_amount=_re_tax_bill_amount,
+                    t12_result=_t12_result_p1,
                 )
 
                 # Step 3: Prepaid ledger — load → merge → release JEs → advance
@@ -1546,6 +1563,16 @@ with tab2:
                     except Exception as _e:
                         st.warning(f"Could not parse Trial Balance: {_e}")
 
+                # Parse 12-Month Statement (optional — powers MoM tab with real prior-month actuals)
+                t12_result = None
+                _t12_file = st.session_state.uploaded_files.get("t12_statement")
+                if _t12_file and os.path.exists(_t12_file):
+                    try:
+                        from parsers.yardi_t12 import parse as parse_t12
+                        t12_result = parse_t12(_t12_file)
+                    except Exception as _e:
+                        st.warning(f"Could not parse 12-Month Statement: {_e}")
+
                 # Parse bank statements for BS workpaper
                 _gl_result = engine_result.parsed.get('gl')
                 bank_rec_data = engine_result.parsed.get("bank_rec")
@@ -1707,6 +1734,7 @@ with tab2:
                         gl_parsed=gl_parsed,
                         loan_data=engine_result.parsed.get('loan'),
                         period_month=_period_month,
+                        t12_result=t12_result,
                     )
                     st.session_state.pass2_output_files["qc_workbook"] = qc_path
                 except Exception as _e:

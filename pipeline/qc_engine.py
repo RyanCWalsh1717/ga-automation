@@ -1291,15 +1291,18 @@ def _write_tab3(wb, report: QCReport, tb_result, gl_parsed):
 
 # ── Tab 4 — MoM Swings ────────────────────────────────────────
 
-def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1):
+def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1, t12_result=None):
     ws = wb.create_sheet('4-MoM Swings')
     ws.sheet_properties.tabColor = _C_NAVY
 
     prop = report.property_name or 'Revolution Labs'
     _qwrite_tab_header(ws, 'CHECK 4: Month-over-Month Swings', prop, report.period)
+
+    has_t12 = t12_result is not None and hasattr(t12_result, 'prior_month')
+    prior_src = '12-Month Statement' if has_t12 else 'YTD − PTD (derived)'
     _qwrite_check_header(ws,
         'CHECK 4: Month-over-Month Swings — Prior Month vs Current Month',
-        'Flag: changes > $10,000 or sign changes | Prior month derived from YTD - PTD',
+        f'Flag: changes > $10,000 or sign changes | Prior month source: {prior_src}',
         6)
 
     headers = ['Line Item', 'Prior Month', 'Current Month', 'Change ($)', 'Flag', 'Notes']
@@ -1309,21 +1312,30 @@ def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1):
     bcm = _bc_map(budget_rows)
 
     row = 9
-
-    # January: P&L resets at fiscal year start — prior month = $0 everywhere.
-    # All swings are trivially "SIGNIFICANT" and carry no analytical value.
-    # Insert a prominent advisory row and suppress flag labels.
     is_january = (period_month == 1)
-    if is_january:
+
+    # Advisory banner for January without T12
+    if is_january and not has_t12:
         note_cell = ws.cell(row=row, column=1,
-            value='JANUARY NOTE: First month of fiscal year — prior month = $0 for all P&L accounts. '
-                  'All changes reflect full-month activity, not period-over-period movement. '
-                  'Flag labels suppressed. Review MoM from February onward.')
-        note_cell.font = _qfont(bold=True, size=9, color=_C_NAVY)
-        note_cell.fill = _qfill('FFFDE7')   # light amber
+            value='JANUARY NOTE: No 12-Month Statement uploaded — prior month = $0 for all P&L accounts '
+                  '(fiscal year reset). Upload the T12 in the sidebar to see real December actuals. '
+                  'Flag labels suppressed for January.')
+        note_cell.font      = _qfont(bold=True, size=9, color=_C_NAVY)
+        note_cell.fill      = _qfill('FFFDE7')
         note_cell.alignment = Alignment(wrap_text=True)
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
         ws.row_dimensions[row].height = 38
+        row += 1
+    elif has_t12:
+        t12_banner = ws.cell(row=row, column=1,
+            value=f'Prior month sourced from 12-Month Statement '
+                  f'({t12_result.period_start} – {t12_result.period_end}). '
+                  f'Current month = PTD Actual from GL.')
+        t12_banner.font      = _qfont(italic=True, size=9, color=_C_GRAY)
+        t12_banner.fill      = _qfill('EBF3FB')
+        t12_banner.alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        ws.row_dimensions[row].height = 22
         row += 1
 
     for section_name, accounts in _PL_ACCOUNTS:
@@ -1336,21 +1348,28 @@ def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1):
                     ws.cell(row=row, column=col).border = _qborder()
                 row += 1
                 continue
+
             ptd = _safe_float(bcm[code].get('ptd_actual', 0))
-            ytd = _safe_float(bcm[code].get('ytd_actual', 0))
-            prior = ytd - ptd
-            change = ptd - prior
+
+            # Prior month: prefer T12 actual; fall back to YTD - PTD derivation
+            if has_t12:
+                prior = t12_result.prior_month(code, period_month)
+                note  = ''
+            else:
+                ytd   = _safe_float(bcm[code].get('ytd_actual', 0))
+                prior = ytd - ptd
+                note  = 'Jan: no prior month' if is_january else ''
+
+            change    = ptd - prior
             sign_flip = (ptd > 0 and prior < 0) or (ptd < 0 and prior > 0)
-            if is_january:
-                # January: show values but suppress flag labels (all changes vs $0 are meaningless)
-                flag = ''
-                note = 'Jan: no prior month'
+
+            if is_january and not has_t12:
+                flag = ''   # suppress — all vs $0
             elif abs(change) > 10_000 or (sign_flip and abs(change) > 2_500):
                 flag = 'SIGN FLIP' if sign_flip else 'SIGNIFICANT'
-                note = ''
             else:
                 flag = 'Minor' if abs(change) > 500 else ''
-                note = ''
+
             _qtxt(ws, row, 1, name)
             _qmoney(ws, row, 2, prior)
             _qmoney(ws, row, 3, ptd)
@@ -1831,7 +1850,8 @@ def _write_tab7b(wb, report: QCReport):
 def generate_qc_workbook(report: QCReport, output_path: str,
                           tb_result=None, budget_rows=None,
                           gl_parsed=None, loan_data=None,
-                          period_month: int = 1) -> None:
+                          period_month: int = 1,
+                          t12_result=None) -> None:
     """
     Write the QC report to an Excel workbook matching the RevLabs QC template.
 
@@ -1847,6 +1867,7 @@ def generate_qc_workbook(report: QCReport, output_path: str,
         gl_parsed:     Parsed GL (GLParseResult) — populates GL ending balances
         loan_data:     Berkadia loan data — populates Tab 7 mortgage + interest section
         period_month:  Reporting month number (1=Jan) — used for Tab 4 January suppression
+        t12_result:    Parsed T12Result — powers Tab 4 MoM prior-month with real actuals
     """
     wb = Workbook()
     # Remove the default blank sheet
@@ -1858,7 +1879,7 @@ def generate_qc_workbook(report: QCReport, output_path: str,
     _write_tab1(wb, report, tb_result, budget_rows)
     _write_tab2(wb, report, budget_rows)
     _write_tab3(wb, report, tb_result, gl_parsed)
-    _write_tab4(wb, report, budget_rows, period_month=period_month)
+    _write_tab4(wb, report, budget_rows, period_month=period_month, t12_result=t12_result)
     _write_tab5(wb, report, gl_parsed, tb_result)
     _write_tab6(wb, report, budget_rows, gl_parsed)
     _write_tab7(wb, report, tb_result, gl_parsed, budget_rows, loan_data)
