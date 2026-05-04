@@ -1419,6 +1419,37 @@ with tab2:
             else:
                 st.caption("⬆️ Upload final Trial Balance to enable BS workpaper tie-out")
 
+    # ── Pass 2: 12-Month Statement upload ────────────────────────────────────
+    _p2_t12_col1, _p2_t12_col2 = st.columns([5, 1])
+    with _p2_t12_col1:
+        _p2_t12_upload = st.file_uploader(
+            "12-Month Income Statement — Post-Close (.xlsx)",
+            type="xlsx",
+            key="uploader_t12_pass2",
+            help=(
+                "Re-export the 12-Month Statement from Yardi AFTER posting all JEs. "
+                "The current-period column will include your accruals, so the MoM tab "
+                "correctly compares prior month vs final posted actuals. "
+                "Overrides the sidebar T12 for Pass 2."
+            ),
+        )
+    with _p2_t12_col2:
+        if _p2_t12_upload is not None:
+            st.markdown("✅")
+    if _p2_t12_upload is not None:
+        _p2_t12_path = os.path.join(st.session_state.temp_dir, f"t12_pass2_{_p2_t12_upload.name}")
+        if not os.path.exists(_p2_t12_path) or os.path.getsize(_p2_t12_path) != _p2_t12_upload.size:
+            with open(_p2_t12_path, "wb") as _f:
+                _f.write(_p2_t12_upload.getbuffer())
+        st.session_state.uploaded_files["t12_statement_pass2"] = _p2_t12_path
+        st.caption(f"✓ Post-close T12 ready: **{_p2_t12_upload.name}**")
+    else:
+        if "t12_statement_pass2" not in st.session_state.uploaded_files:
+            if "t12_statement" in st.session_state.uploaded_files:
+                st.caption("↳ Using 12-Month Statement from sidebar (upload post-close version above to override)")
+            else:
+                st.caption("⬆️ Upload post-close T12 to enable MoM prior-month comparison")
+
     # ── Pass 2: Loan Statements upload ───────────────────────────────────────
     st.markdown("#### Berkadia Loan Statements — Final Close")
     st.caption(
@@ -1510,7 +1541,7 @@ with tab2:
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
             for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
-                       "loan_pass2", "prior_workpaper"):
+                       "t12_statement_pass2", "loan_pass2", "prior_workpaper"):
                 st.session_state.uploaded_files.pop(_k, None)
             st.rerun()
 
@@ -1563,9 +1594,12 @@ with tab2:
                     except Exception as _e:
                         st.warning(f"Could not parse Trial Balance: {_e}")
 
-                # Parse 12-Month Statement (optional — powers MoM tab with real prior-month actuals)
+                # Parse 12-Month Statement — Pass 2 upload takes priority over sidebar
+                # Post-close T12 has the current period's JEs baked in, so MoM prior month
+                # is sourced from T12 and current month from BC PTD Actual (post-close GL).
                 t12_result = None
-                _t12_file = st.session_state.uploaded_files.get("t12_statement")
+                _t12_file = (st.session_state.uploaded_files.get("t12_statement_pass2")
+                             or st.session_state.uploaded_files.get("t12_statement"))
                 if _t12_file and os.path.exists(_t12_file):
                     try:
                         from parsers.yardi_t12 import parse as parse_t12
