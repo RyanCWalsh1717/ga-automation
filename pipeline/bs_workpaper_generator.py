@@ -935,230 +935,279 @@ def _extract_account_history(wb_prior) -> dict:
 
 # ── Account reconciliation tab ────────────────────────────────
 
+def _fmt_txn_desc(t) -> str:
+    """
+    Build a clean workpaper description from a GLTransaction.
+
+    Priority:
+      1. If description is meaningful (not blank, not just a JE/check number),
+         use description.  Append remarks if present and different.
+      2. For journal entries (control starts with J), prefix with control#.
+      3. Fall back to control if description is blank.
+    """
+    desc    = (t.description or '').strip()
+    remarks = (t.remarks     or '').strip()
+    control = (t.control     or '').strip()
+
+    # Build combined description
+    if desc and remarks and remarks.lower() not in desc.lower():
+        combined = f'{desc} — {remarks}'
+    elif desc:
+        combined = desc
+    elif remarks:
+        combined = remarks
+    else:
+        combined = ''
+
+    # Prefix journal control numbers so reviewers can trace to JE
+    if control.upper().startswith('J') and combined:
+        return f'{control}: {combined}'
+    elif control.upper().startswith('J') and not combined:
+        return control
+    return combined or control
+
+
+# Cash account codes — show Deposits / Disbursements instead of Debit / Credit
+_CASH_ACCOUNTS = {'111100', '115100', '115200', '115300', '115600'}
+
+
 def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
                        je_adjustments=None, tab_prefix: str = '',
                        history_rows: list = None):
     """
-    One tab per balance sheet account — rolling multi-period GL vs TB tie-out.
+    One tab per balance sheet account — JLL-style transaction register.
 
-    Tab name: no period prefix; just account code + truncated name.
-    Layout: header → rolling history table (one row per prior period, then
-    current period highlighted in blue).  Each row ties GL Ending to TB Ending.
-    The Variance column is green for $0, red for non-zero.
+    Layout:
+      Row 1: Account# — Account Name                     (dark blue header)
+      Row 2: Entity | Period | Prepared date             (medium blue)
+      Row 3: blank
+      Row 4: column headers (DATE / DESCRIPTION / CONTROL / REF / DR or DEP / CR or DISB / BAL)
+      Row 5: Beginning Balance
+      Row 6+: one row per GL transaction
+      Row N: Ending Balance (bold blue)
+      Row N+2: GL Ending Balance  ┐
+      Row N+3: TB Ending Balance  ├── tie-out block
+      Row N+4: Variance           ┘
+      Row N+6+: Prior period history (if available)
     """
-    # Tab name: no period prefix — account stays in one place through all months
     acct_label = _safe_sheet_name(f'{gl_acct.account_code} {gl_acct.account_name}')
     ws = wb.create_sheet(acct_label)
 
-    is_complex = gl_acct.account_code in COMPLEX_ACCOUNTS
+    is_complex  = gl_acct.account_code in COMPLEX_ACCOUNTS
+    is_cash     = gl_acct.account_code in _CASH_ACCOUNTS
     ws.sheet_properties.tabColor = COLOR_BS_COMPLEX if is_complex else COLOR_BS_STD
     ws.column_dimensions['A'].width = 2
 
-    # ── Header block ─────────────────────────────────────────────────────────
+    # Column layout
+    _DT  = _B       # B  Date
+    _DSC = _B + 1   # C  Description
+    _CTL = _B + 2   # D  Control / JE#
+    _REF = _B + 3   # E  Invoice / Reference
+    _DR  = _B + 4   # F  Debit  (or Deposits for cash)
+    _CR  = _B + 5   # G  Credit (or Disbursements for cash)
+    _BAL = _B + 6   # H  Running Balance
+    _LAST_COL = _BAL
+
+    dr_label = 'Deposits'      if is_cash else 'Debit'
+    cr_label = 'Disbursements' if is_cash else 'Credit'
+
+    # ── Row 1: Account header ──────────────────────────────────────────────
     row = 1
     c = ws.cell(row=row, column=_B,
                 value=f'{gl_acct.account_code} — {gl_acct.account_name}')
     c.font = _font(bold=True, size=13, color='FFFFFF')
     c.fill = _fill(DARK_BLUE)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_LAST_COL)
     row += 1
 
+    # ── Row 2: Entity / period sub-header ────────────────────────────────
     c = ws.cell(row=row, column=_B,
                 value=f'{property_name or "Revolution Labs"}  |  '
+                      f'Period: {period}  |  '
                       f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
-    c.font = _font(italic=True, color='FFFFFF')
+    c.font = _font(italic=True, color='FFFFFF', size=10)
     c.fill = _fill(MED_BLUE)
-    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
-    row += 2
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_LAST_COL)
+    row += 2   # blank row 3
 
-    # ── Rolling-table column headers ────────────────────────────────────────
-    _COL_PERIOD   = _B
-    _COL_BEG      = _B + 1   # C
-    _COL_NET      = _B + 2   # D
-    _COL_GL_END   = _B + 3   # E
-    _COL_TB_END   = _B + 4   # F
-    _COL_VARIANCE = _B + 5   # G
-
-    tbl_headers = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
-    tbl_widths  = [12, 18, 16, 18, 18, 14]
-    for ci, (h, w) in enumerate(zip(tbl_headers, tbl_widths)):
+    # ── Row 4: Column headers ─────────────────────────────────────────────
+    col_hdrs   = ['Date', 'Description', 'Control', 'Reference', dr_label, cr_label, 'Balance']
+    col_widths = [12,      42,             13,         18,          16,        16,       16]
+    for ci, (h, w) in enumerate(zip(col_hdrs, col_widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
         _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
                align=Alignment(horizontal='center', wrap_text=True))
         ws.column_dimensions[get_column_letter(col)].width = w
-    ws.row_dimensions[row].height = 24
+    ws.row_dimensions[row].height = 22
     row += 1
 
-    # ── Historical rows (prior periods) ──────────────────────────────────────
-    for i, hist in enumerate(history_rows or []):
-        alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
-        _var     = hist.get('variance', 0.0) or 0.0
-        _vzero   = abs(_var) < 0.02
+    # ── Row 5: Beginning balance ──────────────────────────────────────────
+    _NUM_FMT = '#,##0.00;(#,##0.00);"-"'
+    for col in range(_B, _LAST_COL + 1):
+        c = ws.cell(row=row, column=col)
+        c.font   = _font(bold=True, italic=True, size=9)
+        c.fill   = _fill(LIGHT_GRAY)
+        c.border = THIN
+    ws.cell(row=row, column=_DSC, value='Balance Forward').font = _font(bold=True, italic=True, size=9)
+    ws.cell(row=row, column=_DSC).fill   = _fill(LIGHT_GRAY)
+    ws.cell(row=row, column=_DSC).border = THIN
+    beg_cell = ws.cell(row=row, column=_BAL, value=gl_acct.beginning_balance)
+    beg_cell.number_format = _NUM_FMT
+    beg_cell.font   = _font(bold=True, italic=True, size=9)
+    beg_cell.fill   = _fill(LIGHT_GRAY)
+    beg_cell.border = THIN
+    row += 1
 
-        row_data = [
-            (_COL_PERIOD,   hist.get('period', ''),           None),
-            (_COL_BEG,      hist.get('beg_bal', 0.0),         '#,##0.00;(#,##0.00);"-"'),
-            (_COL_NET,      hist.get('net_change', 0.0),      '#,##0.00;(#,##0.00);"-"'),
-            (_COL_GL_END,   hist.get('gl_end', 0.0),          '#,##0.00;(#,##0.00);"-"'),
-            (_COL_TB_END,   hist.get('tb_end', hist.get('gl_end', 0.0)),
-                                                               '#,##0.00;(#,##0.00);"-"'),
-            (_COL_VARIANCE, _var,                              '#,##0.00;(#,##0.00);"-"'),
+    # ── Transaction rows ──────────────────────────────────────────────────
+    # Show all transactions; if .period is populated, filter to current period
+    txns = [t for t in (gl_acct.transactions or []) if t.period == period or not t.period]
+    if not txns:
+        txns = list(gl_acct.transactions or [])
+
+    total_dr = 0.0
+    total_cr = 0.0
+    for ti, t in enumerate(txns):
+        alt   = _fill(LIGHT_GRAY) if ti % 2 == 1 else None
+        t_date = t.date.strftime('%m/%d/%Y') if t.date else ''
+        desc   = _fmt_txn_desc(t)
+        ref    = (t.reference or '').strip()
+        ctrl   = (t.control   or '').strip()
+        # For journal entries, control is already embedded in desc — show it clean in ctrl col
+        dr_val = t.debit  if (t.debit  or 0) > 0.005 else None
+        cr_val = t.credit if (t.credit or 0) > 0.005 else None
+        if dr_val:
+            total_dr += dr_val
+        if cr_val:
+            total_cr += cr_val
+
+        row_vals = [
+            (_DT,  t_date,           None),
+            (_DSC, desc,             None),
+            (_CTL, ctrl,             None),
+            (_REF, ref,              None),
+            (_DR,  dr_val or '',     _NUM_FMT if dr_val else None),
+            (_CR,  cr_val or '',     _NUM_FMT if cr_val else None),
+            (_BAL, t.balance,        _NUM_FMT),
         ]
-        for col, val, fmt in row_data:
+        for col, val, fmt in row_vals:
             c = ws.cell(row=row, column=col, value=val)
+            c.font   = _font(size=9)
+            c.border = THIN
+            if alt:
+                c.fill = alt
             if fmt:
                 c.number_format = fmt
-            if alt_fill:
-                c.fill = alt_fill
-            c.border = THIN
-
-        # Variance cell: green or red
-        vc = ws.cell(row=row, column=_COL_VARIANCE)
-        vc.fill  = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
-        vc.font  = _font(color='006100' if _vzero else '9C0006')
-        vc.border = THIN
         row += 1
 
-    # ── Current period row (always last, highlighted blue) ───────────────────
+    # ── Ending balance row ────────────────────────────────────────────────
     _je_delta = (je_adjustments or {}).get(gl_acct.account_code, 0.0)
-    gl_end   = gl_acct.ending_balance + _je_delta
+    gl_end    = gl_acct.ending_balance + _je_delta
+    for col in range(_B, _LAST_COL + 1):
+        c = ws.cell(row=row, column=col)
+        c.font   = _font(bold=True, size=9)
+        c.fill   = _fill(LIGHT_BLUE)
+        c.border = THIN
+    ws.cell(row=row, column=_DSC, value='Ending Balance').font = _font(bold=True, size=9)
+    ws.cell(row=row, column=_DSC).fill   = _fill(LIGHT_BLUE)
+    ws.cell(row=row, column=_DSC).border = THIN
+    if total_dr:
+        tc = ws.cell(row=row, column=_DR, value=total_dr)
+        tc.number_format = _NUM_FMT
+        tc.font = _font(bold=True, size=9)
+        tc.fill = _fill(LIGHT_BLUE)
+        tc.border = THIN
+    if total_cr:
+        tc = ws.cell(row=row, column=_CR, value=total_cr)
+        tc.number_format = _NUM_FMT
+        tc.font = _font(bold=True, size=9)
+        tc.fill = _fill(LIGHT_BLUE)
+        tc.border = THIN
+    ec = ws.cell(row=row, column=_BAL, value=gl_end)
+    ec.number_format = _NUM_FMT
+    ec.font   = _font(bold=True, size=9)
+    ec.fill   = _fill(LIGHT_BLUE)
+    ec.border = THIN
+    row += 2   # blank gap
+
+    # ── Tie-out block ─────────────────────────────────────────────────────
     tb_end   = tb_acct.ending_balance if tb_acct else None
     variance = round(gl_end - tb_end, 2) if tb_end is not None else None
     _vzero   = variance is not None and abs(variance) < 0.02
 
-    cur_row_data = [
-        (_COL_PERIOD,   period,                     None),
-        (_COL_BEG,      gl_acct.beginning_balance,  '#,##0.00;(#,##0.00);"-"'),
-        (_COL_NET,      gl_acct.net_change,          '#,##0.00;(#,##0.00);"-"'),
-        (_COL_GL_END,   gl_end,                      '#,##0.00;(#,##0.00);"-"'),
-        (_COL_TB_END,   tb_end if tb_end is not None else '',
-                                                     '#,##0.00;(#,##0.00);"-"' if tb_end is not None else None),
-        (_COL_VARIANCE, variance if variance is not None else '',
-                                                     '#,##0.00;(#,##0.00);"-"' if variance is not None else None),
-    ]
-    for col, val, fmt in cur_row_data:
-        c = ws.cell(row=row, column=col, value=val)
-        if fmt:
-            c.number_format = fmt
-        c.fill   = _fill(LIGHT_BLUE)
-        c.font   = _font(bold=True)
-        c.border = THIN
+    # Account label
+    lbl = ws.cell(row=row, column=_REF, value=gl_acct.account_code)
+    lbl.font = _font(bold=True, size=9)
+    row += 1
 
-    if variance is not None:
-        vc = ws.cell(row=row, column=_COL_VARIANCE)
-        vc.fill  = _fill(GREEN_FILL) if _vzero else _fill(RED_FILL)
-        vc.font  = _font(bold=True, color='006100' if _vzero else '9C0006')
-        vc.border = THIN
+    gl_lbl = ws.cell(row=row, column=_REF, value='GL Ending Balance')
+    gl_lbl.font = _font(size=9)
+    gl_val = ws.cell(row=row, column=_BAL, value=gl_end)
+    gl_val.number_format = _NUM_FMT
+    gl_val.font = _font(size=9)
+    row += 1
+
+    if tb_end is not None:
+        tb_lbl = ws.cell(row=row, column=_REF, value='TB Ending Balance')
+        tb_lbl.font = _font(size=9)
+        tb_val = ws.cell(row=row, column=_BAL, value=tb_end)
+        tb_val.number_format = _NUM_FMT
+        tb_val.font = _font(size=9)
+        row += 1
+
+        var_lbl = ws.cell(row=row, column=_REF, value='Variance')
+        var_lbl.font = _font(bold=True, size=9)
+        var_val = ws.cell(row=row, column=_BAL, value=variance)
+        var_val.number_format = _NUM_FMT
+        var_val.font  = _font(bold=True, size=9,
+                               color='006100' if _vzero else '9C0006')
+        var_val.fill  = _fill(GREEN_FILL if _vzero else RED_FILL)
+        row += 1
+
         if not _vzero:
-            note_row = row + 2
-            note = ws.cell(row=note_row, column=_B,
-                           value=f'Variance ${abs(variance):,.2f} — accrual JEs in TB '
-                                 f'not yet in GL. Review accrual entries for {period}.')
-            note.font = _font(italic=True, color='9C0006', size=10)
-            note.alignment = Alignment(wrap_text=True)
-            ws.merge_cells(start_row=note_row, start_column=_B,
-                           end_row=note_row, end_column=_B + 5)
-            ws.row_dimensions[note_row].height = 28
-
-    row += 3  # gap before transaction detail
-
-    # ── Transaction detail for current period ────────────────────────────────
-    # Shows every GL line that makes up net activity, so the workpaper is
-    # self-supporting without needing to open the full GL export.
-    txns = [t for t in (gl_acct.transactions or []) if t.period == period or not t.period]
-    # Fallback: if period filter returns nothing (period format mismatch), show all transactions
-    if not txns:
-        txns = list(gl_acct.transactions or [])
-
-    if txns:
-        # Section header
-        hdr = ws.cell(row=row, column=_B, value=f'GL Transaction Detail — {period}')
-        hdr.font = _font(bold=True, size=10, color='FFFFFF')
-        hdr.fill = _fill(MED_BLUE)
-        ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 6)
-        row += 1
-
-        # Column headers
-        _DT  = _B       # B  Date
-        _DSC = _B + 1   # C  Description
-        _CTL = _B + 2   # D  Control / JE#
-        _REF = _B + 3   # E  Reference
-        _DR  = _B + 4   # F  Debit
-        _CR  = _B + 5   # G  Credit
-        _BAL = _B + 6   # H  Balance
-
-        txn_hdrs  = ['Date', 'Description', 'Control', 'Reference', 'Debit', 'Credit', 'Balance']
-        txn_widths = [12,     38,             14,         18,          14,      14,       16]
-        for ci, (h, w) in enumerate(zip(txn_hdrs, txn_widths)):
-            col = _B + ci
-            c = ws.cell(row=row, column=col, value=h)
-            _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
-                   align=Alignment(horizontal='center'))
-            ws.column_dimensions[get_column_letter(col)].width = w
-        row += 1
-
-        # Beginning balance row
-        bb_row_vals = [
-            (_DT,  ''),
-            (_DSC, 'Beginning Balance'),
-            (_CTL, ''),
-            (_REF, ''),
-            (_DR,  ''),
-            (_CR,  ''),
-            (_BAL, gl_acct.beginning_balance),
-        ]
-        for col, val in bb_row_vals:
-            c = ws.cell(row=row, column=col, value=val)
-            c.font   = _font(bold=True, italic=True, size=9)
-            c.fill   = _fill(LIGHT_GRAY)
-            c.border = THIN
-            if isinstance(val, float):
-                c.number_format = '#,##0.00;(#,##0.00);"-"'
-        row += 1
-
-        # Transaction rows
-        for ti, t in enumerate(txns):
-            alt = _fill(LIGHT_GRAY) if ti % 2 == 1 else None
-            t_date = t.date.strftime('%m/%d/%Y') if t.date else ''
-            debit  = t.debit  if (t.debit  or 0) > 0.005 else ''
-            credit = t.credit if (t.credit or 0) > 0.005 else ''
-            row_vals = [
-                (_DT,  t_date),
-                (_DSC, (t.description or '') + (' — ' + t.remarks if t.remarks else '')),
-                (_CTL, t.control or ''),
-                (_REF, t.reference or ''),
-                (_DR,  debit),
-                (_CR,  credit),
-                (_BAL, t.balance),
-            ]
-            for col, val in row_vals:
-                c = ws.cell(row=row, column=col, value=val)
-                c.font   = _font(size=9)
-                c.border = THIN
-                if alt:
-                    c.fill = alt
-                if col in (_DR, _CR, _BAL) and isinstance(val, float):
-                    c.number_format = '#,##0.00;(#,##0.00);"-"'
+            row += 1
+            note = ws.cell(row=row, column=_B,
+                           value=f'Variance ${abs(variance):,.2f} — '
+                                 f'review accrual entries for {period}.')
+            note.font = _font(italic=True, color='9C0006', size=9)
+            ws.merge_cells(start_row=row, start_column=_B,
+                           end_row=row, end_column=_LAST_COL)
             row += 1
 
-        # Ending balance row
-        eb_row_vals = [
-            (_DT,  ''),
-            (_DSC, 'Ending Balance'),
-            (_CTL, ''),
-            (_REF, ''),
-            (_DR,  ''),
-            (_CR,  ''),
-            (_BAL, gl_acct.ending_balance),
-        ]
-        for col, val in eb_row_vals:
-            c = ws.cell(row=row, column=col, value=val)
-            c.font   = _font(bold=True, size=9)
-            c.fill   = _fill(LIGHT_BLUE)
-            c.border = THIN
-            if isinstance(val, float):
-                c.number_format = '#,##0.00;(#,##0.00);"-"'
+    # ── Prior period history (if carried forward) ─────────────────────────
+    if history_rows:
+        row += 1
+        hdr = ws.cell(row=row, column=_B, value='Prior Period History')
+        hdr.font = _font(bold=True, size=9, color='FFFFFF')
+        hdr.fill = _fill(DARK_BLUE)
+        ws.merge_cells(start_row=row, start_column=_B,
+                       end_row=row, end_column=_B + 5)
+        row += 1
+        hist_hdrs = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
+        for ci, h in enumerate(hist_hdrs):
+            c = ws.cell(row=row, column=_B + ci, value=h)
+            _apply(c, font=_hdr_font(), fill=_fill(MED_BLUE), border=THIN,
+                   align=Alignment(horizontal='center'))
+        row += 1
+        for i, hist in enumerate(history_rows):
+            alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+            _var   = hist.get('variance', 0.0) or 0.0
+            _vz    = abs(_var) < 0.02
+            vals   = [hist.get('period', ''), hist.get('beg_bal', 0.0),
+                      hist.get('net_change', 0.0), hist.get('gl_end', 0.0),
+                      hist.get('tb_end', hist.get('gl_end', 0.0)), _var]
+            for ci, val in enumerate(vals):
+                c = ws.cell(row=row, column=_B + ci, value=val)
+                c.font   = _font(size=9)
+                c.border = THIN
+                if alt_fill:
+                    c.fill = alt_fill
+                if isinstance(val, float):
+                    c.number_format = _NUM_FMT
+            vc = ws.cell(row=row, column=_B + 5)
+            vc.fill = _fill(GREEN_FILL if _vz else RED_FILL)
+            vc.font = _font(size=9, color='006100' if _vz else '9C0006')
+            row += 1
 
     ws.freeze_panes = 'B5'
 
