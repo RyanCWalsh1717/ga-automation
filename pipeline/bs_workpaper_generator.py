@@ -1061,6 +1061,105 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
                            end_row=note_row, end_column=_B + 5)
             ws.row_dimensions[note_row].height = 28
 
+    row += 3  # gap before transaction detail
+
+    # ── Transaction detail for current period ────────────────────────────────
+    # Shows every GL line that makes up net activity, so the workpaper is
+    # self-supporting without needing to open the full GL export.
+    txns = [t for t in (gl_acct.transactions or []) if t.period == period or not t.period]
+    # Fallback: if period filter returns nothing (period format mismatch), show all transactions
+    if not txns:
+        txns = list(gl_acct.transactions or [])
+
+    if txns:
+        # Section header
+        hdr = ws.cell(row=row, column=_B, value=f'GL Transaction Detail — {period}')
+        hdr.font = _font(bold=True, size=10, color='FFFFFF')
+        hdr.fill = _fill(MED_BLUE)
+        ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 6)
+        row += 1
+
+        # Column headers
+        _DT  = _B       # B  Date
+        _DSC = _B + 1   # C  Description
+        _CTL = _B + 2   # D  Control / JE#
+        _REF = _B + 3   # E  Reference
+        _DR  = _B + 4   # F  Debit
+        _CR  = _B + 5   # G  Credit
+        _BAL = _B + 6   # H  Balance
+
+        txn_hdrs  = ['Date', 'Description', 'Control', 'Reference', 'Debit', 'Credit', 'Balance']
+        txn_widths = [12,     38,             14,         18,          14,      14,       16]
+        for ci, (h, w) in enumerate(zip(txn_hdrs, txn_widths)):
+            col = _B + ci
+            c = ws.cell(row=row, column=col, value=h)
+            _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+                   align=Alignment(horizontal='center'))
+            ws.column_dimensions[get_column_letter(col)].width = w
+        row += 1
+
+        # Beginning balance row
+        bb_row_vals = [
+            (_DT,  ''),
+            (_DSC, 'Beginning Balance'),
+            (_CTL, ''),
+            (_REF, ''),
+            (_DR,  ''),
+            (_CR,  ''),
+            (_BAL, gl_acct.beginning_balance),
+        ]
+        for col, val in bb_row_vals:
+            c = ws.cell(row=row, column=col, value=val)
+            c.font   = _font(bold=True, italic=True, size=9)
+            c.fill   = _fill(LIGHT_GRAY)
+            c.border = THIN
+            if isinstance(val, float):
+                c.number_format = '#,##0.00;(#,##0.00);"-"'
+        row += 1
+
+        # Transaction rows
+        for ti, t in enumerate(txns):
+            alt = _fill(LIGHT_GRAY) if ti % 2 == 1 else None
+            t_date = t.date.strftime('%m/%d/%Y') if t.date else ''
+            debit  = t.debit  if (t.debit  or 0) > 0.005 else ''
+            credit = t.credit if (t.credit or 0) > 0.005 else ''
+            row_vals = [
+                (_DT,  t_date),
+                (_DSC, (t.description or '') + (' — ' + t.remarks if t.remarks else '')),
+                (_CTL, t.control or ''),
+                (_REF, t.reference or ''),
+                (_DR,  debit),
+                (_CR,  credit),
+                (_BAL, t.balance),
+            ]
+            for col, val in row_vals:
+                c = ws.cell(row=row, column=col, value=val)
+                c.font   = _font(size=9)
+                c.border = THIN
+                if alt:
+                    c.fill = alt
+                if col in (_DR, _CR, _BAL) and isinstance(val, float):
+                    c.number_format = '#,##0.00;(#,##0.00);"-"'
+            row += 1
+
+        # Ending balance row
+        eb_row_vals = [
+            (_DT,  ''),
+            (_DSC, 'Ending Balance'),
+            (_CTL, ''),
+            (_REF, ''),
+            (_DR,  ''),
+            (_CR,  ''),
+            (_BAL, gl_acct.ending_balance),
+        ]
+        for col, val in eb_row_vals:
+            c = ws.cell(row=row, column=col, value=val)
+            c.font   = _font(bold=True, size=9)
+            c.fill   = _fill(LIGHT_BLUE)
+            c.border = THIN
+            if isinstance(val, float):
+                c.number_format = '#,##0.00;(#,##0.00);"-"'
+
     ws.freeze_panes = 'B5'
 
 
