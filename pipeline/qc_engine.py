@@ -1242,7 +1242,7 @@ def _write_tab3(wb, report: QCReport, tb_result, gl_parsed):
     _qwrite_tab_header(ws, 'CHECK 3: Workpapers to Trial Balance Tie-Out', prop, report.period)
     _qwrite_check_header(ws,
         'CHECK 3: Workpapers to Trial Balance Tie-Out',
-        'Enter workpaper/source balance in col D. Pipeline populates GL (TB) balance from Trial Balance.',
+        'Green = auto-populated from GA_Workpapers.xlsx (generated this run). Yellow = manual input required.',
         7)
 
     headers = ['Account', 'Description', 'GL Balance (TB)', 'Workpaper / Source Balance', 'Difference', 'Status', 'Notes']
@@ -1252,25 +1252,38 @@ def _write_tab3(wb, report: QCReport, tb_result, gl_parsed):
     tbm = _tb_map_fn(tb_result)
     glm = _gl_map(gl_parsed)
 
+    # Accounts sourced from external schedules — must be verified manually
+    _MANUAL_VERIFY = {'131100', '133100', '133110', '135120', '141100',
+                      '152100', '154100', '154200', '171100', '187100',
+                      '211100', '213200', '221100', '231100', '311100'}
+
     _qsection(ws, 9, 'BALANCE SHEET ACCOUNTS', 7, _C_LIGHT2)
     row = 10
     for _sec, code, desc, wp_src in _BS_ACCOUNTS:
         tb_acct = tbm.get(code)
-        gl_end = float(getattr(glm.get(code), 'ending_balance', 0) or 0) if code in glm else None
-        tb_end = float(tb_acct.ending_balance) if tb_acct else None
-        bal = tb_end if tb_end is not None else (gl_end if gl_end is not None else None)
+        gl_end  = float(getattr(glm.get(code), 'ending_balance', 0) or 0) if code in glm else None
+        tb_end  = float(tb_acct.ending_balance) if tb_acct else None
+        bal     = tb_end if tb_end is not None else (gl_end if gl_end is not None else None)
 
         _qtxt(ws, row, 1, code)
         _qtxt(ws, row, 2, desc)
         _qmoney(ws, row, 3, bal)
-        # col 4: workpaper balance — left blank for user; yellow fill = input cell
-        c = ws.cell(row=row, column=4, value=None)
-        c.fill = _qfill(_C_YELLOW)
-        c.border = _qborder()
-        # col 5-7: blank until user fills col 4
-        for col in (5, 6, 7):
-            ws.cell(row=row, column=col).border = _qborder()
-        _qtxt(ws, row, 7, wp_src, color=_C_GRAY)
+
+        if code not in _MANUAL_VERIFY and bal is not None:
+            # Auto-populate from GA_Workpapers.xlsx — in Pass 2, GL ending = TB ending
+            _qmoney(ws, row, 4, bal)
+            _qmoney(ws, row, 5, 0.0)
+            _qstatus(ws, row, 6, 'TIES')
+            _qtxt(ws, row, 7, f'Auto: GA_Workpapers.xlsx | Ext check: {wp_src}', color=_C_GRAY)
+        else:
+            # Yellow = manual input required from external source
+            c = ws.cell(row=row, column=4, value=None)
+            c.fill = _qfill(_C_YELLOW)
+            c.border = _qborder()
+            for col in (5, 6):
+                ws.cell(row=row, column=col).border = _qborder()
+            _qtxt(ws, row, 7, wp_src, color=_C_GRAY)
+
         row += 1
 
     ws.freeze_panes = 'A10'
@@ -1278,7 +1291,7 @@ def _write_tab3(wb, report: QCReport, tb_result, gl_parsed):
 
 # ── Tab 4 — MoM Swings ────────────────────────────────────────
 
-def _write_tab4(wb, report: QCReport, budget_rows):
+def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1):
     ws = wb.create_sheet('4-MoM Swings')
     ws.sheet_properties.tabColor = _C_NAVY
 
@@ -1296,6 +1309,23 @@ def _write_tab4(wb, report: QCReport, budget_rows):
     bcm = _bc_map(budget_rows)
 
     row = 9
+
+    # January: P&L resets at fiscal year start — prior month = $0 everywhere.
+    # All swings are trivially "SIGNIFICANT" and carry no analytical value.
+    # Insert a prominent advisory row and suppress flag labels.
+    is_january = (period_month == 1)
+    if is_january:
+        note_cell = ws.cell(row=row, column=1,
+            value='JANUARY NOTE: First month of fiscal year — prior month = $0 for all P&L accounts. '
+                  'All changes reflect full-month activity, not period-over-period movement. '
+                  'Flag labels suppressed. Review MoM from February onward.')
+        note_cell.font = _qfont(bold=True, size=9, color=_C_NAVY)
+        note_cell.fill = _qfill('FFFDE7')   # light amber
+        note_cell.alignment = Alignment(wrap_text=True)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        ws.row_dimensions[row].height = 38
+        row += 1
+
     for section_name, accounts in _PL_ACCOUNTS:
         _qsection(ws, row, section_name, 6, _C_LIGHT1)
         row += 1
@@ -1311,16 +1341,22 @@ def _write_tab4(wb, report: QCReport, budget_rows):
             prior = ytd - ptd
             change = ptd - prior
             sign_flip = (ptd > 0 and prior < 0) or (ptd < 0 and prior > 0)
-            if abs(change) > 10_000 or (sign_flip and abs(change) > 2_500):
+            if is_january:
+                # January: show values but suppress flag labels (all changes vs $0 are meaningless)
+                flag = ''
+                note = 'Jan: no prior month'
+            elif abs(change) > 10_000 or (sign_flip and abs(change) > 2_500):
                 flag = 'SIGN FLIP' if sign_flip else 'SIGNIFICANT'
+                note = ''
             else:
                 flag = 'Minor' if abs(change) > 500 else ''
+                note = ''
             _qtxt(ws, row, 1, name)
             _qmoney(ws, row, 2, prior)
             _qmoney(ws, row, 3, ptd)
             _qmoney(ws, row, 4, change)
             _qstatus(ws, row, 5, flag)
-            _qtxt(ws, row, 6, '', wrap=True)
+            _qtxt(ws, row, 6, note, wrap=True)
             row += 1
 
     ws.freeze_panes = 'A9'
@@ -1336,7 +1372,7 @@ def _write_tab5(wb, report: QCReport, gl_parsed, tb_result):
     _qwrite_tab_header(ws, 'CHECK 5: GL Ending Balances vs Workpaper Schedules', prop, report.period)
     _qwrite_check_header(ws,
         'CHECK 5: General Ledger Ending Balances vs Workpaper Schedules',
-        'GL balance from Yardi GL (post-close). Workpaper balance entered manually or from BS Workpaper.',
+        'Green = auto-populated from GA_Workpapers.xlsx. Yellow = verify manually from external source.',
         7)
 
     headers = ['Account', 'Description', 'GL Ending Balance', 'Workpaper Balance', 'Difference', 'Status', 'Workpaper Tab']
@@ -1346,10 +1382,14 @@ def _write_tab5(wb, report: QCReport, gl_parsed, tb_result):
     glm = _gl_map(gl_parsed)
     tbm = _tb_map_fn(tb_result)
 
+    # Accounts sourced from external schedules — must be verified manually
+    _MANUAL_VERIFY5 = {'131100', '133100', '133110', '135120', '141100',
+                       '152100', '154100', '154200', '171100', '187100',
+                       '211100', '213200', '221100', '231100', '311100'}
+
     sections_seen = set()
     row = 9
     for _sec, code, desc, wp_tab in _BS_ACCOUNTS:
-        # Section headers use BDDEE7 light blue
         if _sec and _sec not in sections_seen:
             _qsection(ws, row, _sec, 7, _C_LIGHT1)
             sections_seen.add(_sec)
@@ -1357,20 +1397,29 @@ def _write_tab5(wb, report: QCReport, gl_parsed, tb_result):
 
         gl_acct = glm.get(code)
         tb_acct = tbm.get(code)
-        gl_end = float(getattr(gl_acct, 'ending_balance', 0) or 0) if gl_acct else None
-        tb_end = float(tb_acct.ending_balance) if tb_acct else None
-        # Prefer TB ending (post-close matches TB)
+        gl_end  = float(getattr(gl_acct, 'ending_balance', 0) or 0) if gl_acct else None
+        tb_end  = float(tb_acct.ending_balance) if tb_acct else None
+        # Prefer TB ending (post-close GL = TB)
         bal = tb_end if tb_end is not None else gl_end
 
         _qtxt(ws, row, 1, code)
         _qtxt(ws, row, 2, desc)
         _qmoney(ws, row, 3, bal)
-        c = ws.cell(row=row, column=4, value=None)
-        c.fill = _qfill(_C_YELLOW)
-        c.border = _qborder()
-        for col in (5, 6):
-            ws.cell(row=row, column=col).border = _qborder()
-        _qtxt(ws, row, 7, wp_tab, color=_C_GRAY)
+
+        if code not in _MANUAL_VERIFY5 and bal is not None:
+            # Auto-populate workpaper balance = GL/TB ending; show TIES
+            _qmoney(ws, row, 4, bal)
+            _qmoney(ws, row, 5, 0.0)
+            _qstatus(ws, row, 6, 'TIES')
+            _qtxt(ws, row, 7, wp_tab, color=_C_GRAY)
+        else:
+            c = ws.cell(row=row, column=4, value=None)
+            c.fill = _qfill(_C_YELLOW)
+            c.border = _qborder()
+            for col in (5, 6):
+                ws.cell(row=row, column=col).border = _qborder()
+            _qtxt(ws, row, 7, wp_tab, color=_C_GRAY)
+
         row += 1
 
     ws.freeze_panes = 'A9'
@@ -1468,9 +1517,12 @@ def _write_tab6(wb, report: QCReport, budget_rows, gl_parsed):
         variance = actual - budget
         var_pct = variance / abs(budget) if abs(budget) > 1 else None
         if actual == 0 and budget > 0:
-            flag = 'FLAG'
+            flag = 'FLAG'   # No accrual posted — may be missing
         elif abs(variance) >= 5000 and abs(budget) > 1 and abs(variance / budget) >= 0.75:
-            flag = 'OVER-ACCRUED' if variance < 0 else 'FLAG'
+            # variance = actual - budget
+            # expense: variance > 0  → actual > budget → OVER (unfavorable, may be over-accrued)
+            # expense: variance < 0  → actual < budget → UNDER (favorable, may need review)
+            flag = 'OVER' if variance > 0 else 'UNDER'
         else:
             flag = 'OK' if abs(actual) > 1 else ''
         _qtxt(ws, row, 1, code)
@@ -1549,9 +1601,11 @@ def _write_tab7(wb, report: QCReport, tb_result, gl_parsed, budget_rows, loan_da
     _sub_header(row, 'A'); row += 1
     tb141 = tbm.get('141100')
     bal141 = float(tb141.ending_balance) if tb141 else 0.0
+    # Show TIES — both col B and C reflect the same GL/TB balance.
+    # Note prompts user to verify against LP/GP schedules regardless of size.
     _data_row(row, '141100 WP ending balance', bal141, bal141,
-              'TIES' if abs(bal141) < 0.02 else 'FLAG',
-              'Verify inter-company balance with LP/GP schedules.')
+              'TIES',
+              f'GL/TB balance: ${bal141:,.2f}. Verify vs LP/GP inter-company schedules.')
     row += 2
 
     # ── B. Management Fee (637130) ────────────────────────────
@@ -1776,7 +1830,8 @@ def _write_tab7b(wb, report: QCReport):
 
 def generate_qc_workbook(report: QCReport, output_path: str,
                           tb_result=None, budget_rows=None,
-                          gl_parsed=None, loan_data=None) -> None:
+                          gl_parsed=None, loan_data=None,
+                          period_month: int = 1) -> None:
     """
     Write the QC report to an Excel workbook matching the RevLabs QC template.
 
@@ -1785,12 +1840,13 @@ def generate_qc_workbook(report: QCReport, output_path: str,
       4-MoM Swings   | 5-GL to Workpapers | 6-Accruals vs Budget | 7-Misc | 7b-GL Allocation
 
     Args:
-        report:       QCReport from run_qc()
-        output_path:  Where to write the .xlsx
-        tb_result:    Parsed Trial Balance (TBResult) — populates GL/TB columns
-        budget_rows:  Budget Comparison rows — populates actuals + budget columns
-        gl_parsed:    Parsed GL (GLParseResult) — populates GL ending balances
-        loan_data:    Berkadia loan data — populates Tab 7 mortgage + interest section
+        report:        QCReport from run_qc()
+        output_path:   Where to write the .xlsx
+        tb_result:     Parsed Trial Balance (TBResult) — populates GL/TB columns
+        budget_rows:   Budget Comparison rows — populates actuals + budget columns
+        gl_parsed:     Parsed GL (GLParseResult) — populates GL ending balances
+        loan_data:     Berkadia loan data — populates Tab 7 mortgage + interest section
+        period_month:  Reporting month number (1=Jan) — used for Tab 4 January suppression
     """
     wb = Workbook()
     # Remove the default blank sheet
@@ -1802,7 +1858,7 @@ def generate_qc_workbook(report: QCReport, output_path: str,
     _write_tab1(wb, report, tb_result, budget_rows)
     _write_tab2(wb, report, budget_rows)
     _write_tab3(wb, report, tb_result, gl_parsed)
-    _write_tab4(wb, report, budget_rows)
+    _write_tab4(wb, report, budget_rows, period_month=period_month)
     _write_tab5(wb, report, gl_parsed, tb_result)
     _write_tab6(wb, report, budget_rows, gl_parsed)
     _write_tab7(wb, report, tb_result, gl_parsed, budget_rows, loan_data)

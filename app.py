@@ -1706,6 +1706,7 @@ with tab2:
                         budget_rows=bc_parsed or [],
                         gl_parsed=gl_parsed,
                         loan_data=engine_result.parsed.get('loan'),
+                        period_month=_period_month,
                     )
                     st.session_state.pass2_output_files["qc_workbook"] = qc_path
                 except Exception as _e:
