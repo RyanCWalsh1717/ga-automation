@@ -1035,7 +1035,7 @@ with tab1:
                     _ws_gc.cell(row=_info_row, column=1,
                                 value=(f"GA Automation Pipeline — {result.period} — "
                                        f"{result.property_name}   |   "
-                                       "Type: C=Charge  J=Journal  R=Receipt  P=Payable  K=Check   |   "
+                                       "All transactions shown are Journal Entries (J). "
                                        "Accruals suppressed for all accounts above — verify before uploading JEs."))
                     _ws_gc.cell(row=_info_row, column=1).font = _Font(italic=True, color='808080')
                     _ws_gc.merge_cells(start_row=_info_row, start_column=1,

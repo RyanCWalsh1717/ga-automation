@@ -2240,58 +2240,56 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             je_num += 1
 
     # ── GL-activity universal gate ──────────────────────────────────────────
-    # After Layer 2 (invoice proration) is done, mark every account that
-    # already has material current-period GL postings as covered.  This
-    # prevents Layers 3 and 4 from double-accruing accounts where a JE was
-    # posted directly in Yardi before the pipeline ran (e.g., RE Taxes paid
-    # by the loan servicer, insurance draws, manually entered entries).
+    # After Layer 2, look for accounts with Journal Entry (J-type) activity
+    # that the pipeline would otherwise try to accrue. K=Check, C=Charge,
+    # R=Receipt, P=Payable are routine operational transactions handled by
+    # other layers — only J entries indicate a manually posted JE that could
+    # double up with what the pipeline generates.
     #
-    # $500 floor: ignore rounding entries and small auto-reversal noise.
-    # Layer 2 is intentionally exempt — it runs above this block because
-    # invoice proration is designed to fire on accounts with partial GL
-    # coverage (prorating the days remaining in the period).
+    # $500 floor on J-type net to ignore small rounding/test entries.
+    # Expense accounts: only suppress when J-type net is a debit (new expense).
+    # A J-type net credit means prior accruals auto-reversed — still accrue.
+    # Balance-sheet accounts: use abs() since BS JEs don't auto-reverse.
     _GL_ACTIVITY_FLOOR = 500.0
     if gl_data and hasattr(gl_data, 'accounts'):
         for _gl_acct in gl_data.accounts:
             _gl_code = str(_gl_acct.account_code).strip()
             if _gl_code in _covered:
                 continue
-            _nc = _gl_acct.net_change
-            # For expense accounts (5-8xxxxx): only suppress when there is net NEW expense
-            # (positive net_change = net debit). A net credit means prior-month accruals
-            # auto-reversed with no new invoice — the account still needs an accrual and
-            # should NOT appear in the gut-check panel.
-            # For balance-sheet accounts: use abs() — BS entries don't auto-reverse.
+
+            _j_txns = [
+                _t for _t in getattr(_gl_acct, 'transactions', [])
+                if (_t.control or '').split('-')[0].upper() == 'J'
+                and abs(_t.debit - _t.credit) >= 0.01
+            ]
+            if not _j_txns:
+                continue
+
+            _j_net = sum(_t.debit - _t.credit for _t in _j_txns)
+
             if is_expense_account(_gl_code):
-                _qualifies = _nc >= _GL_ACTIVITY_FLOOR
+                _qualifies = _j_net >= _GL_ACTIVITY_FLOOR
             else:
-                _qualifies = abs(_nc) >= _GL_ACTIVITY_FLOOR
+                _qualifies = abs(_j_net) >= _GL_ACTIVITY_FLOOR
+
             if _qualifies:
                 _covered.add(_gl_code)
                 if gl_activity_log is not None:
-                    # Collect transaction-level detail so the Excel export can
-                    # show type code (J/C/R), description, and amounts per line.
-                    _txns = []
-                    for _t in getattr(_gl_acct, 'transactions', []):
-                        if abs(_t.debit - _t.credit) < 0.01:
-                            continue   # skip zero-net lines
-                        # Yardi type codes: C=Charge  J=Journal  R=Receipt
-                        #                   P=Payable  K=Check
-                        _ctrl = (_t.control or '').split('-')[0].upper()
-                        _type = _ctrl or '?'
-                        _txns.append({
-                            'date':        str(_t.date) if _t.date else '',
-                            'type':        _type,
-                            'description': _t.description or '',
-                            'reference':   _t.reference or '',
-                            'debit':       _t.debit,
-                            'credit':      _t.credit,
-                        })
                     gl_activity_log.append({
                         'account_code': _gl_code,
                         'account_name': str(_gl_acct.account_name or _gl_code),
-                        'ptd_amount':   abs(_nc),
-                        'transactions': _txns,
+                        'ptd_amount':   abs(_j_net),
+                        'transactions': [
+                            {
+                                'date':        str(_t.date) if _t.date else '',
+                                'type':        (_t.control or '').split('-')[0].upper() or '?',
+                                'description': _t.description or '',
+                                'reference':   _t.reference or '',
+                                'debit':       _t.debit,
+                                'credit':      _t.credit,
+                            }
+                            for _t in _j_txns
+                        ],
                     })
 
     # ── Layer 3 (new order): Historical recurring accruals ──────────────────
