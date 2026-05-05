@@ -306,11 +306,13 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
     if prepaid_balance <= 0:
         return results
 
-    # 2. Find which insurance expense accounts already have March activity
+    # 2. Find which insurance expense accounts already have net new expense activity.
+    # Use net_change > 0 (net debit) — a net credit means prior accrual auto-reversed
+    # and the account still needs amortization this period.
     already_posted: set = set()
     for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
         code = str(acct.account_code).strip()
-        if code in _INSURANCE_EXPENSE_ACCTS and abs(acct.net_change) > 0.01:
+        if code in _INSURANCE_EXPENSE_ACCTS and acct.net_change > 0.01:
             already_posted.add(code)
 
     # 3. Pull monthly amounts from the budget PTD column
@@ -403,10 +405,11 @@ def detect_retax_amortization(gl_data, period: str = '',
     if re_tax_bill_amount <= 0:
         return None
 
-    # Suppress if 641110 already has current-period activity (already posted)
+    # Suppress only if 641110 has net new expense (positive net_change = net debit).
+    # A net credit means prior-month accrual auto-reversed — still need to post this month.
     for acct in gl_data.accounts:
         if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
-            if abs(acct.net_change) > 0.01:
+            if acct.net_change > 0.01:
                 return None
             break
 
@@ -479,13 +482,13 @@ def detect_retax_escrow_je(
     if re_tax_bill_amount <= 0:
         return None
 
-    # Suppress if 641110 already has current-period GL activity.
-    # This means the payment JE was posted directly in Yardi (e.g., by the
-    # property manager or loan servicer) before the pipeline ran — generating
-    # a second entry here would double-count the quarterly tax bill.
+    # Suppress only if 641110 has net new expense (positive net_change = net debit).
+    # This means the payment JE was already posted directly in Yardi before the
+    # pipeline ran. A net credit means prior accruals auto-reversed — still need
+    # to post the quarterly bill this payment month.
     for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
         if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
-            if abs(acct.net_change) > 0.01:
+            if acct.net_change > 0.01:
                 return None   # already posted — skip
             break
 
@@ -1424,8 +1427,11 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         if not is_expense_account(code):
             continue
 
-        # Skip if there's activity this month
-        if abs(acct.net_change) > 0.01:
+        # Skip only if there is net NEW expense activity (positive net_change = net debit).
+        # A net CREDIT (net_change < 0) means prior-month accruals auto-reversed with no
+        # new invoice yet — the account still needs an accrual this period.
+        # Using abs() would incorrectly suppress these auto-reversal-only accounts.
+        if acct.net_change > 0.01:
             continue
 
         # ── January fallback: no prior-year YTD data available ────────────────
@@ -2248,14 +2254,25 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     if gl_data and hasattr(gl_data, 'accounts'):
         for _gl_acct in gl_data.accounts:
             _gl_code = str(_gl_acct.account_code).strip()
-            if _gl_code not in _covered and abs(_gl_acct.net_change) >= _GL_ACTIVITY_FLOOR:
+            if _gl_code in _covered:
+                continue
+            _nc = _gl_acct.net_change
+            # For expense accounts (5-8xxxxx): only suppress when there is net NEW expense
+            # (positive net_change = net debit). A net credit means prior-month accruals
+            # auto-reversed with no new invoice — the account still needs an accrual and
+            # should NOT appear in the gut-check panel.
+            # For balance-sheet accounts: use abs() — BS entries don't auto-reverse.
+            if is_expense_account(_gl_code):
+                _qualifies = _nc >= _GL_ACTIVITY_FLOOR
+            else:
+                _qualifies = abs(_nc) >= _GL_ACTIVITY_FLOOR
+            if _qualifies:
                 _covered.add(_gl_code)
-                # Surface to caller so the UI can show a gut-check list
                 if gl_activity_log is not None:
                     gl_activity_log.append({
                         'account_code': _gl_code,
                         'account_name': str(_gl_acct.account_name or _gl_code),
-                        'ptd_amount':   abs(_gl_acct.net_change),
+                        'ptd_amount':   abs(_nc),
                     })
 
     # ── Layer 3 (new order): Historical recurring accruals ──────────────────

@@ -130,16 +130,14 @@ if "pass2_engine_result" not in st.session_state:
 if "pass2_output_files" not in st.session_state:
     st.session_state.pass2_output_files = {}
 
-# DataEditor tables (persist across reruns)
-if "tenant_billing_df" not in st.session_state:
-    import pandas as pd
-    st.session_state.tenant_billing_df = pd.DataFrame({
-        "Tenant":        ["Accent Therapeutics", "Keros Therapeutics (N)",
-                          "Keros Therapeutics (S)", "Orum Therapeutics",
-                          "Santi Therapeutics"],
-        "Electric ($)":  [0.0, 0.0, 0.0, 0.0, 0.0],
-        "Gas ($)":       [0.0, 0.0, 0.0, 0.0, 0.0],
-    })
+# Tenant list for TUB sidebar inputs (key suffix, display name)
+_TUB_TENANTS = [
+    ("accent",  "Accent Therapeutics"),
+    ("keros_n", "Keros Therapeutics (N)"),
+    ("keros_s", "Keros Therapeutics (S)"),
+    ("orum",    "Orum Therapeutics"),
+    ("santi",   "Santi Therapeutics"),
+]
 
 if "manual_je_df" not in st.session_state:
     import pandas as pd
@@ -363,31 +361,28 @@ st.sidebar.divider()
 st.sidebar.markdown("## Tenant Utility Billing")
 st.sidebar.caption(
     "Enter electric and gas amounts per tenant from the monthly meter read. "
-    "Posts as: DR Accounts Receivable / CR 440500 Tenant Electric and CR 440700 Tenant Gas. "
-    "Leave all $0 to skip — pipeline will auto-accrue the budget amount if meter reads aren't in the GL yet."
+    "Posts as: DR 133110 / CR 440500 (electric) and CR 440700 (gas). "
+    "Leave at $0 to skip — pipeline auto-accrues budget amounts."
 )
-
-_tenant_billing_edited = st.sidebar.data_editor(
-    st.session_state.tenant_billing_df,
-    num_rows="fixed",
-    use_container_width=True,
-    column_config={
-        "Tenant":       st.column_config.TextColumn("Tenant", width="medium"),
-        "Electric ($)": st.column_config.NumberColumn("Electric ($)", min_value=0.0, step=0.01, width="small"),
-        "Gas ($)":      st.column_config.NumberColumn("Gas ($)",      min_value=0.0, step=0.01, width="small"),
-    },
-    key="tenant_billing_editor",
-)
-st.session_state.tenant_billing_df = _tenant_billing_edited
 
 _tenant_utility_rows = []
 _tu_elec_total = 0.0
 _tu_gas_total  = 0.0
-for _, _trow in _tenant_billing_edited.iterrows():
-    _tname = str(_trow.get("Tenant", "") or "").strip()
-    _telec = float(_trow.get("Electric ($)", 0) or 0)
-    _tgas  = float(_trow.get("Gas ($)", 0) or 0)
-    if _tname and (_telec > 0 or _tgas > 0):
+
+for _tkey, _tname in _TUB_TENANTS:
+    st.sidebar.markdown(f"**{_tname}**")
+    _tcol1, _tcol2 = st.sidebar.columns(2)
+    with _tcol1:
+        _telec = st.number_input(
+            "Electric ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
+            key=f"tub_elec_{_tkey}",
+        )
+    with _tcol2:
+        _tgas = st.number_input(
+            "Gas ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
+            key=f"tub_gas_{_tkey}",
+        )
+    if _telec > 0 or _tgas > 0:
         _tenant_utility_rows.append({'tenant': _tname, 'electric': _telec, 'gas': _tgas})
         _tu_elec_total += _telec
         _tu_gas_total  += _tgas
@@ -451,6 +446,9 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     })
     if "manual_accruals_df" in st.session_state:
         st.session_state.manual_accruals_df["Amount ($)"] = 0.0
+    for _tkey, _ in _TUB_TENANTS:
+        st.session_state[f"tub_elec_{_tkey}"] = 0.0
+        st.session_state[f"tub_gas_{_tkey}"]  = 0.0
     st.rerun()
 
 
