@@ -2267,10 +2267,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
             _j_net = sum(_t.debit - _t.credit for _t in _j_txns)
 
-            if is_expense_account(_gl_code):
-                _qualifies = _j_net >= _GL_ACTIVITY_FLOOR
-            else:
-                _qualifies = abs(_j_net) >= _GL_ACTIVITY_FLOOR
+            # Only expense accounts — the pipeline never generates accruals for
+            # revenue, AR, AP, or other BS accounts, so J entries there are
+            # irrelevant to the gut-check.
+            if not is_expense_account(_gl_code):
+                continue
+
+            _qualifies = _j_net >= _GL_ACTIVITY_FLOOR
 
             if _qualifies:
                 _covered.add(_gl_code)

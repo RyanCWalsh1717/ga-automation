@@ -923,39 +923,26 @@ with tab1:
         # before uploading the pipeline JEs to Yardi.
         _gl_log = st.session_state.get('pass1_gl_activity_log') or []
         if _gl_log:
-            # Sort by amount descending so the biggest items are reviewed first
-            _gl_log_sorted = sorted(_gl_log, key=lambda x: x['ptd_amount'], reverse=True)
+            _gl_log_sorted = sorted(_gl_log, key=lambda x: x['account_code'])
             with st.expander(
-                f"⚠️  Existing GL Activity Detected — Accruals Suppressed "
+                f"⚠️  Manual JEs Detected — Accruals Suppressed "
                 f"({len(_gl_log_sorted)} account{'s' if len(_gl_log_sorted) != 1 else ''})",
                 expanded=True,
             ):
                 st.markdown(
-                    "The pipeline found journal entries already posted in the GL for the accounts "
-                    "below. **No accrual was generated for these accounts.** "
-                    "Verify each posting is intentional before uploading the JE CSVs to Yardi. "
-                    "If a posting is incorrect or should not have been made yet, delete it from "
-                    "Yardi and re-run Pass 1."
+                    "A journal entry was already posted in the GL for each account below. "
+                    "**No pipeline accrual was generated.** Confirm each posting is correct "
+                    "before uploading the JE CSVs to Yardi. If a posting is wrong, delete it "
+                    "from Yardi and re-run Pass 1."
                 )
                 import pandas as _pd_gc
                 _gc_df = _pd_gc.DataFrame([
-                    {
-                        'Account':     r['account_code'],
-                        'Name':        r['account_name'],
-                        'PTD in GL':   r['ptd_amount'],
-                    }
+                    {'Account': r['account_code'], 'Name': r['account_name']}
                     for r in _gl_log_sorted
                 ])
-                st.dataframe(
-                    _gc_df.style.format({'PTD in GL': '${:,.0f}'}),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                st.dataframe(_gc_df, use_container_width=True, hide_index=True)
                 st.caption(
-                    "If any of these are correct and intentional, no action needed — "
-                    "they are already captured in your GL. "
-                    "To manually override the suppression and still generate a pipeline JE, "
-                    "add the account to the One-Off Accruals table with your desired amount."
+                    "Need detail on what was posted? Export the GL Activity Log below."
                 )
 
                 # ── Optional backup export ─────────────────────────────────
