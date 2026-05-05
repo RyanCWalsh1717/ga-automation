@@ -129,6 +129,13 @@ if "pass2_engine_result" not in st.session_state:
     st.session_state.pass2_engine_result = None
 if "pass2_output_files" not in st.session_state:
     st.session_state.pass2_output_files = {}
+if "post_close_je_df" not in st.session_state:
+    import pandas as _pd_init
+    st.session_state.post_close_je_df = _pd_init.DataFrame({
+        "JE #": ["", ""], "Description": ["", ""],
+        "Account Code": ["", ""], "Amount": [0.0, 0.0],
+        "Line Description": ["", ""],
+    })
 
 # Tenant list for TUB sidebar inputs (key suffix, display name)
 _TUB_TENANTS = [
@@ -441,6 +448,10 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
     import pandas as _pd
     st.session_state.manual_je_df = _pd.DataFrame({
+        "JE #": ["", ""], "Description": ["", ""],
+        "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
+    })
+    st.session_state.post_close_je_df = _pd.DataFrame({
         "JE #": ["", ""], "Description": ["", ""],
         "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
     })
@@ -1675,6 +1686,11 @@ with tab2:
             st.session_state.pass2_complete = False
             st.session_state.pass2_engine_result = None
             st.session_state.pass2_output_files = {}
+            import pandas as _pd_r2
+            st.session_state.post_close_je_df = _pd_r2.DataFrame({
+                "JE #": ["", ""], "Description": ["", ""],
+                "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
+            })
             for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
                        "t12_statement_pass2", "loan_pass2", "prior_workpaper"):
                 st.session_state.uploaded_files.pop(_k, None)
@@ -2312,6 +2328,109 @@ with tab2:
                                 st.write(f"- {key}: {val}")
         else:
             st.success("No exceptions found! Pipeline validation passed.", icon="✅")
+
+        st.divider()
+
+        # ── Post-Close Adjustments ─────────────────────────────────────────
+        # After reviewing the QC workbook the user may identify JEs that still
+        # need to be posted (e.g. a correction entry, a missed re-accrual, a
+        # reclassification).  Enter them here and download as a Yardi-import CSV.
+        # Same rules as Manual JEs: positive = DR, negative = CR, must net $0 per JE#.
+        st.markdown("### Post-Close Adjustments")
+        st.caption(
+            "If the QC review reveals a JE that still needs to be posted, enter it here. "
+            "Positive Amount = Debit · Negative Amount = Credit · Lines with the same **JE #** must net to $0."
+        )
+
+        _pcje_edited = st.data_editor(
+            st.session_state.post_close_je_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "JE #":             st.column_config.TextColumn("JE #", width="small"),
+                "Description":      st.column_config.TextColumn("JE Description", width="medium"),
+                "Account Code":     st.column_config.TextColumn("Account Code", width="small"),
+                "Amount":           st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small"),
+                "Line Description": st.column_config.TextColumn("Line Description", width="large"),
+            },
+            key="post_close_je_editor",
+        )
+        st.session_state.post_close_je_df = _pcje_edited
+
+        _pcje_valid = _pcje_edited[
+            _pcje_edited["Account Code"].fillna("").str.strip().astype(bool) &
+            (_pcje_edited["Amount"] != 0)
+        ]
+
+        if not _pcje_valid.empty:
+            # ── Validation: each JE # must net to $0 ──
+            _pcje_errors = []
+            for _jn, _grp in _pcje_valid.groupby("JE #"):
+                _net = _grp["Amount"].sum()
+                if abs(_net) > 0.01:
+                    _pcje_errors.append(f"JE #{_jn} does not net to $0 (net = ${_net:+,.2f})")
+
+            if _pcje_errors:
+                for _err in _pcje_errors:
+                    st.error(f"❌ {_err}", icon="❌")
+            else:
+                st.success(
+                    f"✅ {len(_pcje_valid)} line{'s' if len(_pcje_valid) != 1 else ''} "
+                    f"across {_pcje_valid['JE #'].nunique()} JE(s) — balanced",
+                    icon="✅",
+                )
+
+                # ── Build JE lines for CSV export ──
+                _pcje_lines = []
+                _pcje_num   = 1
+                for _jn, _grp in _pcje_valid.groupby("JE #"):
+                    for _, _row in _grp.iterrows():
+                        _amt   = float(_row["Amount"])
+                        _pcje_lines.append({
+                            'je_number':      f'PCJ-{str(_jn).strip() or _pcje_num:04}',
+                            'line':           1 if _amt > 0 else 2,
+                            'date':           '',
+                            'account_code':   str(_row["Account Code"]).strip(),
+                            'account_name':   str(_row["Line Description"] or _row["Account Code"]).strip(),
+                            'description':    str(_row["Description"] or "Post-close adjustment").strip(),
+                            'reference':      'POST-CLOSE',
+                            'debit':          round(_amt, 2) if _amt > 0 else 0.0,
+                            'credit':         round(-_amt, 2) if _amt < 0 else 0.0,
+                            'vendor':         '[Post-Close Adj]',
+                            'invoice_number': '',
+                            'source':         'post_close',
+                            'confidence':     'high',
+                        })
+                    _pcje_num += 1
+
+                # ── Generate CSV ──
+                _pcje_csv_path = os.path.join(
+                    st.session_state.temp_dir, "GA_PostClose_JE.csv"
+                )
+                try:
+                    from accrual_entry_generator import generate_yardi_je_csv
+                    generate_yardi_je_csv(
+                        _pcje_lines,
+                        _pcje_csv_path,
+                        period=result.period,
+                        property_code=result.property_name or 'revlabpm',
+                        je_number='PCJ-001',
+                    )
+                    st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
+                except Exception as _pcje_err:
+                    st.warning(f"Post-close JE CSV generation skipped: {_pcje_err}")
+
+                # ── Download button ──
+                _pcje_path = st.session_state.pass2_output_files.get("post_close_je_csv")
+                if _pcje_path and os.path.exists(_pcje_path):
+                    with open(_pcje_path, "rb") as _f:
+                        st.download_button(
+                            label="⬇️ Download Post-Close JE CSV (Yardi import)",
+                            data=_f.read(),
+                            file_name=f"GA_PostClose_JE_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
 
         st.divider()
 
