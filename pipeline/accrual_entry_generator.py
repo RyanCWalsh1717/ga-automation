@@ -2275,21 +2275,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     for _t in getattr(_gl_acct, 'transactions', []):
                         if abs(_t.debit - _t.credit) < 0.01:
                             continue   # skip zero-net lines
+                        # Yardi type codes: C=Charge  J=Journal  R=Receipt
+                        #                   P=Payable  K=Check
                         _ctrl = (_t.control or '').split('-')[0].upper()
-                        # Map Yardi control prefix to user-facing type code:
-                        #   J → J  (journal entry)
-                        #   P → C  (check / payment)
-                        #   K → C  (PCard — treated as check for display)
-                        #   ARV or "reversal" in description → R
-                        _desc_lc = (_t.description or '').lower()
-                        if 'revers' in _desc_lc or _ctrl in ('ARV', 'REV'):
-                            _type = 'R'
-                        elif _ctrl == 'J':
-                            _type = 'J'
-                        elif _ctrl in ('P', 'K'):
-                            _type = 'C'
-                        else:
-                            _type = _ctrl or '?'
+                        _type = _ctrl or '?'
                         _txns.append({
                             'date':        str(_t.date) if _t.date else '',
                             'type':        _type,
