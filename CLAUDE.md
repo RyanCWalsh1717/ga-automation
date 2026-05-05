@@ -219,7 +219,12 @@ Then: **Generate Reports** button
 ## Management Fee (management_fee.py)
 
 - **JLL rate**: 1.25% | **GRP rate**: 1.75% | **Total**: 3.00%
-- **Base**: Cash received — DACA KeyBank x5132 additions (matches JLL's own basis)
+- **Base**: Cash received — priority order:
+  1. **Receivable Detail + AR Aging** (preferred — JLL's exact method; prepayments excluded via AR Aging pre-payments column)
+  2. **Receivable Detail only** (prepayments excluded by charge-code scan if AR Aging not uploaded)
+  3. **DACA KeyBank x5132 additions** (fallback when Receivable Detail not uploaded)
+  4. **GL 111100 debits** (further fallback)
+  5. **Revenue proxy from BC** (last resort)
 - **JE (Pass 1)**: DR 637130 Admin-Management Fees / CR 213100 Accrued Expenses (JE# MGT-001)
 - **Catch-up**: If 637130 has net credit from prior-period auto-reversal with no matching
   invoice debit, a catch-up JE is generated (DR 637130 / CR 213100 Accrued Expenses, JE# MGT-002)
