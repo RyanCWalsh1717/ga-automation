@@ -1968,72 +1968,69 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 je_num += 1
 
         # ── Electricity expense accrual (Mode b) ─────────────────────────────
-        # When the sidebar is empty and the electricity bill hasn't been posted
-        # yet, also accrue the FULL building electricity expense (613110) at the
-        # budget amount.  The P&L reclass above (DR 613115 / CR 613110) handles
-        # the TENANT portion; this entry handles the TOTAL bill so the GL shows
-        # the correct gross expense before the tenant offset.
+        # Accrue the FULL building electricity expense (613110) at the budget
+        # amount whenever the bill hasn't been posted yet.  Runs independently
+        # of whether the tenant billing (440500) was already posted — the
+        # expense accrual is needed regardless.
         #
-        # Skip if:
-        #   a) 613110 already has GL activity (invoice/JE posted) — no accrual needed
-        #   b) No PTD budget for 613110 in the BC report — can't auto-calculate
+        # Skip if 613110 already has GL activity (invoice/JE posted).
+        # Skip if no PTD budget for 613110 exists in the BC report.
         #
         # Putting 613110 on line=1 with source='tenant_utility_billing' ensures
         # the _covered seeding (see below) blocks budget_gap from double-accruing.
-        if _budget_elec_total > 0:   # only when tenant billing was also unposted
-            _elec_exp_gl = _tub_gl.get(ELEC_EXPENSE_ACCOUNT)
-            _elec_exp_active = (
-                _elec_exp_gl is not None and abs(_elec_exp_gl.net_change) >= 1.0
-            )
-            if not _elec_exp_active:
-                # Look up PTD budget for 613110 from BC report
-                _elec_exp_budget = 0.0
-                _bc_rows = (budget_data if isinstance(budget_data, list)
-                            else getattr(budget_data, 'line_items', []))
-                for _bc_row in _bc_rows:
-                    _bc_code = str(
-                        (_bc_row.get('account_code') if isinstance(_bc_row, dict)
-                         else getattr(_bc_row, 'account_code', '')) or ''
-                    ).strip()
-                    if _bc_code == ELEC_EXPENSE_ACCOUNT:
-                        _elec_exp_budget = abs(float(
-                            (_bc_row.get('ptd_budget') if isinstance(_bc_row, dict)
-                             else getattr(_bc_row, 'ptd_budget', 0)) or 0
-                        ))
-                        break
+        _elec_exp_gl = _tub_gl.get(ELEC_EXPENSE_ACCOUNT)
+        _elec_exp_active = (
+            _elec_exp_gl is not None and abs(_elec_exp_gl.net_change) >= 1.0
+        )
+        if not _elec_exp_active:
+            # Look up PTD budget for 613110 from BC report
+            _elec_exp_budget = 0.0
+            _bc_rows = (budget_data if isinstance(budget_data, list)
+                        else getattr(budget_data, 'line_items', []))
+            for _bc_row in _bc_rows:
+                _bc_code = str(
+                    (_bc_row.get('account_code') if isinstance(_bc_row, dict)
+                     else getattr(_bc_row, 'account_code', '')) or ''
+                ).strip()
+                if _bc_code == ELEC_EXPENSE_ACCOUNT:
+                    _elec_exp_budget = abs(float(
+                        (_bc_row.get('ptd_budget') if isinstance(_bc_row, dict)
+                         else getattr(_bc_row, 'ptd_budget', 0)) or 0
+                    ))
+                    break
 
-                if _elec_exp_budget > 500:
-                    _exp_je_id = f'TUB-{je_num:04d}'
-                    _exp_desc  = (
-                        f'Electricity expense accrual (budget) — '
-                        f'{ELEC_EXPENSE_NAME}: ${_elec_exp_budget:,.2f}/mo '
-                        f'(no invoice in GL; update when actual bill received)'
-                    )
-                    je_lines.append({
-                        'je_number':      _exp_je_id, 'line': 1, 'date': '',
-                        'account_code':   ELEC_EXPENSE_ACCOUNT,
-                        'account_name':   ELEC_EXPENSE_NAME,
-                        'description':    _exp_desc,
-                        'reference':      'ELEC-ACCRUAL',
-                        'debit':          _round(_elec_exp_budget), 'credit': 0,
-                        'vendor':         '[Budget Accrual]',
-                        'invoice_number': '',
-                        'source':         'tenant_utility_billing',
-                        'confidence':     'medium',
-                    })
-                    je_lines.append({
-                        'je_number':      _exp_je_id, 'line': 2, 'date': '',
-                        'account_code':   AP_ACCRUAL_ACCOUNT,
-                        'account_name':   AP_ACCRUAL_NAME,
-                        'description':    _exp_desc,
-                        'reference':      'ELEC-ACCRUAL',
-                        'debit':          0, 'credit': _round(_elec_exp_budget),
-                        'vendor':         '[Budget Accrual]',
-                        'invoice_number': '',
-                        'source':         'tenant_utility_billing',
-                        'confidence':     'medium',
-                    })
-                    je_num += 1
+            if _elec_exp_budget > 500:
+                _exp_je_id = f'TUB-{je_num:04d}'
+                _exp_desc  = (
+                    f'Electricity expense accrual (budget) — '
+                    f'{ELEC_EXPENSE_NAME}: ${_elec_exp_budget:,.2f}/mo '
+                    f'(no invoice in GL; update when actual bill received)'
+                )
+                je_lines.append({
+                    'je_number':      _exp_je_id, 'line': 1, 'date': '',
+                    'account_code':   ELEC_EXPENSE_ACCOUNT,
+                    'account_name':   ELEC_EXPENSE_NAME,
+                    'description':    _exp_desc,
+                    'reference':      'ELEC-ACCRUAL',
+                    'debit':          _round(_elec_exp_budget), 'credit': 0,
+                    'vendor':         '[Budget Accrual]',
+                    'invoice_number': '',
+                    'source':         'tenant_utility_billing',
+                    'confidence':     'medium',
+                })
+                je_lines.append({
+                    'je_number':      _exp_je_id, 'line': 2, 'date': '',
+                    'account_code':   AP_ACCRUAL_ACCOUNT,
+                    'account_name':   AP_ACCRUAL_NAME,
+                    'description':    _exp_desc,
+                    'reference':      'ELEC-ACCRUAL',
+                    'debit':          0, 'credit': _round(_elec_exp_budget),
+                    'vendor':         '[Budget Accrual]',
+                    'invoice_number': '',
+                    'source':         'tenant_utility_billing',
+                    'confidence':     'medium',
+                })
+                je_num += 1
 
     # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
     # Entries that draw down a balance sheet asset/escrow rather than creating
