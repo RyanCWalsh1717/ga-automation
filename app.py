@@ -486,7 +486,8 @@ with tab1:
             "Enter the **debit side** — credit defaults to **213100 Accrued Expenses**. "
             "For AR Other / AP Other periodic entries with a different offset (e.g. 133110, 135150), "
             "enter that account in the **CR Account** column — it will appear as its own section in the JE review. "
-            "Leave Amount at $0 to skip a row this month."
+            "**Leave Amount at $0** to suppress automated detection for that account without generating a JE — "
+            "use this when a JE has already been posted to Yardi (e.g., RE Taxes entered manually) to prevent double-counting."
         )
         accruals_edited_df = st.data_editor(
             st.session_state.manual_accruals_df,
@@ -615,6 +616,11 @@ with tab1:
 
                 # Build manual exclusion list (account codes with entries in the One-Off table)
                 # so Layers 2-4 don't double-accrue those accounts.
+                #
+                # IMPORTANT: rows with Amount ($) = $0 are treated as pure exclusion flags —
+                # they suppress automated layers for that account WITHOUT generating a JE.
+                # Use $0 when a JE has already been posted to Yardi (e.g., RE Taxes posted
+                # manually before the pipeline ran) to prevent double-counting.
                 _accruals_tbl_early = st.session_state.get("manual_accruals_df")
                 _manual_accruals_input = []
                 if _accruals_tbl_early is not None and not _accruals_tbl_early.empty:
@@ -622,12 +628,14 @@ with tab1:
                         {
                             'account_code': str(r["Account Code"]).strip(),
                             'account_name': str(r.get("Account Name", "") or "").strip(),
-                            'amount': 0,   # 0 → Layer 0 skips JE; only needed for dedup exclusion
-                            'description': '',
+                            'amount': float(r.get("Amount ($)", 0) or 0),
+                            'description': str(r.get("Description", "") or "").strip(),
                         }
                         for _, r in _accruals_tbl_early.iterrows()
                         if str(r.get("Account Code", "") or "").strip()
-                        and float(r.get("Amount ($)", 0) or 0) > 0
+                        # Include ALL rows with a valid account code — even $0 amounts.
+                        # $0 rows act as exclusion flags: no JE is generated but the account
+                        # is marked as covered so automated layers don't touch it.
                     ]
 
                 # Parse T12 for Pass 1 (improves Layer 4 January historical accrual accuracy)
