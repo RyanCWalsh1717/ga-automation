@@ -437,6 +437,7 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.pass1_complete = False
     st.session_state.pass1_engine_result = None
     st.session_state.pass1_output_files = {}
+    st.session_state['pass1_gl_activity_log'] = []
     st.session_state.pass2_complete = False
     st.session_state.pass2_engine_result = None
     st.session_state.pass2_output_files = {}
@@ -584,6 +585,7 @@ with tab1:
             st.session_state.pass1_complete = False
             st.session_state.pass1_engine_result = None
             st.session_state.pass1_output_files = {}
+            st.session_state['pass1_gl_activity_log'] = []
             st.rerun()
 
     # ── Pass 1 Processing ─────────────────────────────────────────────────────
@@ -648,6 +650,7 @@ with tab1:
                     except Exception as _e:
                         st.warning(f"Could not parse 12-Month Statement for Pass 1: {_e}")
 
+                _gl_activity_log = []
                 je_lines = build_accrual_entries(
                     nexus_data or [],
                     period=close_period,
@@ -659,7 +662,9 @@ with tab1:
                     loan_data=engine_result.parsed.get('loan'),
                     re_tax_bill_amount=_re_tax_bill_amount,
                     t12_result=_t12_result_p1,
+                    gl_activity_log=_gl_activity_log,
                 )
+                st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
                 # Step 3: Prepaid ledger — load → merge → release JEs → advance
                 status_text.text("Step 3/6: Processing prepaid ledger...")
@@ -913,6 +918,47 @@ with tab1:
 
         st.divider()
         st.markdown(f"## Pass 1 Results — {result.period}  |  {result.property_name}")
+
+        # ── GL Activity Gut-Check ──────────────────────────────────────────
+        # Show accounts where the pipeline detected existing GL postings and
+        # suppressed automated accruals. Lets Ryan verify these are intentional
+        # before uploading the pipeline JEs to Yardi.
+        _gl_log = st.session_state.get('pass1_gl_activity_log') or []
+        if _gl_log:
+            # Sort by amount descending so the biggest items are reviewed first
+            _gl_log_sorted = sorted(_gl_log, key=lambda x: x['ptd_amount'], reverse=True)
+            with st.expander(
+                f"⚠️  Existing GL Activity Detected — Accruals Suppressed "
+                f"({len(_gl_log_sorted)} account{'s' if len(_gl_log_sorted) != 1 else ''})",
+                expanded=True,
+            ):
+                st.markdown(
+                    "The pipeline found journal entries already posted in the GL for the accounts "
+                    "below. **No accrual was generated for these accounts.** "
+                    "Verify each posting is intentional before uploading the JE CSVs to Yardi. "
+                    "If a posting is incorrect or should not have been made yet, delete it from "
+                    "Yardi and re-run Pass 1."
+                )
+                import pandas as _pd_gc
+                _gc_df = _pd_gc.DataFrame([
+                    {
+                        'Account':     r['account_code'],
+                        'Name':        r['account_name'],
+                        'PTD in GL':   r['ptd_amount'],
+                    }
+                    for r in _gl_log_sorted
+                ])
+                st.dataframe(
+                    _gc_df.style.format({'PTD in GL': '${:,.0f}'}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(
+                    "If any of these are correct and intentional, no action needed — "
+                    "they are already captured in your GL. "
+                    "To manually override the suppression and still generate a pipeline JE, "
+                    "add the account to the One-Off Accruals table with your desired amount."
+                )
 
         # ── Management Fee ─────────────────────────────────────────────────
         if fee_result and fee_result.cash_received > 0:

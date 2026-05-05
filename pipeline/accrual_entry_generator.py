@@ -1651,6 +1651,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           loan_data=None,
                           re_tax_bill_amount: float = 0.0,
                           t12_result=None,
+                          gl_activity_log: Optional[List[Dict]] = None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from five sources (in priority order):
@@ -1697,6 +1698,15 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                            should note the invoice amount and divisor so the
                            reviewer can verify.  Accounts in manual_accruals are
                            excluded from all automated layers.
+
+        gl_activity_log:   Optional mutable list.  When provided, one dict is
+                           appended for each account the GL-activity gate
+                           suppresses (net_change ≥ $500 in the current period).
+                           Each dict has keys:
+                               account_code, account_name, ptd_amount (abs)
+                           Caller can display these as a gut-check list so the
+                           user can verify that existing GL postings are correct
+                           before uploading the pipeline JEs to Yardi.
 
     Returns:
         List of JE line dicts with keys:
@@ -2240,6 +2250,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _gl_code = str(_gl_acct.account_code).strip()
             if _gl_code not in _covered and abs(_gl_acct.net_change) >= _GL_ACTIVITY_FLOOR:
                 _covered.add(_gl_code)
+                # Surface to caller so the UI can show a gut-check list
+                if gl_activity_log is not None:
+                    gl_activity_log.append({
+                        'account_code': _gl_code,
+                        'account_name': str(_gl_acct.account_name or _gl_code),
+                        'ptd_amount':   abs(_gl_acct.net_change),
+                    })
 
     # ── Layer 3 (new order): Historical recurring accruals ──────────────────
     # Moved before budget gap: BC YTD ÷ months elapsed is more reliable than
