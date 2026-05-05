@@ -132,8 +132,9 @@ if "pass2_output_files" not in st.session_state:
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
     st.session_state.post_close_je_df = _pd_init.DataFrame({
-        "JE #": ["", ""], "Description": ["", ""],
-        "Account Code": ["", ""], "Amount": [0.0, 0.0],
+        "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+        "Account Code": ["", ""],
+        "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
         "Line Description": ["", ""],
     })
 
@@ -452,8 +453,10 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
         "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
     })
     st.session_state.post_close_je_df = _pd.DataFrame({
-        "JE #": ["", ""], "Description": ["", ""],
-        "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
+        "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+        "Account Code": ["", ""],
+        "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
+        "Line Description": ["", ""],
     })
     if "manual_accruals_df" in st.session_state:
         st.session_state.manual_accruals_df["Amount ($)"] = 0.0
@@ -1688,8 +1691,10 @@ with tab2:
             st.session_state.pass2_output_files = {}
             import pandas as _pd_r2
             st.session_state.post_close_je_df = _pd_r2.DataFrame({
-                "JE #": ["", ""], "Description": ["", ""],
-                "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
+                "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+                "Account Code": ["", ""],
+                "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
+                "Line Description": ["", ""],
             })
             for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
                        "t12_statement_pass2", "loan_pass2", "prior_workpaper"):
@@ -2335,12 +2340,40 @@ with tab2:
         # After reviewing the QC workbook the user may identify JEs that still
         # need to be posted (e.g. a correction entry, a missed re-accrual, a
         # reclassification).  Enter them here and download as a Yardi-import CSV.
-        # Same rules as Manual JEs: positive = DR, negative = CR, must net $0 per JE#.
+        # Each JE uses two lines (one DR, one CR).  Debits must equal Credits per JE#.
         st.markdown("### Post-Close Adjustments")
         st.caption(
-            "If the QC review reveals a JE that still needs to be posted, enter it here. "
-            "Positive Amount = Debit · Negative Amount = Credit · Lines with the same **JE #** must net to $0."
+            "Enter each JE as a Debit line and a Credit line. "
+            "Use **Add JE Lines** to append a new pre-numbered pair. "
+            "Debits must equal Credits for each **JE #** before export."
         )
+
+        # ── Add JE Lines button ────────────────────────────────────────────
+        if st.button("➕ Add JE Lines", key="pcje_add_btn"):
+            import pandas as _pd_pcje_add
+            _existing_pcje = st.session_state.post_close_je_df
+            _used_jes = (
+                _existing_pcje["JE #"]
+                .str.strip()
+                .replace("", None)
+                .dropna()
+                .unique()
+                .tolist()
+            )
+            _next_n   = len(_used_jes) + 1
+            _next_lbl = f"PC-{_next_n:03d}"
+            _new_pair = _pd_pcje_add.DataFrame({
+                "JE #":           [_next_lbl, _next_lbl],
+                "Description":    ["", ""],
+                "Account Code":   ["", ""],
+                "Debit ($)":      [0.0, 0.0],
+                "Credit ($)":     [0.0, 0.0],
+                "Line Description": ["", ""],
+            })
+            st.session_state.post_close_je_df = _pd_pcje_add.concat(
+                [_existing_pcje, _new_pair], ignore_index=True
+            )
+            st.rerun()
 
         _pcje_edited = st.data_editor(
             st.session_state.post_close_je_df,
@@ -2350,7 +2383,8 @@ with tab2:
                 "JE #":             st.column_config.TextColumn("JE #", width="small"),
                 "Description":      st.column_config.TextColumn("JE Description", width="medium"),
                 "Account Code":     st.column_config.TextColumn("Account Code", width="small"),
-                "Amount":           st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small"),
+                "Debit ($)":        st.column_config.NumberColumn("Debit ($)", format="$%,.2f", width="small"),
+                "Credit ($)":       st.column_config.NumberColumn("Credit ($)", format="$%,.2f", width="small"),
                 "Line Description": st.column_config.TextColumn("Line Description", width="large"),
             },
             key="post_close_je_editor",
@@ -2359,16 +2393,19 @@ with tab2:
 
         _pcje_valid = _pcje_edited[
             _pcje_edited["Account Code"].fillna("").str.strip().astype(bool) &
-            (_pcje_edited["Amount"] != 0)
+            ((_pcje_edited["Debit ($)"] != 0) | (_pcje_edited["Credit ($)"] != 0))
         ]
 
         if not _pcje_valid.empty:
-            # ── Validation: each JE # must net to $0 ──
+            # ── Validation: each JE # debits must equal credits ──
             _pcje_errors = []
             for _jn, _grp in _pcje_valid.groupby("JE #"):
-                _net = _grp["Amount"].sum()
-                if abs(_net) > 0.01:
-                    _pcje_errors.append(f"JE #{_jn} does not net to $0 (net = ${_net:+,.2f})")
+                _total_dr = _grp["Debit ($)"].sum()
+                _total_cr = _grp["Credit ($)"].sum()
+                if abs(_total_dr - _total_cr) > 0.01:
+                    _pcje_errors.append(
+                        f"JE #{_jn}: Debits ${_total_dr:,.2f} ≠ Credits ${_total_cr:,.2f}"
+                    )
 
             if _pcje_errors:
                 for _err in _pcje_errors:
@@ -2384,23 +2421,27 @@ with tab2:
                 _pcje_lines = []
                 _pcje_num   = 1
                 for _jn, _grp in _pcje_valid.groupby("JE #"):
+                    _line_seq = 1
                     for _, _row in _grp.iterrows():
-                        _amt   = float(_row["Amount"])
-                        _pcje_lines.append({
-                            'je_number':      f'PCJ-{str(_jn).strip() or _pcje_num:04}',
-                            'line':           1 if _amt > 0 else 2,
-                            'date':           '',
-                            'account_code':   str(_row["Account Code"]).strip(),
-                            'account_name':   str(_row["Line Description"] or _row["Account Code"]).strip(),
-                            'description':    str(_row["Description"] or "Post-close adjustment").strip(),
-                            'reference':      'POST-CLOSE',
-                            'debit':          round(_amt, 2) if _amt > 0 else 0.0,
-                            'credit':         round(-_amt, 2) if _amt < 0 else 0.0,
-                            'vendor':         '[Post-Close Adj]',
-                            'invoice_number': '',
-                            'source':         'post_close',
-                            'confidence':     'high',
-                        })
+                        _dr = float(_row["Debit ($)"] or 0)
+                        _cr = float(_row["Credit ($)"] or 0)
+                        if _dr > 0 or _cr > 0:
+                            _pcje_lines.append({
+                                'je_number':      f'PCJ-{str(_jn).strip() or _pcje_num:04}',
+                                'line':           _line_seq,
+                                'date':           '',
+                                'account_code':   str(_row["Account Code"]).strip(),
+                                'account_name':   str(_row["Line Description"] or _row["Account Code"]).strip(),
+                                'description':    str(_row["Description"] or "Post-close adjustment").strip(),
+                                'reference':      'POST-CLOSE',
+                                'debit':          round(_dr, 2),
+                                'credit':         round(_cr, 2),
+                                'vendor':         '[Post-Close Adj]',
+                                'invoice_number': '',
+                                'source':         'post_close',
+                                'confidence':     'high',
+                            })
+                            _line_seq += 1
                     _pcje_num += 1
 
                 # ── Generate CSV ──
