@@ -479,6 +479,16 @@ def detect_retax_escrow_je(
     if re_tax_bill_amount <= 0:
         return None
 
+    # Suppress if 641110 already has current-period GL activity.
+    # This means the payment JE was posted directly in Yardi (e.g., by the
+    # property manager or loan servicer) before the pipeline ran — generating
+    # a second entry here would double-count the quarterly tax bill.
+    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+        if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
+            if abs(acct.net_change) > 0.01:
+                return None   # already posted — skip
+            break
+
     # Berkadia escrow balance for informational note
     loans = loan_data if isinstance(loan_data, list) else [loan_data]
     berkadia_escrow = 0.0
@@ -2212,6 +2222,24 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             })
             _covered.add(pro['account_code'])
             je_num += 1
+
+    # ── GL-activity universal gate ──────────────────────────────────────────
+    # After Layer 2 (invoice proration) is done, mark every account that
+    # already has material current-period GL postings as covered.  This
+    # prevents Layers 3 and 4 from double-accruing accounts where a JE was
+    # posted directly in Yardi before the pipeline ran (e.g., RE Taxes paid
+    # by the loan servicer, insurance draws, manually entered entries).
+    #
+    # $500 floor: ignore rounding entries and small auto-reversal noise.
+    # Layer 2 is intentionally exempt — it runs above this block because
+    # invoice proration is designed to fire on accounts with partial GL
+    # coverage (prorating the days remaining in the period).
+    _GL_ACTIVITY_FLOOR = 500.0
+    if gl_data and hasattr(gl_data, 'accounts'):
+        for _gl_acct in gl_data.accounts:
+            _gl_code = str(_gl_acct.account_code).strip()
+            if _gl_code not in _covered and abs(_gl_acct.net_change) >= _GL_ACTIVITY_FLOOR:
+                _covered.add(_gl_code)
 
     # ── Layer 3 (new order): Historical recurring accruals ──────────────────
     # Moved before budget gap: BC YTD ÷ months elapsed is more reliable than
