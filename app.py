@@ -489,6 +489,8 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.pass2_engine_result = None
     st.session_state.pass2_output_files = {}
     st.session_state.uploaded_files = {}
+    st.session_state.bulk_overrides_p1 = {}
+    st.session_state.bulk_overrides_p2 = {}
     shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
     import pandas as _pd
@@ -1522,8 +1524,7 @@ with tab2:
     st.caption(
         "Drop all post-close files here at once — Final GL, Budget Comparison, "
         "Trial Balance, T12, Berkadia loan statements, and prior workpaper. "
-        "The app auto-detects each file type. "
-        "are reused from the sidebar — only the GL needs to be re-exported."
+        "The app auto-detects each file type."
     )
 
     # ── Pass 2 bulk uploader session state ───────────────────────────────────
@@ -1659,6 +1660,7 @@ with tab2:
             for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
                        "t12_statement_pass2", "loan_pass2", "prior_workpaper"):
                 st.session_state.uploaded_files.pop(_k, None)
+            st.session_state.bulk_overrides_p2 = {}
             st.rerun()
 
     # ── Pass 2 Processing ─────────────────────────────────────────────────────
