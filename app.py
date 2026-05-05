@@ -962,41 +962,85 @@ with tab1:
                 try:
                     import io as _io
                     import openpyxl as _opxl
-                    from openpyxl.styles import Font as _Font, PatternFill as _PFill, Alignment as _Align
+                    from openpyxl.styles import (Font as _Font, PatternFill as _PFill,
+                                                 Alignment as _Align, Border as _Border,
+                                                 Side as _Side)
                     _buf = _io.BytesIO()
                     _wb_gc = _opxl.Workbook()
                     _ws_gc = _wb_gc.active
                     _ws_gc.title = "GL Activity — Verify"
-                    # Header row
-                    _hdr = ['Account Code', 'Account Name', 'PTD Amount in GL', 'Verified? (Y/N)', 'Notes']
+
+                    # ── Styles ────────────────────────────────────────────
+                    _hdr_fill  = _PFill(fill_type='solid', fgColor='1F4E79')
+                    _acct_fill = _PFill(fill_type='solid', fgColor='D6E4F0')
+                    _thin      = _Side(style='thin', color='BFBFBF')
+                    _border    = _Border(bottom=_Side(style='thin', color='BFBFBF'))
+
+                    # ── Column headers ────────────────────────────────────
+                    _hdr = ['Account', 'Account Name', 'Type', 'Date',
+                            'Description', 'Reference', 'Debit', 'Credit',
+                            'Verified? (Y/N)', 'Notes']
                     _ws_gc.append(_hdr)
-                    for _c in range(1, len(_hdr) + 1):
-                        _cell = _ws_gc.cell(row=1, column=_c)
-                        _cell.font = _Font(bold=True, color='FFFFFF')
-                        _cell.fill = _PFill(fill_type='solid', fgColor='1F4E79')
-                        _cell.alignment = _Align(horizontal='center')
-                    # Data rows
+                    for _ci, _ in enumerate(_hdr, 1):
+                        _cell = _ws_gc.cell(row=1, column=_ci)
+                        _cell.font      = _Font(bold=True, color='FFFFFF')
+                        _cell.fill      = _hdr_fill
+                        _cell.alignment = _Align(horizontal='center', wrap_text=True)
+
+                    # ── Data: one account header row + one row per transaction ──
                     for _r in _gl_log_sorted:
+                        # Account summary row (shaded)
                         _ws_gc.append([
                             _r['account_code'],
                             _r['account_name'],
-                            _r['ptd_amount'],
-                            '',   # Verified column for Ryan to fill in
-                            '',   # Notes
+                            '', '', '',  # Type / Date / Description blank on summary
+                            f"Net PTD: ${_r['ptd_amount']:,.2f}",
+                            '', '', '', '',
                         ])
-                        _ws_gc.cell(row=_ws_gc.max_row, column=3).number_format = '$#,##0.00'
-                    # Column widths
-                    for _col, _w in zip('ABCDE', [14, 38, 22, 18, 30]):
+                        _acct_row = _ws_gc.max_row
+                        for _ci in range(1, len(_hdr) + 1):
+                            _cell = _ws_gc.cell(row=_acct_row, column=_ci)
+                            _cell.fill = _acct_fill
+                            _cell.font = _Font(bold=True)
+
+                        # Individual transaction rows
+                        for _t in _r.get('transactions', []):
+                            _ws_gc.append([
+                                '',                  # Account (blank — grouped under header)
+                                '',                  # Name
+                                _t.get('type', ''),
+                                _t.get('date', ''),
+                                _t.get('description', ''),
+                                _t.get('reference', ''),
+                                _t['debit']  if _t.get('debit')  else '',
+                                _t['credit'] if _t.get('credit') else '',
+                                '',  # Verified
+                                '',  # Notes
+                            ])
+                            _txn_row = _ws_gc.max_row
+                            # Format debit/credit as currency
+                            for _ci in (7, 8):
+                                _ws_gc.cell(row=_txn_row, column=_ci).number_format = '$#,##0.00'
+
+                        # Spacer row between accounts
+                        _ws_gc.append([''] * len(_hdr))
+
+                    # ── Column widths ─────────────────────────────────────
+                    for _col, _w in zip('ABCDEFGHIJ',
+                                        [11, 34, 6, 12, 40, 16, 12, 12, 16, 28]):
                         _ws_gc.column_dimensions[_col].width = _w
-                    # Info block below table
-                    _info_row = _ws_gc.max_row + 2
+
+                    # ── Footer note ───────────────────────────────────────
+                    _info_row = _ws_gc.max_row + 1
                     _ws_gc.cell(row=_info_row, column=1,
-                                value=f"Generated by GA Automation Pipeline — {result.period} — {result.property_name}")
+                                value=(f"GA Automation Pipeline — {result.period} — "
+                                       f"{result.property_name}   |   "
+                                       "Type: J=Journal  C=Check/Payment  R=Reversal   |   "
+                                       "Accruals suppressed for all accounts above — verify before uploading JEs."))
                     _ws_gc.cell(row=_info_row, column=1).font = _Font(italic=True, color='808080')
-                    _ws_gc.cell(row=_info_row + 1, column=1,
-                                value="These accounts had GL activity before Pass 1 ran. "
-                                      "Accruals were suppressed. Verify before uploading JEs to Yardi.")
-                    _ws_gc.cell(row=_info_row + 1, column=1).font = _Font(italic=True, color='808080')
+                    _ws_gc.merge_cells(start_row=_info_row, start_column=1,
+                                       end_row=_info_row, end_column=len(_hdr))
+
                     _wb_gc.save(_buf)
                     _buf.seek(0)
                     _gc_filename = f"GA_GL_Activity_GutCheck_{(result.period or 'unknown').replace(' ', '_').replace('-', '')}.xlsx"
@@ -1005,7 +1049,7 @@ with tab1:
                         data=_buf.getvalue(),
                         file_name=_gc_filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        help="Download a standalone Excel backup of this gut-check list.",
+                        help="Download a standalone Excel backup with transaction detail.",
                     )
                 except Exception:
                     pass  # Export is optional — never block the main UI
