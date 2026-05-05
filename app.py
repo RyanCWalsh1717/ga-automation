@@ -282,47 +282,91 @@ FILE_CONFIG = {
 
 file_config = FILE_CONFIG
 
-def _save_upload(uf, key: str):
-    """Save uploaded file to temp dir. Skips re-write if file already correct size."""
-    temp_file = os.path.join(st.session_state.temp_dir, uf.name)
-    if not os.path.exists(temp_file) or os.path.getsize(temp_file) != uf.size:
-        with open(temp_file, "wb") as f:
-            f.write(uf.getbuffer())
-    st.session_state.uploaded_files[key] = temp_file
+from file_classifier import classify_file as _classify_file, FILE_LABELS as _FILE_LABELS, MULTI_FILE_KEYS as _MULTI_FILE_KEYS
 
-# Render each file group
-for group_key, group_label in FILE_GROUPS.items():
-    st.sidebar.markdown(f"**{group_label}**")
-    for key, (label, file_type, required, grp, help_text) in FILE_CONFIG.items():
-        if grp != group_key:
-            continue
-        col1, col2 = st.sidebar.columns([5, 1])
-        with col1:
-            if key == "loan":
-                multi = st.file_uploader(
-                    label, type="pdf", accept_multiple_files=True,
-                    key="uploader_loan", help=help_text,
-                )
-                if multi:
-                    paths = []
-                    for uf in multi:
-                        temp_file = os.path.join(st.session_state.temp_dir, uf.name)
-                        if not os.path.exists(temp_file) or os.path.getsize(temp_file) != uf.size:
-                            with open(temp_file, "wb") as f:
-                                f.write(uf.getbuffer())
-                        paths.append(temp_file)
-                    st.session_state.uploaded_files["loan"] = paths
+# ── Session state: persist override selections across reruns ─────────────────
+if "bulk_overrides_p1" not in st.session_state:
+    st.session_state.bulk_overrides_p1 = {}
+
+# Options shown in the override dropdown for Pass 1
+_P1_SLOT_KEYS = [
+    "gl", "trial_balance", "budget_comparison", "kardin_budget", "t12_statement",
+    "nexus_accrual", "bank_rec", "receivable_detail", "ar_aging",
+    "bank_rec_dev", "daca_bank", "loan", "prepaid_ledger", "unknown",
+]
+_P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
+
+# ── Pass 1 bulk uploader ─────────────────────────────────────────────────────
+_bulk_p1 = st.sidebar.file_uploader(
+    "Upload Pass 1 Files",
+    accept_multiple_files=True,
+    type=["xlsx", "xls", "pdf"],
+    key="bulk_upload_p1",
+    help=(
+        "Select all files at once — GL, Budget Comparison, Trial Balance, "
+        "Bank Rec, Nexus, DACA, Berkadia, etc.  "
+        "The app auto-detects each file type."
+    ),
+)
+
+# Clear all Pass 1 slots so stale entries don't persist after a file is removed
+for _clr_key in set(_P1_SLOT_KEYS) - {"unknown"}:
+    st.session_state.uploaded_files.pop(_clr_key, None)
+
+if _bulk_p1:
+    _loan_paths_p1: list = []
+
+    for _uf in _bulk_p1:
+        _raw = bytes(_uf.getbuffer())
+        _det_key, _conf, _det_label = _classify_file(_uf.name, _raw, pass2=False)
+
+        # Apply user override if previously selected
+        _eff_key = st.session_state.bulk_overrides_p1.get(_uf.name, _det_key)
+
+        # ── Detection row: icon | filename | type ──────────────────────
+        _ic, _fn_col, _tp_col = st.sidebar.columns([1, 3, 4])
+        if _eff_key == "unknown":
+            _ic.markdown("⚠️")
+        elif _conf >= 0.85:
+            _ic.markdown("✅")
+        else:
+            _ic.markdown("🟡")
+
+        _short = _uf.name if len(_uf.name) <= 22 else _uf.name[:19] + "…"
+        _fn_col.caption(_short)
+
+        if _eff_key == "unknown" or _conf < 0.70:
+            _cur_idx = (_P1_SLOT_KEYS.index(_eff_key)
+                        if _eff_key in _P1_SLOT_KEYS else len(_P1_SLOT_KEYS) - 1)
+            _sel_label = _tp_col.selectbox(
+                "type", _P1_SLOT_LABELS, index=_cur_idx,
+                key=f"ovr_p1_{_uf.name}", label_visibility="collapsed",
+            )
+            _eff_key = _P1_SLOT_KEYS[_P1_SLOT_LABELS.index(_sel_label)]
+            st.session_state.bulk_overrides_p1[_uf.name] = _eff_key
+        else:
+            _tp_col.caption(_det_label)
+
+        # ── Save to temp dir and uploaded_files ────────────────────────
+        if _eff_key != "unknown":
+            _tp = os.path.join(st.session_state.temp_dir, _uf.name)
+            if not os.path.exists(_tp) or os.path.getsize(_tp) != _uf.size:
+                with open(_tp, "wb") as _f:
+                    _f.write(_raw)
+            if _eff_key in _MULTI_FILE_KEYS:
+                _loan_paths_p1.append(_tp)
             else:
-                uf = st.file_uploader(
-                    label, type=file_type,
-                    key=f"uploader_{key}", help=help_text,
-                )
-                if uf is not None:
-                    _save_upload(uf, key)
-        with col2:
-            if key in st.session_state.uploaded_files:
-                st.markdown("✅")
-    st.sidebar.markdown("")
+                st.session_state.uploaded_files[_eff_key] = _tp
+
+    if _loan_paths_p1:
+        st.session_state.uploaded_files["loan"] = _loan_paths_p1
+
+    # Clean up overrides for files no longer in the uploader
+    _active_names = {_uf.name for _uf in _bulk_p1}
+    st.session_state.bulk_overrides_p1 = {
+        k: v for k, v in st.session_state.bulk_overrides_p1.items()
+        if k in _active_names
+    }
 
 # ── Missing-output warnings ───────────────────────────────────
 uploaded_keys = set(st.session_state.uploaded_files.keys())
@@ -1473,188 +1517,104 @@ with tab2:
 
     st.divider()
 
-    # ── Pass 2: Final GL upload ───────────────────────────────────────────────
-    st.markdown("#### Final GL — Post-Close")
+    # ── Pass 2: Bulk file upload ──────────────────────────────────────────────
+    st.markdown("#### Upload Pass 2 Files")
     st.caption(
-        "Export a fresh GL from Yardi **after** the Pass 1 JE CSVs have been uploaded and posted. "
-        "All other files (bank statements, trial balance, budget comparison, loan statements) "
+        "Drop all post-close files here at once — Final GL, Budget Comparison, "
+        "Trial Balance, T12, Berkadia loan statements, and prior workpaper. "
+        "The app auto-detects each file type. "
         "are reused from the sidebar — only the GL needs to be re-exported."
     )
 
-    _p2_gl_col1, _p2_gl_col2 = st.columns([5, 1])
-    with _p2_gl_col1:
-        _p2_gl_upload = st.file_uploader(
-            "Yardi GL Detail — Final Close (.xlsx)",
-            type="xlsx",
-            key="uploader_gl_pass2",
-            help="Post-close GL export from Yardi (after all accrual JEs are posted). "
-                 "This replaces the pre-close GL uploaded in the sidebar for Pass 2 only.",
-        )
-    with _p2_gl_col2:
-        if _p2_gl_upload is not None:
-            st.markdown("✅")
+    # ── Pass 2 bulk uploader session state ───────────────────────────────────
+    if "bulk_overrides_p2" not in st.session_state:
+        st.session_state.bulk_overrides_p2 = {}
 
-    if _p2_gl_upload is not None:
-        _p2_gl_path = os.path.join(st.session_state.temp_dir, f"gl_pass2_{_p2_gl_upload.name}")
-        if not os.path.exists(_p2_gl_path) or os.path.getsize(_p2_gl_path) != _p2_gl_upload.size:
-            with open(_p2_gl_path, "wb") as _f:
-                _f.write(_p2_gl_upload.getbuffer())
-        st.session_state.uploaded_files["gl_pass2"] = _p2_gl_path
-        st.caption(f"✓ Final GL ready: **{_p2_gl_upload.name}**")
-    else:
-        if "gl_pass2" not in st.session_state.uploaded_files:
-            st.caption("⬆️ Upload the post-close GL to enable Pass 2")
+    _P2_SLOT_KEYS = [
+        "gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
+        "t12_statement_pass2", "loan_pass2", "prior_workpaper", "unknown",
+    ]
+    _P2_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P2_SLOT_KEYS]
 
-    # ── Pass 2: Budget Comparison upload ─────────────────────────────────────
-    st.markdown("#### Budget Comparison — Final Close")
-    st.caption(
-        "Re-export the Budget Comparison from Yardi after the close posts. "
-        "Once accrual JEs are in Yardi the actuals column updates, which gives "
-        "variance comments and the annotated BC the correct final numbers."
+    _bulk_p2 = st.file_uploader(
+        "Drop all Pass 2 files here",
+        accept_multiple_files=True,
+        type=["xlsx", "xls", "pdf"],
+        key="bulk_upload_p2",
     )
-    _p2_bc_col1, _p2_bc_col2 = st.columns([5, 1])
-    with _p2_bc_col1:
-        _p2_bc_upload = st.file_uploader(
-            "Yardi Budget Comparison (.xlsx)",
-            type="xlsx",
-            key="uploader_budget_comparison_pass2",
-            help="Post-close Budget Comparison export. Overrides the sidebar Budget Comparison for Pass 2.",
-        )
-    with _p2_bc_col2:
-        if _p2_bc_upload is not None:
-            st.markdown("✅")
-    if _p2_bc_upload is not None:
-        _p2_bc_path = os.path.join(st.session_state.temp_dir, f"bc_pass2_{_p2_bc_upload.name}")
-        if not os.path.exists(_p2_bc_path) or os.path.getsize(_p2_bc_path) != _p2_bc_upload.size:
-            with open(_p2_bc_path, "wb") as _f:
-                _f.write(_p2_bc_upload.getbuffer())
-        st.session_state.uploaded_files["budget_comparison_pass2"] = _p2_bc_path
-        st.caption(f"✓ Final BC ready: **{_p2_bc_upload.name}**")
-    else:
-        if "budget_comparison_pass2" not in st.session_state.uploaded_files:
-            if "budget_comparison" in st.session_state.uploaded_files:
-                st.caption("↳ Using Budget Comparison from sidebar (upload final version above to override)")
-            else:
-                st.caption("⬆️ Upload final Budget Comparison to enable variance comments on final actuals")
 
-    # ── Pass 2: Trial Balance upload ─────────────────────────────────────────
-    st.markdown("#### Trial Balance — Final Close")
-    st.caption(
-        "Export the Trial Balance from Yardi after the close is complete. "
-        "Used for the GL↔TB tie-out in the BS workpaper."
-    )
-    _p2_tb_col1, _p2_tb_col2 = st.columns([5, 1])
-    with _p2_tb_col1:
-        _p2_tb_upload = st.file_uploader(
-            "Yardi Trial Balance (.xlsx)",
-            type="xlsx",
-            key="uploader_trial_balance_pass2",
-            help="Post-close Trial Balance export. Overrides the sidebar Trial Balance for Pass 2.",
-        )
-    with _p2_tb_col2:
-        if _p2_tb_upload is not None:
-            st.markdown("✅")
-    if _p2_tb_upload is not None:
-        _p2_tb_path = os.path.join(st.session_state.temp_dir, f"tb_pass2_{_p2_tb_upload.name}")
-        if not os.path.exists(_p2_tb_path) or os.path.getsize(_p2_tb_path) != _p2_tb_upload.size:
-            with open(_p2_tb_path, "wb") as _f:
-                _f.write(_p2_tb_upload.getbuffer())
-        st.session_state.uploaded_files["trial_balance_pass2"] = _p2_tb_path
-        st.caption(f"✓ Final TB ready: **{_p2_tb_upload.name}**")
-    else:
-        if "trial_balance_pass2" not in st.session_state.uploaded_files:
-            if "trial_balance" in st.session_state.uploaded_files:
-                st.caption("↳ Using Trial Balance from sidebar (upload final version above to override)")
-            else:
-                st.caption("⬆️ Upload final Trial Balance to enable BS workpaper tie-out")
+    # Clear Pass 2 slots so stale entries don't persist after file removal
+    for _clr_k2 in set(_P2_SLOT_KEYS) - {"unknown"}:
+        st.session_state.uploaded_files.pop(_clr_k2, None)
 
-    # ── Pass 2: 12-Month Statement upload ────────────────────────────────────
-    _p2_t12_col1, _p2_t12_col2 = st.columns([5, 1])
-    with _p2_t12_col1:
-        _p2_t12_upload = st.file_uploader(
-            "12-Month Income Statement — Post-Close (.xlsx)",
-            type="xlsx",
-            key="uploader_t12_pass2",
-            help=(
-                "Re-export the 12-Month Statement from Yardi AFTER posting all JEs. "
-                "The current-period column will include your accruals, so the MoM tab "
-                "correctly compares prior month vs final posted actuals. "
-                "Overrides the sidebar T12 for Pass 2."
-            ),
-        )
-    with _p2_t12_col2:
-        if _p2_t12_upload is not None:
-            st.markdown("✅")
-    if _p2_t12_upload is not None:
-        _p2_t12_path = os.path.join(st.session_state.temp_dir, f"t12_pass2_{_p2_t12_upload.name}")
-        if not os.path.exists(_p2_t12_path) or os.path.getsize(_p2_t12_path) != _p2_t12_upload.size:
-            with open(_p2_t12_path, "wb") as _f:
-                _f.write(_p2_t12_upload.getbuffer())
-        st.session_state.uploaded_files["t12_statement_pass2"] = _p2_t12_path
-        st.caption(f"✓ Post-close T12 ready: **{_p2_t12_upload.name}**")
-    else:
-        if "t12_statement_pass2" not in st.session_state.uploaded_files:
-            if "t12_statement" in st.session_state.uploaded_files:
-                st.caption("↳ Using 12-Month Statement from sidebar (upload post-close version above to override)")
-            else:
-                st.caption("⬆️ Upload post-close T12 to enable MoM prior-month comparison")
+    if _bulk_p2:
+        _loan_paths_p2: list = []
 
-    # ── Pass 2: Loan Statements upload ───────────────────────────────────────
-    st.markdown("#### Berkadia Loan Statements — Final Close")
-    st.caption(
-        "Upload the final month's loan billing statements. "
-        "Used for the debt service workpaper tab."
-    )
-    _p2_loan_col1, _p2_loan_col2 = st.columns([5, 1])
-    with _p2_loan_col1:
-        _p2_loan_upload = st.file_uploader(
-            "Berkadia Loan Statements (.pdf)",
-            type="pdf",
-            accept_multiple_files=True,
-            key="uploader_loan_pass2",
-            help="Post-close loan billing PDFs (up to 3). Overrides the sidebar loan files for Pass 2.",
-        )
-    with _p2_loan_col2:
-        if _p2_loan_upload:
-            st.markdown("✅")
-    if _p2_loan_upload:
-        _p2_loan_paths = []
-        for _lf in _p2_loan_upload:
-            _lp = os.path.join(st.session_state.temp_dir, f"loan_pass2_{_lf.name}")
-            if not os.path.exists(_lp) or os.path.getsize(_lp) != _lf.size:
-                with open(_lp, "wb") as _f:
-                    _f.write(_lf.getbuffer())
-            _p2_loan_paths.append(_lp)
-        st.session_state.uploaded_files["loan_pass2"] = _p2_loan_paths
-        st.caption(f"✓ {len(_p2_loan_paths)} loan statement(s) ready")
-    else:
-        if "loan_pass2" not in st.session_state.uploaded_files:
-            if "loan" in st.session_state.uploaded_files:
-                st.caption("↳ Using loan statements from sidebar (upload final versions above to override)")
-            else:
-                st.caption("⬆️ Upload loan statements to enable debt service workpaper")
+        for _uf2 in _bulk_p2:
+            _raw2 = bytes(_uf2.getbuffer())
+            _det_key2, _conf2, _det_label2 = _classify_file(_uf2.name, _raw2, pass2=True)
 
-    # ── Prior Month Workpaper (optional — for historical carry-forward) ────────
-    st.markdown("**Prior Month Workpaper** *(optional — for historical carry-forward)*")
-    _p2_wp_col1, _p2_wp_col2 = st.columns([5, 1])
-    with _p2_wp_col1:
-        _p2_wp_upload = st.file_uploader(
-            "Prior Month Workpaper (.xlsx)",
-            type="xlsx",
-            key="uploader_prior_workpaper",
-            help="Upload the workpaper from last month. The pipeline will copy all prior sheets "
-                 "and append the current period's sheets so the file builds history over time.",
-        )
-    with _p2_wp_col2:
-        if _p2_wp_upload:
-            st.markdown("✅")
-    if _p2_wp_upload is not None:
-        _p2_wp_path = os.path.join(st.session_state.temp_dir, f"prior_workpaper_{_p2_wp_upload.name}")
-        if not os.path.exists(_p2_wp_path) or os.path.getsize(_p2_wp_path) != _p2_wp_upload.size:
-            with open(_p2_wp_path, "wb") as _f:
-                _f.write(_p2_wp_upload.getbuffer())
-        st.session_state.uploaded_files["prior_workpaper"] = _p2_wp_path
-        st.caption(f"✓ Prior workpaper ready: **{_p2_wp_upload.name}**")
+            # If classifier returned a base key that isn't in the P2 slot list,
+            # keep it as-is (e.g. prior_workpaper has no remap)
+            if _det_key2 not in _P2_SLOT_KEYS:
+                _det_key2 = "unknown"
+
+            _eff_key2 = st.session_state.bulk_overrides_p2.get(_uf2.name, _det_key2)
+
+            _ic2, _fn2, _tp2 = st.columns([1, 3, 4])
+            if _eff_key2 == "unknown":
+                _ic2.markdown("⚠️")
+            elif _conf2 >= 0.85:
+                _ic2.markdown("✅")
+            else:
+                _ic2.markdown("🟡")
+
+            _short2 = _uf2.name if len(_uf2.name) <= 22 else _uf2.name[:19] + "…"
+            _fn2.caption(_short2)
+
+            if _eff_key2 == "unknown" or _conf2 < 0.70:
+                _cur_idx2 = (_P2_SLOT_KEYS.index(_eff_key2)
+                             if _eff_key2 in _P2_SLOT_KEYS else len(_P2_SLOT_KEYS) - 1)
+                _sel_label2 = _tp2.selectbox(
+                    "type", _P2_SLOT_LABELS, index=_cur_idx2,
+                    key=f"ovr_p2_{_uf2.name}", label_visibility="collapsed",
+                )
+                _eff_key2 = _P2_SLOT_KEYS[_P2_SLOT_LABELS.index(_sel_label2)]
+                st.session_state.bulk_overrides_p2[_uf2.name] = _eff_key2
+            else:
+                _tp2.caption(_det_label2)
+
+            if _eff_key2 != "unknown":
+                _tp2_path = os.path.join(st.session_state.temp_dir, f"p2_{_uf2.name}")
+                if not os.path.exists(_tp2_path) or os.path.getsize(_tp2_path) != _uf2.size:
+                    with open(_tp2_path, "wb") as _f2:
+                        _f2.write(_raw2)
+                if _eff_key2 in _MULTI_FILE_KEYS:
+                    _loan_paths_p2.append(_tp2_path)
+                else:
+                    st.session_state.uploaded_files[_eff_key2] = _tp2_path
+
+        if _loan_paths_p2:
+            st.session_state.uploaded_files["loan_pass2"] = _loan_paths_p2
+
+        # Show fallback notes for optional slots not yet uploaded
+        _p2_loaded = set(st.session_state.uploaded_files.keys())
+        if "budget_comparison_pass2" not in _p2_loaded and "budget_comparison" in _p2_loaded:
+            st.caption("↳ BC: using sidebar version — upload post-close BC above to override")
+        if "trial_balance_pass2" not in _p2_loaded and "trial_balance" in _p2_loaded:
+            st.caption("↳ TB: using sidebar version — upload post-close TB above to override")
+        if "t12_statement_pass2" not in _p2_loaded and "t12_statement" in _p2_loaded:
+            st.caption("↳ T12: using sidebar version — upload post-close T12 above to override")
+        if "loan_pass2" not in _p2_loaded and "loan" in _p2_loaded:
+            st.caption("↳ Loan: using sidebar version — upload post-close PDFs above to override")
+
+        # Clean up overrides for files no longer in uploader
+        _active2 = {_uf2.name for _uf2 in _bulk_p2}
+        st.session_state.bulk_overrides_p2 = {
+            k: v for k, v in st.session_state.bulk_overrides_p2.items()
+            if k in _active2
+        }
+
     st.text_input(
         "Prior period label",
         placeholder="e.g. Mar-2026  (leave blank to auto-detect)",
