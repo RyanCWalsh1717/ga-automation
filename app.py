@@ -147,8 +147,8 @@ _TUB_TENANTS = [
     ("santi",   "Santi Therapeutics"),
 ]
 
+import pandas as pd  # needed for manual_accruals_df init and stale-session reset
 if "manual_accruals_df" not in st.session_state:
-    import pandas as pd
     _n = 11  # number of pre-seeded rows
     st.session_state.manual_accruals_df = pd.DataFrame({
         "Account Code": ["613310", "637150", "637150", "617110", "619120",
