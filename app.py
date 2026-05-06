@@ -632,14 +632,15 @@ with tab1:
                         {
                             'account_code': str(r["Account Code"]).strip(),
                             'account_name': str(r.get("Account Name", "") or "").strip(),
-                            'amount': float(r.get("Amount ($)", 0) or 0),
+                            # Force amount=0 so Layer 0 registers the account for dedup
+                            # suppression WITHOUT generating a MAN-XXXX JE entry.
+                            # The actual SUP-XXXX JEs (with custom CR account support)
+                            # are built separately via _supplement_je_lines below.
+                            'amount': 0,
                             'description': str(r.get("Description", "") or "").strip(),
                         }
                         for _, r in _accruals_tbl_early.iterrows()
                         if str(r.get("Account Code", "") or "").strip()
-                        # Include ALL rows with a valid account code — even $0 amounts.
-                        # $0 rows act as exclusion flags: no JE is generated but the account
-                        # is marked as covered so automated layers don't touch it.
                     ]
 
                 # Parse T12 for Pass 1 (improves Layer 4 January historical accrual accuracy)
