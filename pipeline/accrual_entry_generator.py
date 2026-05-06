@@ -1244,7 +1244,7 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
     #   1. Account is a recurring obligation (keyword match OR 613/614/615 code range)
     #   2. ptd_actual > 0 (has some activity — distinguishes from zero-activity gaps)
     #   3. ptd_actual < ptd_budget × 0.90 (below 90% of expected monthly spend)
-    #   4. Gap (ptd_budget − ptd_actual) > $2,500 materiality
+    #   4. Gap (ptd_budget − ptd_actual) ≥ $2,500 materiality
     #   5. Has prior-period history (beginning_balance > 0), OR it is January
     #   6. Not already captured by the main gap loop (ptd_actual >= 1 so main loop skipped it)
     #
@@ -1301,7 +1301,7 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
         if abs(ptd_b) < 2500:
             continue
         gap = abs(ptd_b) - abs(ptd_a)
-        if gap < 500:
+        if gap < 2500:
             continue
         if abs(ptd_a) >= abs(ptd_b) * 0.90:
             continue   # >= 90% covered — within normal invoice timing variation
