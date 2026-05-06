@@ -53,7 +53,7 @@ from management_fee import (
 st.set_page_config(
     page_title="GA Automation",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # ── Custom CSS ───────────────────────────────────────────────
@@ -185,14 +185,37 @@ st.markdown("**Revolution Labs — 1050 Waltham St, Lexington, MA**")
 st.divider()
 
 
-# ── Sidebar: File uploads ────────────────────────────────────
-st.sidebar.markdown("## File Uploads")
+# ── Sidebar ──────────────────────────────────────────────────────────────────
+prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
 
-FILE_GROUPS = {
-    "core": "📄 Core Close Files",
-    "bank": "🏦 Bank Statements",
-    "ref":  "📎 Reference",
-}
+if st.sidebar.button("🔄 Reset All", use_container_width=True,
+                     help="Clear all results and uploaded files"):
+    st.session_state.pass1_complete = False
+    st.session_state.pass1_engine_result = None
+    st.session_state.pass1_output_files = {}
+    st.session_state['pass1_gl_activity_log'] = []
+    st.session_state.pass2_complete = False
+    st.session_state.pass2_engine_result = None
+    st.session_state.pass2_output_files = {}
+    st.session_state.uploaded_files = {}
+    st.session_state.bulk_overrides_p1 = {}
+    st.session_state.bulk_overrides_p2 = {}
+    shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
+    st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
+    import pandas as _pd
+    st.session_state.post_close_je_df = _pd.DataFrame({
+        "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+        "Account Code": ["", ""],
+        "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
+        "Line Description": ["", ""],
+    })
+    if "manual_accruals_df" in st.session_state:
+        st.session_state.manual_accruals_df["Amount ($)"] = 0.0
+    for _tkey, _ in _TUB_TENANTS:
+        st.session_state[f"tub_elec_{_tkey}"] = 0.0
+        st.session_state[f"tub_gas_{_tkey}"]  = 0.0
+    st.rerun()
+
 
 FILE_CONFIG = {
     # ── Core ──────────────────────────────────────────────────
@@ -286,202 +309,6 @@ _P1_SLOT_KEYS = [
 ]
 _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 
-# ── Pass 1 bulk uploader ─────────────────────────────────────────────────────
-_bulk_p1 = st.sidebar.file_uploader(
-    "Upload Pass 1 Files",
-    accept_multiple_files=True,
-    type=["xlsx", "xls", "pdf"],
-    key="bulk_upload_p1",
-    help=(
-        "Select all files at once — GL, Budget Comparison, Trial Balance, "
-        "Bank Rec, Nexus, DACA, Berkadia, etc.  "
-        "The app auto-detects each file type."
-    ),
-)
-
-# Clear all Pass 1 slots so stale entries don't persist after a file is removed
-for _clr_key in set(_P1_SLOT_KEYS) - {"unknown"}:
-    st.session_state.uploaded_files.pop(_clr_key, None)
-
-if _bulk_p1:
-    _loan_paths_p1: list = []
-
-    for _uf in _bulk_p1:
-        _raw = bytes(_uf.getbuffer())
-        _det_key, _conf, _det_label = _classify_file(_uf.name, _raw, pass2=False)
-
-        # Apply user override if previously selected
-        _eff_key = st.session_state.bulk_overrides_p1.get(_uf.name, _det_key)
-
-        # ── Detection row: icon | filename | type ──────────────────────
-        _ic, _fn_col, _tp_col = st.sidebar.columns([1, 3, 4])
-        if _eff_key == "unknown":
-            _ic.markdown("⚠️")
-        elif _conf >= 0.85:
-            _ic.markdown("✅")
-        else:
-            _ic.markdown("🟡")
-
-        _short = _uf.name if len(_uf.name) <= 22 else _uf.name[:19] + "…"
-        _fn_col.caption(_short)
-
-        if _eff_key == "unknown" or _conf < 0.70:
-            _cur_idx = (_P1_SLOT_KEYS.index(_eff_key)
-                        if _eff_key in _P1_SLOT_KEYS else len(_P1_SLOT_KEYS) - 1)
-            _sel_label = _tp_col.selectbox(
-                "type", _P1_SLOT_LABELS, index=_cur_idx,
-                key=f"ovr_p1_{_uf.name}", label_visibility="collapsed",
-            )
-            _eff_key = _P1_SLOT_KEYS[_P1_SLOT_LABELS.index(_sel_label)]
-            st.session_state.bulk_overrides_p1[_uf.name] = _eff_key
-        else:
-            _tp_col.caption(_det_label)
-
-        # ── Save to temp dir and uploaded_files ────────────────────────
-        if _eff_key != "unknown":
-            _tp = os.path.join(st.session_state.temp_dir, _uf.name)
-            if not os.path.exists(_tp) or os.path.getsize(_tp) != _uf.size:
-                with open(_tp, "wb") as _f:
-                    _f.write(_raw)
-            if _eff_key in _MULTI_FILE_KEYS:
-                _loan_paths_p1.append(_tp)
-            else:
-                st.session_state.uploaded_files[_eff_key] = _tp
-
-    if _loan_paths_p1:
-        st.session_state.uploaded_files["loan"] = _loan_paths_p1
-
-    # Clean up overrides for files no longer in the uploader
-    _active_names = {_uf.name for _uf in _bulk_p1}
-    st.session_state.bulk_overrides_p1 = {
-        k: v for k, v in st.session_state.bulk_overrides_p1.items()
-        if k in _active_names
-    }
-
-# ── Missing-output warnings ───────────────────────────────────
-uploaded_keys = set(st.session_state.uploaded_files.keys())
-missing_impact = []
-if "trial_balance"     not in uploaded_keys: missing_impact.append("No BS tie-out validation (Pass 2)")
-if "budget_comparison" not in uploaded_keys: missing_impact.append("No budget gap accruals or variance comments")
-if "bank_rec"          not in uploaded_keys: missing_impact.append("No Operating bank rec tab (Pass 2)")
-if "daca_bank"         not in uploaded_keys: missing_impact.append("No DACA bank rec tab (Pass 2)")
-if "loan"              not in uploaded_keys: missing_impact.append("No debt service tab (Pass 2)")
-
-uploaded_count = len(uploaded_keys)
-gl_uploaded = "gl" in uploaded_keys
-
-if missing_impact:
-    with st.sidebar.expander(f"⚠️ {len(missing_impact)} output(s) won't generate", expanded=False):
-        for m in missing_impact:
-            st.caption(f"• {m}")
-
-st.sidebar.markdown(f"**{uploaded_count} file(s) uploaded**")
-st.sidebar.divider()
-
-if not gl_uploaded:
-    st.sidebar.warning("⚠️ GL Detail is required to run either pass.")
-
-prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
-st.sidebar.divider()
-
-# ── Tenant Utility Billing (Pass 1 only) ────────────────────────────────────
-st.sidebar.markdown("## Tenant Utility Billing")
-st.sidebar.caption(
-    "Enter electric and gas amounts per tenant from the monthly meter read. "
-    "Posts as: DR 133110 / CR 440500 (electric) and CR 440700 (gas). "
-    "Leave at $0 to skip — pipeline auto-accrues budget amounts."
-)
-
-_tenant_utility_rows = []
-_tu_elec_total = 0.0
-_tu_gas_total  = 0.0
-
-for _tkey, _tname in _TUB_TENANTS:
-    st.sidebar.markdown(f"**{_tname}**")
-    _tcol1, _tcol2 = st.sidebar.columns(2)
-    with _tcol1:
-        _telec = st.number_input(
-            "Electric ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
-            key=f"tub_elec_{_tkey}",
-        )
-    with _tcol2:
-        _tgas = st.number_input(
-            "Gas ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
-            key=f"tub_gas_{_tkey}",
-        )
-    if _telec > 0 or _tgas > 0:
-        _tenant_utility_rows.append({'tenant': _tname, 'electric': _telec, 'gas': _tgas})
-        _tu_elec_total += _telec
-        _tu_gas_total  += _tgas
-
-if _tenant_utility_rows:
-    st.sidebar.caption(
-        f"✓ {len(_tenant_utility_rows)} tenant(s) — "
-        f"Electric ${_tu_elec_total:,.2f} / Gas ${_tu_gas_total:,.2f}"
-    )
-else:
-    st.sidebar.caption("↳ No entries — will auto-accrue budget if meter read not in GL")
-
-st.sidebar.divider()
-
-# ── RE Tax Bill (Pass 1 — payment months only) ───────────────────────────────
-st.sidebar.markdown("## RE Tax Bill")
-st.sidebar.caption(
-    "Payment months only: Jan / Apr / Jul / Oct. "
-    "Enter the quarterly RE Tax bill amount from the town. "
-    "Posts as: DR 641110 Real Estate Taxes / CR 115200 RE Tax Escrow. "
-    "Leave $0 in non-payment months — the monthly DR 641110 / CR 135120 "
-    "accrual runs automatically."
-)
-_re_tax_bill_amount = st.sidebar.number_input(
-    "Quarterly RE Tax Bill ($)",
-    min_value=0.0,
-    value=0.0,
-    step=1000.0,
-    format="%.2f",
-    key="widget_re_tax_bill",
-    help=(
-        "Enter the actual quarterly real estate tax bill from the town. "
-        "Only relevant in January, April, July, and October. "
-        "Prior-month accruals (DR 641110 / CR 135120) will auto-reverse "
-        "in Yardi, netting both accounts to zero."
-    ),
-)
-_re_tax_bill_amount = _re_tax_bill_amount if _re_tax_bill_amount > 0 else 0.0
-
-st.sidebar.divider()
-
-st.sidebar.divider()
-
-# ── Reset (sidebar) ───────────────────────────────────────────
-if st.sidebar.button("🔄 Reset All", use_container_width=True,
-                     help="Clear all results and uploaded files"):
-    st.session_state.pass1_complete = False
-    st.session_state.pass1_engine_result = None
-    st.session_state.pass1_output_files = {}
-    st.session_state['pass1_gl_activity_log'] = []
-    st.session_state.pass2_complete = False
-    st.session_state.pass2_engine_result = None
-    st.session_state.pass2_output_files = {}
-    st.session_state.uploaded_files = {}
-    st.session_state.bulk_overrides_p1 = {}
-    st.session_state.bulk_overrides_p2 = {}
-    shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
-    st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
-    import pandas as _pd
-    st.session_state.post_close_je_df = _pd.DataFrame({
-        "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
-        "Account Code": ["", ""],
-        "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
-        "Line Description": ["", ""],
-    })
-    if "manual_accruals_df" in st.session_state:
-        st.session_state.manual_accruals_df["Amount ($)"] = 0.0
-    for _tkey, _ in _TUB_TENANTS:
-        st.session_state[f"tub_elec_{_tkey}"] = 0.0
-        st.session_state[f"tub_gas_{_tkey}"]  = 0.0
-    st.rerun()
-
 
 # ═══════════════════════════════════════════════════════════════
 # ── Main content: Two-pass tabs ──────────────────────────────
@@ -499,11 +326,154 @@ tab1, tab2, tab3 = st.tabs([
 # TAB 1 — PASS 1: JE GENERATION
 # ──────────────────────────────────────────────────────────────
 with tab1:
+    # ── File Upload ──────────────────────────────────────────────────────────
+    st.markdown("### 📥 Upload Pass 1 Files")
+    st.caption(
+        "Select all source files at once — GL, Budget Comparison, Trial Balance, "
+        "Bank Rec, Nexus, DACA, Berkadia, etc. The app auto-detects each file type. "
+        "Use the dropdown to correct any mismatches."
+    )
+
+    _bulk_p1 = st.file_uploader(
+        "Drop Pass 1 files here",
+        accept_multiple_files=True,
+        type=["xlsx", "xls", "pdf"],
+        key="bulk_upload_p1",
+        label_visibility="collapsed",
+    )
+
+    # Clear all Pass 1 slots so stale entries don't persist after a file is removed
+    for _clr_key in set(_P1_SLOT_KEYS) - {"unknown"}:
+        st.session_state.uploaded_files.pop(_clr_key, None)
+
+    if _bulk_p1:
+        _loan_paths_p1: list = []
+
+        for _uf in _bulk_p1:
+            _raw = bytes(_uf.getbuffer())
+            _det_key, _conf, _det_label = _classify_file(_uf.name, _raw, pass2=False)
+            _eff_key = st.session_state.bulk_overrides_p1.get(_uf.name, _det_key)
+
+            _ic, _fn_col, _tp_col = st.columns([0.5, 5, 5])
+            if _eff_key == "unknown":
+                _ic.markdown("⚠️")
+            elif _conf >= 0.85:
+                _ic.markdown("✅")
+            else:
+                _ic.markdown("🟡")
+
+            _short = _uf.name if len(_uf.name) <= 40 else _uf.name[:37] + "…"
+            _fn_col.caption(_short)
+
+            if _eff_key == "unknown" or _conf < 0.70:
+                _cur_idx = (_P1_SLOT_KEYS.index(_eff_key)
+                            if _eff_key in _P1_SLOT_KEYS else len(_P1_SLOT_KEYS) - 1)
+                _sel_label = _tp_col.selectbox(
+                    "type", _P1_SLOT_LABELS, index=_cur_idx,
+                    key=f"ovr_p1_{_uf.name}", label_visibility="collapsed",
+                )
+                _eff_key = _P1_SLOT_KEYS[_P1_SLOT_LABELS.index(_sel_label)]
+                st.session_state.bulk_overrides_p1[_uf.name] = _eff_key
+            else:
+                _tp_col.caption(_det_label)
+
+            if _eff_key != "unknown":
+                _tp = os.path.join(st.session_state.temp_dir, _uf.name)
+                if not os.path.exists(_tp) or os.path.getsize(_tp) != _uf.size:
+                    with open(_tp, "wb") as _f:
+                        _f.write(_raw)
+                if _eff_key in _MULTI_FILE_KEYS:
+                    _loan_paths_p1.append(_tp)
+                else:
+                    st.session_state.uploaded_files[_eff_key] = _tp
+
+        if _loan_paths_p1:
+            st.session_state.uploaded_files["loan"] = _loan_paths_p1
+
+        _active_names = {_uf.name for _uf in _bulk_p1}
+        st.session_state.bulk_overrides_p1 = {
+            k: v for k, v in st.session_state.bulk_overrides_p1.items()
+            if k in _active_names
+        }
+
+    # ── Upload status ─────────────────────────────────────────────────────────
+    uploaded_keys = set(st.session_state.uploaded_files.keys())
+    missing_impact = []
+    if "trial_balance"     not in uploaded_keys: missing_impact.append("No BS tie-out validation (Pass 2)")
+    if "budget_comparison" not in uploaded_keys: missing_impact.append("No budget gap accruals or variance comments")
+    if "bank_rec"          not in uploaded_keys: missing_impact.append("No Operating bank rec tab (Pass 2)")
+    if "daca_bank"         not in uploaded_keys: missing_impact.append("No DACA bank rec tab (Pass 2)")
+    if "loan"              not in uploaded_keys: missing_impact.append("No debt service tab (Pass 2)")
+
+    uploaded_count = len(uploaded_keys)
+    gl_uploaded = "gl" in uploaded_keys
+
+    _st_c1, _st_c2 = st.columns(2)
+    with _st_c1:
+        st.caption(f"**{uploaded_count} file(s) uploaded**")
+    with _st_c2:
+        if missing_impact:
+            with st.expander(f"⚠️ {len(missing_impact)} output(s) won't generate", expanded=False):
+                for m in missing_impact:
+                    st.caption(f"• {m}")
+
+    if not gl_uploaded and uploaded_count > 0:
+        st.warning("⚠️ GL Detail is required to run either pass.")
+
+    st.divider()
+
+    # ── Tenant Utility Billing ────────────────────────────────────────────────
+    _tenant_utility_rows = []
+    _tu_elec_total = 0.0
+    _tu_gas_total  = 0.0
+    with st.expander("⚡ Tenant Utility Billing — Enter monthly meter read amounts", expanded=False):
+        st.caption(
+            "Enter electric and gas amounts per tenant from the monthly meter read. "
+            "Posts as: DR 133110 / CR 440500 (electric) and CR 440700 (gas). "
+            "Leave at $0 to skip — pipeline auto-accrues budget amounts."
+        )
+        _tub_cols = st.columns(len(_TUB_TENANTS))
+        for (_tkey, _tname), _tcol in zip(_TUB_TENANTS, _tub_cols):
+            with _tcol:
+                st.caption(f"**{_tname}**")
+                _telec = st.number_input(
+                    "Electric ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
+                    key=f"tub_elec_{_tkey}",
+                )
+                _tgas = st.number_input(
+                    "Gas ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
+                    key=f"tub_gas_{_tkey}",
+                )
+            if _telec > 0 or _tgas > 0:
+                _tenant_utility_rows.append({'tenant': _tname, 'electric': _telec, 'gas': _tgas})
+                _tu_elec_total += _telec
+                _tu_gas_total  += _tgas
+        if _tenant_utility_rows:
+            st.caption(f"✓ {len(_tenant_utility_rows)} tenant(s) — Electric ${_tu_elec_total:,.2f} / Gas ${_tu_gas_total:,.2f}")
+        else:
+            st.caption("↳ No entries — pipeline will auto-accrue budget amounts if meter read not in GL")
+
+    # ── RE Tax Bill ───────────────────────────────────────────────────────────
+    with st.expander("🏛️ RE Tax Bill — Payment months only (Jan / Apr / Jul / Oct)", expanded=False):
+        st.caption(
+            "Enter the quarterly RE Tax bill amount from the town. "
+            "Posts as: DR 641110 Real Estate Taxes / CR 115200 RE Tax Escrow. "
+            "Leave $0 in non-payment months — the monthly DR 641110 / CR 135120 accrual runs automatically."
+        )
+        _re_tax_bill_amount = st.number_input(
+            "Quarterly RE Tax Bill ($)",
+            min_value=0.0, value=0.0, step=1000.0, format="%.2f",
+            key="widget_re_tax_bill",
+        )
+        _re_tax_bill_amount = _re_tax_bill_amount if _re_tax_bill_amount > 0 else 0.0
+
+    st.divider()
+
     st.markdown("""
     **What this does:** Reads your pre-close Yardi GL and detects every accrual entry needed
     to complete the month-end close — invoices in Nexus not yet posted, budget gaps,
     historical patterns, management fee, prepaid amortization, one-off items you enter below.
-    Exports three Yardi-import CSVs.
+    Exports two Yardi-import files.
 
     **Next step after this tab:** Upload the CSVs to Yardi → run final close → switch to **Pass 2**.
     """)
@@ -1389,6 +1359,10 @@ with tab1:
 # TAB 2 — PASS 2: REPORT GENERATION
 # ──────────────────────────────────────────────────────────────
 with tab2:
+    # Recompute upload state (defined in tab1, available via session_state)
+    uploaded_keys = set(st.session_state.uploaded_files.keys())
+    gl_uploaded = "gl" in uploaded_keys
+
     st.markdown("""
     **What this does:** Reads the final post-close Yardi GL (after all JEs have been posted)
     and generates the GRP review deliverables — Balance Sheet workpaper, institutional workpapers,
