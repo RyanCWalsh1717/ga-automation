@@ -149,6 +149,7 @@ _TUB_TENANTS = [
 
 if "manual_accruals_df" not in st.session_state:
     import pandas as pd
+    _n = 11  # number of pre-seeded rows
     st.session_state.manual_accruals_df = pd.DataFrame({
         "Account Code": ["613310", "637150", "637150", "617110", "619120",
                          "627230", "635110", "610140", "610160", "637230", ""],
@@ -157,25 +158,15 @@ if "manual_accruals_df" not in st.session_state:
                          "Water Contract Svc", "Fire Life Safety",
                          "Snow & Ice Removal", "Cleaning Mat/Supplies",
                          "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
-        "Vendor":       ["Town of Lexington", "Transaction Associates",
-                         "Jones Lang Lasalle", "HAVAC (quarterly)",
-                         "PPM", "J&M Brown (quarterly)",
-                         "Outdoor Pride", "Durkin",
-                         "Casella (extra lines)", "BlueTriton/Primo", ""],
-        "Amount ($)":   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "Description":  ["Semi-annual ÷ 6 (enter invoice ÷ 6)",
-                         "Monthly retainer", "Monthly brokerage fee",
-                         "Quarterly HVAC contract", "Monthly water treatment",
-                         "Quarterly fire/life safety PM", "Pending storm invoices",
-                         "Monthly cleaning supplies", "Service lines not yet in Yardi",
-                         "Water delivery", ""],
-        "CR Account":   ["", "", "", "", "", "", "", "", "", "", ""],
-        "Auto-Reverse": [True, True, True, True, True, True, True, True, True, True, True],
+        "Vendor":       [""] * _n,
+        "Amount ($)":   [0.0] * _n,
+        "Description":  [""] * _n,
     })
 
-# Backfill CR Account column for sessions initialized before this column was added
-if "CR Account" not in st.session_state.manual_accruals_df.columns:
-    st.session_state.manual_accruals_df["CR Account"] = ""
+# Drop removed columns from sessions that have them (backward compatibility)
+for _col in ("CR Account", "Auto-Reverse"):
+    if _col in st.session_state.manual_accruals_df.columns:
+        st.session_state.manual_accruals_df = st.session_state.manual_accruals_df.drop(columns=[_col])
 
 
 # ── Header ───────────────────────────────────────────────────
@@ -480,15 +471,14 @@ with tab1:
     st.divider()
 
     # ── One-Off Accruals Table ────────────────────────────────────────────────
-    with st.expander("🧾 One-Off Accruals  (DR expense → CR 213100 auto, or specify CR Account)", expanded=False):
+    with st.expander("🧾 One-Off Accruals  (DR expense → CR 213100 Accrued Expenses)", expanded=False):
         st.caption(
             "Use this for known invoices not yet in Nexus or Yardi — quarterly contracts, "
             "seasonal items, recurring retainers, semi-annual billings, etc. "
-            "Enter the **debit side** — credit defaults to **213100 Accrued Expenses**. "
-            "For AR Other / AP Other periodic entries with a different offset (e.g. 133110, 135150), "
-            "enter that account in the **CR Account** column — it will appear as its own section in the JE review. "
+            "All entries debit the expense account and credit **213100 Accrued Expenses** — "
+            "they auto-reverse next period. "
             "**Leave Amount at $0** to suppress automated detection for that account without generating a JE — "
-            "use this when a JE has already been posted to Yardi (e.g., RE Taxes entered manually) to prevent double-counting."
+            "use this when a JE has already been posted to Yardi to prevent double-counting."
         )
         accruals_edited_df = st.data_editor(
             st.session_state.manual_accruals_df,
@@ -504,12 +494,6 @@ with tab1:
                                      help="Positive amount — debit to expense account"),
                 "Description":   st.column_config.TextColumn("Description", width="large",
                                      help="Description for the Yardi JE line"),
-                "CR Account":    st.column_config.TextColumn("CR Account", width="small",
-                                     help="Leave blank to auto-credit 213100 Accrued Expenses. "
-                                          "Enter a different account code (e.g. 133110, 135150) "
-                                          "for AR Other / AP Other / Prepaid entries."),
-                "Auto-Reverse":  st.column_config.CheckboxColumn("Rev?", width="small",
-                                     help="Check to auto-reverse next period"),
             },
             key="manual_accruals_editor",
         )
@@ -738,19 +722,18 @@ with tab1:
                         '213100': 'Accrued Expenses',
                     }
                     for _, _row in _active_accruals.iterrows():
-                        _cr_override = str(_row.get("CR Account", "") or "").strip()
+                        _vendor = str(_row.get("Vendor", "") or "").strip()
+                        _desc   = str(_row.get("Description", "") or "").strip()
                         _periodic_supplement_rows.append({
-                            'account_code':  str(_row["Account Code"]).strip(),
-                            'account_name':  str(_row.get("Account Name", "") or "").strip()
-                                             or str(_row["Account Code"]).strip(),
-                            'amount':        float(_row["Amount ($)"]),
-                            'description':   str(_row.get("Description", "") or "").strip()
-                                             or f'{_row.get("Vendor","") or ""} — one-off accrual',
-                            'vendor':        str(_row.get("Vendor", "") or "").strip(),
-                            'auto_reverse':  bool(_row.get("Auto-Reverse", True)),
-                            'cr_account':    _cr_override if _cr_override else '213100',
-                            'cr_account_name': _CR_ACCT_NAMES.get(_cr_override, _cr_override)
-                                               if _cr_override else 'Accrued Expenses',
+                            'account_code':    str(_row["Account Code"]).strip(),
+                            'account_name':    str(_row.get("Account Name", "") or "").strip()
+                                               or str(_row["Account Code"]).strip(),
+                            'amount':          float(_row["Amount ($)"]),
+                            'description':     _desc or _vendor or 'one-off accrual',
+                            'vendor':          _vendor,
+                            'auto_reverse':    True,   # all one-off accruals auto-reverse
+                            'cr_account':      '213100',
+                            'cr_account_name': 'Accrued Expenses',
                         })
 
                 for _si, _sup in enumerate(_periodic_supplement_rows):
@@ -2444,9 +2427,7 @@ The table comes **pre-populated** with common monthly items. Review and adjust a
 | BlueTriton Water Delivery | 637230 | ~$200 |
 | Water/Sewer (if no Nexus) | 613310 | Budget amount |
 
-Each row creates a **DR expense / CR 213100 Accrued Expenses** journal entry.
-If the credit account should be something other than 213100 (e.g., an AR reclass),
-fill in the optional **CR Account** column.
+Each row creates a **DR expense / CR 213100 Accrued Expenses** journal entry that auto-reverses next period.
 """)
 
     # ── Pass 1 Outputs ────────────────────────────────────────────────────────
@@ -2474,9 +2455,8 @@ After clicking **Generate JEs**, two files are available to download:
 4. Run the **month-end close** in Yardi (locks the period)
 
 **What Yardi auto-reverses on the 1st of next month:**
-All entries with `auto_reverse = Yes` in the CSV (accruals, management fee) will automatically
-reverse on the first day of the following period. This is standard accrual accounting —
-no manual reversal needed.
+All accrual and management fee entries auto-reverse on the first day of the following period.
+This is standard accrual accounting — no manual reversal needed.
 
 > **Note:** The Singerman 8-tab monthly report (Balance Sheet, Income Statement, T12,
 > Trial Balance MTD/YTD, GL MTD/YTD, Tenancy) is downloaded directly from Yardi
