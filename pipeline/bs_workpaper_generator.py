@@ -935,40 +935,146 @@ def _extract_account_history(wb_prior) -> dict:
 
 # ── Account reconciliation tab ────────────────────────────────
 
+# Matches Yardi auto-reversal boilerplate at the start of description fields.
+# Examples matched:  "Reversal of J-19118: memo"  |  "J-19118: memo"
+# Examples NOT matched: "J-2024"  (no separator → not boilerplate, keep it)
+# Requires a colon/dash separator + whitespace after the JE number so a bare
+# "J-XXXX" that IS the meaningful description is never accidentally stripped.
+_REVERSAL_PREFIX_RE = re.compile(
+    r'^(reversal\s+of\s+)?[Jj]-\d+\s*[:\-–]\s+', re.IGNORECASE
+)
+
+
 def _fmt_txn_desc(t) -> str:
     """
     Build a clean workpaper description from a GLTransaction.
 
     Priority:
-      1. If description is meaningful (not blank, not just a JE/check number),
-         use description.  Append remarks if present and different.
-      2. For journal entries (control starts with J), prefix with control#.
-      3. Fall back to control if description is blank.
+      1. remarks  — the actual transaction memo/description entered by the user.
+      2. description — often the GL account name that Yardi auto-populates;
+                       used as additional context if it differs from remarks,
+                       or as the sole fallback when remarks is blank.
+      3. control  — last resort when both text fields are empty.
+
+    Strips Yardi auto-reversal boilerplate ('Reversal of J-XXXXX:') from both
+    fields before combining.  No JE control number is prepended.
     """
     desc    = (t.description or '').strip()
     remarks = (t.remarks     or '').strip()
     control = (t.control     or '').strip()
 
-    # Build combined description
-    if desc and remarks and remarks.lower() not in desc.lower():
-        combined = f'{desc} — {remarks}'
-    elif desc:
-        combined = desc
-    elif remarks:
-        combined = remarks
-    else:
-        combined = ''
+    # Strip Yardi boilerplate from both fields before any comparison
+    if desc:
+        desc = _REVERSAL_PREFIX_RE.sub('', desc).strip(' :–-')
+    if remarks:
+        remarks = _REVERSAL_PREFIX_RE.sub('', remarks).strip(' :–-')
 
-    # Prefix journal control numbers so reviewers can trace to JE
-    if control.upper().startswith('J') and combined:
-        return f'{control}: {combined}'
-    elif control.upper().startswith('J') and not combined:
-        return control
-    return combined or control
+    # remarks is the real description — use it exclusively.
+    # Fall back to description only when remarks is blank, and to control as last resort.
+    return remarks or desc or control
 
 
 # Cash account codes — show Deposits / Disbursements instead of Debit / Credit
 _CASH_ACCOUNTS = {'111100', '115100', '115200', '115300', '115600'}
+
+
+def _is_journal_entry(control: str) -> bool:
+    """Return True if the GL control number looks like a journal entry (not a bank item)."""
+    c = (control or '').strip().upper()
+    # JE controls: 'J-12345', 'GJ-001', 'MGT-001', 'SUP-001', etc.
+    return bool(c and (c[0] == 'J' or c[:2] in ('GJ', 'MG', 'SU', 'PR', 'TU')))
+
+
+def _group_cash_txns_by_day(txns):
+    """
+    For cash accounts, collapse same-day same-direction bank transactions into
+    daily summary rows.  Journal entries are always kept individual (they have
+    meaningful descriptions).  Single-item days render as-is.
+
+    Returns a list of dicts, each representing one display row:
+        {
+          'date':    date | str,
+          'desc':    str,
+          'control': str,
+          'ref':     str,
+          'debit':   float | None,
+          'credit':  float | None,
+          'balance': float,
+          'is_summary': bool,   # True → use italic style
+        }
+    """
+    from itertools import groupby as _groupby
+
+    # Sort by date then preserve original order within a date
+    sorted_txns = sorted(txns, key=lambda t: (t.date or datetime.min.date()))
+
+    rows = []
+    for dt_val, day_iter in _groupby(sorted_txns, key=lambda t: t.date):
+        day_list = list(day_iter)
+
+        # Journal entries: always individual
+        je_txns   = [t for t in day_list if _is_journal_entry(t.control or '')]
+        bank_txns = [t for t in day_list if not _is_journal_entry(t.control or '')]
+
+        # End-of-day balance = last bank transaction's balance for this date.
+        # All summary rows on the same day share this balance so the reader
+        # sees a single consistent closing balance rather than a mid-day jump.
+        eod_balance = bank_txns[-1].balance if bank_txns else (je_txns[-1].balance if je_txns else 0.0)
+
+        # JE rows first (they're typically end-of-month postings)
+        for t in je_txns:
+            rows.append({
+                'date': t.date, 'desc': _fmt_txn_desc(t),
+                'control': (t.control or '').strip(),
+                'ref': (t.reference or '').strip(),
+                'debit':  t.debit  if (t.debit  or 0) > 0.005 else None,
+                'credit': t.credit if (t.credit or 0) > 0.005 else None,
+                'balance': t.balance, 'is_summary': False,
+            })
+
+        # Deposits (debits) — group if more than one
+        deposits = [t for t in bank_txns if (t.debit or 0) > 0.005]
+        if len(deposits) == 1:
+            t = deposits[0]
+            rows.append({
+                'date': t.date, 'desc': _fmt_txn_desc(t),
+                'control': (t.control or '').strip(),
+                'ref': (t.reference or '').strip(),
+                'debit': t.debit, 'credit': None,
+                'balance': t.balance, 'is_summary': False,
+            })
+        elif deposits:
+            total_dep = sum(t.debit for t in deposits)
+            rows.append({
+                'date': dt_val,
+                'desc': f'Daily Deposits — {len(deposits)} items',
+                'control': '', 'ref': '',
+                'debit': total_dep, 'credit': None,
+                'balance': eod_balance, 'is_summary': True,
+            })
+
+        # Disbursements (credits) — group if more than one
+        disb = [t for t in bank_txns if (t.credit or 0) > 0.005]
+        if len(disb) == 1:
+            t = disb[0]
+            rows.append({
+                'date': t.date, 'desc': _fmt_txn_desc(t),
+                'control': (t.control or '').strip(),
+                'ref': (t.reference or '').strip(),
+                'debit': None, 'credit': t.credit,
+                'balance': t.balance, 'is_summary': False,
+            })
+        elif disb:
+            total_disb = sum(t.credit for t in disb)
+            rows.append({
+                'date': dt_val,
+                'desc': f'Daily Disbursements — {len(disb)} items',
+                'control': '', 'ref': '',
+                'debit': None, 'credit': total_disb,
+                'balance': eod_balance, 'is_summary': True,
+            })
+
+    return rows
 
 
 def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
@@ -1065,34 +1171,56 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     if not txns:
         txns = list(gl_acct.transactions or [])
 
+    # Cash accounts: collapse same-day bank transactions into daily summary rows.
+    # Journal entries always remain individual.  Non-cash accounts: one row per txn.
+    if is_cash:
+        display_rows = _group_cash_txns_by_day(txns)
+    else:
+        display_rows = [
+            {
+                'date': t.date, 'desc': _fmt_txn_desc(t),
+                'control': (t.control or '').strip(),
+                'ref': (t.reference or '').strip(),
+                'debit':  t.debit  if (t.debit  or 0) > 0.005 else None,
+                'credit': t.credit if (t.credit or 0) > 0.005 else None,
+                'balance': t.balance, 'is_summary': False,
+            }
+            for t in txns
+        ]
+
     total_dr = 0.0
     total_cr = 0.0
-    for ti, t in enumerate(txns):
-        alt   = _fill(LIGHT_GRAY) if ti % 2 == 1 else None
-        t_date = t.date.strftime('%m/%d/%Y') if t.date else ''
-        desc   = _fmt_txn_desc(t)
-        ref    = (t.reference or '').strip()
-        ctrl   = (t.control   or '').strip()
-        # For journal entries, control is already embedded in desc — show it clean in ctrl col
-        dr_val = t.debit  if (t.debit  or 0) > 0.005 else None
-        cr_val = t.credit if (t.credit or 0) > 0.005 else None
+    for ti, r in enumerate(display_rows):
+        alt    = _fill(LIGHT_GRAY) if ti % 2 == 1 else None
+        dt_val = r['date']
+        t_date = dt_val.strftime('%m/%d/%Y') if hasattr(dt_val, 'strftime') else str(dt_val or '')
+        desc   = r['desc']
+        ctrl   = r['control']
+        ref    = r['ref']
+        dr_val = r['debit']
+        cr_val = r['credit']
+        bal    = r['balance']
+
         if dr_val:
             total_dr += dr_val
         if cr_val:
             total_cr += cr_val
 
+        # Summary rows (collapsed daily groups) render in italic to signal aggregation
+        txn_font = _font(size=9, italic=r['is_summary'])
+
         row_vals = [
-            (_DT,  t_date,           None),
-            (_DSC, desc,             None),
-            (_CTL, ctrl,             None),
-            (_REF, ref,              None),
-            (_DR,  dr_val or '',     _NUM_FMT if dr_val else None),
-            (_CR,  cr_val or '',     _NUM_FMT if cr_val else None),
-            (_BAL, t.balance,        _NUM_FMT),
+            (_DT,  t_date,       None),
+            (_DSC, desc,         None),
+            (_CTL, ctrl,         None),
+            (_REF, ref,          None),
+            (_DR,  dr_val or '', _NUM_FMT if dr_val else None),
+            (_CR,  cr_val or '', _NUM_FMT if cr_val else None),
+            (_BAL, bal,          _NUM_FMT),
         ]
         for col, val, fmt in row_vals:
             c = ws.cell(row=row, column=col, value=val)
-            c.font   = _font(size=9)
+            c.font   = txn_font
             c.border = THIN
             if alt:
                 c.fill = alt
