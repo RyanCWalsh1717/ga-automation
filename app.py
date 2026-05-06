@@ -147,16 +147,6 @@ _TUB_TENANTS = [
     ("santi",   "Santi Therapeutics"),
 ]
 
-if "manual_je_df" not in st.session_state:
-    import pandas as pd
-    st.session_state.manual_je_df = pd.DataFrame({
-        "JE #":             ["", ""],
-        "Description":      ["", ""],
-        "Account Code":     ["", ""],
-        "Amount":           [0.0, 0.0],
-        "Line Description": ["", ""],
-    })
-
 if "manual_accruals_df" not in st.session_state:
     import pandas as pd
     st.session_state.manual_accruals_df = pd.DataFrame({
@@ -494,10 +484,6 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
     import pandas as _pd
-    st.session_state.manual_je_df = _pd.DataFrame({
-        "JE #": ["", ""], "Description": ["", ""],
-        "Account Code": ["", ""], "Amount": [0.0, 0.0], "Line Description": ["", ""],
-    })
     st.session_state.post_close_je_df = _pd.DataFrame({
         "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
         "Account Code": ["", ""],
@@ -583,48 +569,6 @@ with tab1:
                 f"${_accrual_active['Amount ($)'].sum():,.2f} total debits",
                 icon="✅",
             )
-
-    # ── Manual JEs Table ─────────────────────────────────────────────────────
-    with st.expander("📝 Manual Journal Entries & Reclasses  (fully balanced)", expanded=False):
-        st.caption(
-            "Use this for reclasses between accounts, true-up entries, or any adjustment where you control "
-            "both the debit and credit sides (i.e., the offset is not 213100 Accrued Expenses). "
-            "Positive Amount = Debit, Negative = Credit. Group lines with the same **JE #** — they must net to $0. "
-            "Exports as a separate Manual JE CSV (not mixed with accruals)."
-        )
-        edited_df = st.data_editor(
-            st.session_state.manual_je_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "JE #":             st.column_config.TextColumn("JE #", width="small"),
-                "Description":      st.column_config.TextColumn("JE Description", width="medium"),
-                "Account Code":     st.column_config.TextColumn("Account", width="small"),
-                "Amount":           st.column_config.NumberColumn("Amount (+DR / -CR)",
-                                        format="$%,.2f", width="small"),
-                "Line Description": st.column_config.TextColumn("Line Description", width="large"),
-            },
-            key="manual_je_editor",
-        )
-        st.session_state.manual_je_df = edited_df
-
-        valid_rows = edited_df[
-            edited_df["Account Code"].fillna("").str.strip().astype(bool) &
-            (edited_df["Amount"] != 0)
-        ]
-        if not valid_rows.empty:
-            balance_check = valid_rows.groupby("JE #")["Amount"].sum()
-            all_balanced = True
-            for je_id, total in balance_check.items():
-                if abs(total) > 0.01:
-                    st.warning(f"⚠️ {je_id} is out of balance by ${abs(total):,.2f}", icon="⚠️")
-                    all_balanced = False
-            if all_balanced:
-                total_dr = valid_rows[valid_rows["Amount"] > 0]["Amount"].sum()
-                st.success(
-                    f"✅ All entries balanced — {len(balance_check)} JE(s), ${total_dr:,.2f} total debits",
-                    icon="✅",
-                )
 
     st.divider()
 
@@ -814,29 +758,9 @@ with tab1:
                         je_number=f'MGT-{len(je_lines)//2 + 2:03d}',
                     )
 
-                # Step 5: Manual JEs + One-Off Accrual JEs
-                status_text.text("Step 5/6: Building manual entries...")
+                # Step 5: One-Off Accrual JEs
+                status_text.text("Step 5/6: Building one-off accrual entries...")
                 progress_bar.progress(75)
-
-                # Manual JEs & Reclasses (fully balanced, user-entered)
-                manual_je_lines = []
-                _mdf = st.session_state.manual_je_df
-                _valid = _mdf[
-                    _mdf["Account Code"].str.strip().astype(bool) &
-                    (_mdf["Amount"] != 0)
-                ] if not _mdf.empty else _mdf
-                for _, _row in _valid.iterrows():
-                    _amt = float(_row["Amount"])
-                    manual_je_lines.append({
-                        "je_number":    str(_row["JE #"]).strip(),
-                        "account_code": str(_row["Account Code"]).strip(),
-                        "description":  str(_row["Description"]).strip(),
-                        "reference":    str(_row["JE #"]).strip(),
-                        "debit":        _amt if _amt > 0 else 0.0,
-                        "credit":       -_amt if _amt < 0 else 0.0,
-                        "source":       "manual",
-                        "date":         close_period,
-                    })
 
                 # One-Off Accruals → DR expense / CR 213100 (or custom CR Account if specified)
                 _supplement_je_lines = []
@@ -905,37 +829,17 @@ with tab1:
                     + prepaid_release_je
                     + fee_je
                     + _catchup_je
-                    + manual_je_lines
                     + _supplement_je_lines
                 )
 
-                # Accruals CSV = all auto-generated entries including prepaid releases
-                # Manual CSV   = user-entered manual JEs / reclasses only
-                _accrual_sources = {
-                    'nexus', 'budget_gap', 'historical', 'management_fee',
-                    'management_fee_catchup', 'invoice_proration', 'prepaid_amortization',
-                    'contract_supplement', 'tenant_utility_billing', 'bonus_accrual',
-                    'prepaid_ledger',   # ← prepaid releases included in main accruals JE
-                }
-                _manual_sources = {'manual'}
-
-                _accrual_lines = [l for l in all_je_lines if l.get('source') in _accrual_sources]
-                _manual_lines  = [l for l in all_je_lines if l.get('source') in _manual_sources]
-
-                _accrual_csv_path = _manual_csv_path = None
+                _accrual_csv_path = None
 
                 _prop_code = (engine_result.parsed.get('gl') and
                               engine_result.parsed['gl'].metadata.property_code) or 'revlabpm'
 
-                if _accrual_lines:
+                if all_je_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
-                    generate_yardi_je_csv(_accrual_lines, _accrual_csv_path,
-                                          period=close_period, property_code=_prop_code,
-                                          book='')
-
-                if _manual_lines:
-                    _manual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Manual_JE.csv")
-                    generate_yardi_je_csv(_manual_lines, _manual_csv_path,
+                    generate_yardi_je_csv(all_je_lines, _accrual_csv_path,
                                           period=close_period, property_code=_prop_code,
                                           book='')
 
@@ -943,7 +847,6 @@ with tab1:
                 p1 = st.session_state.pass1_output_files
                 p1["all_je_lines"]          = all_je_lines
                 p1["accrual_je_csv"]        = _accrual_csv_path
-                p1["manual_je_csv"]         = _manual_csv_path
                 p1["fee_result"]            = fee_result
                 p1["rd_prepayment_amount"]  = getattr(fee_result, 'prepayment_excluded', 0.0)
                 p1["catchup_amount"]        = _catchup_amount
@@ -985,7 +888,7 @@ with tab1:
         if _gl_log:
             _gl_log_sorted = sorted(_gl_log, key=lambda x: x['account_code'])
             with st.expander(
-                f"⚠️  Manual JEs Detected — Accruals Suppressed "
+                f"⚠️  Existing GL Activity — Accruals Suppressed "
                 f"({len(_gl_log_sorted)} account{'s' if len(_gl_log_sorted) != 1 else ''})",
                 expanded=True,
             ):
@@ -1156,7 +1059,6 @@ with tab1:
                 'management_fee_catchup': 'Mgmt Fee Catch-up',
                 'contract_supplement':    'One-Off Accrual',
                 'tenant_utility_billing': 'Tenant Utility',
-                'manual':                 'Manual JE',
             }
 
             # ── Build CR lookup: je_number → (cr_account_code, cr_description) ──
@@ -1452,7 +1354,6 @@ with tab1:
         period_label = (result.period or 'Period').replace('-', '_')
         p1_zip_files = {
             f"RevLabs_{period_label}_Accruals_JE.csv":      p1.get("accrual_je_csv"),
-            f"RevLabs_{period_label}_Manual_JE.csv":        p1.get("manual_je_csv"),
             f"RevLabs_{period_label}_Prepaid_Ledger.xlsx":  p1.get("prepaid_ledger_updated"),
         }
         p1_zip_files = {k: v for k, v in p1_zip_files.items() if v and os.path.exists(v)}
@@ -1471,11 +1372,10 @@ with tab1:
                 use_container_width=True,
             )
 
-        col_d1, col_d2, col_d3 = st.columns(3)
+        col_d1, col_d2 = st.columns(2)
         for col, key, label, fname in [
-            (col_d1, "accrual_je_csv",        "📄 Accruals JE",     f"GA_Accruals_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
-            (col_d2, "manual_je_csv",          "📄 Manual JE",       f"GA_Manual_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
-            (col_d3, "prepaid_ledger_updated", "📊 Prepaid Ledger",  f"GA_Prepaid_Ledger_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+            (col_d1, "accrual_je_csv",        "📄 Accruals JE",    f"GA_Accruals_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
+            (col_d2, "prepaid_ledger_updated", "📊 Prepaid Ledger", f"GA_Prepaid_Ledger_{datetime.now().strftime('%Y%m%d')}.xlsx"),
         ]:
             fpath = p1.get(key)
             if fpath and os.path.exists(fpath):
