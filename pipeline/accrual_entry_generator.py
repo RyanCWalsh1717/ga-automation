@@ -1185,8 +1185,8 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
             'electric', 'gas', 'water', 'sewer', 'utilit',
             # Payroll / HR
             'payroll', 'wage', 'salary', 'labor', 'benefit',
-            # Tenant amenities / food service
-            'food', 'catering', 'amenity', 'fitness',
+            # Tenant amenities / food service / tenant relations
+            'food', 'catering', 'amenity', 'fitness', 'tenant relation',
             # Fixed obligations
             'insurance', 'tax', 'license',
         )
@@ -1285,7 +1285,7 @@ def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str,
             'cleaning', 'porter', 'engineer', 'technician',
             'electric', 'gas', 'water', 'sewer', 'utilit',
             'payroll', 'wage', 'salary', 'labor', 'benefit',
-            'food', 'catering', 'amenity', 'fitness',
+            'food', 'catering', 'amenity', 'fitness', 'tenant relation',
             'insurance', 'tax', 'license',
         )
         _is_util_p2    = code.startswith(('613', '614'))
