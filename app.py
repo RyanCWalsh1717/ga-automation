@@ -163,10 +163,22 @@ if "manual_accruals_df" not in st.session_state:
         "Description":  [""] * _n,
     })
 
-# Drop removed columns from sessions that have them (backward compatibility)
-for _col in ("CR Account", "Auto-Reverse"):
-    if _col in st.session_state.manual_accruals_df.columns:
-        st.session_state.manual_accruals_df = st.session_state.manual_accruals_df.drop(columns=[_col])
+# If session has stale columns from an older version, reset the whole table so
+# pre-seeded Vendor/Description text is also cleared.
+if any(_col in st.session_state.manual_accruals_df.columns for _col in ("CR Account", "Auto-Reverse")):
+    _n = 11
+    st.session_state.manual_accruals_df = pd.DataFrame({
+        "Account Code": ["613310", "637150", "637150", "617110", "619120",
+                         "627230", "635110", "610140", "610160", "637230", ""],
+        "Account Name": ["Utilities-Water/Sewer", "Admin-Tenant Relations",
+                         "Admin-Tenant Relations", "HVAC Maint-Contract Svc",
+                         "Water Contract Svc", "Fire Life Safety",
+                         "Snow & Ice Removal", "Cleaning Mat/Supplies",
+                         "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
+        "Vendor":       [""] * _n,
+        "Amount ($)":   [0.0] * _n,
+        "Description":  [""] * _n,
+    })
 
 
 # ── Header ───────────────────────────────────────────────────
