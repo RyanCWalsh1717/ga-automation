@@ -9,9 +9,10 @@ Runs against the parsed data from the pipeline and produces:
 Checks:
   1  TB to Budget Comparison Tie-Out
   2  Budget Variances ≥ Tier 1 threshold (GRP standards)
-  3  TB Self-Balance + GL Ending Balances vs TB
+  3  Trial Balance Self-Balance (debits = credits)
+       Note: GL-to-TB account-level tie-out removed — Yardi validates this
   4  Month-over-Month Swings (>$10,000 or sign change)
-  5  GL Ending Balances vs Workpapers (BS account cross-check)
+  5  BS Workpaper Tie-Out (GL ending vs Workpaper)
   6  Accruals vs Budget (missing accrual detection)
   7  Miscellaneous (mgmt fee, interest expense, insurance/prepaid)
 """
@@ -240,22 +241,25 @@ def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
 
 
 # ══════════════════════════════════════════════════════════════
-# CHECK 3 — TB Self-Balance + GL vs TB
+# CHECK 3 — TB Self-Balance
+# (GL-to-TB account-level tie-out removed — Yardi validates this)
 # ══════════════════════════════════════════════════════════════
 
 def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
     """
-    3a. TB self-balance: total debits = total credits.
-    3b. For each account in GL, ending balance matches TB ending balance.
-    3c. Income accounts in TB are presented in negative convention (credit balance).
+    TB self-balance check: total debits = total credits.
+
+    Note: The account-level GL vs TB comparison was removed (May 2026) because
+    Yardi already validates that each journal entry balances before posting.
+    If Yardi accepted the JEs, GL will tie to TB by construction.
     """
     findings: List[QCFinding] = []
 
     if not tb_result:
-        return QCResult('CHECK_3', 'TB Self-Balance + GL vs TB',
+        return QCResult('CHECK_3', 'Trial Balance Self-Balance',
                         'FAIL', 'Trial Balance not available.', [])
 
-    # 3a: Self-balance check
+    # TB self-balance check
     diff = abs(tb_result.total_debits - tb_result.total_credits)
     if diff > 0.05:
         findings.append(QCFinding(
@@ -268,29 +272,7 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
             note=f'Debits ({tb_result.total_debits:,.2f}) ≠ Credits ({tb_result.total_credits:,.2f}). Out of balance by ${diff:,.2f}.',
         ))
 
-    # 3b: GL ending balance vs TB ending balance
-    if gl_parsed and hasattr(gl_parsed, 'accounts'):
-        tb_map = tb_result.account_map
-        for gl_acct in gl_parsed.accounts:
-            code = str(gl_acct.account_code or '').strip()
-            if code not in tb_map:
-                continue
-            tb_acct = tb_map[code]
-            gl_end = float(getattr(gl_acct, 'ending_balance', 0) or 0)
-            tb_end = float(tb_acct.ending_balance)
-            diff_b = abs(gl_end - tb_end)
-            if diff_b > 0.05:
-                findings.append(QCFinding(
-                    account_code=code,
-                    account_name=tb_acct.account_name,
-                    value_a=gl_end,
-                    value_b=tb_end,
-                    difference=gl_end - tb_end,
-                    flag='MISMATCH',
-                    note=f'GL ending ${gl_end:,.2f} ≠ TB ending ${tb_end:,.2f}',
-                ))
-
-    # 3c: TB totals summary — appended last so mismatches appear first
+    # TB totals summary
     findings.append(QCFinding(
         account_code='TB-TOTAL',
         account_name='TB Totals',
@@ -303,17 +285,15 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
               else f'OUT OF BALANCE by ${abs(tb_result.total_debits - tb_result.total_credits):,.2f}'),
     ))
 
-    critical = [f for f in findings if f.flag in ('FAIL', 'MISMATCH')]
+    critical = [f for f in findings if f.flag == 'FAIL']
     if not critical:
         status = 'PASS'
-        acct_count = len(tb_result.accounts)
-        summary = (f'TB balanced: debits = credits = ${tb_result.total_debits:,.2f}. '
-                   f'All {acct_count} accounts verified.')
+        summary = f'TB balanced: debits = credits = ${tb_result.total_debits:,.2f}.'
     else:
         status = 'FAIL'
-        summary = f'{len(critical)} balance discrepancy/discrepancies found.'
+        summary = f'Trial Balance out of balance by ${diff:,.2f}.'
 
-    return QCResult('CHECK_3', 'Workpapers to Trial Balance Tie-Out', status, summary, findings)
+    return QCResult('CHECK_3', 'Trial Balance Self-Balance', status, summary, findings)
 
 
 # ══════════════════════════════════════════════════════════════

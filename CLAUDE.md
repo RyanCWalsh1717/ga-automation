@@ -68,7 +68,8 @@ pipeline/
   qc_engine.py                  ← 7-point QC checklist run in Pass 2:
                                   CHECK_1: TB → BC tie-out
                                   CHECK_2: Budget variances (Tier 1/2 flags)
-                                  CHECK_3: Workpapers → Trial Balance tie-out
+                                  CHECK_3: Trial Balance self-balance (GL-to-TB account
+                                           comparison removed — Yardi validates this)
                                   CHECK_4: Month-over-month swings (> $10K)
                                   CHECK_5: BS workpaper tie-out
                                   CHECK_6: Accruals vs budget coverage

@@ -868,128 +868,22 @@ with tab1:
         st.markdown(f"## Pass 1 Results — {result.period}  |  {result.property_name}")
 
         # ── GL Activity Gut-Check ──────────────────────────────────────────
-        # Show accounts where the pipeline detected existing GL postings and
-        # suppressed automated accruals. Lets Ryan verify these are intentional
-        # before uploading the pipeline JEs to Yardi.
+        # Show a compact warning listing accounts where the pipeline detected
+        # an existing JE in the GL and suppressed automated accruals.
         _gl_log = st.session_state.get('pass1_gl_activity_log') or []
         if _gl_log:
             _gl_log_sorted = sorted(_gl_log, key=lambda x: x['account_code'])
-            with st.expander(
-                f"⚠️  Existing GL Activity — Accruals Suppressed "
-                f"({len(_gl_log_sorted)} account{'s' if len(_gl_log_sorted) != 1 else ''})",
-                expanded=True,
-            ):
-                st.markdown(
-                    "A journal entry was already posted in the GL for each account below. "
-                    "**No pipeline accrual was generated.** Confirm each posting is correct "
-                    "before uploading the JE CSVs to Yardi. If a posting is wrong, delete it "
-                    "from Yardi and re-run Pass 1."
-                )
-                import pandas as _pd_gc
-                _gc_df = _pd_gc.DataFrame([
-                    {'Account': r['account_code'], 'Name': r['account_name']}
-                    for r in _gl_log_sorted
-                ])
-                st.dataframe(_gc_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    "Need detail on what was posted? Export the GL Activity Log below."
-                )
-
-                # ── Optional backup export ─────────────────────────────────
-                try:
-                    import io as _io
-                    import openpyxl as _opxl
-                    from openpyxl.styles import (Font as _Font, PatternFill as _PFill,
-                                                 Alignment as _Align, Border as _Border,
-                                                 Side as _Side)
-                    _buf = _io.BytesIO()
-                    _wb_gc = _opxl.Workbook()
-                    _ws_gc = _wb_gc.active
-                    _ws_gc.title = "GL Activity — Verify"
-
-                    # ── Styles ────────────────────────────────────────────
-                    _hdr_fill  = _PFill(fill_type='solid', fgColor='1F4E79')
-                    _acct_fill = _PFill(fill_type='solid', fgColor='D6E4F0')
-                    _thin      = _Side(style='thin', color='BFBFBF')
-                    _border    = _Border(bottom=_Side(style='thin', color='BFBFBF'))
-
-                    # ── Column headers ────────────────────────────────────
-                    _hdr = ['Account', 'Account Name', 'Type', 'Date',
-                            'Description', 'Reference', 'Debit', 'Credit',
-                            'Verified? (Y/N)', 'Notes']
-                    _ws_gc.append(_hdr)
-                    for _ci, _ in enumerate(_hdr, 1):
-                        _cell = _ws_gc.cell(row=1, column=_ci)
-                        _cell.font      = _Font(bold=True, color='FFFFFF')
-                        _cell.fill      = _hdr_fill
-                        _cell.alignment = _Align(horizontal='center', wrap_text=True)
-
-                    # ── Data: one account header row + one row per transaction ──
-                    for _r in _gl_log_sorted:
-                        # Account summary row (shaded)
-                        _ws_gc.append([
-                            _r['account_code'],
-                            _r['account_name'],
-                            '', '', '',  # Type / Date / Description blank on summary
-                            f"Net PTD: ${_r['ptd_amount']:,.2f}",
-                            '', '', '', '',
-                        ])
-                        _acct_row = _ws_gc.max_row
-                        for _ci in range(1, len(_hdr) + 1):
-                            _cell = _ws_gc.cell(row=_acct_row, column=_ci)
-                            _cell.fill = _acct_fill
-                            _cell.font = _Font(bold=True)
-
-                        # Individual transaction rows
-                        for _t in _r.get('transactions', []):
-                            _ws_gc.append([
-                                '',                  # Account (blank — grouped under header)
-                                '',                  # Name
-                                _t.get('type', ''),
-                                _t.get('date', ''),
-                                _t.get('description', ''),
-                                _t.get('reference', ''),
-                                _t['debit']  if _t.get('debit')  else '',
-                                _t['credit'] if _t.get('credit') else '',
-                                '',  # Verified
-                                '',  # Notes
-                            ])
-                            _txn_row = _ws_gc.max_row
-                            # Format debit/credit as currency
-                            for _ci in (7, 8):
-                                _ws_gc.cell(row=_txn_row, column=_ci).number_format = '$#,##0.00'
-
-                        # Spacer row between accounts
-                        _ws_gc.append([''] * len(_hdr))
-
-                    # ── Column widths ─────────────────────────────────────
-                    for _col, _w in zip('ABCDEFGHIJ',
-                                        [11, 34, 6, 12, 40, 16, 12, 12, 16, 28]):
-                        _ws_gc.column_dimensions[_col].width = _w
-
-                    # ── Footer note ───────────────────────────────────────
-                    _info_row = _ws_gc.max_row + 1
-                    _ws_gc.cell(row=_info_row, column=1,
-                                value=(f"GA Automation Pipeline — {result.period} — "
-                                       f"{result.property_name}   |   "
-                                       "All transactions shown are Journal Entries (J). "
-                                       "Accruals suppressed for all accounts above — verify before uploading JEs."))
-                    _ws_gc.cell(row=_info_row, column=1).font = _Font(italic=True, color='808080')
-                    _ws_gc.merge_cells(start_row=_info_row, start_column=1,
-                                       end_row=_info_row, end_column=len(_hdr))
-
-                    _wb_gc.save(_buf)
-                    _buf.seek(0)
-                    _gc_filename = f"GA_GL_Activity_GutCheck_{(result.period or 'unknown').replace(' ', '_').replace('-', '')}.xlsx"
-                    st.download_button(
-                        label="⬇️  Export GL Activity Log (.xlsx)",
-                        data=_buf.getvalue(),
-                        file_name=_gc_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        help="Download a standalone Excel backup with transaction detail.",
-                    )
-                except Exception:
-                    pass  # Export is optional — never block the main UI
+            _acct_list = ', '.join(
+                f"{r['account_code']} {r['account_name']}"
+                for r in _gl_log_sorted
+            )
+            st.warning(
+                f"⚠️  **Existing GL postings — accruals suppressed for "
+                f"{len(_gl_log_sorted)} account{'s' if len(_gl_log_sorted) != 1 else ''}:** "
+                f"{_acct_list}. "
+                f"Confirm each posting is intentional before uploading JE CSVs to Yardi. "
+                f"If a posting is incorrect, delete it from Yardi and re-run Pass 1."
+            )
 
         # ── Management Fee ─────────────────────────────────────────────────
         if fee_result and fee_result.cash_received > 0:
