@@ -16,7 +16,7 @@ The pipeline runs in two distinct passes that map to the real month-end close wo
 ```
 PASS 1 — Pre-Close (replacing JLL India team)
   Inputs:  Pre-close Yardi GL + Nexus, bank statements, Kardin budget
-  Actions: 5-layer accrual detection, management fee JE, prepaid release JEs,
+  Actions: 4-layer accrual detection, management fee JE, prepaid release JEs,
            one-off accruals table, manual JEs table
   Outputs: 3 Yardi-import JE CSVs + updated prepaid ledger
   Next:    Upload CSVs to Yardi → run final close
@@ -51,21 +51,19 @@ pipeline/
                                   Also detects prior-period catch-up (unmatched auto-reversals
                                   in 637130) and generates MGT-002 catch-up JE.
 
-  accrual_entry_generator.py    ← 5-layer accrual entry detection (deduped against GL):
+  accrual_entry_generator.py    ← 4-layer accrual entry detection (deduped against GL):
                                   Layer 1: Nexus open invoices
-                                  Layer 2: Invoice proration (cost-per-day × days remaining
-                                           for recurring vendors already in GL)
-                                  Layer 3: Budget gap detection — PASS 1 (zero-activity accounts)
-                                           and PASS 2 (partially-covered accounts, <90% of budget).
-                                           Covers contracted services, utilities (613/614xxx),
-                                           payroll (615xxx), fixed costs, tenant amenities.
-                                           Materiality floor: $500.
-                                  Layer 4: Historical recurring (BC YTD actual ÷ months elapsed;
+                                  Layer 2: Invoice proration — utilities (613/614xxx): daily
+                                           rate × uncovered days; all other services: full
+                                           prior invoice amount (flat monthly service rate)
+                                  Layer 3: Historical recurring (BC YTD actual ÷ months elapsed;
                                            $5,000 materiality floor; January uses annual÷12 fallback)
-                                  Layer 5: Kardin payroll bonus accruals
+                                  Layer 4: Payroll bonus accruals — user-entered annual ÷ 12
+                                           (bonus_overrides) or Kardin-derived as fallback;
+                                           suppressed in payment months (GL ≥ monthly avg)
                                   Interest expense (801xxx) auto-routes to CR 213200
-                                  TUB accounts added to _covered so budget gap never
-                                  double-counts utility accounts touched by meter-read JEs.
+                                  Budget gap detection (detect_budget_gaps) retained in codebase
+                                  but no longer called — removed per May 2026 review.
 
   qc_engine.py                  ← 7-point QC checklist run in Pass 2:
                                   CHECK_1: TB → BC tie-out
@@ -181,8 +179,9 @@ Then: **Generate Reports** button
 8. Manual JE table rows → balanced Yardi-import JEs
 9. Prepaid amortization schedule runs; release JEs generated from ledger
 10. Three Yardi-import CSVs exported:
-    - `GA_Accruals_JE.csv` — all accrual entries (invoice proration, budget gap, historical,
-      management fee, catch-up, contract supplements, bonus accruals, tenant utility billings)
+    - `GA_Accruals_JE.csv` — all accrual entries (Nexus invoices, utility proration,
+      service accruals, historical recurring, management fee, catch-up, contract supplements,
+      bonus accruals, tenant utility billings)
     - `GA_Prepaid_JE.csv` — prepaid amortization entries
     - `GA_Manual_JE.csv` — manual JEs and reclasses
 11. Updated Prepaid Ledger exported for carry-forward next month
@@ -237,27 +236,19 @@ Then: **Generate Reports** button
 | Layer | Source | Method |
 |-------|--------|--------|
 | 1 | Nexus AP Accrual Detail | Open invoices not yet in GL (deduped by invoice number) |
-| 2 | GL recurring invoices | Cost-per-day × days remaining in period |
-| 3 | Budget gap — PASS 1 | Zero-activity accounts: full ptd_budget when no GL activity |
-| 3 | Budget gap — PASS 2 | Partial coverage: gap (ptd_budget − ptd_actual) when <90% covered |
-| 4 | Historical (BC YTD) | Average of prior months; January fallback uses annual÷12 |
-| 5 | Kardin budget | Annual bonus ÷ 12 − min monthly; suppressed on payment months |
+| 2 | GL recurring invoices — utilities | Daily rate × uncovered days (613/614xxx codes or utility keywords) |
+| 2 | GL recurring invoices — services | Full prior invoice amount (non-utility; flat monthly service rate) |
+| 3 | Historical (BC YTD) | Average of prior months; January fallback uses annual÷12 |
+| 4 | Payroll bonus | User-entered annual ÷ 12; Kardin-derived as fallback; suppressed in payment months |
 
-**Materiality floors**: Layer 3 → $2,500 | Layer 4 → $5,000
-
-**Account coverage for Layer 3**:
-- Service contracts (janitorial, elevator, HVAC, fire life safety, landscaping, snow, trash, security, cleaning, maintenance, parking, etc.)
-- Utilities: `electric`, `gas`, `water`, `sewer`, `utilit` keywords + all 613xxx / 614xxx account codes
-- Payroll / HR: `payroll`, `wage`, `salary`, `labor`, `benefit` keywords + all 615xxx account codes
-- Tenant amenities: `food`, `catering`, `amenity`, `fitness`
-- Fixed obligations: `insurance`, `tax`, `license`
-- PASS 2 threshold: accounts ≥ 90% covered are skipped (normal invoice timing variation)
-
-**Escrow-funded accounts excluded from budget gap** (e.g., 641110 RE Tax via 115200, insurance via 115300).
+**Materiality floor**: Layer 3 → $5,000
 
 **`_covered` exclusion set** seeds from: manual JEs + amortization entries + Nexus invoices + TUB entries.
-TUB accounts included to prevent budget gap from double-counting utility expense accounts
+TUB accounts included to prevent Layer 3 from double-accruing utility expense accounts
 that are also touched by the meter-read P&L reclass (DR 613115 / CR 613110).
+
+**Budget gap removed**: `detect_budget_gaps()` is retained in the codebase but is no longer
+called — accruing to budget is not good practice (removed May 2026).
 
 ---
 
@@ -386,7 +377,7 @@ No CI/CD pipeline — Streamlit builds directly from `requirements.txt`.
 ### Pass 1 — JE Generation (pre-close)
 | File | Contents |
 |------|----------|
-| `GA_Accruals_JE.csv` | Yardi-import CSV: all accrual JEs (invoice proration, budget gap, historical, management fee, catch-up, contract supplements, bonus accruals, tenant utility billings) |
+| `GA_Accruals_JE.csv` | Yardi-import CSV: all accrual JEs (Nexus invoices, utility proration, service accruals, historical recurring, management fee, catch-up, contract supplements, bonus accruals, tenant utility billings) |
 | `GA_Prepaid_JE.csv` | Yardi-import CSV: prepaid amortization JEs |
 | `GA_Manual_JE.csv` | Yardi-import CSV: manual JEs and reclasses |
 | `GA_Prepaid_Ledger_Updated.xlsx` | Updated prepaid amortization schedule — upload next month as the prior-month ledger |

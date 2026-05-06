@@ -5,11 +5,11 @@ Generates journal entries for accruals in priority layer order:
 
   Layer 0: Manual overrides (user-entered one-off accruals)
   Layer 1: Nexus open invoices (AP-side, deduped against GL)
-  Layer 2: Invoice-period proration (partial contract coverage from GL dates)
+  Layer 2: Invoice-period proration (utility accounts: daily rate × uncovered
+           days; all other services: full prior invoice amount)
   Layer 3: Historical recurring — BC YTD actual ÷ months elapsed
            (accounts with prior-period spend but no current activity)
-  Layer 4: Budget gap — last resort for contract/service accounts ≥$5K
-           with no GL activity and no historical data
+  Layer 4: Payroll bonus accruals (user-entered annual ÷ 12 or Kardin-derived)
 
 First-layer-wins: each account is claimed by at most one layer.
 Multi-layer detection is surfaced as a review flag on the first-layer entry.
@@ -756,23 +756,56 @@ def detect_invoice_proration_accruals(
                 # Latest invoice already covers the full month
                 continue
 
-            # Build daily rate from the most recently invoiced period.
+            # Build amounts from the most recently invoiced period.
             # Combine all vendors that share this billing end date.
             group = by_end[latest_end]
             total_amount = sum(g[2] for g in group)
             min_start    = min(g[0] for g in group)
             period_days  = max(1, (latest_end - min_start).days)
 
-            # Sanity cap: don't extrapolate more than 2× the billing period.
-            # This filters short-duration service calls (e.g., 10-day HVAC
-            # repair invoiced in Feb with 47 uncovered March days → wrong)
-            # while allowing 30-day utility cycles to bleed into the next month
-            # by up to 30 extra days (gas billed in Feb covering all of March).
-            if uncovered > period_days * 2.0:
-                continue
+            # ── Utility vs. non-utility proration logic ────────────────────
+            # Utilities (613/614 codes, or name contains utility keywords):
+            #   Prorate by day: daily rate × uncovered days.  Utility bills
+            #   span a calendar cycle that rarely aligns to month-end, so
+            #   the exact uncovered days is the right accrual amount.
+            #
+            # All other services (janitorial, elevator, HVAC, security, etc.):
+            #   Accrue the full prior invoice amount.  Service contracts bill a
+            #   flat monthly fee — the current month will cost the same as the
+            #   most recent invoice, regardless of how many days are uncovered.
+            _utility_kw = ('electric', 'gas', 'water', 'sewer', 'utilit')
+            _name_l = (acct.account_name or '').lower()
+            _is_utility = (
+                code.startswith(('613', '614'))
+                or any(kw in _name_l for kw in _utility_kw)
+            )
 
-            daily_rate   = total_amount / period_days
-            accrual      = daily_rate * uncovered
+            if _is_utility:
+                # Sanity cap: don't extrapolate more than 2× the billing period.
+                # Allows 30-day utility cycles to bleed into the next month by
+                # up to 30 extra days (e.g., gas billed in Feb covering all March).
+                if uncovered > period_days * 2.0:
+                    continue
+                daily_rate = total_amount / period_days
+                accrual    = daily_rate * uncovered
+                accrual_desc = (
+                    f'Utility proration — {acct.account_name}: '
+                    f'last invoice {min_start.strftime("%m/%d/%y")}'
+                    f'-{latest_end.strftime("%m/%d/%y")} '
+                    f'(${total_amount:,.0f}/{period_days}d = '
+                    f'${daily_rate:,.2f}/day × {uncovered} days uncovered)'
+                )
+            else:
+                # Non-utility: accrue the full invoice amount
+                daily_rate = 0.0
+                accrual    = total_amount
+                accrual_desc = (
+                    f'Service accrual — {acct.account_name}: '
+                    f'last invoice {min_start.strftime("%m/%d/%y")}'
+                    f'-{latest_end.strftime("%m/%d/%y")} '
+                    f'(${total_amount:,.0f} — accruing full invoice amount '
+                    f'for current month)'
+                )
 
             if accrual < materiality:
                 continue
@@ -782,13 +815,7 @@ def detect_invoice_proration_accruals(
                 'account_name':   acct.account_name,
                 'accrual_amount': _round(accrual),
                 'source':         'invoice_proration',
-                'description': (
-                    f'Invoice proration — {acct.account_name}: '
-                    f'last invoice {min_start.strftime("%m/%d/%y")}'
-                    f'-{latest_end.strftime("%m/%d/%y")} '
-                    f'(${total_amount:,.0f}/{period_days}d = '
-                    f'${daily_rate:,.2f}/day x {uncovered} days uncovered)'
-                ),
+                'description':    accrual_desc,
                 'daily_rate':     round(daily_rate, 4),
                 'uncovered_days': uncovered,
                 'period_days':    period_days,
@@ -1660,18 +1687,21 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           gl_activity_log: Optional[List[Dict]] = None,
                           ) -> List[Dict[str, Any]]:
     """
-    Build accrual journal entry lines from five sources (in priority order):
+    Build accrual journal entry lines from four sources (in priority order):
 
       Layer 0: Manual overrides — user-supplied amounts for accounts that
                cannot be auto-calculated (e.g., semi-annual water/sewer bills)
       Layer 1: Nexus pending invoices (AP-side, deduped against GL)
-      Layer 2: Invoice-period proration (billing date ranges in GL descriptions)
+      Layer 2: Invoice-period proration (billing date ranges in GL descriptions).
+               For utility accounts (613/614 codes): prorates by day (daily rate
+               × uncovered days). For all other services: accrues the full
+               invoice amount — assumes current month will match prior billing.
       Layer 3: Historical recurring — BC YTD actual ÷ months elapsed.
                Fires when an expense account had prior-period activity but is
                silent this month. Skipped in January (no prior data).
-      Layer 4: Budget gap — last resort, only for contract/service accounts
-               with ≥$5K PTD budget and no GL activity. Requires a contract
-               keyword in the account name (e.g., "contract", "hvac", "snow").
+      Layer 4: Payroll bonus accruals — monthly bonus component for engineering
+               and admin payroll accounts. Driven by user-entered annual amounts
+               (bonus_overrides) or Kardin-derived amounts as fallback.
 
     First-layer-wins: an account claimed by an earlier layer is skipped by all
     later layers. If multiple layers would have fired for the same account, a
@@ -1687,7 +1717,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         property_name:     Property name for the JE header
         status_filter:     Invoice statuses to include (default: all)
         gl_data:           GLParseResult — required for Layers 2-4
-        budget_data:       BC rows — required for Layer 3 (budget gap)
+        budget_data:       BC rows — required for Layer 3 (historical recurring)
         period_month_end:  Override for the last calendar day of the reporting
                            month (date object).  If None, derived from ``period``
                            or gl_data.metadata.period automatically.
@@ -2411,66 +2441,111 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _covered.add(hist['account_code'])
             je_num += 1
 
-    # ── Layer 4 (new order): Budget gap accruals ────────────────────────────
-    # Last resort: fires only for contract/service accounts with ≥$5K budget
-    # and no GL activity AND no historical data to draw from.
-    # The $5K threshold and contract keyword filter keep false positives minimal.
-    if gl_data and budget_data:
-        budget_gaps = detect_budget_gaps(gl_data, budget_data, period=period)
+    # ── Layer 4: Payroll bonus accruals ────────────────────────────────────────
+    # Accrues the monthly bonus component for engineering and admin payroll
+    # accounts (615110, 637110).  Two modes:
+    #
+    #   a) User-entered annual bonus amounts (bonus_overrides provided):
+    #      bonus_overrides = {'615110': 48000.0, '637110': 24000.0}
+    #      Monthly accrual = annual / 12 per account.
+    #
+    #   b) Kardin-derived amounts (when kardin_records provided, no override):
+    #      Uses detect_payroll_bonus_accrual() — monthly avg minus standard month.
+    #
+    # In both modes the accrual is suppressed when the GL already shows a net
+    # debit ≥ the monthly average (the actual bonus payment hit the GL).
+    _bonus_month_map = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    }
+    _period_month_num = 0
+    for _ab, _nm in _bonus_month_map.items():
+        if _ab in (period or '').lower():
+            _period_month_num = _nm
+            break
 
-        for gap in budget_gaps:
-            if gap['account_code'] in _covered:
-                _other_claimants.setdefault(gap['account_code'], []).append('budget_gap')
-                continue   # already handled by an earlier layer
+    if gl_data and _period_month_num:
+        # Build GL net_change for payroll accounts
+        _gl_net_bonus: Dict[str, float] = {}
+        for _ba in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
+            _bc = str(_ba.account_code).strip()
+            if _bc in PAYROLL_BONUS_ACCOUNTS:
+                _gl_net_bonus[_bc] = _ba.net_change
 
-            confidence = gap.get('confidence', 'medium')
-            je_id   = f"BGA-{je_num:04d}"
-            # Use the rich description from detect_budget_gaps (includes confidence note)
-            je_desc = gap.get('description') or f"Budget gap accrual — {gap['account_name']}"
+        if bonus_overrides:
+            # Mode (a): user-entered annual amounts
+            for _ba_code, _ba_cfg in PAYROLL_BONUS_ACCOUNTS.items():
+                if _ba_code in _covered:
+                    continue
+                _annual = float(bonus_overrides.get(_ba_code, 0) or 0)
+                if _annual <= 0:
+                    continue
+                _monthly = _round(_annual / 12.0)
+                if _monthly < 100:
+                    continue
+                # Suppress if GL already shows the bonus payment
+                _net = _gl_net_bonus.get(_ba_code, 0.0)
+                if _net >= _monthly:
+                    continue
+                _bon_id = f"BON-{je_num:04d}"
+                _bon_desc = (
+                    f'Monthly bonus accrual — {_ba_cfg["label"]}: '
+                    f'${_annual:,.2f}/yr ÷ 12 = ${_monthly:,.2f}/mo'
+                )
+                je_lines.append({
+                    'je_number': _bon_id, 'line': 1, 'date': '',
+                    'account_code': _ba_code,
+                    'account_name': _ba_cfg['label'],
+                    'description': _bon_desc,
+                    'reference': 'BONUS',
+                    'debit': _monthly, 'credit': 0,
+                    'vendor': '[Bonus Accrual]', 'invoice_number': '',
+                    'source': 'bonus_accrual', 'confidence': 'high',
+                })
+                _cr_acct, _cr_name = _cr_for(_ba_code)
+                je_lines.append({
+                    'je_number': _bon_id, 'line': 2, 'date': '',
+                    'account_code': _cr_acct, 'account_name': _cr_name,
+                    'description': _bon_desc,
+                    'reference': 'BONUS',
+                    'debit': 0, 'credit': _monthly,
+                    'vendor': '[Bonus Accrual]', 'invoice_number': '',
+                    'source': 'bonus_accrual', 'confidence': 'high',
+                })
+                _covered.add(_ba_code)
+                je_num += 1
 
-            # LOW confidence gaps are still included but clearly flagged so the
-            # reviewer can decide whether to keep, adjust, or delete before posting.
-            _gap_line: Dict[str, Any] = {
-                'je_number':    je_id,
-                'line':         1,
-                'date':         '',
-                'account_code': gap['account_code'],
-                'account_name': gap['account_name'],
-                'description':  je_desc,
-                'reference':    'BUDGET-GAP',
-                'debit':        gap['budget_amount'],
-                'credit':       0,
-                'vendor':       '[Budget Gap]',
-                'invoice_number': '',
-                'source':       'budget_gap',
-                'confidence':   confidence,
-            }
-            # Carry periodic-billing flag through so the UI can surface
-            # a supplement input for the remaining undetected portion.
-            if gap.get('periodic_flag'):
-                _gap_line['periodic_flag']      = True
-                _gap_line['periodic_label']     = gap.get('periodic_label', '')
-                _gap_line['periodic_billing']   = gap.get('periodic_billing', '')
-                _gap_line['periodic_suggested'] = gap.get('periodic_suggested', 0.0)
-            je_lines.append(_gap_line)
-            _cr_acct, _cr_name = _cr_for(gap['account_code'])
-            je_lines.append({
-                'je_number':    je_id,
-                'line':         2,
-                'date':         '',
-                'account_code': _cr_acct,
-                'account_name': _cr_name,
-                'description':  je_desc,
-                'reference':    'BUDGET-GAP',
-                'debit':        0,
-                'credit':       gap['budget_amount'],
-                'vendor':       '[Budget Gap]',
-                'invoice_number': '',
-                'source':       'budget_gap',
-                'confidence':   confidence,
-            })
-            _covered.add(gap['account_code'])
-            je_num += 1
+        elif kardin_records:
+            # Mode (b): Kardin-derived amounts
+            for _bon in detect_payroll_bonus_accrual(
+                gl_data, kardin_records, _period_month_num
+            ):
+                if _bon['account_code'] in _covered:
+                    continue
+                _bon_id = f"BON-{je_num:04d}"
+                je_lines.append({
+                    'je_number': _bon_id, 'line': 1, 'date': '',
+                    'account_code': _bon['account_code'],
+                    'account_name': _bon['account_name'],
+                    'description': _bon['description'],
+                    'reference': 'BONUS',
+                    'debit': _bon['estimated_amount'], 'credit': 0,
+                    'vendor': '[Bonus Accrual]', 'invoice_number': '',
+                    'source': 'bonus_accrual', 'confidence': 'high',
+                })
+                _cr_acct, _cr_name = _cr_for(_bon['account_code'])
+                je_lines.append({
+                    'je_number': _bon_id, 'line': 2, 'date': '',
+                    'account_code': _cr_acct, 'account_name': _cr_name,
+                    'description': _bon['description'],
+                    'reference': 'BONUS',
+                    'debit': 0, 'credit': _bon['estimated_amount'],
+                    'vendor': '[Bonus Accrual]', 'invoice_number': '',
+                    'source': 'bonus_accrual', 'confidence': 'high',
+                })
+                _covered.add(_bon['account_code'])
+                je_num += 1
 
     # ── Apply multi-layer review flags ──────────────────────────────────────
     # When multiple layers detected the same account, we kept only the first-

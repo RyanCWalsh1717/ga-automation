@@ -233,25 +233,25 @@ FILE_CONFIG = {
     ),
     "budget_comparison": (
         "Yardi Budget Comparison (.xlsx)", "xlsx", False, "core",
-        "Enables budget gap accrual detection (Layer 3) and variance commentary. "
+        "Enables historical pattern accruals (Layer 3) and variance commentary. "
         "Without it: only Nexus invoice and invoice-proration accruals generated; no variance comments.",
     ),
     "kardin_budget": (
         "Kardin 2026 Budget (.xlsx)", "xlsx", False, "core",
-        "Enables QC YTD budget vs Kardin cross-check AND monthly payroll bonus accruals (Layer 5 — "
-        "annual budget ÷ 12, suppressed in payment months). "
-        "Without it: QC budget check and bonus accruals skipped.",
+        "Enables QC YTD budget vs Kardin cross-check AND payroll bonus accruals (Layer 4 — "
+        "used as fallback when no annual bonus is entered in the Bonus Accrual expander). "
+        "Without it: QC budget check and Kardin-derived bonus accruals skipped.",
     ),
     "t12_statement": (
         "12-Month Income Statement (.xlsx)", "xlsx", False, "core",
         "Powers MoM Swings tab (Tab 4) in Pass 2 QC workbook with real prior-month actuals "
         "instead of derived YTD-PTD. Critical for January (prior month = December actuals). "
-        "Also improves Layer 4 historical accrual detection in Pass 1.",
+        "Also improves Layer 3 historical accrual detection in Pass 1.",
     ),
     "nexus_accrual": (
         "Nexus Invoice Detail (.xls / .xlsx)", ["xls", "xlsx"], False, "core",
         "Enables AP accrual detection (Layer 1 — open invoices not yet posted to GL). "
-        "Without it: invoice-proration (Layer 2), budget gap (Layer 3), and historical (Layer 4) still run.",
+        "Without it: invoice-proration (Layer 2) and historical (Layer 3) still run.",
     ),
     # ── Bank ──────────────────────────────────────────────────
     "bank_rec": (
@@ -403,7 +403,7 @@ with tab1:
     uploaded_keys = set(st.session_state.uploaded_files.keys())
     missing_impact = []
     if "trial_balance"     not in uploaded_keys: missing_impact.append("No BS tie-out validation (Pass 2)")
-    if "budget_comparison" not in uploaded_keys: missing_impact.append("No budget gap accruals or variance comments")
+    if "budget_comparison" not in uploaded_keys: missing_impact.append("No historical pattern accruals or variance comments")
     if "bank_rec"          not in uploaded_keys: missing_impact.append("No Operating bank rec tab (Pass 2)")
     if "daca_bank"         not in uploaded_keys: missing_impact.append("No DACA bank rec tab (Pass 2)")
     if "loan"              not in uploaded_keys: missing_impact.append("No debt service tab (Pass 2)")
@@ -456,6 +456,39 @@ with tab1:
         else:
             st.caption("↳ No entries — pipeline will auto-accrue budget amounts if meter read not in GL")
 
+    # ── Payroll Bonus Accrual ─────────────────────────────────────────────────
+    with st.expander("💰 Payroll Bonus Accrual — Monthly (optional)", expanded=False):
+        st.caption(
+            "Enter the annual bonus budget for engineering and/or admin payroll. "
+            "The pipeline accrues 1/12 each month and suppresses automatically "
+            "in months when the actual bonus payment hits the GL."
+        )
+        _bonus_col1, _bonus_col2 = st.columns(2)
+        with _bonus_col1:
+            _bonus_rm = st.number_input(
+                "RM-Pay/Wages (615110) — Annual Bonus ($)",
+                min_value=0.0, value=0.0, step=1000.0, format="%.2f",
+                key="widget_bonus_rm",
+                help="Engineering/RM annual bonus budget. Monthly accrual = annual ÷ 12.",
+            )
+        with _bonus_col2:
+            _bonus_admin = st.number_input(
+                "Admin-Pay/Wages (637110) — Annual Bonus ($)",
+                min_value=0.0, value=0.0, step=1000.0, format="%.2f",
+                key="widget_bonus_admin",
+                help="Administrative/office annual bonus budget. Monthly accrual = annual ÷ 12.",
+            )
+        _bonus_overrides: dict = {}
+        if _bonus_rm > 0:
+            _bonus_overrides['615110'] = float(_bonus_rm)
+        if _bonus_admin > 0:
+            _bonus_overrides['637110'] = float(_bonus_admin)
+        if _bonus_overrides:
+            _bonus_monthly_display = {k: f"${v/12:,.2f}/mo" for k, v in _bonus_overrides.items()}
+            st.caption(f"✓ Monthly accruals: {' | '.join(f'{k}: {v}' for k, v in _bonus_monthly_display.items())}")
+        else:
+            st.caption("↳ No bonus entered — pipeline will use Kardin data if uploaded, otherwise skip")
+
     # ── RE Tax Bill ───────────────────────────────────────────────────────────
     with st.expander("🏛️ RE Tax Bill — Payment months only (Jan / Apr / Jul / Oct)", expanded=False):
         st.caption(
@@ -474,9 +507,9 @@ with tab1:
 
     st.markdown("""
     **What this does:** Reads your pre-close Yardi GL and detects every accrual entry needed
-    to complete the month-end close — invoices in Nexus not yet posted, budget gaps,
-    historical patterns, management fee, prepaid amortization, one-off items you enter below.
-    Exports two Yardi-import files.
+    to complete the month-end close — invoices in Nexus not yet posted, utility proration,
+    historical recurring patterns, management fee, prepaid amortization, bonus accruals,
+    and one-off items you enter below. Exports two Yardi-import files.
 
     **Next step after this tab:** Upload the CSVs to Yardi → run final close → switch to **Pass 2**.
     """)
@@ -595,7 +628,7 @@ with tab1:
                         if str(r.get("Account Code", "") or "").strip()
                     ]
 
-                # Parse T12 for Pass 1 (improves Layer 4 January historical accrual accuracy)
+                # Parse T12 for Pass 1 (improves Layer 3 January historical accrual accuracy)
                 _t12_file_p1 = st.session_state.uploaded_files.get("t12_statement")
                 _t12_result_p1 = None
                 if _t12_file_p1 and os.path.exists(_t12_file_p1):
@@ -616,6 +649,8 @@ with tab1:
                     tenant_utility_rows=_tenant_utility_rows or None,
                     loan_data=engine_result.parsed.get('loan'),
                     re_tax_bill_amount=_re_tax_bill_amount,
+                    bonus_overrides=_bonus_overrides or None,
+                    kardin_records=engine_result.parsed.get('kardin_budget') or None,
                     t12_result=_t12_result_p1,
                     gl_activity_log=_gl_activity_log,
                 )
@@ -1004,13 +1039,13 @@ with tab1:
                 'nexus':                  'Nexus AP',
                 'invoice_proration':      'Invoice Proration',
                 'historical':             'Historical Pattern',
-                'budget_gap':             'Budget Gap',
                 'prepaid_amortization':   'Prepaid Amort.',
                 'prepaid_ledger':         'Prepaid Release',
                 'management_fee':         'Management Fee',
                 'management_fee_catchup': 'Mgmt Fee Catch-up',
                 'contract_supplement':    'One-Off Accrual',
                 'tenant_utility_billing': 'Tenant Utility',
+                'bonus_accrual':          'Bonus Accrual',
             }
 
             # ── Build CR lookup: je_number → (cr_account_code, cr_description) ──
@@ -1255,7 +1290,7 @@ with tab1:
         # ── Accruals CSV content breakdown ──────────────────────────────
         _accrual_lines_display = [l for l in all_je_lines
                                   if l.get('source') in {
-                                      'nexus', 'budget_gap', 'historical', 'management_fee',
+                                      'nexus', 'historical', 'management_fee',
                                       'management_fee_catchup', 'invoice_proration',
                                       'prepaid_amortization', 'contract_supplement',
                                       'tenant_utility_billing', 'bonus_accrual', 'prepaid_ledger',
@@ -1264,7 +1299,6 @@ with tab1:
             'nexus':                  'Nexus AP',
             'invoice_proration':      'Invoice Proration',
             'historical':             'Historical Pattern',
-            'budget_gap':             'Budget Gap',
             'prepaid_amortization':   'Prepaid Amort.',
             'prepaid_ledger':         'Prepaid Release',
             'management_fee':         'Management Fee',
@@ -2392,7 +2426,7 @@ with tab3:
 |------|--------------------------|-------|
 | **Yardi GL Detail** | Reports → General Ledger → by Property, Period = current month, Book = Accrual | Most important file — drives all accrual logic |
 | **Yardi Trial Balance** | Reports → Trial Balance → same period & book | Used for GL ↔ TB tie-out |
-| **Yardi Budget Comparison** | Reports → Budget Comparison → PTD + YTD columns, same period | Drives budget gap detection |
+| **Yardi Budget Comparison** | Reports → Budget Comparison → PTD + YTD columns, same period | Drives historical pattern accruals and variance commentary |
 | **12-Month Income Statement** | Reports → 12-Month Statement → trailing 12 months | Used for historical recurring accruals |
 | **Nexus Invoice Detail** | Nexus AP → Export open invoices → .xls format | Open invoices not yet in the GL |
 | **Kardin Budget** | Kardin → Export → qryExportData format | Annual budget; used for payroll bonus accruals |
@@ -2449,11 +2483,11 @@ After clicking **Generate JEs**, two files are available to download:
 
 | File | Contents | What to do with it |
 |------|----------|--------------------|
-| **GA_Accruals_JE.csv** | All accrual entries: invoice proration, budget gaps, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings | **Import into Yardi** as a journal batch |
+| **GA_Accruals_JE.csv** | All accrual entries: Nexus invoices, utility proration, service accruals, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings | **Import into Yardi** as a journal batch |
 | **GA_Prepaid_Ledger.xlsx** | Updated prepaid amortization schedule with this month's releases applied | **Save** — upload as the prior-month ledger next month |
 
 > The pipeline also shows a **summary table** of every entry generated, grouped by layer
-> (Layer 1 Nexus, Layer 2 Proration, Layer 3 Budget Gap, etc.) so you can review before posting.
+> (Layer 1 Nexus, Layer 2 Proration, Layer 3 Historical, Layer 4 Bonus, etc.) so you can review before posting.
 """)
 
     # ── Yardi Upload Step ─────────────────────────────────────────────────────
