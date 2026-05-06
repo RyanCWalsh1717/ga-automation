@@ -381,22 +381,7 @@ st.sidebar.divider()
 if not gl_uploaded:
     st.sidebar.warning("⚠️ GL Detail is required to run either pass.")
 
-# ── Bank Rec Settings (Pass 1 + Pass 2) ──────────────────────────────────────
-st.sidebar.markdown("## Bank Rec")
-prior_period_outstanding = st.sidebar.number_input(
-    "Prior Period Outstanding Checks ($)",
-    min_value=0.0,
-    value=0.0,
-    step=100.0,
-    format="%.2f",
-    help=(
-        "Only needed when using the raw PNC statement (no Yardi Bank Rec PDF). "
-        "Enter the total of checks outstanding from prior periods that aren't in the "
-        "current GL export. Leave $0 when uploading the Yardi Bank Rec PDF — "
-        "Yardi's pre-computed values are used directly in that case."
-    ),
-)
-prior_period_outstanding = prior_period_outstanding if prior_period_outstanding > 0 else 0.0
+prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
 st.sidebar.divider()
 
 # ── Tenant Utility Billing (Pass 1 only) ────────────────────────────────────
