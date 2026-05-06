@@ -243,7 +243,7 @@ Then: **Generate Reports** button
 | 4 | Historical (BC YTD) | Average of prior months; January fallback uses annual÷12 |
 | 5 | Kardin budget | Annual bonus ÷ 12 − min monthly; suppressed on payment months |
 
-**Materiality floors**: Layer 3 → $5,000 | Layer 4 → $5,000
+**Materiality floors**: Layer 3 → $2,500 | Layer 4 → $5,000
 
 **Account coverage for Layer 3**:
 - Service contracts (janitorial, elevator, HVAC, fire life safety, landscaping, snow, trash, security, cleaning, maintenance, parking, etc.)
