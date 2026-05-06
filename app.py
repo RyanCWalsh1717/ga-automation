@@ -503,9 +503,10 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
 # ═══════════════════════════════════════════════════════════════
 import pandas as pd
 
-tab1, tab2 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📋 Pass 1 — Generate JEs  (Pre-Close)",
     "📊 Pass 2 — Generate Reports  (Post-Close)",
+    "📖 How to Use",
 ])
 
 
@@ -2394,3 +2395,239 @@ with tab2:
                             file_name=fname,
                             use_container_width=True,
                         )
+
+
+# ──────────────────────────────────────────────────────────────
+# TAB 3 — HOW TO USE
+# ──────────────────────────────────────────────────────────────
+with tab3:
+    st.markdown("## 📖 Pipeline User Guide")
+    st.markdown(
+        "This guide walks through every step of the monthly close — what files to pull from "
+        "Yardi, what the pipeline produces, what gets posted to Yardi, and what the final "
+        "deliverables look like. No prior knowledge of the pipeline required."
+    )
+
+    # ── Quick-reference flow ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### At a Glance")
+    st.markdown("""
+| Step | Who | Action |
+|------|-----|--------|
+| 1 | Ryan / Natasha | Export pre-close files from Yardi & pull bank statements |
+| 2 | Ryan / Natasha | Upload all Pass 1 files → click **Generate JEs** |
+| 3 | Ryan / Natasha | Review outputs, download 2 JE CSVs + Prepaid Ledger |
+| 4 | Ryan / Natasha | Import both CSVs into Yardi → run the final close |
+| 5 | Ryan / Natasha | Re-export final GL, TB, BC, Bank Rec, Loan Statements from Yardi |
+| 6 | Ryan / Natasha | Upload Pass 2 files → click **Generate Reports** |
+| 7 | Ryan / Natasha | Review all outputs before sending to Lauren |
+| 8 | Lauren | Reviews Workpapers, QC Workbook, and Annotated BC |
+""")
+
+    # ── PASS 1 ────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📥  Step 1 — Pass 1: What to Upload", expanded=True):
+        st.markdown(
+            "Upload all files into the **Pass 1 upload zone** in the sidebar (or use the individual "
+            "uploaders). The pipeline auto-detects each file type — if it guesses wrong, use the "
+            "dropdown next to the filename to correct it."
+        )
+        st.markdown("#### Core Close Files — export from Yardi before running the close")
+        st.markdown("""
+| File | Where to get it in Yardi | Notes |
+|------|--------------------------|-------|
+| **Yardi GL Detail** | Reports → General Ledger → by Property, Period = current month, Book = Accrual | Most important file — drives all accrual logic |
+| **Yardi Trial Balance** | Reports → Trial Balance → same period & book | Used for GL ↔ TB tie-out |
+| **Yardi Budget Comparison** | Reports → Budget Comparison → PTD + YTD columns, same period | Drives budget gap detection |
+| **12-Month Income Statement** | Reports → 12-Month Statement → trailing 12 months | Used for historical recurring accruals |
+| **Nexus Invoice Detail** | Nexus AP → Export open invoices → .xls format | Open invoices not yet in the GL |
+| **Kardin Budget** | Kardin → Export → qryExportData format | Annual budget; used for payroll bonus accruals |
+""")
+        st.markdown("#### Bank Statements")
+        st.markdown("""
+| File | Where to get it | Notes |
+|------|-----------------|-------|
+| **Yardi / PNC Bank Rec** | Yardi Reports → Bank Reconciliation → export as PDF | Preferred source — pipeline reads the pre-computed reconciled balance |
+| **KeyBank DACA Statement** | KeyBank online → account x5132 → monthly statement PDF | Used as management fee cash-received basis |
+| **BofA Development Statement** | BofA online → development account → monthly PDF | Balance only; development account is dormant |
+| **Berkadia Loan Statement(s)** | Berkadia portal → monthly loan statements → PDF (all 3 loans) | Debt service detail + escrow balances |
+""")
+        st.markdown("#### Reference Files")
+        st.markdown("""
+| File | Where to get it | Notes |
+|------|-----------------|-------|
+| **Yardi Receivable Detail** | Reports → Receivable Detail → current period | Used to calculate management fee on cash received |
+| **Yardi AR Detail Aging** | Reports → AR Aging Detail → current period | Used alongside Receivable Detail to exclude prepayments |
+| **Prior Month Prepaid Ledger** | Downloaded from last month's Pass 1 run | First month (January): use the seed file `GA_Prepaid_Ledger_Seed_Dec2025.xlsx` |
+""")
+        st.markdown(
+            "> **Tip:** You don't need every file every month. The pipeline runs on whatever is "
+            "uploaded and flags anything it couldn't calculate. The GL is the only required file."
+        )
+
+    # ── One-Off Accruals ──────────────────────────────────────────────────────
+    with st.expander("✏️  Step 1b — Fill in the One-Off Accruals Table"):
+        st.markdown("""
+The **One-Off Accruals** table (Pass 1 tab) is for items the pipeline can't detect automatically —
+typically small recurring contracts where no invoice arrives until after close.
+
+The table comes **pre-populated** with common monthly items. Review and adjust amounts each month:
+
+| Pre-seeded item | Account | Typical amount |
+|-----------------|---------|---------------|
+| Tenant Relations (misc.) | 637150 | ~$1,700 |
+| HVAC Quarterly Maintenance | 617110 | ~$8,375 (Q months) |
+| PPM Pit Maintenance | 619120 | ~$3,400 |
+| Fire Life Safety | 627230 | ~$1,000 |
+| Snow & Ice Removal | 635110 | Seasonal — update from quote |
+| Durkin Supply | 610140 | ~$300 |
+| Casella Extra Pickup | 610160 | ~$670 |
+| BlueTriton Water Delivery | 637230 | ~$200 |
+| Water/Sewer (if no Nexus) | 613310 | Budget amount |
+
+Each row creates a **DR expense / CR 213100 Accrued Expenses** journal entry.
+If the credit account should be something other than 213100 (e.g., an AR reclass),
+fill in the optional **CR Account** column.
+""")
+
+    # ── Pass 1 Outputs ────────────────────────────────────────────────────────
+    with st.expander("📄  Step 2 — What Pass 1 Produces"):
+        st.markdown("""
+After clicking **Generate JEs**, two files are available to download:
+
+| File | Contents | What to do with it |
+|------|----------|--------------------|
+| **GA_Accruals_JE.csv** | All accrual entries: invoice proration, budget gaps, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings | **Import into Yardi** as a journal batch |
+| **GA_Prepaid_Ledger.xlsx** | Updated prepaid amortization schedule with this month's releases applied | **Save** — upload as the prior-month ledger next month |
+
+> The pipeline also shows a **summary table** of every entry generated, grouped by layer
+> (Layer 1 Nexus, Layer 2 Proration, Layer 3 Budget Gap, etc.) so you can review before posting.
+""")
+
+    # ── Yardi Upload Step ─────────────────────────────────────────────────────
+    with st.expander("⬆️  Step 3 — Post to Yardi & Run the Close"):
+        st.markdown("""
+**In Yardi, before running the final close:**
+
+1. Go to **Journals → Import Journal Entries**
+2. Import `GA_Accruals_JE.csv` → review the batch → post
+3. Verify the journal batch posted cleanly (no errors)
+4. Run the **month-end close** in Yardi (locks the period)
+
+**What Yardi auto-reverses on the 1st of next month:**
+All entries with `auto_reverse = Yes` in the CSV (accruals, management fee) will automatically
+reverse on the first day of the following period. This is standard accrual accounting —
+no manual reversal needed.
+
+> **Note:** The Singerman 8-tab monthly report (Balance Sheet, Income Statement, T12,
+> Trial Balance MTD/YTD, GL MTD/YTD, Tenancy) is downloaded directly from Yardi by Ryan
+> after the close — it is **not** generated by this pipeline.
+""")
+
+    # ── Pass 2 ────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📥  Step 4 — Pass 2: What to Re-Upload", expanded=True):
+        st.markdown(
+            "After the close runs in Yardi, re-export the **final versions** of these files. "
+            "They reflect all journal entries that were posted (including the ones from Pass 1). "
+            "Upload them in the **Pass 2 section** of the Pass 2 tab — they override the "
+            "sidebar versions for the final reports."
+        )
+        st.markdown("""
+| File | Why it needs to be re-exported |
+|------|-------------------------------|
+| **Yardi GL Detail** | Must include all accrual JEs that were posted — the pre-close GL is missing them |
+| **Yardi Trial Balance** | Final balances after all JEs posted — used for GL ↔ TB tie-out |
+| **Yardi Budget Comparison** | Actuals update after JEs post — needed for accurate variance commentary |
+| **Yardi Bank Rec PDF** | Final reconciliation with outstanding checks as of close |
+| **Berkadia Loan Statements** | Same file as Pass 1 — re-upload or the pipeline reuses the sidebar version |
+
+> All other Pass 1 files (Nexus, Kardin, bank statements, T12, etc.) do **not** need to be
+> re-exported — the pipeline reuses them automatically from Pass 1.
+""")
+
+    # ── Pass 2 Outputs ────────────────────────────────────────────────────────
+    with st.expander("📊  Step 5 — What Pass 2 Produces"):
+        st.markdown("""
+After clicking **Generate Reports**, four files are available to download:
+
+| File | Contents | Audience |
+|------|----------|----------|
+| **GA_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Ryan / Natasha / Lauren |
+| **GA_QC_Workbook.xlsx** | 7-point QC checklist: TB↔BC tie, budget variances, workpaper tie, MoM swings, BS tie-out, accrual coverage, misc checks | Ryan / Natasha |
+| **GA_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Ryan / Natasha |
+| **GA_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Ryan / Natasha / Lauren |
+
+> **Before sending to Lauren:** Ryan and Natasha should review all four files and clear any
+> open Errors in the Exception Report. Warnings should be reviewed but may be acceptable.
+""")
+
+    # ── Post-Close Adjustments ────────────────────────────────────────────────
+    with st.expander("🔧  Post-Close Adjustments (Pass 2 JEs)"):
+        st.markdown("""
+If the review uncovers items that need a correcting entry **after** the close (reclasses,
+true-ups, corrections), use the **Post-Close Adjustments** table in the Pass 2 tab.
+
+- Click **➕ Add JE Lines** to add a balanced pair of DR / CR rows
+- Each JE pair is auto-numbered (PC-001, PC-002, …)
+- Debits must equal Credits per JE# — the pipeline validates before export
+- Download `GA_PostClose_JE.csv` and import into Yardi as a separate journal batch
+
+Post-close JEs are **not** auto-reversing — they are permanent adjustments.
+""")
+
+    # ── Final Deliverables ────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📬  Final Deliverables — What Goes Where"):
+        st.markdown("""
+#### To Lauren (CFO)
+| Item | Source |
+|------|--------|
+| Workpapers (GL ↔ TB tie-out) | `GA_Workpapers.xlsx` from Pass 2 |
+| Annotated Budget Comparison | `GA_BC_Internal.xlsx` from Pass 2 |
+| Singerman 8-Tab Monthly Report | Downloaded directly from Yardi by Ryan |
+
+#### To Singerman (Capital Partner)
+| Item | Source |
+|------|--------|
+| Monthly Report (BS, IS, T12, TB, GL, Tenancy) | Downloaded directly from Yardi — not from this pipeline |
+
+#### Retained Internally (GRP)
+| Item | Purpose |
+|------|---------|
+| `GA_QC_Workbook.xlsx` | GRP internal QC sign-off |
+| `GA_Exceptions_Report.xlsx` | Audit trail of all flagged items |
+| `GA_Prepaid_Ledger.xlsx` | Carry forward — upload next month as the prior-month ledger |
+""")
+
+    # ── Troubleshooting ───────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("🛠️  Common Issues & Tips"):
+        st.markdown("""
+**File uploaded but not recognized**
+→ Use the dropdown next to the filename in the sidebar to manually select the file type.
+
+**Management fee shows $0**
+→ The pipeline couldn't find cash received. Check that the DACA statement or Receivable Detail
+was uploaded. If both are missing, the fee will be $0 and will need a manual One-Off entry.
+
+**Workpaper doesn't include prior months**
+→ Upload the prior month's `GA_Workpapers.xlsx` in the Pass 2 sidebar. The pipeline appends
+the new period's sheets to the existing file. Leave blank for January (first run of the year).
+
+**RE Tax shows $0 in January**
+→ January is a payment month (Berkadia pays from escrow). Enter the quarterly tax bill amount
+in the sidebar RE Tax field — the pipeline generates the DR 641110 / CR 115200 entry.
+
+**Accrual entry says "REVIEW REQUIRED"**
+→ This is a low-confidence entry — the account has a budget but no GL history this year.
+Review whether the expense was actually incurred before posting. Delete the row in the
+summary table if it should not be posted.
+
+**Reset button**
+→ Use **Reset All** (sidebar) to clear all uploads and start fresh. Use **Reset Pass 2**
+(Pass 2 tab) to clear only the final-close files without losing Pass 1 results.
+""")
+
+    st.markdown("---")
+    st.caption("Pipeline built by GRP · Questions: Ryan Walsh or Natasha · Version: May 2026")
