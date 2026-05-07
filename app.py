@@ -2594,48 +2594,35 @@ with tab2:
 
         st.divider()
         st.markdown("##### Individual Downloads")
-        col1, col2 = st.columns(2)
+        _dc1, _dc2, _dc3 = st.columns(3)
+        _dl_cols = [_dc1, _dc2, _dc3]
 
         _dl_items = [
             ("bs_workpaper",    "📋 Workpapers",
-             f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+             f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx",      None),
             ("qc_workbook",     "✅ QC Workbook",
-             f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+             f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx",     None),
             ("exception_report","⚠️ Exception Report",
-             f"GA_Exceptions_{datetime.now().strftime('%Y%m%d')}.xlsx"),
-            ("annotated_bc",    "💬 Budget Comparison (Internal)",
-             f"GA_BC_Internal_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+             f"GA_Exceptions_{datetime.now().strftime('%Y%m%d')}.xlsx",      None),
+            ("annotated_bc",    "💬 Budget Comparison",
+             f"GA_BC_Internal_{datetime.now().strftime('%Y%m%d')}.xlsx",     None),
             ("audit_trail",     "🔍 Audit Trail",
-             f"GA_Audit_Trail_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+             f"GA_Audit_Trail_{datetime.now().strftime('%Y%m%d')}.xlsx",     None),
+            ("fee_invoice",     "🧾 Management Fee Invoice",
+             f"RevLabsPM_Invoice_{(result.period or '').replace('-','')}.pdf",
+             "application/pdf"),
         ]
 
-        for i, (key, label, fname) in enumerate(_dl_items):
+        for i, (key, label, fname, mime) in enumerate(_dl_items):
             fpath = p2.get(key)
-            target_col = col1 if i % 2 == 0 else col2
             if fpath and os.path.exists(fpath):
-                with target_col:
+                with _dl_cols[i % 3]:
                     with open(fpath, "rb") as f:
-                        st.download_button(
-                            label=label,
-                            data=f.read(),
-                            file_name=fname,
-                            use_container_width=True,
-                        )
-
-        # Management fee invoice — PDF download
-        _inv_path = p2.get("fee_invoice")
-        if _inv_path and os.path.exists(_inv_path):
-            _inv_period = (result.period or '').replace('-', '')
-            with col1:
-                with open(_inv_path, "rb") as _f:
-                    st.download_button(
-                        label="🧾 Management Fee Invoice",
-                        data=_f.read(),
-                        file_name=f"RevLabsPM_Invoice_{_inv_period}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        help="GRP management fee invoice — ready to send to Revolution Labs Owner, LLC",
-                    )
+                        kw = dict(label=label, data=f.read(), file_name=fname,
+                                  use_container_width=True)
+                        if mime:
+                            kw["mime"] = mime
+                        st.download_button(**kw)
 
 
 # ──────────────────────────────────────────────────────────────
