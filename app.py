@@ -2628,6 +2628,7 @@ with tab2:
             f"RevLabs_{period_label}_Exceptions.xlsx":      p2.get("exception_report"),
             f"RevLabs_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
             f"RevLabs_{period_label}_Audit_Trail.xlsx":     p2.get("audit_trail"),
+            f"RevLabsPM_Invoice_{period_label}.pdf":        p2.get("fee_invoice"),
         }
         p2_zip_files = {k: v for k, v in p2_zip_files.items() if v and os.path.exists(v)}
 
