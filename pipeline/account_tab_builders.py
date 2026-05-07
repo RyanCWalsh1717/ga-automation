@@ -119,6 +119,25 @@ _INSUR_SEED: List[tuple] = [
     ('11/7/2025',  'Property Insurance per 11.08.25 stmt due',   19280.11),
 ]
 
+# 115600 — Loan Reserve seed ledger
+_LOAN_RESERVE_SEED: List[tuple] = [
+    ('3/25/2025',  'Rcd: Alchemab Lease Settlement Payment',  4733004.36),
+    ('3/25/2025',  'Rcd: 2/25 - 3/25 Interest Income',           350.08),
+    ('4/25/2025',  'Rcd: 04/25 Interest Income',                 265.48),
+    ('5/25/2025',  'Rcd: 05/25 Interest Income',                 256.43),
+    ('6/25/2025',  'Rcd: 06/25 Interest Income',                 238.29),
+    ('7/25/2025',  'Rcd: 07/25 Interest Income',                 274.62),
+    ('8/25/2025',  'Rcd: 08/25 Interest Income',                 238.31),
+    ('9/25/2025',  'Rcd: 09/25 Interest Income',                 256.49),
+    ('10/25/2025', 'Rcd: 10/25 Interest Income',                 256.50),
+    ('11/25/2025', 'Rcd: 11/25 Interest Income',                 220.19),
+    ('12/25/2025', 'Rcd: 12/25 Interest Income',                 283.78),
+    ('1/25/2026',  'Rcd: 01/26 Interest Income',                 247.46),
+    ('2/25/2026',  'Rcd: 02/26 Interest Income',                 229.31),
+    ('3/25/2026',  'Rcd: 03/26 Interest Income',                 265.66),
+    ('4/25/2026',  'Rcd: 04/26 Interest Income',                 247.51),
+]
+
 _ENTITY = 'revlabpm'
 
 _MONTH_MAP = {
@@ -372,6 +391,62 @@ def build_115300_tab(wb, period: str, property_name: str,
         c4 = ws.cell(row=next_row, column=5, value=amt)
         _apply(c4, font=_font(bold=is_payment,
                               color='CC0000' if is_payment else '000000'),
+               fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+
+        c5 = ws.cell(row=next_row, column=6, value=running)
+        _apply(c5, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+               fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+
+        next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
+    return ws
+
+
+# ── 115600 — Loan Reserve ────────────────────────────────────────────────────
+
+def build_115600_tab(wb, period: str, property_name: str,
+                     gl_acct=None, tb_entry=None,
+                     **_):
+    close_year, close_month = _parse_close_period(period)
+    seed = _seed_rows_for_period(_LOAN_RESERVE_SEED, close_year, close_month)
+
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    ws = wb.create_sheet('115600 Loan Reserve'[:31])
+    ws.sheet_properties.tabColor = '4472C4'
+
+    next_row = _write_tab_header(ws, '115600', 'Loan Reserve',
+                                 period, property_name, ncols=5)
+    next_row += 1
+    next_row = _write_col_headers(
+        ws, next_row,
+        ['Date', 'Description', 'Entity', 'Amount', 'Running Balance'],
+        [14, 52, 14, 18, 18],
+    )
+
+    running = 0.0
+    for i, (d, desc, amt) in enumerate(seed):
+        running = round(running + amt, 2)
+        alt = i % 2 == 1
+        bg = _fill(LIGHT_GRAY) if alt else None
+        is_debit = amt < 0
+
+        c1 = ws.cell(row=next_row, column=2, value=d.strftime('%m/%d/%Y'))
+        _apply(c1, font=_font(), fill=bg, border=THIN)
+
+        c2 = ws.cell(row=next_row, column=3, value=desc)
+        _apply(c2, font=_font(bold=is_debit), fill=bg, border=THIN)
+
+        c3 = ws.cell(row=next_row, column=4, value=_ENTITY)
+        _apply(c3, font=_font(), fill=bg, border=THIN)
+
+        c4 = ws.cell(row=next_row, column=5, value=amt)
+        _apply(c4, font=_font(bold=is_debit,
+                              color='CC0000' if is_debit else '000000'),
                fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
 
@@ -1660,6 +1735,7 @@ CUSTOM_BUILDERS: Dict[str, Any] = {
     '115100': build_115100_tab,
     '115200': build_115200_tab,
     '115300': build_115300_tab,
+    '115600': build_115600_tab,
     '131100': build_131100_tab,
     '133100': build_133100_tab,
     '133110': build_133110_tab,
