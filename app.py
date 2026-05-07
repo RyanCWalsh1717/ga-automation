@@ -1224,6 +1224,7 @@ with tab1:
                 'contract_supplement':    'One-Off Accrual Table',
                 'tenant_utility_billing': 'Tenant Utility Billing',
                 'bonus_accrual':          'Kardin Budget',
+                'manual_addition':        'Manually Added',
             }
 
             # ── Description cleaner — strip amounts / verbose phrases ────────
@@ -1404,6 +1405,150 @@ with tab1:
                 except Exception:
                     pass
 
+            # ── Add Missed Entry ──────────────────────────────────────────────
+            # Lets you append a DR/CR pair to the Accruals CSV after JEs are
+            # generated — e.g. a forgotten one-off accrual entry.
+            st.markdown("#### ➕  Add a Missed Entry")
+
+            # Counter drives input key changes so fields clear after each submit
+            _add_counter_key = f"je_add_count_{_run_key}"
+            if _add_counter_key not in st.session_state:
+                st.session_state[_add_counter_key] = 0
+            _add_n = st.session_state[_add_counter_key]
+
+            with st.expander("Add entry to Accruals CSV", expanded=False):
+                _ac1, _ac2, _ac3, _ac4, _ac5 = st.columns([1.5, 1.5, 4, 1.8, 1])
+                with _ac1:
+                    _add_dr_raw = st.text_input(
+                        "DR Account", placeholder="e.g. 637150",
+                        key=f"add_dr_{_run_key}_{_add_n}",
+                    )
+                with _ac2:
+                    _add_cr_raw = st.text_input(
+                        "CR Account", value="213100",
+                        key=f"add_cr_{_run_key}_{_add_n}",
+                    )
+                with _ac3:
+                    _add_desc_raw = st.text_input(
+                        "Description", placeholder="e.g. Tenant Relations accrual",
+                        key=f"add_desc_{_run_key}_{_add_n}",
+                    )
+                with _ac4:
+                    _add_amt_raw = st.number_input(
+                        "Amount ($)", min_value=0.0, step=100.0, format="%.2f",
+                        key=f"add_amt_{_run_key}_{_add_n}",
+                    )
+                with _ac5:
+                    st.write("")   # vertical align
+                    st.write("")
+                    _add_submit = st.button("Add", key=f"add_btn_{_run_key}_{_add_n}",
+                                           type="primary", use_container_width=True)
+
+                if _add_submit:
+                    _dr = (_add_dr_raw or '').strip()
+                    _cr = (_add_cr_raw or '213100').strip()
+                    _desc = (_add_desc_raw or '').strip()
+                    _amt  = float(_add_amt_raw or 0.0)
+                    if not _dr:
+                        st.warning("Please enter a DR Account code.", icon="⚠️")
+                    elif not _desc:
+                        st.warning("Please enter a Description.", icon="⚠️")
+                    elif _amt <= 0:
+                        st.warning("Amount must be greater than zero.", icon="⚠️")
+                    else:
+                        # Determine next ADD-XXXX number
+                        _prev_adds = [
+                            l for l in p1.get("all_je_lines", [])
+                            if str(l.get('je_number', '')).startswith('ADD-')
+                        ]
+                        _next_add_num = (len(_prev_adds) // 2) + 1
+                        _new_je_id    = f"ADD-{_next_add_num:04d}"
+
+                        _new_je_lines = [
+                            {
+                                'je_number':      _new_je_id, 'line': 1, 'date': '',
+                                'account_code':   _dr,
+                                'account_name':   '',
+                                'description':    _desc,
+                                'reference':      'MANUAL-ADD',
+                                'debit':          round(_amt, 2), 'credit': 0,
+                                'vendor':         '[Manual Addition]',
+                                'invoice_number': '',
+                                'source':         'manual_addition',
+                                'confidence':     'high',
+                            },
+                            {
+                                'je_number':      _new_je_id, 'line': 2, 'date': '',
+                                'account_code':   _cr,
+                                'account_name':   '',
+                                'description':    _desc,
+                                'reference':      'MANUAL-ADD',
+                                'debit':          0, 'credit': round(_amt, 2),
+                                'vendor':         '[Manual Addition]',
+                                'invoice_number': '',
+                                'source':         'manual_addition',
+                                'confidence':     'high',
+                            },
+                        ]
+
+                        _updated_all = p1.get("all_je_lines", []) + _new_je_lines
+                        p1["all_je_lines"] = _updated_all
+
+                        # Regenerate CSV
+                        _p1_er_add = st.session_state.pass1_engine_result
+                        _p1_prop_add = (
+                            (_p1_er_add.parsed.get('gl') and
+                             _p1_er_add.parsed['gl'].metadata.property_code)
+                            if _p1_er_add else None
+                        ) or 'revlabpm'
+                        try:
+                            from accrual_entry_generator import generate_yardi_je_csv as _gen_csv_add
+                            _add_csv_path = os.path.join(
+                                st.session_state.temp_dir, "GA_Accruals_JE.csv"
+                            )
+                            _gen_csv_add(
+                                _updated_all, _add_csv_path,
+                                period=result.period, property_code=_p1_prop_add, book=''
+                            )
+                            p1["accrual_je_csv"] = _add_csv_path
+                            st.success(
+                                f"✅  **{_new_je_id}** added — "
+                                f"DR {_dr} / CR {_cr}  ${_amt:,.2f}  ·  {_desc}  ·  CSV updated.",
+                                icon="✅",
+                            )
+                        except Exception as _add_ex:
+                            st.warning(
+                                f"Entry added to session but CSV regeneration failed: {_add_ex}",
+                                icon="⚠️",
+                            )
+
+                        # Bump counter → clears input fields on next render
+                        st.session_state[_add_counter_key] += 1
+                        st.rerun()
+
+                # ── Previously added entries ──────────────────────────────────
+                _manual_adds = [
+                    l for l in p1.get("all_je_lines", [])
+                    if l.get('source') == 'manual_addition' and (l.get('debit') or 0) > 0
+                ]
+                if _manual_adds:
+                    st.caption(
+                        f"**{len(_manual_adds)} manually added "
+                        f"entr{'ies' if len(_manual_adds) != 1 else 'y'} in this session:**"
+                    )
+                    for _ma in _manual_adds:
+                        _ma_cr = next(
+                            (l['account_code'] for l in p1.get("all_je_lines", [])
+                             if l.get('je_number') == _ma['je_number'] and (l.get('credit') or 0) > 0),
+                            '?'
+                        )
+                        st.caption(
+                            f"• **{_ma['je_number']}** · "
+                            f"DR {_ma['account_code']} / CR {_ma_cr} · "
+                            f"${_ma.get('debit', 0):,.2f} · "
+                            f"{_ma.get('description', '')}"
+                        )
+
             st.divider()
         else:
             st.info("No accrual entries generated. Upload a Nexus file, Budget Comparison, "
@@ -1520,6 +1665,7 @@ with tab1:
                                       'management_fee_catchup', 'invoice_proration',
                                       'prepaid_amortization', 'contract_supplement',
                                       'tenant_utility_billing', 'bonus_accrual', 'prepaid_ledger',
+                                      'manual_addition',
                                   }]
         _src_label_map = {
             'nexus':                  'Nexus AP',
@@ -1532,6 +1678,7 @@ with tab1:
             'contract_supplement':    'One-Off Accrual',
             'tenant_utility_billing': 'Tenant Utility',
             'bonus_accrual':          'Bonus Accrual',
+            'manual_addition':        'Manually Added',
         }
         # Count unique JEs (not lines) per source — DR lines only to avoid double-count
         _src_je_counts = {}
