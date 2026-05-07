@@ -86,12 +86,6 @@ _RET_SEED: List[tuple] = [
     ('10/17/2025', 'RET ESCROW Payment 10.1.25-Q2-2025',       -682671.07),
     ('11/7/2025',  'RET Escrow - Per statement due 11.07.25',   216069.98),
     ('12/8/2025',  'RET Escrow - Per statement due 12.08.25',   203295.19),
-    ('1/7/2026',   'RET Escrow - Per statement due 01.07.26',   203295.19),
-    ('1/16/2026',  'RET ESCROW Payment 01.1.26-Q3-2026',       -498750.81),
-    ('2/9/2026',   'RET Escrow - Per statement due 02.09.26',   203295.19),
-    ('3/9/2026',   'RET Escrow - Per statement due 03.09.26',   203295.19),
-    ('4/7/2026',   'RET Escrow - Per statement due 04.07.26',   203295.19),
-    ('4/16/2026',  'RET ESCROW Payment 04.16.26-Q4-2026',      -498750.80),
 ]
 
 # 115300 — Insurance Escrow seed ledger
@@ -132,10 +126,6 @@ _LOAN_RESERVE_SEED: List[tuple] = [
     ('10/25/2025', 'Rcd: 10/25 Interest Income',                 256.50),
     ('11/25/2025', 'Rcd: 11/25 Interest Income',                 220.19),
     ('12/25/2025', 'Rcd: 12/25 Interest Income',                 283.78),
-    ('1/25/2026',  'Rcd: 01/26 Interest Income',                 247.46),
-    ('2/25/2026',  'Rcd: 02/26 Interest Income',                 229.31),
-    ('3/25/2026',  'Rcd: 03/26 Interest Income',                 265.66),
-    ('4/25/2026',  'Rcd: 04/26 Interest Income',                 247.51),
 ]
 
 _ENTITY = 'revlabpm'
