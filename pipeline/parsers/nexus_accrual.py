@@ -8,7 +8,7 @@ so only accrual-worthy invoices reach the pipeline.
 Status filtering (case-insensitive)
 ────────────────────────────────────
 INCLUDED (needs accrual):
-  In Progress, Pending Approval, Submitted for Payment, Completed
+  Pending, In Progress, Pending Approval, In Yardi, Submitted for Payment, Completed
 
 EXCLUDED (no accrual needed):
   Rejected, Void, On Hold  — and any other status not in the include list
@@ -79,7 +79,9 @@ def _load_sheet(filepath: str) -> Tuple[List[List[Any]], str]:
 # accrued.  Everything else (Rejected, Void, On Hold, unknown) is excluded.
 _INCLUDE_STATUSES = frozenset({
     'in progress',
+    'pending',
     'pending approval',
+    'in yardi',
     'submitted for payment',
     'completed',
 })
@@ -96,8 +98,8 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
 
     Accepts both the "Accrual Detail" and full "Invoice Detail" exports.
     Invoices with status Rejected, Void, or On Hold are silently excluded.
-    Only In Progress, Pending Approval, Submitted for Payment, and Completed
-    invoices are returned.
+    Only Pending, In Progress, Pending Approval, In Yardi, Submitted for
+    Payment, and Completed invoices are returned.
 
     Args:
         filepath: Path to .xls file

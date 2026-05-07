@@ -238,10 +238,10 @@ Then: **Generate Reports** button
 |-------|--------|--------|
 | 0b | RE Tax prepaid (all months) | Payment months: defer 2/3 (DR 135120 / CR 641110); Release months: release 1/3 (DR 641110 / CR 135120) |
 | 0b | Insurance prepaid | DR 639110/639120 / CR 135110; monthly from budget |
-| 1 | Nexus AP Accrual Detail | Open invoices not yet in GL (deduped by invoice number) |
-| 2 | GL recurring invoices — utilities | Daily rate × uncovered days (613/614xxx codes or utility keywords) |
-| 2 | GL recurring invoices — services | Full prior invoice amount (non-utility; flat monthly service rate) |
-| 3 | Historical (BC YTD) | Average of prior months; January fallback uses annual÷12 |
+| 1 | Nexus AP Accrual Detail | Open invoices not yet in GL (statuses: Pending, In Progress, Pending Approval, In Yardi, Submitted for Payment, Completed) |
+| 2 | GL recurring invoices — electricity (613110 only) | Daily rate × uncovered days |
+| 2 | GL recurring invoices — all other accounts | Full last invoice amount (flat monthly rate) |
+| 3 | Historical (BC YTD) | Average of prior months actual; January fallback uses annual÷12 |
 | 4 | Payroll bonus | User-entered annual ÷ 12; Kardin-derived as fallback; suppressed in payment months |
 
 **RE Tax quarterly cycle (Jan/Apr/Jul/Oct billing months):**

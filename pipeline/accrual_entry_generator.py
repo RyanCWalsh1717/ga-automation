@@ -704,24 +704,28 @@ def detect_invoice_proration_accruals(
     materiality: float = 500.0,
 ) -> List[Dict[str, Any]]:
     """
-    Layer 2 — Invoice-period proration accruals.
+    Layer 2 — Invoice-period accruals.
 
     Scans GL transactions for billing date-range references in the remarks /
     description field (format ``MM.DD.YY-MM.DD.YY``).  For each expense account
     where the latest invoiced period ends *before* the close of the reporting
-    month, it accrues the uncovered portion at the same daily rate as the most
-    recent invoice.
+    month, accrues the current month's estimated cost.
 
     Algorithm
     ---------
     For each expense account (6xxxxx, 5xxxxx, …):
 
-    **Vendor billing-period accounts** (electricity, gas, security, elevator, …)
+    **Electricity (613110 only)**
       1. Parse ``(start, end, amount)`` from every transaction with a date range.
       2. Group by billing end date; identify the *latest* end date.
       3. For the latest group: compute daily rate = total amount / period days.
       4. Uncovered days  = calendar month-end  −  latest billing end.
       5. Accrual = daily rate × uncovered days   (if > materiality threshold).
+
+    **All other accounts** (gas, water, sewer, janitorial, HVAC, security, etc.)
+      1. Parse ``(start, end, amount)`` from every transaction with a date range.
+      2. Identify the *latest* billing end date.
+      3. Accrual = full last invoice amount (flat monthly rate assumption).
 
     **Payroll accounts** (account name contains "Pay/Wages" or "Payroll")
       1. Identify payroll runs by description keyword.
@@ -802,48 +806,41 @@ def detect_invoice_proration_accruals(
             min_start    = min(g[0] for g in group)
             period_days  = max(1, (latest_end - min_start).days)
 
-            # ── Utility vs. non-utility proration logic ────────────────────
-            # Utilities (613/614 codes, or name contains utility keywords):
-            #   Prorate by day: daily rate × uncovered days.  Utility bills
-            #   span a calendar cycle that rarely aligns to month-end, so
-            #   the exact uncovered days is the right accrual amount.
+            # ── Electricity vs. all other accounts ─────────────────────────
+            # Electricity (613110 only):
+            #   Prorate by day: daily rate × uncovered days.  Electric bills
+            #   span a metered cycle that rarely aligns to month-end, so the
+            #   exact uncovered days gives the most accurate accrual.
             #
-            # All other services (janitorial, elevator, HVAC, security, etc.):
-            #   Accrue the full prior invoice amount.  Service contracts bill a
-            #   flat monthly fee — the current month will cost the same as the
-            #   most recent invoice, regardless of how many days are uncovered.
-            _utility_kw = ('electric', 'gas', 'water', 'sewer', 'utilit')
-            _name_l = (acct.account_name or '').lower()
-            _is_utility = (
-                code.startswith(('613', '614'))
-                or any(kw in _name_l for kw in _utility_kw)
-            )
+            # Everything else (gas, water, sewer, janitorial, HVAC, security,
+            #   elevator, etc.):
+            #   Accrue the full prior invoice amount.  These are flat monthly
+            #   service contracts or fixed utility bills — the current month
+            #   will cost the same as the most recent invoice.
+            _is_electricity = (code == ELEC_EXPENSE_ACCOUNT)  # 613110 only
 
-            if _is_utility:
+            if _is_electricity:
                 # Sanity cap: don't extrapolate more than 2× the billing period.
-                # Allows 30-day utility cycles to bleed into the next month by
-                # up to 30 extra days (e.g., gas billed in Feb covering all March).
                 if uncovered > period_days * 2.0:
                     continue
                 daily_rate = total_amount / period_days
                 accrual    = daily_rate * uncovered
                 accrual_desc = (
-                    f'Utility proration — {acct.account_name}: '
+                    f'Electricity proration — {acct.account_name}: '
                     f'last invoice {min_start.strftime("%m/%d/%y")}'
                     f'-{latest_end.strftime("%m/%d/%y")} '
                     f'(${total_amount:,.0f}/{period_days}d = '
                     f'${daily_rate:,.2f}/day × {uncovered} days uncovered)'
                 )
             else:
-                # Non-utility: accrue the full invoice amount
+                # All other accounts: accrue the full last invoice amount
                 daily_rate = 0.0
                 accrual    = total_amount
                 accrual_desc = (
-                    f'Service accrual — {acct.account_name}: '
+                    f'Invoice accrual — {acct.account_name}: '
                     f'last invoice {min_start.strftime("%m/%d/%y")}'
                     f'-{latest_end.strftime("%m/%d/%y")} '
-                    f'(${total_amount:,.0f} — accruing full invoice amount '
-                    f'for current month)'
+                    f'(${total_amount:,.0f})'
                 )
 
             if accrual < materiality:
