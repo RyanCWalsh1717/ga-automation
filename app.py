@@ -244,6 +244,8 @@ if "pass1_output_files" not in st.session_state:
     st.session_state.pass1_output_files = {}
 if "pass1_run_count" not in st.session_state:
     st.session_state.pass1_run_count = 0
+if "upload_key_p1" not in st.session_state:
+    st.session_state.upload_key_p1 = 0
 
 # Pass 2 — Report Generation
 if "pass2_complete" not in st.session_state:
@@ -252,6 +254,8 @@ if "pass2_engine_result" not in st.session_state:
     st.session_state.pass2_engine_result = None
 if "pass2_output_files" not in st.session_state:
     st.session_state.pass2_output_files = {}
+if "upload_key_p2" not in st.session_state:
+    st.session_state.upload_key_p2 = 0
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
     st.session_state.post_close_je_df = _pd_init.DataFrame({
@@ -380,6 +384,8 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.uploaded_files = {}
     st.session_state.bulk_overrides_p1 = {}
     st.session_state.bulk_overrides_p2 = {}
+    st.session_state.upload_key_p1 += 1
+    st.session_state.upload_key_p2 += 1
     shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
     import pandas as _pd
@@ -527,7 +533,7 @@ with tab1:
         "Drop Pass 1 files here",
         accept_multiple_files=True,
         type=["xlsx", "xls", "pdf"],
-        key="bulk_upload_p1",
+        key=f"bulk_upload_p1_{st.session_state.upload_key_p1}",
         label_visibility="collapsed",
     )
 
@@ -761,6 +767,13 @@ with tab1:
             st.session_state.pass1_engine_result = None
             st.session_state.pass1_output_files = {}
             st.session_state['pass1_gl_activity_log'] = []
+            st.session_state.bulk_overrides_p1 = {}
+            st.session_state.upload_key_p1 += 1
+            for _clr in list(st.session_state.uploaded_files.keys()):
+                if _clr not in ("gl_pass2", "budget_comparison_pass2",
+                                "trial_balance_pass2", "loan_pass2",
+                                "prior_workpaper", "t12_statement_pass2"):
+                    st.session_state.uploaded_files.pop(_clr, None)
             st.rerun()
 
     # ── Pass 1 Processing ─────────────────────────────────────────────────────
@@ -1614,7 +1627,7 @@ with tab2:
         "Drop all Pass 2 files here",
         accept_multiple_files=True,
         type=["xlsx", "xls", "pdf"],
-        key="bulk_upload_p2",
+        key=f"bulk_upload_p2_{st.session_state.upload_key_p2}",
     )
 
     # Clear Pass 2 slots so stale entries don't persist after file removal
@@ -1734,6 +1747,7 @@ with tab2:
                        "t12_statement_pass2", "loan_pass2", "prior_workpaper"):
                 st.session_state.uploaded_files.pop(_k, None)
             st.session_state.bulk_overrides_p2 = {}
+            st.session_state.upload_key_p2 += 1
             st.rerun()
 
     # ── Pass 2 Processing ─────────────────────────────────────────────────────
