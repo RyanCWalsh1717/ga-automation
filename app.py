@@ -1257,14 +1257,14 @@ with tab1:
                 return f"{code}"
 
             # ── Sort order for BS sections ──────────────────────────────────
-            def _section_sort_key(code: str) -> int:
-                if code.startswith('115'):  return 1   # Escrow (RE Tax, Insurance)
-                if code.startswith('133'):  return 2   # Tenant AR Billback
-                if code.startswith('135'):  return 3   # Prepaids
-                if code == '213100':        return 4   # Accrued Expenses
-                if code == '213200':        return 5   # Accrued Interest Payable
-                if code.startswith('213'):  return 6   # Other accrued
-                return 9                                # Other
+            # Prepaids first, accrued expenses last; everything else by code.
+            def _section_sort_key(code: str) -> tuple:
+                if code.startswith('135'):  return (0, code)   # Prepaids — first
+                if code.startswith('115'):  return (1, code)   # Escrow (RE Tax, Insurance)
+                if code.startswith('133'):  return (2, code)   # Tenant AR Billback
+                if code.startswith('641'):  return (3, code)   # RE Tax deferral
+                if code.startswith('213'):  return (9, code)   # Accrued Expenses — last
+                return (5, code)                               # Everything else in code order
 
             # ── Group DR lines by CR account ────────────────────────────────
             _groups: dict = {}   # cr_code → list of DR lines
@@ -1307,7 +1307,10 @@ with tab1:
             }
 
             for _cr_code in _sorted_cr_codes:
-                _group_lines = _groups[_cr_code]
+                _group_lines = sorted(
+                    _groups[_cr_code],
+                    key=lambda _l: str(_l.get('account_code') or ''),
+                )
                 _group_total = sum(_l.get('debit') or 0 for _l in _group_lines)
                 _group_count = len(set(_l.get('je_number', '') for _l in _group_lines))
                 _section_title = _cr_section_label(_cr_code)
