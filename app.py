@@ -912,8 +912,15 @@ with tab1:
                 _daca_parsed = None
                 if _daca_file and os.path.exists(_daca_file):
                     try:
+                        from parsers.yardi_daca_rec import (
+                            is_yardi_daca_rec as _is_yardi_daca,
+                            parse as _parse_yardi_daca,
+                        )
                         from parsers.keybank_daca import parse as _parse_daca
-                        _daca_parsed = _parse_daca(_daca_file)
+                        if _is_yardi_daca(_daca_file):
+                            _daca_parsed = _parse_yardi_daca(_daca_file)
+                        else:
+                            _daca_parsed = _parse_daca(_daca_file)
                     except Exception:
                         _daca_parsed = None
 
@@ -1827,8 +1834,15 @@ with tab2:
                 daca_gl_balance = None
                 if _daca_file and os.path.exists(_daca_file):
                     try:
+                        from parsers.yardi_daca_rec import (
+                            is_yardi_daca_rec as _is_yardi_daca2,
+                            parse as _parse_yardi_daca2,
+                        )
                         from parsers.keybank_daca import parse as _parse_daca2
-                        daca_bank_data = _parse_daca2(_daca_file)
+                        if _is_yardi_daca2(_daca_file):
+                            daca_bank_data = _parse_yardi_daca2(_daca_file)
+                        else:
+                            daca_bank_data = _parse_daca2(_daca_file)
                     except Exception:
                         daca_bank_data = None
                 if daca_bank_data and _gl_result:

@@ -672,19 +672,110 @@ def build_135150_tab(wb, period: str, property_name: str,
 
 # ── 115100 — DACA Restricted Cash ────────────────────────────────────────────
 
+def _group_daca_gl_transactions(gl_acct) -> list:
+    """
+    Group the Yardi GL transactions for account 115100 by (date, tenant/description)
+    and return a list of row dicts ready for the workpaper.
+
+    Yardi posts many individual lines per tenant per day (charge-code breakdown
+    plus APPLY clearing entries that net to zero).  We group by (date, clean_desc),
+    net the debits and credits, then discard groups that net to zero (APPLY pairs).
+
+    Classification:
+      - "Sweep" in description  → Adjustments (negative, labelled "Transfer to PNC")
+      - "bank fee" / "service"  → Adjustments (negative, labelled "Bank Fee")
+      - net > 0                 → Deposits (tenant name as label)
+      - net < 0 (other)         → Disbursements
+
+    Returns list of dicts: {date, desc, deposits, disb, adj, sort_date}
+    sorted chronologically.
+    """
+    from collections import defaultdict
+    from datetime import date as _date
+
+    net_by_key: Dict[tuple, float] = defaultdict(float)
+    meta: Dict[tuple, dict] = {}   # key -> {date_str, sort_date, desc}
+
+    for txn in (getattr(gl_acct, 'transactions', []) or []):
+        d = getattr(txn, 'date', None)
+        if isinstance(d, _date):
+            date_str  = d.strftime('%m/%d/%Y')
+            sort_date = d
+        else:
+            date_str  = str(d or '')
+            sort_date = _date(1900, 1, 1)
+
+        desc_raw   = str(getattr(txn, 'description', '') or '')
+        # Strip Yardi tenant codes "(t0000011)" / "(v0000123)"
+        desc_clean = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc_raw).strip()
+
+        debit  = float(getattr(txn, 'debit',  0) or 0)
+        credit = float(getattr(txn, 'credit', 0) or 0)
+
+        key = (sort_date, desc_clean)
+        net_by_key[key] = round(net_by_key[key] + debit - credit, 2)
+        if key not in meta:
+            meta[key] = {'date_str': date_str, 'sort_date': sort_date,
+                         'desc': desc_clean}
+
+    rows = []
+    for key in sorted(net_by_key.keys()):
+        net  = net_by_key[key]
+        info = meta[key]
+        desc = info['desc']
+
+        if abs(net) < 0.01:
+            continue   # APPLY pairs net to zero — skip
+
+        desc_lower = desc.lower()
+        is_sweep   = 'sweep' in desc_lower or 'transfer to pnc' in desc_lower
+        is_fee     = any(kw in desc_lower for kw in
+                         ('bank fee', 'analysis service', 'service chg', 'monthly bank'))
+
+        if is_sweep:
+            rows.append({'date': info['date_str'], 'desc': 'Transfer to PNC',
+                         'deposits': 0.0, 'disb': 0.0, 'adj': net,
+                         'sort_date': info['sort_date']})
+        elif is_fee:
+            rows.append({'date': info['date_str'], 'desc': 'Bank Fee',
+                         'deposits': 0.0, 'disb': 0.0, 'adj': net,
+                         'sort_date': info['sort_date']})
+        elif net > 0:
+            rows.append({'date': info['date_str'], 'desc': desc,
+                         'deposits': net, 'disb': 0.0, 'adj': 0.0,
+                         'sort_date': info['sort_date']})
+        else:
+            rows.append({'date': info['date_str'], 'desc': desc,
+                         'deposits': 0.0, 'disb': abs(net), 'adj': 0.0,
+                         'sort_date': info['sort_date']})
+
+    return rows
+
+
 def build_115100_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
                      daca_data: Dict = None,
-                     bank_rec_data: Dict = None,
                      **_):
     """
-    Rolling balance format:
-      Date | Tenant/Description | Deposits | Disbursements | Adjustments | Ending Balance
+    Rolling balance workpaper for DACA (KeyBank x5132 → GL 115100).
 
-    If bank_rec_data for DACA is present, use those reconciled items.
-    Otherwise: DACA statement additions = deposits; PNC bank rec transfers = disbursements.
+    Columns: Date | Tenant / Description | Deposits | Disbursements |
+             Adjustments | Ending Balance
+
+    GL transactions are grouped by (date, tenant name) so the workpaper
+    matches the hand-prepared format:
+      • One row per tenant per day (net of all charge-code sub-lines)
+      • Sweeps to PNC → "Transfer to PNC" in the Adjustments column
+      • Bank fees     → "Bank Fee" in the Adjustments column
+      • Ending Balance is an Excel running-balance formula referencing
+        the row above so users can inspect calculations in Excel.
+
+    Reconciliation footer (if daca_data from YardiDACARec / KeyBankDACA is
+    provided):
+      Bank Statement Balance | GL Ending Balance | Difference
     """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    gl_beg    = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
     ws = wb.create_sheet('115100 DACA'[:31])
@@ -696,64 +787,53 @@ def build_115100_tab(wb, period: str, property_name: str,
     next_row = _write_col_headers(
         ws, next_row,
         ['Date', 'Tenant / Description', 'Deposits', 'Disbursements', 'Adjustments', 'Ending Balance'],
-        [14, 42, 16, 18, 16, 18],
+        [14, 44, 16, 18, 16, 18],
     )
-    hdr_row = next_row - 1  # row above data — used for ending balance reference
 
-    # Build row list from DACA data
-    daca_rows = []
-    if daca_data and isinstance(daca_data, dict):
-        # Tenant-level additions
-        for tenant, amt in (daca_data.get('tenant_additions') or {}).items():
-            if amt:
-                daca_rows.append({'date': '', 'desc': tenant,
-                                  'deposits': float(amt), 'disb': 0.0, 'adj': 0.0})
-        # Transfers out (from PNC bank rec — recorded as disbursements)
-        for transfer in (daca_data.get('transfers_out') or []):
-            daca_rows.append({'date': str(transfer.get('date', '')),
-                              'desc': transfer.get('description', 'Transfer to Operating'),
-                              'deposits': 0.0,
-                              'disb': abs(float(transfer.get('amount', 0))),
-                              'adj': 0.0})
-        # Adjustments / miscellaneous
-        for adj in (daca_data.get('adjustments') or []):
-            daca_rows.append({'date': str(adj.get('date', '')),
-                              'desc': adj.get('description', 'Adjustment'),
-                              'deposits': 0.0, 'disb': 0.0,
-                              'adj': float(adj.get('amount', 0))})
+    # ── Beginning balance row ─────────────────────────────────────────────────
+    c_beg = ws.cell(row=next_row, column=3, value='Balance Forward')
+    _apply(c_beg, font=_font(italic=True, color='444444'), border=THIN,
+           align=Alignment(horizontal='left'))
+    ws.merge_cells(start_row=next_row, start_column=3,
+                   end_row=next_row, end_column=6)
+    c_beg_bal = ws.cell(row=next_row, column=7, value=gl_beg)
+    _apply(c_beg_bal, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+           fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+    beg_balance_row = next_row
+    next_row += 1
 
-    # If no structured data, fall back to GL transactions
-    if not daca_rows:
-        for txn in (getattr(gl_acct, 'transactions', []) or []):
-            d = getattr(txn, 'date', None)
-            date_str = d.strftime('%m/%d/%Y') if isinstance(d, date) else ''
-            desc = str(getattr(txn, 'description', '') or '')
-            debit  = float(getattr(txn, 'debit',  0) or 0)
-            credit = float(getattr(txn, 'credit', 0) or 0)
-            daca_rows.append({'date': date_str, 'desc': desc,
-                              'deposits': debit, 'disb': credit, 'adj': 0.0})
+    # ── Build data rows from GL transactions (grouped by date × tenant) ───────
+    daca_rows = _group_daca_gl_transactions(gl_acct)
 
     # Write rows with running Ending Balance formula
     for i, r in enumerate(daca_rows):
         alt = i % 2 == 1
-        bg = _fill(LIGHT_GRAY) if alt else None
+        bg  = _fill(LIGHT_GRAY) if alt else None
 
         c1 = ws.cell(row=next_row, column=2, value=r['date'])
         _apply(c1, font=_font(), fill=bg, border=THIN)
+
         c2 = ws.cell(row=next_row, column=3, value=r['desc'])
         _apply(c2, font=_font(), fill=bg, border=THIN)
+
         c3 = ws.cell(row=next_row, column=4, value=r['deposits'] or None)
         _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
+
         c4 = ws.cell(row=next_row, column=5, value=r['disb'] or None)
         _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
+
         c5 = ws.cell(row=next_row, column=6, value=r['adj'] or None)
         _apply(c5, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
-        # Ending balance = prior ending + deposits - disbursements + adjustments
-        prev_bal_ref = f'G{next_row - 1}' if next_row > hdr_row + 1 else '0'
-        formula = f'={prev_bal_ref}+IFERROR(D{next_row},0)-IFERROR(E{next_row},0)+IFERROR(F{next_row},0)'
+
+        # Ending balance formula: prior G + deposits(D) - disbursements(E) + adjustments(F)
+        prev_ref = f'G{next_row - 1}'
+        formula  = (f'={prev_ref}'
+                    f'+IFERROR(D{next_row},0)'
+                    f'-IFERROR(E{next_row},0)'
+                    f'+IFERROR(F{next_row},0)')
         c6 = ws.cell(row=next_row, column=7, value=formula)
         _apply(c6, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
                fmt='$#,##0.00', border=THIN,
@@ -762,10 +842,91 @@ def build_115100_tab(wb, period: str, property_name: str,
         next_row += 1
 
     if not daca_rows:
-        c = ws.cell(row=next_row, column=2, value='No DACA activity parsed this period')
+        c = ws.cell(row=next_row, column=2,
+                    value='No DACA GL activity for this period')
         _apply(c, font=_font(italic=True, color='666666'))
         next_row += 1
 
+    # ── Totals row ────────────────────────────────────────────────────────────
+    next_row += 1
+    c_tot_lbl = ws.cell(row=next_row, column=2, value='Period Totals')
+    _apply(c_tot_lbl, font=_font(bold=True), border=THICK_BOTTOM)
+
+    data_start = beg_balance_row + 1
+    data_end   = next_row - 2
+
+    for col_letter, col_idx in [('D', 4), ('E', 5), ('F', 6)]:
+        if data_end >= data_start:
+            tot_formula = f'=SUM({col_letter}{data_start}:{col_letter}{data_end})'
+        else:
+            tot_formula = 0
+        ct = ws.cell(row=next_row, column=col_idx, value=tot_formula)
+        _apply(ct, font=_font(bold=True), fmt='$#,##0.00', border=THICK_BOTTOM,
+               align=Alignment(horizontal='right'))
+
+    # Ending balance column just shows the last GL ending balance
+    ct_end = ws.cell(row=next_row, column=7, value=gl_ending)
+    _apply(ct_end, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+           fmt='$#,##0.00', border=THICK_BOTTOM,
+           align=Alignment(horizontal='right'))
+    next_row += 2
+
+    # ── Bank reconciliation block ─────────────────────────────────────────────
+    # Uses daca_data from YardiDACARec or KeyBankDACA parser
+    bank_bal = None
+    rec_diff = None
+    if daca_data and isinstance(daca_data, dict):
+        bank_bal = (daca_data.get('reconciled_bank_balance')
+                    or daca_data.get('ending_balance'))
+        rec_diff = daca_data.get('reconciling_difference')
+
+    rec_rows = [
+        ('Bank Statement Balance (Reconciled)',
+         bank_bal if bank_bal is not None else '— upload DACA rec to populate —',
+         DARK_BLUE, 'FFFFFF'),
+        ('Ending Balance per GL',
+         gl_ending,
+         MED_BLUE,  'FFFFFF'),
+        ('Difference',
+         round(gl_ending - (bank_bal or gl_ending), 2),
+         None, None),
+    ]
+    c_rec_hdr = ws.cell(row=next_row, column=2, value='Bank Reconciliation')
+    _apply(c_rec_hdr, font=_font(bold=True, size=10), border=THIN)
+    ws.merge_cells(start_row=next_row, start_column=2,
+                   end_row=next_row, end_column=6)
+    next_row += 1
+
+    for label, val, fill_hex, font_color in rec_rows:
+        c_lbl = ws.cell(row=next_row, column=2, value=label)
+        _apply(c_lbl,
+               font=_font(bold=True, color=font_color or '000000'),
+               fill=_fill(fill_hex) if fill_hex else None,
+               border=THIN,
+               align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=6)
+        c_val = ws.cell(row=next_row, column=7, value=val)
+        if label == 'Difference':
+            ok = isinstance(val, (int, float)) and abs(val) < 0.02
+            _apply(c_val,
+                   font=_font(bold=True, color='006400' if ok else 'CC0000'),
+                   fill=_fill(GREEN_FILL if ok else RED_FILL),
+                   fmt='$#,##0.00' if isinstance(val, (int, float)) else None,
+                   border=DOUBLE_BTM)
+        elif isinstance(val, (int, float)):
+            _apply(c_val,
+                   font=_font(bold=True, color=font_color or '000000'),
+                   fill=_fill(fill_hex) if fill_hex else None,
+                   fmt='$#,##0.00', border=THIN)
+        else:
+            _apply(c_val,
+                   font=_font(italic=True, color='888888'),
+                   border=THIN)
+        next_row += 1
+
+    # ── TB tie-out ────────────────────────────────────────────────────────────
+    next_row += 1
     _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=7)
     return ws
 
