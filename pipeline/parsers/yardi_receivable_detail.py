@@ -110,6 +110,7 @@ def parse(filepath: str) -> ReceivableDetailResult:
             prepayment_receipts=0.0,
             net_receipts=0.0,
             ending_balance=0.0,
+            elec_by_tenant={},
             _parse_error=str(exc),
         )
 

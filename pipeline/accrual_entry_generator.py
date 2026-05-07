@@ -2154,11 +2154,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                          else getattr(_bc_row, 'ptd_budget', 0)) or 0
                     ))
                     if _elec_months_elapsed >= 1 and _ytd_actual > 0:
-                        # Average of prior months' actual bills — more accurate than budget
+                        # Feb onward: average of prior closed months' actual bills
                         _elec_exp_amt    = _ytd_actual / _elec_months_elapsed
                         _elec_exp_source = 'prior_actual'
                     else:
-                        # January (no prior actuals) or no YTD actual — fall back to budget
+                        # January (months_elapsed=0, no prior-year YTD) → fall back to PTD budget
                         _elec_exp_amt    = _ptd_budget
                         _elec_exp_source = 'budget'
                     break
@@ -2178,7 +2178,6 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         f'{ELEC_EXPENSE_NAME}: ${_elec_exp_amt:,.2f}/mo '
                         f'(no invoice in GL; update when actual bill received)'
                     )
-                _elec_exp_budget = _elec_exp_amt  # keep alias for je_lines below
                 _exp_vendor = '[Prior Actual Avg]' if _elec_exp_source == 'prior_actual' else '[Budget Accrual]'
                 _exp_conf   = 'high' if _elec_exp_source == 'prior_actual' else 'medium'
                 je_lines.append({
