@@ -607,12 +607,14 @@ with tab1:
     if "daca_bank"         not in uploaded_keys: missing_impact.append("No DACA bank rec tab (Pass 2)")
     if "loan"              not in uploaded_keys: missing_impact.append("No debt service tab (Pass 2)")
 
-    # Count actual files uploaded — list values (e.g. loan with multiple Berkadia PDFs)
-    # are unfolded so 3 PDFs count as 3, not 1.
+    # Count Pass 1 files only — scope to P1 slot keys so Pass 2 files in the same
+    # session-state dict don't inflate the sidebar count.  List values (e.g. loan
+    # with multiple Berkadia PDFs) are unfolded so 3 PDFs count as 3, not 1.
+    _p1_count_keys = set(_P1_SLOT_KEYS) - {"unknown"}
     uploaded_count = sum(
         len(v) if isinstance(v, list) else 1
-        for v in st.session_state.uploaded_files.values()
-        if v is not None
+        for k, v in st.session_state.uploaded_files.items()
+        if k in _p1_count_keys and v is not None
     )
     gl_uploaded = "gl" in uploaded_keys
 
@@ -1714,6 +1716,17 @@ with tab2:
             st.caption("↳ T12: using Pass 1 version — upload post-close T12 above to override")
         if "loan_pass2" not in _p2_loaded and "loan" in _p2_loaded:
             st.caption("↳ Loan: using Pass 1 version — upload post-close PDFs above to override")
+
+        # File count for Pass 2 — list slots (e.g. loan_pass2 with multiple PDFs)
+        # are unfolded so 3 Berkadia PDFs count as 3, not 1.
+        _p2_count_keys = set(_P2_SLOT_KEYS) - {"unknown"}
+        _p2_file_count = sum(
+            len(v) if isinstance(v, list) else 1
+            for k, v in st.session_state.uploaded_files.items()
+            if k in _p2_count_keys and v is not None
+        )
+        if _p2_file_count > 0:
+            st.caption(f"**{_p2_file_count} file(s) uploaded**")
 
         # Clean up overrides for files no longer in uploader
         _active2 = {_uf2.name for _uf2 in _bulk_p2}
