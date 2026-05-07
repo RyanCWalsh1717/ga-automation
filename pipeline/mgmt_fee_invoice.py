@@ -1,15 +1,17 @@
 """
 Management Fee Invoice Generator
 =================================
-Produces a GRP-branded PDF invoice for the monthly property management fee.
+Produces a PDF invoice for the monthly property management fee,
+matching the RevLabsPM reference invoice exactly.
 
-Layout mirrors the reference invoice (RevLabsPM022026):
-  - Header:  GRP name/address block (left) + "INVOICE" label (right)
-  - Bill To: Revolution Labs Owner, LLC
-  - Meta box: Invoice #, Date, Due Date, Terms
-  - Line items: Total fee (3.00%) and Less JLL Portion (1.25%)
-  - Balance Due: GRP net (1.75%)
-  - Payment instructions (ACH + Check)
+Reference invoice extracted via pdfplumber (page 612 × 792 pt = US Letter):
+  Font:     TimesNewRoman Bold (Times-Bold) and Regular (Times-Roman)
+  Sizes:    6.72 pt body, 6.0 pt column headers, 13.44 pt INVOICE title
+  Green:    RGB(0.164, 0.395, 0.109)  — headers and INVOICE title
+  Layout:   text on white, NO colored background blocks
+
+All y-coordinates below are pdfplumber convention (from top of page).
+Converted to reportlab (from bottom) via:  rl_y = PAGE_H - pdf_y
 
 Invoice # format:  RevLabsPM{MM}{YYYY}   e.g. RevLabsPM022026
 """
@@ -17,44 +19,32 @@ Invoice # format:  RevLabsPM{MM}{YYYY}   e.g. RevLabsPM022026
 from __future__ import annotations
 
 import io
+import re
 import calendar
 from datetime import date
 from typing import Optional
 
-from reportlab.lib import colors
+from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    HRFlowable,
-)
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+from reportlab.lib import colors
 
-# ── GRP Brand colours ────────────────────────────────────────────────────────
-_NAVY   = colors.HexColor('#1F3864')
-_BLUE   = colors.HexColor('#2E5496')
-_GRAY   = colors.HexColor('#555555')
-_LGRAY  = colors.HexColor('#F2F2F2')
-_BLACK  = colors.black
-_WHITE  = colors.white
+# ── Palette ──────────────────────────────────────────────────────────────────
+_GREEN = colors.Color(0.164, 0.395, 0.109)   # dark green (table headers / INVOICE title)
+_BLACK = colors.black
 
-# ── Static GRP / property constants ─────────────────────────────────────────
+# ── GRP / property constants ──────────────────────────────────────────────────
 _GRP_NAME    = 'Greatland Realty Partners LLC'
 _GRP_ADDR1   = 'One Federal Street, 28th Floor'
 _GRP_ADDR2   = 'Boston, MA 02110'
 _GRP_WEB     = 'www.greatlandpartners.com'
 
 _BILL_TO     = 'Revolution Labs Owner, LLC'
-_PROP_LABEL  = 'Rev Labs Property Management Fee'
 _TERMS       = 'Due on receipt'
 
-# Payment instructions
-_ACH_NAME    = 'Greatland Realty Partners LLC'
 _ACH_BANK    = 'Bank of America'
 _ACH_ACCT    = '466007913255'
 _ACH_RTG     = '026009593'
-_ACH_ADDR    = '1 Federal St\nBoston, MA 02110'
+_ACH_ADDR    = '1 Federal St, Boston, MA 02110'
 
 _CHK_PAYABLE = 'Greatland Realty Partners LLC'
 _CHK_ADDR1   = 'Greatland Realty Partners'
@@ -69,129 +59,33 @@ _GRP_RATE    = 0.0175   # 1.75%
 
 _MONTH_MAP = {
     1: 'January', 2: 'February', 3: 'March', 4: 'April',
-    5: 'May', 6: 'June', 7: 'July', 8: 'August',
+    5: 'May',     6: 'June',     7: 'July',   8: 'August',
     9: 'September', 10: 'October', 11: 'November', 12: 'December',
 }
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _month_end(year: int, month: int) -> date:
-    last = calendar.monthrange(year, month)[1]
-    return date(year, month, last)
+    return date(year, month, calendar.monthrange(year, month)[1])
 
 
 def _parse_period(period: str):
-    """
-    Parse a period string like 'Feb-2026' → (2026, 2).
-    Returns (0, 0) on failure.
-    """
-    month_abbr = {
+    """Return (year, month_int) from a string like 'Feb-2026'.  (0, 0) on failure."""
+    abbr = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
         'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
         'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
     }
-    import re
     m = re.search(r'([A-Za-z]{3})[\s\-](\d{4})', period or '')
     if not m:
         return 0, 0
-    mon = month_abbr.get(m.group(1).lower(), 0)
-    yr  = int(m.group(2))
-    return yr, mon
+    return int(m.group(2)), abbr.get(m.group(1).lower(), 0)
 
 
-# ── Styles ───────────────────────────────────────────────────────────────────
-
-def _styles():
-    base = getSampleStyleSheet()
-    s = {}
-
-    s['company'] = ParagraphStyle(
-        'company', parent=base['Normal'],
-        fontSize=13, fontName='Helvetica-Bold',
-        textColor=_NAVY, spaceAfter=2,
-    )
-    s['addr'] = ParagraphStyle(
-        'addr', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica',
-        textColor=_GRAY, spaceAfter=1, leading=13,
-    )
-    s['web'] = ParagraphStyle(
-        'web', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica',
-        textColor=_BLUE, spaceAfter=0,
-    )
-    s['invoice_title'] = ParagraphStyle(
-        'invoice_title', parent=base['Normal'],
-        fontSize=28, fontName='Helvetica-Bold',
-        textColor=_NAVY, alignment=TA_RIGHT,
-    )
-    s['label'] = ParagraphStyle(
-        'label', parent=base['Normal'],
-        fontSize=8, fontName='Helvetica-Bold',
-        textColor=_GRAY, spaceAfter=2, leading=11,
-    )
-    s['value'] = ParagraphStyle(
-        'value', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica',
-        textColor=_BLACK, leading=13,
-    )
-    s['bill_label'] = ParagraphStyle(
-        'bill_label', parent=base['Normal'],
-        fontSize=8, fontName='Helvetica-Bold',
-        textColor=_WHITE,
-    )
-    s['bill_value'] = ParagraphStyle(
-        'bill_value', parent=base['Normal'],
-        fontSize=10, fontName='Helvetica',
-        textColor=_BLACK, spaceAfter=2,
-    )
-    s['tbl_hdr'] = ParagraphStyle(
-        'tbl_hdr', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica-Bold',
-        textColor=_WHITE,
-    )
-    s['tbl_body'] = ParagraphStyle(
-        'tbl_body', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica',
-        textColor=_BLACK, leading=13,
-    )
-    s['tbl_body_r'] = ParagraphStyle(
-        'tbl_body_r', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica',
-        textColor=_BLACK, alignment=TA_RIGHT, leading=13,
-    )
-    s['tbl_body_neg'] = ParagraphStyle(
-        'tbl_body_neg', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica',
-        textColor=colors.HexColor('#C00000'),
-        alignment=TA_RIGHT, leading=13,
-    )
-    s['bal_label'] = ParagraphStyle(
-        'bal_label', parent=base['Normal'],
-        fontSize=11, fontName='Helvetica-Bold',
-        textColor=_NAVY, alignment=TA_RIGHT,
-    )
-    s['bal_value'] = ParagraphStyle(
-        'bal_value', parent=base['Normal'],
-        fontSize=11, fontName='Helvetica-Bold',
-        textColor=_NAVY, alignment=TA_RIGHT,
-    )
-    s['pay_hdr'] = ParagraphStyle(
-        'pay_hdr', parent=base['Normal'],
-        fontSize=9, fontName='Helvetica-Bold',
-        textColor=_WHITE,
-    )
-    s['pay_body'] = ParagraphStyle(
-        'pay_body', parent=base['Normal'],
-        fontSize=8.5, fontName='Helvetica',
-        textColor=_BLACK, leading=13,
-    )
-    s['pay_label'] = ParagraphStyle(
-        'pay_label', parent=base['Normal'],
-        fontSize=8, fontName='Helvetica-Bold',
-        textColor=_GRAY, spaceAfter=1,
-    )
-
-    return s
+def _money(v: float, neg: bool = False) -> str:
+    sign = '-' if neg else ''
+    return f'{sign}${abs(v):,.2f}'
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -202,12 +96,12 @@ def generate_invoice(
     output_path: Optional[str] = None,
 ) -> bytes:
     """
-    Generate the GRP management fee invoice as a PDF.
+    Generate the GRP management fee invoice PDF, matching the RevLabsPM reference.
 
     Args:
         period:        Accounting period string, e.g. 'Feb-2026'.
-        cash_received: The management fee basis (cash collected this period).
-        output_path:   Optional file path to save PDF.  If None, returns bytes only.
+        cash_received: Management fee basis (cash collected this period).
+        output_path:   Optional path to write PDF file.  Returns bytes always.
 
     Returns:
         PDF bytes.
@@ -218,306 +112,193 @@ def generate_invoice(
 
     inv_date   = _month_end(year, month)
     inv_date_s = f'{inv_date.month}/{inv_date.day}/{inv_date.year}'
+    inv_num    = f'RevLabsPM{month:02d}{year}'
+    month_lbl  = _MONTH_MAP.get(month, str(month))
 
-    inv_num = f'RevLabsPM{month:02d}{year}'
-    month_label = _MONTH_MAP.get(month, str(month))
-
-    # Amounts
     total_fee = round(cash_received * _TOTAL_RATE, 2)
-    jll_fee   = round(cash_received * _JLL_RATE, 2)
-    balance   = round(cash_received * _GRP_RATE, 2)
-
-    def _money(v: float, neg: bool = False) -> str:
-        sign = '-' if neg else ''
-        return f'{sign}${abs(v):,.2f}'
+    jll_fee   = round(cash_received * _JLL_RATE,   2)
+    balance   = round(cash_received * _GRP_RATE,   2)
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        leftMargin=0.75 * inch,
-        rightMargin=0.75 * inch,
-        topMargin=0.65 * inch,
-        bottomMargin=0.75 * inch,
-    )
+    c   = rl_canvas.Canvas(buf, pagesize=letter)
+    W, H = letter  # 612 × 792 pt
 
-    S = _styles()
-    W = letter[0] - 1.5 * inch   # usable width
+    # Convert pdfplumber y-from-top to reportlab y-from-bottom (baseline approx)
+    def y(pdf_y: float) -> float:
+        return H - pdf_y
 
-    story = []
+    # ── SECTION 1: Company header (top-left) ────────────────────────────────
+    # pdfplumber positions: company name y=64.2, addresses y=72.6/81.1/89.7
+    c.setFillColor(_BLACK)
+    c.setFont('Times-Bold', 6.72)
+    c.drawString(56.9, y(64.2), _GRP_NAME)
 
-    # ── SECTION 1: Header — company block (left) + INVOICE title (right) ──
-    hdr_data = [[
-        [
-            Paragraph(_GRP_NAME, S['company']),
-            Paragraph(_GRP_ADDR1, S['addr']),
-            Paragraph(_GRP_ADDR2, S['addr']),
-            Paragraph(_GRP_WEB, S['web']),
-        ],
-        Paragraph('INVOICE', S['invoice_title']),
-    ]]
-    hdr_tbl = Table(hdr_data, colWidths=[W * 0.55, W * 0.45])
-    hdr_tbl.setStyle(TableStyle([
-        ('VALIGN',  (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-        ('TOPPADDING',   (0, 0), (-1, -1), 0),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
-    ]))
-    story.append(hdr_tbl)
-    story.append(HRFlowable(width=W, thickness=2, color=_NAVY, spaceAfter=10))
+    c.setFont('Times-Roman', 6.72)
+    c.drawString(56.9, y(72.6), _GRP_ADDR1)
+    c.drawString(56.9, y(81.1), _GRP_ADDR2)
+    c.drawString(56.9, y(89.7), _GRP_WEB)
 
-    # ── SECTION 2: Bill To + Invoice Meta ──────────────────────────────────
-    meta_rows = [
-        ['INVOICE #', inv_num],
-        ['DATE',      inv_date_s],
-        ['DUE DATE',  inv_date_s],
-        ['TERMS',     _TERMS],
+    # ── SECTION 2: "INVOICE" title (large, green, left-aligned) ─────────────
+    # pdfplumber: x=57.7, y=104.4, size=13.44pt
+    c.setFillColor(_GREEN)
+    c.setFont('Times-Bold', 13.44)
+    c.drawString(57.7, y(104.4), 'INVOICE')
+    c.setFillColor(_BLACK)
+
+    # ── SECTION 3: Invoice meta block (right side) ───────────────────────────
+    # Labels at x=382.1, values at x=468.5
+    # pdfplumber y rows: 120.6, 130.6, 139.1, 147.6
+    _meta = [
+        ('INVOICE #', inv_num,    120.6),
+        ('DATE',      inv_date_s, 130.6),
+        ('DUE DATE',  inv_date_s, 139.1),
+        ('TERMS',     _TERMS,     147.6),
     ]
-    meta_cells = []
-    for lbl, val in meta_rows:
-        meta_cells.append([
-            Paragraph(lbl, S['label']),
-            Paragraph(val, S['value']),
-        ])
-    meta_tbl = Table(meta_cells, colWidths=[1.1 * inch, 1.5 * inch])
-    meta_tbl.setStyle(TableStyle([
-        ('VALIGN',  (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 4),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING',   (0, 0), (-1, -1), 3),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 3),
-        ('BACKGROUND', (0, 0), (-1, -1), _LGRAY),
-        ('BOX',      (0, 0), (-1, -1), 0.5, _GRAY),
-        ('LINEBELOW',(0, 0), (-1, -2), 0.3, colors.HexColor('#CCCCCC')),
-    ]))
+    for lbl, val, pdf_y in _meta:
+        c.setFont('Times-Bold', 6.72)
+        c.drawString(382.1, y(pdf_y), lbl)
+        c.setFont('Times-Roman', 6.72)
+        c.drawString(468.5, y(pdf_y), val)
 
-    bill_header = Table(
-        [[Paragraph('BILL TO', S['bill_label'])]],
-        colWidths=[1.5 * inch]
-    )
-    bill_header.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), _NAVY),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 6),
-        ('TOPPADDING',   (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
-    ]))
+    # ── SECTION 4: Bill To (left side, same vertical band as meta) ───────────
+    # "BILL TO:" at y=122.1; bill-to name one line below
+    c.setFont('Times-Bold', 6.72)
+    c.drawString(56.9, y(122.1), 'BILL TO:')
+    c.setFont('Times-Roman', 6.72)
+    c.drawString(56.9, y(131.0), _BILL_TO)
 
-    bill_section = Table(
-        [[
-            [
-                bill_header,
-                Spacer(1, 4),
-                Paragraph(_BILL_TO, S['bill_value']),
-            ],
-            '',
-            meta_tbl,
-        ]],
-        colWidths=[W * 0.38, W * 0.12, W * 0.50],
-    )
-    bill_section.setStyle(TableStyle([
-        ('VALIGN',  (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-        ('TOPPADDING',   (0, 0), (-1, -1), 0),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 0),
-        ('ALIGN', (2, 0), (2, 0), 'RIGHT'),
-    ]))
-    story.append(bill_section)
-    story.append(Spacer(1, 18))
+    # ── SECTION 5: Line-item table ───────────────────────────────────────────
+    # Column x anchors (pdfplumber):
+    #   DATE hdr:        x=85.1   (left-align)
+    #   ACTIVITY hdr:    x=146.5  (left-align)
+    #   DESCRIPTION hdr: x=240.0  (left-align)
+    #   COLLECTIONS hdr: x=375.6  (right-align to col right edge ≈432)
+    #   RATE hdr:        x=434.6  (right-align to col right edge ≈472)
+    #   AMOUNT hdr:      x=473.5  (right-align to col right edge ≈555)
+    #
+    # Data row 1: date at x=79.3, activity bold at x=136.4, desc at x=240.0
+    # Data row 2: activity bold at x=136.4, desc at x=240.0
 
-    # ── SECTION 3: Line Items Table ────────────────────────────────────────
-    col_widths = [0.95*inch, 2.6*inch, 1.45*inch, 0.75*inch, 1.1*inch]
+    TBL_L    = 57.0    # table left edge (horizontal rule)
+    TBL_R    = 555.0   # table right edge
+    R_COLL   = 432.0   # right edge of COLLECTIONS column
+    R_RATE   = 472.0   # right edge of RATE column
+    R_AMT    = 555.0   # right edge of AMOUNT column
 
-    def _hcell(txt):
-        return Paragraph(txt, S['tbl_hdr'])
+    HDR_Y    = 181.7   # header baseline (pdfplumber)
+    ROW1_Y   = 193.1   # row 1 baseline
+    ROW2_Y   = 201.6   # row 2 baseline
 
-    def _cell(txt):
-        return Paragraph(txt, S['tbl_body'])
+    # Horizontal rules (estimated from extracted row spacing)
+    c.setStrokeColor(_BLACK)
+    c.setLineWidth(0.5)
+    c.line(TBL_L, y(175.5), TBL_R, y(175.5))   # above header
+    c.line(TBL_L, y(187.5), TBL_R, y(187.5))   # below header
+    c.line(TBL_L, y(197.0), TBL_R, y(197.0))   # below row 1
+    c.line(TBL_L, y(206.0), TBL_R, y(206.0))   # below row 2
 
-    def _rcell(txt):
-        return Paragraph(txt, S['tbl_body_r'])
+    # Column headers — 6.0pt bold, green
+    c.setFont('Times-Bold', 6.0)
+    c.setFillColor(_GREEN)
+    c.drawString(     85.1, y(HDR_Y), 'DATE')
+    c.drawString(    146.5, y(HDR_Y), 'ACTIVITY')
+    c.drawString(    240.0, y(HDR_Y), 'DESCRIPTION')
+    c.drawRightString(R_COLL, y(HDR_Y), 'COLLECTIONS')
+    c.drawRightString(R_RATE, y(HDR_Y), 'RATE')
+    c.drawRightString(R_AMT,  y(HDR_Y), 'AMOUNT')
+    c.setFillColor(_BLACK)
 
-    def _negcell(txt):
-        return Paragraph(txt, S['tbl_body_neg'])
+    # Row 1: total management fee
+    c.setFont('Times-Roman', 6.72)
+    c.drawString(79.3, y(ROW1_Y), inv_date_s)
+    c.setFont('Times-Bold', 6.72)
+    c.drawString(136.4, y(ROW1_Y), 'Rev Labs Property')
+    c.setFont('Times-Roman', 6.72)
+    c.drawString(240.0, y(ROW1_Y), f'{month_lbl} {year} Property Management Fee')
+    c.drawRightString(R_COLL, y(ROW1_Y), _money(cash_received))
+    c.drawRightString(R_RATE, y(ROW1_Y), '3.00%')
+    c.drawRightString(R_AMT,  y(ROW1_Y), _money(total_fee))
 
-    tbl_header = [
-        _hcell('DATE'),
-        _hcell('ACTIVITY DESCRIPTION'),
-        _hcell('COLLECTIONS'),
-        _hcell('RATE'),
-        _hcell('AMOUNT'),
+    # Row 2: less JLL portion
+    c.setFont('Times-Bold', 6.72)
+    c.drawString(136.4, y(ROW2_Y), 'Management Fee')
+    c.setFont('Times-Roman', 6.72)
+    c.drawString(240.0, y(ROW2_Y), 'Less JLL Portion')
+    c.drawRightString(R_COLL, y(ROW2_Y), _money(cash_received))
+    c.drawRightString(R_RATE, y(ROW2_Y), '1.25%')
+    c.drawRightString(R_AMT,  y(ROW2_Y), _money(jll_fee, neg=True))
+
+    # ── SECTION 6: Balance Due ───────────────────────────────────────────────
+    # pdfplumber: "BALANCE DUE" at y=233.7, bold amount at y=233.8
+    BAL_Y = 233.7
+    c.line(TBL_L, y(227.0), TBL_R, y(227.0))   # rule above balance line
+
+    c.setFont('Times-Bold', 6.72)
+    c.drawString(    TBL_L,  y(BAL_Y), 'BALANCE DUE')
+    c.drawRightString(R_AMT, y(BAL_Y), _money(balance))
+
+    # ── SECTION 7: Payment Instructions ─────────────────────────────────────
+    # "PAYMENT INSTRUCTIONS:" at pdfplumber y=489.3 (bold)
+    # Electronic Payment left col x=56.9; Check Payment right col x=250.1
+    # Data rows y=506.4 through ~574.5 (≈6-7 rows, ~10pt leading)
+    PAY_HDR_Y  = 489.3
+    PAY_SECT_Y = 499.0    # "Electronic Payment:" / "Check Payment:" headers
+    PAY_ROW_Y0 = 510.0    # first data row baseline
+    PAY_LEAD   = 9.5      # row leading (pt)
+
+    # Section heading
+    c.setFont('Times-Bold', 6.72)
+    c.drawString(56.9, y(PAY_HDR_Y), 'PAYMENT INSTRUCTIONS:')
+
+    # Sub-section headings
+    c.drawString( 56.9, y(PAY_SECT_Y), 'Electronic Payment:')
+    c.drawString(250.1, y(PAY_SECT_Y), 'Check Payment:')
+
+    # ACH detail rows (label bold, value regular)
+    _ach_rows = [
+        ('Account Name:',        'Greatland Realty Partners LLC'),
+        ('Bank Name:',           _ACH_BANK),
+        ('Bank Account #:',      _ACH_ACCT),
+        ('Bank Routing (ABA) #:', _ACH_RTG),
+        ('Bank Address:',        _ACH_ADDR),
     ]
+    ACH_LBL_X  = 56.9
+    ACH_VAL_X  = 160.0   # value indent (right of longest label)
+    for i, (lbl, val) in enumerate(_ach_rows):
+        row_y = PAY_ROW_Y0 + i * PAY_LEAD
+        c.setFont('Times-Bold', 6.72)
+        c.drawString(ACH_LBL_X, y(row_y), lbl)
+        c.setFont('Times-Roman', 6.72)
+        c.drawString(ACH_VAL_X, y(row_y), val)
 
-    desc_activity = f'{month_label} {year} {_PROP_LABEL}'
-
-    tbl_rows = [
-        # Header
-        tbl_header,
-        # Row 1: Total fee
-        [
-            _cell(inv_date_s),
-            _cell(desc_activity),
-            _rcell(_money(cash_received)),
-            _rcell('3.00%'),
-            _rcell(_money(total_fee)),
-        ],
-        # Row 2: Less JLL (indented description)
-        [
-            _cell(''),
-            _cell('Less JLL Portion'),
-            _rcell(_money(cash_received)),
-            _rcell('1.25%'),
-            _negcell(_money(jll_fee, neg=True)),
-        ],
-        # Spacer row
-        ['', '', '', '', ''],
+    # Check detail rows
+    _chk_rows = [
+        ('Payable to:',       _CHK_PAYABLE),
+        ('Mailing Address:',  ''),
+        ('',                  _CHK_ADDR1),
+        ('',                  _CHK_ADDR2),
+        ('',                  _CHK_ADDR3),
+        ('Attention:',        _CHK_ATTN),
     ]
+    CHK_LBL_X = 250.1
+    CHK_VAL_X = 340.0
+    row_y = PAY_ROW_Y0
+    for lbl, val in _chk_rows:
+        if lbl:
+            c.setFont('Times-Bold', 6.72)
+            c.drawString(CHK_LBL_X, y(row_y), lbl)
+        if val:
+            c.setFont('Times-Roman', 6.72)
+            c.drawString(CHK_VAL_X if lbl else CHK_LBL_X, y(row_y), val)
+        row_y += PAY_LEAD
 
-    item_tbl = Table(tbl_rows, colWidths=col_widths, repeatRows=1)
-    item_tbl.setStyle(TableStyle([
-        # Header row
-        ('BACKGROUND',   (0, 0), (-1, 0), _NAVY),
-        ('TEXTCOLOR',    (0, 0), (-1, 0), _WHITE),
-        ('TOPPADDING',   (0, 0), (-1, 0), 6),
-        ('BOTTOMPADDING',(0, 0), (-1, 0), 6),
-        ('LEFTPADDING',  (0, 0), (-1, 0), 6),
-        ('RIGHTPADDING', (0, 0), (-1, 0), 6),
-        # Data rows
-        ('TOPPADDING',   (0, 1), (-1, -1), 5),
-        ('BOTTOMPADDING',(0, 1), (-1, -1), 5),
-        ('LEFTPADDING',  (0, 1), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 1), (-1, -1), 6),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        # Alternating row shading
-        ('BACKGROUND', (0, 1), (-1, 1), _LGRAY),
-        # Grid
-        ('LINEBELOW', (0, 0), (-1, -2), 0.3, colors.HexColor('#CCCCCC')),
-        ('BOX', (0, 0), (-1, -1), 0.5, _GRAY),
-    ]))
-    story.append(item_tbl)
-    story.append(Spacer(1, 4))
-
-    # ── SECTION 4: Balance Due ─────────────────────────────────────────────
-    bal_tbl = Table(
-        [[Paragraph('BALANCE DUE', S['bal_label']),
-          Paragraph(_money(balance), S['bal_value'])]],
-        colWidths=[sum(col_widths[:-1]), col_widths[-1]],
-    )
-    bal_tbl.setStyle(TableStyle([
-        ('BACKGROUND',   (0, 0), (-1, -1), colors.HexColor('#D6E4F0')),
-        ('TOPPADDING',   (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 8),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('BOX', (0, 0), (-1, -1), 0.75, _NAVY),
-        ('ALIGN', (0, 0), (0, 0), 'RIGHT'),
-        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
-    ]))
-    story.append(bal_tbl)
-    story.append(Spacer(1, 24))
-
-    # ── SECTION 5: Payment Instructions ───────────────────────────────────
-    pay_hdr_style = TableStyle([
-        ('BACKGROUND',   (0, 0), (-1, 0), _NAVY),
-        ('TOPPADDING',   (0, 0), (-1, 0), 5),
-        ('BOTTOMPADDING',(0, 0), (-1, 0), 5),
-        ('LEFTPADDING',  (0, 0), (-1, 0), 8),
-        ('RIGHTPADDING', (0, 0), (-1, 0), 8),
-    ])
-
-    def _pay_row(label, value):
-        return [
-            Paragraph(label, S['pay_label']),
-            Paragraph(value, S['pay_body']),
-        ]
-
-    # Electronic column
-    ach_rows = [
-        [Paragraph('Electronic Payment:', S['pay_hdr']), ''],
-        _pay_row('Account Name:', _ACH_NAME),
-        _pay_row('Bank Name:', _ACH_BANK),
-        _pay_row('Bank Account #:', _ACH_ACCT),
-        _pay_row('Bank Routing (ABA) #:', _ACH_RTG),
-        _pay_row('Bank Address:', '1 Federal St, Boston, MA 02110'),
-    ]
-    ach_tbl = Table(ach_rows, colWidths=[1.45*inch, 1.85*inch])
-    ach_tbl.setStyle(TableStyle([
-        ('SPAN',         (0, 0), (-1, 0)),
-        ('BACKGROUND',   (0, 0), (-1, 0), _NAVY),
-        ('TOPPADDING',   (0, 0), (-1, 0), 6),
-        ('BOTTOMPADDING',(0, 0), (-1, 0), 6),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING',   (0, 1), (-1, -1), 3),
-        ('BOTTOMPADDING',(0, 1), (-1, -1), 3),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BOX', (0, 0), (-1, -1), 0.5, _GRAY),
-        ('LINEBELOW', (0, 1), (-1, -2), 0.3, colors.HexColor('#DDDDDD')),
-        ('BACKGROUND', (0, 1), (-1, -1), _LGRAY),
-    ]))
-
-    # Check column
-    chk_rows = [
-        [Paragraph('Check Payment:', S['pay_hdr']), ''],
-        _pay_row('Payable to:', _CHK_PAYABLE),
-        [Paragraph('Mailing Address:', S['pay_label']), ''],
-        [Paragraph(
-            f'{_CHK_ADDR1}<br/>{_CHK_ADDR2}<br/>{_CHK_ADDR3}',
-            S['pay_body'],
-        ), ''],
-        _pay_row('Attention:', _CHK_ATTN),
-    ]
-    chk_tbl = Table(chk_rows, colWidths=[1.2*inch, 2.0*inch])
-    chk_tbl.setStyle(TableStyle([
-        ('SPAN',         (0, 0), (-1, 0)),
-        ('SPAN',         (0, 2), (-1, 2)),
-        ('SPAN',         (0, 3), (-1, 3)),
-        ('BACKGROUND',   (0, 0), (-1, 0), _NAVY),
-        ('TOPPADDING',   (0, 0), (-1, 0), 6),
-        ('BOTTOMPADDING',(0, 0), (-1, 0), 6),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING',   (0, 1), (-1, -1), 3),
-        ('BOTTOMPADDING',(0, 1), (-1, -1), 3),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BOX', (0, 0), (-1, -1), 0.5, _GRAY),
-        ('LINEBELOW', (0, 1), (-1, -2), 0.3, colors.HexColor('#DDDDDD')),
-        ('BACKGROUND', (0, 1), (-1, -1), _LGRAY),
-    ]))
-
-    pay_hdr_row = Table(
-        [[Paragraph('PAYMENT INSTRUCTIONS:', S['tbl_hdr'])]],
-        colWidths=[W],
-    )
-    pay_hdr_row.setStyle(TableStyle([
-        ('BACKGROUND',   (0, 0), (-1, -1), _NAVY),
-        ('TOPPADDING',   (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 8),
-    ]))
-    story.append(pay_hdr_row)
-    story.append(Spacer(1, 6))
-
-    pay_cols = Table(
-        [[ach_tbl, Spacer(0.2*inch, 1), chk_tbl]],
-        colWidths=[3.3*inch, 0.2*inch, 3.2*inch],
-    )
-    pay_cols.setStyle(TableStyle([
-        ('VALIGN',  (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING',  (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-        ('TOPPADDING',   (0, 0), (-1, -1), 0),
-        ('BOTTOMPADDING',(0, 0), (-1, -1), 0),
-    ]))
-    story.append(pay_cols)
-
-    # ── Build ──────────────────────────────────────────────────────────────
-    doc.build(story)
+    # ── Finalise ─────────────────────────────────────────────────────────────
+    c.showPage()
+    c.save()
     pdf_bytes = buf.getvalue()
 
     if output_path:
-        with open(output_path, 'wb') as f:
-            f.write(pdf_bytes)
+        with open(output_path, 'wb') as fh:
+            fh.write(pdf_bytes)
 
     return pdf_bytes

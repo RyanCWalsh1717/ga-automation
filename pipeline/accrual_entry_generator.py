@@ -359,76 +359,120 @@ _RETAX_ESCROW_ACCT     = '115200'   # RE Tax Escrow — Berkadia-held; ties to l
 _RETAX_PAYMENT_MONTHS  = frozenset({1, 4, 7, 10})
 
 
-def detect_retax_amortization(gl_data, period: str = '',
-                               re_tax_bill_amount: float = 0.0) -> Optional[Dict[str, Any]]:
+def detect_retax_amortization(
+    gl_data,
+    period: str = '',
+    re_tax_bill_amount: float = 0.0,
+) -> Optional[Dict[str, Any]]:
     """
-    Generate the monthly RE tax expense accrual (DR 641110 / CR 135120).
+    RE Tax prepaid deferral / release JE.  Required every month when a quarterly
+    bill amount is entered.
 
-    The quarterly tax bill is split evenly across 3 months.  The pipeline
-    accrues 1/3 of the bill in each of the 2 non-payment months; the payment
-    month is covered by detect_retax_escrow_je() (DR 641110 / CR 115200).
+    Business rule (quarterly invoice cycle — Jan / Apr / Jul / Oct):
+    ─────────────────────────────────────────────────────────────────
+    Payment months (Jan / Apr / Jul / Oct):
+        Berkadia pays the town from escrow; Yardi auto-posts the full quarterly
+        bill via the loan payment entry:
+            DR 641110  Real Estate Taxes (full bill — automatic, NOT by pipeline)
+            CR 115200  RE Tax Escrow     (full bill — automatic, NOT by pipeline)
 
-    Behaviour
-    ─────────
-    Payment months (Jan/Apr/Jul/Oct):
-        → Suppressed here — detect_retax_escrow_je() handles those.
+        The pipeline DEFERS 2/3 so only 1/3 hits the P&L this month:
+            DR 135120  Prepaid RE Taxes  (2/3 of quarterly bill)
+            CR 641110  Real Estate Taxes (2/3 of quarterly bill)
 
-    Non-payment months, re_tax_bill_amount provided (> 0):
-        → Monthly accrual = re_tax_bill_amount / 3
-          DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes
+        Suppressed if 135120 already carries a net debit > $100 (deferral
+        was posted to Yardi before the pipeline ran).
 
-    Non-payment months, re_tax_bill_amount = 0 (not entered):
-        → Suppressed — cannot derive amount without the quarterly bill.
+    Release months (all other months):
+        Releases 1/3 of the quarterly bill from prepaid back to expense:
+            DR 641110  Real Estate Taxes (1/3 of quarterly bill)
+            CR 135120  Prepaid RE Taxes  (1/3 of quarterly bill)
 
-    Returns None when no entry is needed.
+        Suppressed if 641110 already carries a net debit > $100 (release
+        was posted to Yardi before the pipeline ran).
+
+    Both modes suppressed when re_tax_bill_amount = 0 (not entered by user).
+
+    Args:
+        gl_data:             GL parse result (.accounts list with .net_change).
+        period:              Close period string e.g. 'Jan-2026'.
+        re_tax_bill_amount:  Quarterly RE tax bill (user-entered every month).
+
+    Returns a JE dict or None.
     """
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return None
+    if re_tax_bill_amount <= 0:
+        return None
 
-    # Parse period month ("Apr-2026" → 4)
-    _MONTH_MAP = {
+    # Parse period month ("Jan-2026" → 1)
+    _MMAP = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
         'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
         'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
     }
     period_month = 0
-    for abbr, num in _MONTH_MAP.items():
+    for abbr, num in _MMAP.items():
         if abbr in (period or '').lower():
             period_month = num
             break
-
-    # Payment months are handled by detect_retax_escrow_je — nothing to do here
-    if period_month in _RETAX_PAYMENT_MONTHS:
+    if not period_month:
         return None
 
-    # Need the quarterly bill to compute 1/3
-    if re_tax_bill_amount <= 0:
-        return None
-
-    # Suppress only if 641110 has net new expense (positive net_change = net debit).
-    # A net credit means prior-month accrual auto-reversed — still need to post this month.
+    # Collect current-period net changes for both accounts
+    net_641110 = 0.0   # Real Estate Taxes expense (positive = net debit)
+    net_135120 = 0.0   # Prepaid RE Taxes asset   (positive = net debit)
     for acct in gl_data.accounts:
-        if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
-            if acct.net_change > 0.01:
-                return None
-            break
+        code = str(acct.account_code).strip()
+        if code == _RETAX_EXPENSE_ACCT:
+            net_641110 = float(getattr(acct, 'net_change', 0) or 0)
+        elif code == _RETAX_PREPAID_ACCT:
+            net_135120 = float(getattr(acct, 'net_change', 0) or 0)
 
-    monthly_amt = _round(re_tax_bill_amount / 3)
+    if period_month in _RETAX_PAYMENT_MONTHS:
+        # ── Payment month: defer 2/3 → DR 135120 / CR 641110 ────────────────
+        if net_135120 > 100.0:
+            return None   # deferral already posted in Yardi — suppress
 
-    return {
-        'account_code':   _RETAX_EXPENSE_ACCT,
-        'account_name':   'Real Estate Taxes',
-        'amount':         monthly_amt,
-        'credit_account': _RETAX_PREPAID_ACCT,
-        'credit_name':    'Prepaid RE Taxes',
-        'source':         'prepaid_amortization',
-        'confidence':     'high',
-        'auto_reverse':   False,
-        'description': (
-            f'RE Tax monthly accrual — ${monthly_amt:,.2f} '
-            f'(${re_tax_bill_amount:,.2f} quarterly bill / 3; '
-            f'DR {_RETAX_EXPENSE_ACCT} / CR {_RETAX_PREPAID_ACCT})'
-        ),
+        deferred = _round(re_tax_bill_amount * 2.0 / 3.0)
+        return {
+            'account_code':   _RETAX_PREPAID_ACCT,
+            'account_name':   'Prepaid RE Taxes',
+            'amount':         deferred,
+            'credit_account': _RETAX_EXPENSE_ACCT,
+            'credit_name':    'Real Estate Taxes',
+            'source':         'prepaid_amortization',
+            'confidence':     'high',
+            'auto_reverse':   False,
+            'description': (
+                f'RE Tax prepaid deferral — ${deferred:,.2f} '
+                f'(${re_tax_bill_amount:,.2f} quarterly bill × 2/3; '
+                f'Berkadia auto-posts full bill; pipeline defers 2/3 to prepaid. '
+                f'DR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes / '
+                f'CR {_RETAX_EXPENSE_ACCT} Real Estate Taxes)'
+            ),
+        }
+    else:
+        # ── Release month: release 1/3 → DR 641110 / CR 135120 ──────────────
+        if net_641110 > 100.0:
+            return None   # release already posted in Yardi — suppress
+
+        release = _round(re_tax_bill_amount / 3.0)
+        return {
+            'account_code':   _RETAX_EXPENSE_ACCT,
+            'account_name':   'Real Estate Taxes',
+            'amount':         release,
+            'credit_account': _RETAX_PREPAID_ACCT,
+            'credit_name':    'Prepaid RE Taxes',
+            'source':         'prepaid_amortization',
+            'confidence':     'high',
+            'auto_reverse':   False,
+            'description': (
+                f'RE Tax prepaid release — ${release:,.2f} '
+                f'(${re_tax_bill_amount:,.2f} quarterly bill / 3; '
+                f'DR {_RETAX_EXPENSE_ACCT} Real Estate Taxes / '
+                f'CR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes)'
+            ),
         }
 
 
@@ -440,22 +484,17 @@ def detect_retax_escrow_je(
     re_tax_bill_amount: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     """
-    Generate the RE Tax payment-month JE (DR 641110 / CR 115200).
+    [RETIRED — no longer called as of May 2026]
 
-    Non-payment months: NO JE generated here.
-        - DR 641110 / CR 135120 (monthly accrual) is handled by detect_retax_amortization().
-        - DR 115200 / CR 111100 (escrow funding) posts automatically in Yardi
-          as part of the Berkadia loan payment entry — no pipeline entry needed.
+    Previously generated DR 641110 / CR 115200 in payment months (Jan/Apr/Jul/Oct).
+    This entry is now handled automatically by Yardi as part of the Berkadia loan
+    payment entry — the pipeline no longer needs to post it.
 
-    Payment months (Jan / Apr / Jul / Oct):
-        DR 641110  Real Estate Taxes        ← actual quarterly tax bill recognised
-        CR 115200  RE Tax Escrow (Berkadia) ← Berkadia pays from escrow to town
-        Amount = re_tax_bill_amount (user-entered from the quarterly tax bill).
+    The pipeline now uses detect_retax_amortization() for all months:
+      - Payment months: DR 135120 Prepaid RE Taxes / CR 641110 RE Taxes (2/3 deferral)
+      - Release months: DR 641110 RE Taxes / CR 135120 Prepaid RE Taxes (1/3 release)
 
-        Prior months' DR 641110 / CR 135120 accruals auto-reverse in Yardi,
-        netting both 641110 and 135120 back to zero before this entry posts.
-
-    Returns None when no entry is needed or re_tax_bill_amount is not provided.
+    Retained for reference.  Not called from build_accrual_entries().
     """
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return None
@@ -1685,6 +1724,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           re_tax_bill_amount: float = 0.0,
                           t12_result=None,
                           gl_activity_log: Optional[List[Dict]] = None,
+                          receivable_detail=None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from four sources (in priority order):
@@ -1945,33 +1985,83 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 })
                 je_num += 1
 
-    elif gl_data and budget_data:
-        # ── Mode (b): auto-detect from GL + budget (aggregate budget accrual) ──
-        # Only runs when the sidebar utility table is empty.
-        # Retains GL activity guard — skip if already posted to GL.
-        _budget_elec_total = 0.0
-        for cand in detect_tenant_utility_billing(gl_data, budget_data):
-            cr_code = cand['account_code']
-            cr_name = 'Recovery - Electricity' if cr_code == '440500' else 'Recovery - Misc Utilities'
-            _acct   = _tub_gl.get(cr_code)
-            if _acct is not None and abs(_acct.net_change) >= 0.01:
-                continue   # already posted — skip
-            _post_tub_line(
-                cr_code, cr_name, cand['amount'],
-                '[Budget Accrual]',
-                cand['description'],
-            )
-            _tub_accounts.add(cr_code)
-            if cr_code == '440500':
-                _budget_elec_total += cand['amount']
+    elif gl_data:
+        # ── Mode (b): no sidebar rows — use Receivable Detail if uploaded, else budget ──
+        #
+        # Electric (440500):
+        #   Priority 1 — Receivable Detail: sum charges_by_code for codes containing
+        #                'ELEC' (e.g. ELEC, ELECTRIC, TELECTRIC, ELECRECOV).
+        #                Reflects what was actually charged to tenants this month.
+        #   Priority 2 — Budget: BC PTD budget for 440500 (legacy fallback).
+        #
+        # Gas (440700): budget only (no receivable detail charge-code mapping yet).
+        #
+        # GL activity guard: skip each account if already posted to Yardi.
 
-        # P&L reclassification for budget electric (same structure as Mode a)
-        if _round(_budget_elec_total) > 0:
+        # ── Determine electric amount ──────────────────────────────────────────
+        _rec_elec_amt = 0.0
+        _elec_source  = 'budget'
+        _elec_vendor  = '[Budget Accrual]'
+        _elec_conf    = 'medium'
+
+        if receivable_detail and hasattr(receivable_detail, 'charges_by_code'):
+            for _cc, _amt in receivable_detail.charges_by_code.items():
+                if 'ELEC' in _cc.upper():
+                    _rec_elec_amt += _amt
+            if _rec_elec_amt > 0:
+                _elec_source = 'receivable_detail'
+                _elec_vendor = '[Receivable Detail]'
+                _elec_conf   = 'high'
+
+        # ── Post 440500 electric recovery ─────────────────────────────────────
+        _mode_b_elec_total = 0.0
+        _440500_gl = _tub_gl.get('440500')
+        if _440500_gl is None or abs(_440500_gl.net_change) < 0.01:
+            if _elec_source == 'receivable_detail' and _rec_elec_amt > 0:
+                # Use actual charges from Receivable Detail
+                _post_tub_line(
+                    '440500', 'Recovery - Electricity', _rec_elec_amt,
+                    _elec_vendor,
+                    (f'Tenant electric recovery accrual — ${_rec_elec_amt:,.2f} '
+                     f'per Receivable Detail electric charges '
+                     f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
+                )
+                _tub_accounts.add('440500')
+                _mode_b_elec_total = _rec_elec_amt
+            elif budget_data:
+                # Fallback: budget amount
+                for cand in detect_tenant_utility_billing(gl_data, budget_data):
+                    if cand['account_code'] != '440500':
+                        continue
+                    _post_tub_line(
+                        '440500', 'Recovery - Electricity', cand['amount'],
+                        '[Budget Accrual]',
+                        cand['description'],
+                    )
+                    _tub_accounts.add('440500')
+                    _mode_b_elec_total += cand['amount']
+
+        # ── Post 440700 gas recovery (budget only) ────────────────────────────
+        _440700_gl = _tub_gl.get('440700')
+        if budget_data and (_440700_gl is None or abs(_440700_gl.net_change) < 0.01):
+            for cand in detect_tenant_utility_billing(gl_data, budget_data):
+                if cand['account_code'] != '440700':
+                    continue
+                _post_tub_line(
+                    '440700', 'Recovery - Misc Utilities', cand['amount'],
+                    '[Budget Accrual]',
+                    cand['description'],
+                )
+                _tub_accounts.add('440700')
+
+        # ── P&L reclassification for Mode (b) electric ───────────────────────
+        if _round(_mode_b_elec_total) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
             if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
                 _elec_je_id = f'TUB-{je_num:04d}'
-                _elec_desc  = (f'Tenant electricity reclassification (budget) — '
-                               f'${_budget_elec_total:,.2f} '
+                _src_label  = 'Receivable Detail' if _elec_source == 'receivable_detail' else 'budget'
+                _elec_desc  = (f'Tenant electricity reclassification ({_src_label}) — '
+                               f'${_mode_b_elec_total:,.2f} '
                                f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                 je_lines.append({
                     'je_number':      _elec_je_id, 'line': 1, 'date': '',
@@ -1979,10 +2069,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_TENANT_REIMB_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          _round(_budget_elec_total), 'credit': 0,
-                    'vendor':         '[Budget Accrual]',
+                    'debit':          _round(_mode_b_elec_total), 'credit': 0,
+                    'vendor':         _elec_vendor,
                     'invoice_number': '',
-                    'source':         'tenant_utility_billing', 'confidence': 'medium',
+                    'source':         'tenant_utility_billing', 'confidence': _elec_conf,
                 })
                 je_lines.append({
                     'je_number':      _elec_je_id, 'line': 2, 'date': '',
@@ -1990,10 +2080,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_EXPENSE_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          0, 'credit': _round(_budget_elec_total),
-                    'vendor':         '[Budget Accrual]',
+                    'debit':          0, 'credit': _round(_mode_b_elec_total),
+                    'vendor':         _elec_vendor,
                     'invoice_number': '',
-                    'source':         'tenant_utility_billing', 'confidence': 'medium',
+                    'source':         'tenant_utility_billing', 'confidence': _elec_conf,
                 })
                 je_num += 1
 
@@ -2063,20 +2153,19 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 je_num += 1
 
     # ── Layer 0b: Prepaid / escrow amortization ────────────────────────────────
-    # Entries that draw down a balance sheet asset/escrow rather than creating
-    # a new liability (213100).  Each generates DR expense / CR asset account.
+    # Entries that move cost between balance-sheet assets and P&L expense.
+    # Do NOT create a new liability (213100) — they reduce an existing BS asset.
     #
-    #   Insurance:     DR 639110/639120  /  CR 135110  Prepaid Insurance
-    #   RE Taxes:      DR 641110         /  CR 135120  Prepaid RE Taxes
+    #   Insurance:   DR 639110/639120  /  CR 135110  Prepaid Insurance
     #
-    # RE Tax Escrow (115200) is handled separately:
-    #   Non-payment months: Berkadia loan payment entry in Yardi already
-    #     debits 115200 / credits 111100 — no pipeline JE needed.
-    #   Payment months (Jan/Apr/Jul/Oct): pipeline generates DR 641110 / CR 115200
-    #     for the quarterly bill amount (user-entered from the town's tax bill).
-    #
-    # Generated whenever the asset account has a balance and the expense account
-    # has no current-period activity (normal for the pre-close GL from JLL).
+    #   RE Taxes (quarterly invoice cycle — Jan/Apr/Jul/Oct):
+    #     Payment months: Berkadia/Yardi auto-posts full quarterly bill
+    #       (DR 641110 / CR 115200) via the loan payment entry — NOT by pipeline.
+    #       Pipeline defers 2/3:  DR 135120 Prepaid RE Taxes / CR 641110 (2/3)
+    #       → only 1/3 of the quarterly bill hits P&L in the payment month.
+    #     Release months (all other): pipeline releases 1/3 each month:
+    #       DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes (1/3)
+    #     Net effect: expense spread evenly — 1/3 per month across the quarter.
     _amort_accounts: set = set()
 
     def _post_amort(entry: Dict[str, Any], prefix: str, ref: str, vendor: str) -> None:
@@ -2107,6 +2196,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'source':         'prepaid_amortization', 'confidence': 'high',
         })
         _amort_accounts.add(acct_code)
+        _amort_accounts.add(entry.get('credit_account', ''))  # cover both sides
         je_num += 1
 
     # Insurance: DR 639110/639120 / CR 135110
@@ -2114,24 +2204,20 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         for ins in detect_insurance_amortization(gl_data, budget_data):
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
 
-    # RE Taxes (expense accrual): DR 641110 / CR 135120
-    # Monthly amount = quarterly bill / 3. Only fires in non-payment months
-    # and only when re_tax_bill_amount is provided in the sidebar.
+    # RE Taxes — all months when re_tax_bill_amount is entered:
+    #   Payment months (Jan/Apr/Jul/Oct):
+    #       Berkadia/Yardi auto-posts full bill (DR 641110 / CR 115200).
+    #       Pipeline defers 2/3:  DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes
+    #   Release months (all other):
+    #       Pipeline releases 1/3:  DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes
     if gl_data:
         retax = detect_retax_amortization(gl_data, period=period,
                                            re_tax_bill_amount=re_tax_bill_amount)
         if retax:
             _post_amort(retax, 'TAX', 'TAX-AMORT', '[RE Tax Amortization]')
-
-    # RE Tax Escrow — payment months only (Jan/Apr/Jul/Oct): DR 641110 / CR 115200
-    # Amount = user-entered quarterly bill. Only fires when re_tax_bill_amount > 0.
-    if gl_data and loan_data:
-        retax_esc = detect_retax_escrow_je(
-            gl_data, loan_data, period=period,
-            re_tax_bill_amount=re_tax_bill_amount,
-        )
-        if retax_esc:
-            _post_amort(retax_esc, 'TAX', 'TAX-ESC', '[RE Tax Escrow]')
+    # Note: detect_retax_escrow_je() (full-bill DR 641110 / CR 115200) is retained
+    # in the codebase for reference but is NO LONGER CALLED — Berkadia's Yardi loan
+    # payment entries post this automatically each payment month.
 
     for inv in invoices:
         vendor = str(inv.get('vendor', '') or '')
@@ -3263,3 +3349,120 @@ def write_accrual_entries_workpaper_tab(wb: Workbook, je_lines: List[Dict],
     ws.column_dimensions['C'].width = 25
     ws.column_dimensions['G'].width = 45
     ws.sheet_properties.tabColor = '7030A0'  # Purple for accrual entries
+
+
+# ── Prior-Month Accrual vs Actual Check ──────────────────────────────────────
+
+def check_prior_accrual_vs_actual(gl_data) -> List[Dict[str, Any]]:
+    """
+    Identify prior-period accruals that auto-reversed into the current period
+    and compare them against actual invoices received.
+
+    Detection method:
+      Auto-reversals appear in Yardi as J-type journal entries that:
+        • Credit an expense account  (reversing the prior DR expense)
+        • Debit account 213100       (reversing the prior CR accrued liability)
+      Any J-type JE matching that pattern is treated as an auto-reversal.
+
+    For each reversed expense account the function also sums non-J-type debits
+    (P-type checks, K-type PCard) as the "actual invoices received" amount.
+
+    Tolerance: max($250, 5% of reversal) — entries within tolerance are MATCHED.
+
+    Returns a list sorted by account code.  Each dict has:
+      account_code    str   — e.g. '613110'
+      account_name    str   — e.g. 'Electricity'
+      reversal_amount float — absolute value of J-type credit(s) on this account
+      actual_amount   float — sum of non-J-type debits on this account
+      variance        float — actual − reversal  (+ = overbilled, − = underbilled)
+      status          str   — 'MATCHED' | 'NOT YET BILLED' | 'PARTIAL' | 'OVER INVOICED'
+      je_refs         str   — comma-separated J-type control numbers involved
+    """
+    if not gl_data or not hasattr(gl_data, 'all_transactions'):
+        return []
+
+    # ── Step 1: group all transactions by J-type control number ──────────────
+    je_lines_by_ctrl: Dict[str, List[Any]] = {}
+    for txn in gl_data.all_transactions:
+        ctrl = (txn.control or '').strip().upper()
+        if ctrl.startswith('J-'):
+            je_lines_by_ctrl.setdefault(ctrl, []).append(txn)
+
+    # ── Step 2: identify reversal JE control numbers ──────────────────────────
+    # A reversal JE has at least one line that debits 213100 (accrued expenses).
+    reversal_ctrl_nums: set = set()
+    for ctrl, lines in je_lines_by_ctrl.items():
+        for txn in lines:
+            if txn.account_code == '213100' and txn.debit > 0:
+                reversal_ctrl_nums.add(ctrl)
+                break
+
+    if not reversal_ctrl_nums:
+        return []
+
+    # ── Step 3: collect expense-account credits from reversal JEs ────────────
+    # key: account_code → {account_name, reversal_amount, je_refs}
+    reversal_by_acct: Dict[str, Dict[str, Any]] = {}
+    for ctrl in reversal_ctrl_nums:
+        for txn in je_lines_by_ctrl[ctrl]:
+            if not is_expense_account(txn.account_code):
+                continue
+            if txn.credit <= 0:
+                continue
+            acc = txn.account_code
+            if acc not in reversal_by_acct:
+                reversal_by_acct[acc] = {
+                    'account_name':    txn.account_name,
+                    'reversal_amount': 0.0,
+                    'je_refs':         set(),
+                }
+            reversal_by_acct[acc]['reversal_amount'] += txn.credit
+            reversal_by_acct[acc]['je_refs'].add(ctrl)
+
+    if not reversal_by_acct:
+        return []
+
+    # ── Step 4: sum non-J-type debits as "actual invoices received" ──────────
+    actual_by_acct: Dict[str, float] = {acc: 0.0 for acc in reversal_by_acct}
+    for txn in gl_data.all_transactions:
+        if txn.account_code not in actual_by_acct:
+            continue
+        ctrl = (txn.control or '').strip().upper()
+        if ctrl.startswith('J-'):
+            continue                     # skip all journal entries
+        if txn.debit > 0:
+            actual_by_acct[txn.account_code] += txn.debit
+
+    # ── Step 5: build result rows ─────────────────────────────────────────────
+    _MATCH_TOL_FLOOR = 250.0    # $250 minimum tolerance
+    _MATCH_TOL_PCT   = 0.05     # 5% of reversal amount
+
+    results: List[Dict[str, Any]] = []
+    for acc in sorted(reversal_by_acct):
+        info     = reversal_by_acct[acc]
+        reversal = round(info['reversal_amount'], 2)
+        actual   = round(actual_by_acct.get(acc, 0.0), 2)
+        variance = round(actual - reversal, 2)
+
+        tol = max(_MATCH_TOL_FLOOR, reversal * _MATCH_TOL_PCT)
+
+        if actual == 0.0:
+            status = 'NOT YET BILLED'
+        elif abs(variance) <= tol:
+            status = 'MATCHED'
+        elif variance > 0:
+            status = 'OVER INVOICED'
+        else:
+            status = 'PARTIAL'
+
+        results.append({
+            'account_code':    acc,
+            'account_name':    info['account_name'],
+            'reversal_amount': reversal,
+            'actual_amount':   actual,
+            'variance':        variance,
+            'status':          status,
+            'je_refs':         ', '.join(sorted(info['je_refs'])),
+        })
+
+    return results

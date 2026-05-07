@@ -236,15 +236,24 @@ Then: **Generate Reports** button
 
 | Layer | Source | Method |
 |-------|--------|--------|
+| 0b | RE Tax prepaid (all months) | Payment months: defer 2/3 (DR 135120 / CR 641110); Release months: release 1/3 (DR 641110 / CR 135120) |
+| 0b | Insurance prepaid | DR 639110/639120 / CR 135110; monthly from budget |
 | 1 | Nexus AP Accrual Detail | Open invoices not yet in GL (deduped by invoice number) |
 | 2 | GL recurring invoices — utilities | Daily rate × uncovered days (613/614xxx codes or utility keywords) |
 | 2 | GL recurring invoices — services | Full prior invoice amount (non-utility; flat monthly service rate) |
 | 3 | Historical (BC YTD) | Average of prior months; January fallback uses annual÷12 |
 | 4 | Payroll bonus | User-entered annual ÷ 12; Kardin-derived as fallback; suppressed in payment months |
 
+**RE Tax quarterly cycle (Jan/Apr/Jul/Oct billing months):**
+- Berkadia/Yardi auto-posts the full quarterly bill: `DR 641110 / CR 115200` (NOT by pipeline)
+- Payment month pipeline JE: `DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes` (2/3 of quarterly bill)
+- Release months (next 2 months): `DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes` (1/3 each)
+- User enters the same quarterly bill amount in all 3 months of each cycle
+- `detect_retax_escrow_je()` retained in codebase but no longer called (retired May 2026)
+
 **Materiality floor**: Layer 3 → $5,000
 
-**`_covered` exclusion set** seeds from: manual JEs + amortization entries + Nexus invoices + TUB entries.
+**`_covered` exclusion set** seeds from: manual JEs + amortization entries (both DR and CR accounts) + Nexus invoices + TUB entries.
 TUB accounts included to prevent Layer 3 from double-accruing utility expense accounts
 that are also touched by the meter-read P&L reclass (DR 613115 / CR 613110).
 

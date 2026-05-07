@@ -31,6 +31,7 @@ import traceback
 from accrual_entry_generator import (
     build_accrual_entries, generate_yardi_je_csv,
     build_prepaid_amortization, build_prepaid_release_je,
+    check_prior_accrual_vs_actual,
 )
 import prepaid_ledger
 import bs_workpaper_generator
@@ -48,11 +49,13 @@ from management_fee import (
     build_catchup_je,
 )
 from mgmt_fee_invoice import generate_invoice as generate_mgmt_fee_invoice
+from audit_trail_generator import generate_audit_trail
 
 
 # ── Page configuration ───────────────────────────────────────
 st.set_page_config(
-    page_title="GA Automation",
+    page_title="Rev Labs Close | GRP",
+    page_icon="🏢",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -60,47 +63,166 @@ st.set_page_config(
 # ── Custom CSS ───────────────────────────────────────────────
 st.markdown("""
 <style>
+    /* ── Brand palette ── */
     :root {
-        --primary-color: #1F3864;
-        --success-color: #2ecc71;
-        --warning-color: #f39c12;
-        --error-color: #e74c3c;
-        --info-color: #3498db;
+        --grp-green:     #1A5C22;
+        --grp-green-mid: #2E7D32;
+        --grp-green-lit: #E8F5E9;
+        --success-color: #2E7D32;
+        --warning-color: #E65100;
+        --error-color:   #B71C1C;
+        --info-color:    #1565C0;
+        --text-primary:  #212121;
+        --text-muted:    #616161;
+        --border:        #E0E0E0;
+        --bg-alt:        #F9FAFB;
     }
 
-    .main-header {
-        color: var(--primary-color);
-        border-bottom: 3px solid var(--primary-color);
-        padding-bottom: 10px;
-        margin-bottom: 20px;
+    /* ── Hero banner ── */
+    .grp-hero {
+        background: linear-gradient(135deg, var(--grp-green) 0%, var(--grp-green-mid) 100%);
+        border-radius: 10px;
+        padding: 0;
+        overflow: hidden;
+        margin-bottom: 18px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+        display: flex;
+        align-items: stretch;
+        min-height: 110px;
+    }
+    .grp-hero-photo {
+        width: 260px;
+        min-width: 260px;
+        object-fit: cover;
+        border-radius: 10px 0 0 10px;
+        display: block;
+    }
+    .grp-hero-body {
+        padding: 20px 28px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .grp-hero-title {
+        color: #ffffff;
+        font-size: 1.55rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        margin: 0 0 4px 0;
+        line-height: 1.2;
+    }
+    .grp-hero-sub {
+        color: #C8E6C9;
+        font-size: 0.88rem;
+        margin: 0 0 10px 0;
+        font-weight: 400;
+    }
+    .grp-hero-badges {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 4px;
+    }
+    .grp-badge {
+        background: rgba(255,255,255,0.18);
+        border: 1px solid rgba(255,255,255,0.35);
+        border-radius: 20px;
+        padding: 3px 12px;
+        color: #ffffff;
+        font-size: 0.75rem;
+        font-weight: 500;
+        white-space: nowrap;
+    }
+    .grp-hero-logo {
+        padding: 20px 24px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        min-width: 160px;
+    }
+    .grp-logo-text {
+        color: rgba(255,255,255,0.85);
+        font-size: 0.7rem;
+        text-align: right;
+        line-height: 1.4;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
     }
 
-    .metric-card {
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-        padding: 20px;
+    /* ── Sidebar property card ── */
+    .grp-sidebar-card {
+        background: linear-gradient(135deg, var(--grp-green) 0%, var(--grp-green-mid) 100%);
         border-radius: 8px;
-        border-left: 4px solid var(--primary-color);
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        padding: 14px 16px;
+        margin-bottom: 12px;
+        color: white;
+    }
+    .grp-sidebar-prop {
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: #ffffff;
+        margin: 0 0 2px 0;
+        letter-spacing: 0.03em;
+    }
+    .grp-sidebar-addr {
+        font-size: 0.72rem;
+        color: #C8E6C9;
+        margin: 0;
     }
 
-    .status-clean    { color: var(--success-color); font-weight: bold; }
-    .status-warnings { color: var(--warning-color); font-weight: bold; }
-    .status-errors   { color: var(--error-color);   font-weight: bold; }
+    /* ── Section headers ── */
+    .grp-section {
+        color: var(--grp-green);
+        font-size: 1.05rem;
+        font-weight: 700;
+        border-bottom: 2px solid var(--grp-green-lit);
+        padding-bottom: 4px;
+        margin: 18px 0 10px 0;
+    }
 
+    /* ── Status pills ── */
+    .status-clean    { color: var(--success-color); font-weight: 600; }
+    .status-warnings { color: var(--warning-color); font-weight: 600; }
+    .status-errors   { color: var(--error-color);   font-weight: 600; }
+
+    /* ── Exception cards ── */
     .exception-error {
-        background-color: #ffe6e6;
+        background-color: #FFEBEE;
         border-left: 4px solid var(--error-color);
-        padding: 10px; margin: 10px 0; border-radius: 4px;
+        padding: 10px 14px; margin: 8px 0; border-radius: 5px;
     }
     .exception-warning {
-        background-color: #fff3cd;
+        background-color: #FFF8E1;
         border-left: 4px solid var(--warning-color);
-        padding: 10px; margin: 10px 0; border-radius: 4px;
+        padding: 10px 14px; margin: 8px 0; border-radius: 5px;
     }
     .exception-info {
-        background-color: #e7f3ff;
+        background-color: #E3F2FD;
         border-left: 4px solid var(--info-color);
-        padding: 10px; margin: 10px 0; border-radius: 4px;
+        padding: 10px 14px; margin: 8px 0; border-radius: 5px;
+    }
+
+    /* ── Metric cards ── */
+    .metric-card {
+        background: #ffffff;
+        padding: 16px 20px;
+        border-radius: 8px;
+        border-left: 4px solid var(--grp-green);
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    /* ── Streamlit element tweaks ── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 6px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 6px 6px 0 0;
+        font-weight: 500;
+    }
+    div[data-testid="stSidebarContent"] {
+        padding-top: 12px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -182,15 +304,70 @@ if any(_col in st.session_state.manual_accruals_df.columns for _col in ("CR Acco
     })
 
 
-# ── Header ───────────────────────────────────────────────────
-st.markdown("<h1 class='main-header'>Greatland Realty Partners</h1>", unsafe_allow_html=True)
-st.markdown("### GA Automation — Monthly Close Pipeline")
-st.markdown("**Revolution Labs — 1050 Waltham St, Lexington, MA**")
-st.divider()
+# ── Image asset loader ────────────────────────────────────────
+import base64 as _b64
+
+def _img_b64(fname: str) -> str | None:
+    """Load an image from assets/ and return a base64 data-URI, or None."""
+    _path = os.path.join(os.path.dirname(__file__), 'assets', fname)
+    if os.path.exists(_path):
+        with open(_path, 'rb') as _f:
+            _raw = _b64.b64encode(_f.read()).decode()
+        _ext = fname.rsplit('.', 1)[-1].lower()
+        _mime = {'png': 'image/png', 'jpg': 'image/jpeg',
+                 'jpeg': 'image/jpeg', 'svg': 'image/svg+xml'}.get(_ext, 'image/png')
+        return f'data:{_mime};base64,{_raw}'
+    return None
+
+_HERO_SRC   = _img_b64('revlabs_hero.jpg') or _img_b64('revlabs_hero.png')
+_LOGO_SRC   = _img_b64('grp_logo.png') or _img_b64('grp_logo.svg')
+
+
+# ── Hero banner ───────────────────────────────────────────────
+_photo_html = (
+    f'<img src="{_HERO_SRC}" class="grp-hero-photo" alt="Revolution Labs"/>'
+    if _HERO_SRC else ''
+)
+_logo_html = (
+    f'<img src="{_LOGO_SRC}" style="max-width:140px;max-height:60px;" alt="GRP Logo"/>'
+    if _LOGO_SRC else
+    '<div class="grp-logo-text">Greatland<br>Realty<br>Partners</div>'
+)
+
+st.markdown(f"""
+<div class="grp-hero">
+    {_photo_html}
+    <div class="grp-hero-body">
+        <div class="grp-hero-title">Revolution Labs Monthly Close</div>
+        <div class="grp-hero-sub">1050 Waltham Street · Lexington, MA &nbsp;|&nbsp; Managed by GRP for Singerman Real Estate</div>
+        <div class="grp-hero-badges">
+            <span class="grp-badge">🏢 revlabpm</span>
+            <span class="grp-badge">📐 ~180,000 SF</span>
+            <span class="grp-badge">🔬 Life Science</span>
+            <span class="grp-badge">⚙️ GA Automation v2</span>
+        </div>
+    </div>
+    <div class="grp-hero-logo">{_logo_html}</div>
+</div>
+""", unsafe_allow_html=True)
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
+
+# Sidebar property card
+_sb_logo = (
+    f'<img src="{_LOGO_SRC}" style="max-width:120px;max-height:44px;margin-bottom:8px;display:block;" alt="GRP"/>'
+    if _LOGO_SRC else ''
+)
+st.sidebar.markdown(f"""
+<div class="grp-sidebar-card">
+    {_sb_logo}
+    <div class="grp-sidebar-prop">Revolution Labs — revlabpm</div>
+    <div class="grp-sidebar-addr">1050 Waltham St · Lexington, MA<br>
+    Greatland Realty Partners · Singerman RE</div>
+</div>
+""", unsafe_allow_html=True)
 
 if st.sidebar.button("🔄 Reset All", use_container_width=True,
                      help="Clear all results and uploaded files"):
@@ -320,9 +497,9 @@ _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 import pandas as pd
 
 tab1, tab2, tab3 = st.tabs([
-    "📋 Pass 1 — Generate JEs  (Pre-Close)",
-    "📊 Pass 2 — Generate Reports  (Post-Close)",
-    "📖 How to Use",
+    "📋  Pass 1 — Generate JEs",
+    "📊  Pass 2 — Generate Reports",
+    "📖  How to Use",
 ])
 
 
@@ -330,6 +507,15 @@ tab1, tab2, tab3 = st.tabs([
 # TAB 1 — PASS 1: JE GENERATION
 # ──────────────────────────────────────────────────────────────
 with tab1:
+    st.markdown(
+        "<div style='background:var(--grp-green-lit,#E8F5E9);border-left:4px solid #1A5C22;"
+        "border-radius:5px;padding:8px 16px;margin-bottom:14px;font-size:0.85rem;color:#1A5C22;'>"
+        "⬤ &nbsp;<strong>Pass 1 — Pre-Close</strong>&nbsp; Upload source files, review accruals, "
+        "download JE CSVs → post to Yardi → run close."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
     # ── File Upload ──────────────────────────────────────────────────────────
     st.markdown("### 📥 Upload Pass 1 Files")
     st.caption(
@@ -491,11 +677,13 @@ with tab1:
             st.caption("↳ No bonus entered — pipeline will use Kardin data if uploaded, otherwise skip")
 
     # ── RE Tax Bill ───────────────────────────────────────────────────────────
-    with st.expander("🏛️ RE Tax Bill — Payment months only (Jan / Apr / Jul / Oct)", expanded=False):
+    with st.expander("🏛️ RE Tax Bill — Enter every month", expanded=False):
         st.caption(
-            "Enter the quarterly RE Tax bill amount from the town. "
-            "Posts as: DR 641110 Real Estate Taxes / CR 115200 RE Tax Escrow. "
-            "Leave $0 in non-payment months — the monthly DR 641110 / CR 135120 accrual runs automatically."
+            "Enter the quarterly RE Tax bill amount **every month** (same amount for all 3 months in each cycle). "
+            "**Payment months (Jan / Apr / Jul / Oct):** Berkadia auto-posts the full bill to Yardi. "
+            "Pipeline defers 2/3 → DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes. "
+            "**Release months (all other):** Pipeline releases 1/3 → DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes. "
+            "Net result: expense is spread evenly — 1/3 of the quarterly bill per month."
         )
         _re_tax_bill_amount = st.number_input(
             "Quarterly RE Tax Bill ($)",
@@ -639,6 +827,17 @@ with tab1:
                     except Exception as _e:
                         st.warning(f"Could not parse 12-Month Statement for Pass 1: {_e}")
 
+                # Parse Receivable Detail early — used by both accrual engine (Mode b
+                # tenant electric) and management fee calculation (Step 4).
+                _rd_file = st.session_state.uploaded_files.get("receivable_detail")
+                _rd_parsed = None
+                if _rd_file and os.path.exists(_rd_file):
+                    try:
+                        from parsers.yardi_receivable_detail import parse as _parse_rd
+                        _rd_parsed = _parse_rd(_rd_file)
+                    except Exception:
+                        _rd_parsed = None
+
                 _gl_activity_log = []
                 je_lines = build_accrual_entries(
                     nexus_data or [],
@@ -654,6 +853,7 @@ with tab1:
                     kardin_records=engine_result.parsed.get('kardin_budget') or None,
                     t12_result=_t12_result_p1,
                     gl_activity_log=_gl_activity_log,
+                    receivable_detail=_rd_parsed,
                 )
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
@@ -705,14 +905,7 @@ with tab1:
                     except Exception:
                         _daca_parsed = None
 
-                _rd_file = st.session_state.uploaded_files.get("receivable_detail")
-                _rd_parsed = None
-                if _rd_file and os.path.exists(_rd_file):
-                    try:
-                        from parsers.yardi_receivable_detail import parse as _parse_rd
-                        _rd_parsed = _parse_rd(_rd_file)
-                    except Exception:
-                        _rd_parsed = None
+                # _rd_parsed already parsed above (before build_accrual_entries)
 
                 _ar_aging_file = st.session_state.uploaded_files.get("ar_aging")
                 _ar_aging_parsed = None
@@ -958,9 +1151,12 @@ with tab1:
                 '115200': 'RE Tax Escrow',
                 '115300': 'Insurance Escrow',
                 '133110': 'Tenant AR Billback (Utility / Elec Recovery)',
+                '135110': 'Prepaid Insurance',
+                '135120': 'Prepaid RE Taxes',
                 '135150': 'Prepaids',
                 '213100': 'Accrued Expenses',
                 '213200': 'Accrued Interest Payable',
+                '641110': 'Real Estate Taxes (deferral)',
             }
             def _cr_section_label(code: str) -> str:
                 if code in _CR_LABELS:
@@ -1229,6 +1425,90 @@ with tab1:
                     icon="📄",
                 )
 
+        # ── Prior Month Accrual vs Actuals ────────────────────────────────────
+        _gl_for_check = result.parsed.get('gl') if result.parsed else None
+        _prior_check  = check_prior_accrual_vs_actual(_gl_for_check) if _gl_for_check else []
+
+        if _prior_check:
+            _not_billed   = [r for r in _prior_check if r['status'] == 'NOT YET BILLED']
+            _needs_review = [r for r in _prior_check if r['status'] in ('PARTIAL', 'OVER INVOICED')]
+            _matched      = [r for r in _prior_check if r['status'] == 'MATCHED']
+
+            _status_icon = '⚠️' if (_not_billed or _needs_review) else '✅'
+            _review_note = ''
+            if _not_billed:
+                _review_note += f' · {len(_not_billed)} not yet billed (re-accrued)'
+            if _needs_review:
+                _review_note += f' · {len(_needs_review)} variance(s) to review'
+
+            _check_label = (
+                f"{_status_icon} Prior Month Accrual vs Actuals — "
+                f"{len(_prior_check)} accounts{_review_note}"
+            )
+            with st.expander(_check_label, expanded=bool(_not_billed or _needs_review)):
+                st.caption(
+                    "Auto-reversals of last month's pipeline accruals compared to actual invoices "
+                    "received this period. **NOT YET BILLED** = invoice hasn't arrived; pipeline "
+                    "has re-accrued it. **MATCHED** = actual within 5% of accrual. "
+                    "**PARTIAL / OVER INVOICED** = material variance — review before close."
+                )
+
+                _STATUS_EMOJI = {
+                    'MATCHED':        '✅ MATCHED',
+                    'NOT YET BILLED': '🔄 NOT YET BILLED',
+                    'PARTIAL':        '⚠️ PARTIAL',
+                    'OVER INVOICED':  '⚠️ OVER INVOICED',
+                }
+                _check_rows = [{
+                    'Account':        f"{r['account_code']}  {r['account_name']}",
+                    'Prior Accrual':  f"${r['reversal_amount']:,.2f}",
+                    'Actual Billed':  f"${r['actual_amount']:,.2f}",
+                    'Variance':       (f"+${r['variance']:,.2f}" if r['variance'] >= 0
+                                       else f"-${abs(r['variance']):,.2f}"),
+                    'Status':         _STATUS_EMOJI.get(r['status'], r['status']),
+                    'JE Ref':         r['je_refs'],
+                } for r in _prior_check]
+
+                st.dataframe(
+                    _check_rows,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Account':       st.column_config.TextColumn('Account',       width='medium'),
+                        'Prior Accrual': st.column_config.TextColumn('Prior Accrual', width='small'),
+                        'Actual Billed': st.column_config.TextColumn('Actual Billed', width='small'),
+                        'Variance':      st.column_config.TextColumn('Variance',      width='small'),
+                        'Status':        st.column_config.TextColumn('Status',        width='medium'),
+                        'JE Ref':        st.column_config.TextColumn('JE Ref',        width='small'),
+                    },
+                )
+
+                if _not_billed:
+                    _nb_accts = ', '.join(
+                        f"{r['account_code']} {r['account_name']}"
+                        for r in _not_billed
+                    )
+                    st.warning(
+                        f"**{len(_not_billed)} account(s) not yet billed:** {_nb_accts}. "
+                        f"The pipeline has included re-accruals in the Accruals JE CSV. "
+                        f"Confirm each was also re-accrued last month before posting.",
+                        icon="🔄",
+                    )
+                if _needs_review:
+                    _rv_parts = [
+                        f"{r['account_code']} ({r['status']}: "
+                        f"accrued ${r['reversal_amount']:,.0f}, "
+                        f"billed ${r['actual_amount']:,.0f})"
+                        for r in _needs_review
+                    ]
+                    st.warning(
+                        f"**{len(_needs_review)} account(s) with material variance:** "
+                        + ', '.join(_rv_parts) + '. Review before close.',
+                        icon="⚠️",
+                    )
+
+        st.divider()
+
         # Zip of all 3 CSVs + updated ledger
         import zipfile, io
         _run_key = st.session_state.get('pass1_run_count', 0)
@@ -1286,6 +1566,15 @@ with tab2:
     # Recompute upload state (defined in tab1, available via session_state)
     uploaded_keys = set(st.session_state.uploaded_files.keys())
     gl_uploaded = "gl" in uploaded_keys
+
+    st.markdown(
+        "<div style='background:#E3F2FD;border-left:4px solid #1565C0;"
+        "border-radius:5px;padding:8px 16px;margin-bottom:14px;font-size:0.85rem;color:#1565C0;'>"
+        "⬤ &nbsp;<strong>Pass 2 — Post-Close</strong>&nbsp; Upload final Yardi exports, "
+        "generate QC workbook, workpaper, variance comments, audit trail, and management fee invoice."
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown("""
     **What this does:** Reads the final post-close Yardi GL (after all JEs have been posted)
@@ -1801,6 +2090,37 @@ with tab2:
                 st.session_state.pass2_output_files["daca_gl_balance"]   = daca_gl_balance
                 st.session_state.pass2_output_files["dev_bank_rec_data"] = dev_bank_rec_data
 
+                # Audit Trail — comprehensive pass-1+pass-2 record for auditors
+                try:
+                    _at_path = os.path.join(
+                        st.session_state.temp_dir,
+                        f"GA_Audit_Trail_{close_period.replace('-', '')}.xlsx",
+                    )
+                    # Pull Pass 1 JE lines from session state if available
+                    _p1_out = st.session_state.get('pass1_output_files', {})
+                    _at_je_lines = _p1_out.get('all_je_lines') or []
+                    _at_fee      = fee_result   # Pass 2 fee verification result
+                    _at_qc       = st.session_state.pass2_output_files.get('qc_report')
+
+                    # Prior-month accrual check against the PASS 2 (final) GL
+                    _gl_for_at = engine_result.parsed.get('gl') if engine_result.parsed else None
+                    _at_prior  = check_prior_accrual_vs_actual(_gl_for_at) if _gl_for_at else []
+
+                    generate_audit_trail(
+                        output_path         = _at_path,
+                        period              = close_period,
+                        property_name       = engine_result.property_name or 'Revolution Labs',
+                        all_je_lines        = _at_je_lines,
+                        fee_result          = _at_fee,
+                        qc_report           = _at_qc,
+                        prior_accrual_check = _at_prior,
+                        files_uploaded      = st.session_state.uploaded_files,
+                    )
+                    st.session_state.pass2_output_files["audit_trail"] = _at_path
+                except Exception as _ate:
+                    st.warning(f"Audit trail skipped: {_ate}")
+                    st.session_state.pass2_output_files["audit_trail"] = None
+
                 progress_bar.progress(100)
                 status_text.text("✓ Reports complete!")
                 st.session_state.pass2_complete = True
@@ -2254,6 +2574,7 @@ with tab2:
             f"RevLabs_{period_label}_QC_Workbook.xlsx":     p2.get("qc_workbook"),
             f"RevLabs_{period_label}_Exceptions.xlsx":      p2.get("exception_report"),
             f"RevLabs_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
+            f"RevLabs_{period_label}_Audit_Trail.xlsx":     p2.get("audit_trail"),
         }
         p2_zip_files = {k: v for k, v in p2_zip_files.items() if v and os.path.exists(v)}
 
@@ -2285,6 +2606,8 @@ with tab2:
              f"GA_Exceptions_{datetime.now().strftime('%Y%m%d')}.xlsx"),
             ("annotated_bc",    "💬 Budget Comparison (Internal)",
              f"GA_BC_Internal_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+            ("audit_trail",     "🔍 Audit Trail",
+             f"GA_Audit_Trail_{datetime.now().strftime('%Y%m%d')}.xlsx"),
         ]
 
         for i, (key, label, fname) in enumerate(_dl_items):
@@ -2531,9 +2854,11 @@ was uploaded. If both are missing, the fee will be $0 and will need a manual One
 → Upload the prior month's `GA_Workpapers.xlsx` in the Pass 2 upload zone. The pipeline appends
 the new period's sheets to the existing file. Leave blank for January (first run of the year).
 
-**RE Tax shows $0 in January**
-→ January is a payment month (Berkadia pays from escrow). Enter the quarterly tax bill amount
-in the RE Tax expander in the Pass 1 tab — the pipeline generates the DR 641110 / CR 115200 entry.
+**RE Tax — what to enter each month**
+→ Enter the quarterly bill amount every month (all 3 months in each cycle use the same number).
+Payment months (Jan/Apr/Jul/Oct): pipeline defers 2/3 → DR 135120 Prepaid RE Taxes / CR 641110.
+Release months (Feb/Mar/May/Jun/Aug/Sep/Nov/Dec): pipeline releases 1/3 → DR 641110 / CR 135120.
+Leave $0 only if the RE Tax JE has already been posted manually in Yardi.
 
 **Accrual entry says "REVIEW REQUIRED"**
 → This is a low-confidence entry — the account has a budget but no GL history this year.

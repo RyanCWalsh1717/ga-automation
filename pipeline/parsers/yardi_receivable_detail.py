@@ -70,6 +70,11 @@ class ReceivableDetailResult:
     ending_balance:       float                  # Grand Total ending AR balance
     per_tenant:           List[TenantReceivable] = field(default_factory=list)
     prepayment_detail:    List[Dict[str, Any]]   = field(default_factory=list)
+    charges_by_code:      Dict[str, float]       = field(default_factory=dict)
+    # charges_by_code — upper-cased charge code → total charges billed (absolute).
+    # e.g. {'BASE': 280000.0, 'ELEC': 15420.0, 'CAMREC': 4200.0, 'PREPM': 0.0}
+    # Used by the accrual engine to detect what was actually charged to tenants
+    # for electricity recovery (codes containing 'ELEC') vs. budget.
     _parse_error:         Optional[str]          = None
 
 
@@ -156,6 +161,7 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
     #      prepayment-coded; otherwise = charges on prepayment rows (conservative)
     prepayment_detail: List[Dict[str, Any]] = []
     prepayment_receipts = 0.0
+    charges_by_code: Dict[str, float] = {}
 
     current_tenant = ''
     tenant_prepay_charges = 0.0
@@ -182,9 +188,12 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
         if col0 in ('Receivable Detail', 'Property', '') and not col3 and not has_financials:
             continue
 
-        # C-XXXX charge rows — check for prepayment charge code
+        # C-XXXX charge rows — accumulate by charge code and check for prepayments
         if col3.upper().startswith('C-') and col6 and col6 not in ('Balance Forward', 'Charge', 'Code'):
             tenant_total_charges += charges
+            # Accumulate absolute charges per code (upper-cased for consistent lookup)
+            code_key = col6.strip().upper()
+            charges_by_code[code_key] = charges_by_code.get(code_key, 0.0) + abs(charges)
             if _is_prepayment(col6):
                 tenant_prepay_charges += abs(charges)
                 prepayment_detail.append({
@@ -235,5 +244,6 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
         ending_balance=grand_balance,
         per_tenant=per_tenant,
         prepayment_detail=prepayment_detail,
+        charges_by_code=charges_by_code,
         _parse_error=None,
     )
