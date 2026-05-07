@@ -2360,6 +2360,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         except Exception:
             pass
 
+    # Accounts that are ALWAYS handled by dedicated pipeline modules and must never
+    # be touched by any automated accrual layer (2, 3, or budget gap).
+    # 637130 — Admin-Management Fees: computed by management_fee.py (cash-received
+    #           basis), always generates MGT-001 separately; historical/proration
+    #           layers must not add a second accrual.
+    _PIPELINE_RESERVED = {'637130'}
+
     # Collect accounts already covered by Layers 0 (manual), 0b (amortization),
     # 1 (Nexus), and TUB (tenant utility billing). Seeding _covered here prevents
     # later layers from generating duplicate entries for the same account.
@@ -2368,7 +2375,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     #   613115  — Tenant Electric Reimb (DR side of P&L reclass)
     #   613110  — Electricity Expense (DR side of Mode-b budget expense accrual, when generated)
     # Ensuring 613110 lands on line=1 prevents budget_gap from double-accruing it.
-    _covered = _manual_accounts | _amort_accounts | set(
+    _covered = _PIPELINE_RESERVED | _manual_accounts | _amort_accounts | set(
         l['account_code'] for l in je_lines
         if l.get('line') == 1 and l.get('source') in ('nexus', 'tenant_utility_billing')
     )
