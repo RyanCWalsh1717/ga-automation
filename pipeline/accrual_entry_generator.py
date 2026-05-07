@@ -2125,8 +2125,21 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _elec_exp_gl is not None and abs(_elec_exp_gl.net_change) >= 1.0
         )
         if not _elec_exp_active:
-            # Look up PTD budget for 613110 from BC report
-            _elec_exp_budget = 0.0
+            # ── Derive months_elapsed from close period ────────────────────────
+            _elec_month_map = {
+                'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+            }
+            _elec_month_num = 0
+            for _ab, _nm in _elec_month_map.items():
+                if _ab in (period or '').lower():
+                    _elec_month_num = _nm
+                    break
+            _elec_months_elapsed = max(0, _elec_month_num - 1)
+
+            # ── Look up 613110 from BC: prefer YTD actual ÷ months, fall back to budget ──
+            _elec_exp_amt    = 0.0
+            _elec_exp_source = 'budget'
             _bc_rows = (budget_data if isinstance(budget_data, list)
                         else getattr(budget_data, 'line_items', []))
             for _bc_row in _bc_rows:
@@ -2135,30 +2148,53 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                      else getattr(_bc_row, 'account_code', '')) or ''
                 ).strip()
                 if _bc_code == ELEC_EXPENSE_ACCOUNT:
-                    _elec_exp_budget = abs(float(
+                    _ytd_actual = abs(float(
+                        (_bc_row.get('ytd_actual') if isinstance(_bc_row, dict)
+                         else getattr(_bc_row, 'ytd_actual', 0)) or 0
+                    ))
+                    _ptd_budget = abs(float(
                         (_bc_row.get('ptd_budget') if isinstance(_bc_row, dict)
                          else getattr(_bc_row, 'ptd_budget', 0)) or 0
                     ))
+                    if _elec_months_elapsed >= 1 and _ytd_actual > 0:
+                        # Average of prior months' actual bills — more accurate than budget
+                        _elec_exp_amt    = _ytd_actual / _elec_months_elapsed
+                        _elec_exp_source = 'prior_actual'
+                    else:
+                        # January (no prior actuals) or no YTD actual — fall back to budget
+                        _elec_exp_amt    = _ptd_budget
+                        _elec_exp_source = 'budget'
                     break
 
-            if _elec_exp_budget > 500:
+            if _elec_exp_amt > 500:
                 _exp_je_id = f'TUB-{je_num:04d}'
-                _exp_desc  = (
-                    f'Electricity expense accrual (budget) — '
-                    f'{ELEC_EXPENSE_NAME}: ${_elec_exp_budget:,.2f}/mo '
-                    f'(no invoice in GL; update when actual bill received)'
-                )
+                if _elec_exp_source == 'prior_actual':
+                    _exp_desc = (
+                        f'Electricity expense accrual — '
+                        f'{ELEC_EXPENSE_NAME}: ${_elec_exp_amt:,.2f}/mo '
+                        f'(avg of {_elec_months_elapsed} prior month(s) actual; '
+                        f'update when actual bill received)'
+                    )
+                else:
+                    _exp_desc = (
+                        f'Electricity expense accrual (budget) — '
+                        f'{ELEC_EXPENSE_NAME}: ${_elec_exp_amt:,.2f}/mo '
+                        f'(no invoice in GL; update when actual bill received)'
+                    )
+                _elec_exp_budget = _elec_exp_amt  # keep alias for je_lines below
+                _exp_vendor = '[Prior Actual Avg]' if _elec_exp_source == 'prior_actual' else '[Budget Accrual]'
+                _exp_conf   = 'high' if _elec_exp_source == 'prior_actual' else 'medium'
                 je_lines.append({
                     'je_number':      _exp_je_id, 'line': 1, 'date': '',
                     'account_code':   ELEC_EXPENSE_ACCOUNT,
                     'account_name':   ELEC_EXPENSE_NAME,
                     'description':    _exp_desc,
                     'reference':      'ELEC-ACCRUAL',
-                    'debit':          _round(_elec_exp_budget), 'credit': 0,
-                    'vendor':         '[Budget Accrual]',
+                    'debit':          _round(_elec_exp_amt), 'credit': 0,
+                    'vendor':         _exp_vendor,
                     'invoice_number': '',
                     'source':         'tenant_utility_billing',
-                    'confidence':     'medium',
+                    'confidence':     _exp_conf,
                 })
                 je_lines.append({
                     'je_number':      _exp_je_id, 'line': 2, 'date': '',
@@ -2166,11 +2202,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   AP_ACCRUAL_NAME,
                     'description':    _exp_desc,
                     'reference':      'ELEC-ACCRUAL',
-                    'debit':          0, 'credit': _round(_elec_exp_budget),
-                    'vendor':         '[Budget Accrual]',
+                    'debit':          0, 'credit': _round(_elec_exp_amt),
+                    'vendor':         _exp_vendor,
                     'invoice_number': '',
                     'source':         'tenant_utility_billing',
-                    'confidence':     'medium',
+                    'confidence':     _exp_conf,
                 })
                 je_num += 1
 
