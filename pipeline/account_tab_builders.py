@@ -943,15 +943,14 @@ def _group_cash_gl_transactions(gl_acct) -> list:
 
     Skips groups that net to near-zero (e.g. APPLY clearing pairs in rare cases).
     Strips vendor codes "(v/t NNNNNN)" from descriptions.
-    Returns list of dicts: {date, desc, control, receipts, disb, sort_date}
+    Returns list of dicts: {date, desc, receipts, disb, sort_date}
     sorted chronologically.
     """
     from collections import defaultdict
     from datetime import date as _date
 
-    net_by_key:  Dict[tuple, float] = defaultdict(float)
-    ctrl_by_key: Dict[tuple, str]   = {}
-    meta:        Dict[tuple, dict]  = {}
+    net_by_key: Dict[tuple, float] = defaultdict(float)
+    meta:       Dict[tuple, dict]  = {}
 
     for txn in (getattr(gl_acct, 'transactions', []) or []):
         d = getattr(txn, 'date', None)
@@ -964,7 +963,6 @@ def _group_cash_gl_transactions(gl_acct) -> list:
 
         desc_raw   = str(getattr(txn, 'description', '') or '')
         desc_clean = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc_raw).strip()
-        control    = str(getattr(txn, 'control', '') or '')
 
         debit  = float(getattr(txn, 'debit',  0) or 0)
         credit = float(getattr(txn, 'credit', 0) or 0)
@@ -972,9 +970,8 @@ def _group_cash_gl_transactions(gl_acct) -> list:
         key = (sort_date, desc_clean)
         net_by_key[key] = round(net_by_key[key] + debit - credit, 2)
         if key not in meta:
-            meta[key]     = {'date_str': date_str, 'sort_date': sort_date,
-                             'desc': desc_clean}
-            ctrl_by_key[key] = control
+            meta[key] = {'date_str': date_str, 'sort_date': sort_date,
+                         'desc': desc_clean}
 
     rows = []
     for key in sorted(net_by_key.keys()):
@@ -982,14 +979,13 @@ def _group_cash_gl_transactions(gl_acct) -> list:
         if abs(net) < 0.01:
             continue
         info = meta[key]
-        ctrl = ctrl_by_key.get(key, '')
         if net > 0:
             rows.append({'date': info['date_str'], 'desc': info['desc'],
-                         'control': ctrl, 'receipts': net, 'disb': 0.0,
+                         'receipts': net, 'disb': 0.0,
                          'sort_date': info['sort_date']})
         else:
             rows.append({'date': info['date_str'], 'desc': info['desc'],
-                         'control': ctrl, 'receipts': 0.0, 'disb': abs(net),
+                         'receipts': 0.0, 'disb': abs(net),
                          'sort_date': info['sort_date']})
 
     return rows
@@ -1003,7 +999,7 @@ def build_111100_tab(wb, period: str, property_name: str,
     Operating Cash (PNC x3993) bank reconciliation workpaper.
 
     Layout:
-      1. GL Activity — Date | Description | Control | Receipts | Disbursements | Balance
+      1. GL Activity — Date | Description | Receipts | Disbursements | Running Balance
          (transactions from main Yardi GL export, grouped by date × description)
       2. Bank Reconciliation block — from the Yardi Bank Rec PDF (first 3 pages):
             Balance Per Bank Statement as of {date}
@@ -1021,18 +1017,18 @@ def build_111100_tab(wb, period: str, property_name: str,
     ws = wb.create_sheet('111100 PNC Cash'[:31])
     ws.sheet_properties.tabColor = '2E75B6'
 
-    RCPT_COL  = 5   # E — Receipts
-    DISB_COL  = 6   # F — Disbursements
-    BAL_COL   = 7   # G — Running Balance
-    NCOLS     = 6   # B-G
+    RCPT_COL  = 4   # D — Receipts
+    DISB_COL  = 5   # E — Disbursements
+    BAL_COL   = 6   # F — Running Balance
+    NCOLS     = 5   # B-F
 
     next_row = _write_tab_header(ws, '111100', 'Cash - Operating Account (PNC x3993)',
                                  period, property_name, ncols=NCOLS)
     next_row += 1
     next_row = _write_col_headers(
         ws, next_row,
-        ['Date', 'Description', 'Control', 'Receipts', 'Disbursements', 'Running Balance'],
-        [14, 46, 12, 16, 18, 18],
+        ['Date', 'Description', 'Receipts', 'Disbursements', 'Running Balance'],
+        [14, 52, 16, 18, 18],
     )
 
     # ── Balance Forward row ───────────────────────────────────────────────────
@@ -1060,24 +1056,21 @@ def build_111100_tab(wb, period: str, property_name: str,
         c2 = ws.cell(row=next_row, column=3, value=r['desc'])
         _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
 
-        c3 = ws.cell(row=next_row, column=4, value=r['control'])
-        _apply(c3, font=_font(color='555555'), fill=bg, border=THIN)
+        c3 = ws.cell(row=next_row, column=RCPT_COL, value=r['receipts'] or None)
+        _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
 
-        c4 = ws.cell(row=next_row, column=RCPT_COL, value=r['receipts'] or None)
+        c4 = ws.cell(row=next_row, column=DISB_COL, value=r['disb'] or None)
         _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
 
-        c5 = ws.cell(row=next_row, column=DISB_COL, value=r['disb'] or None)
-        _apply(c5, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
-               align=Alignment(horizontal='right'))
-
-        # Running balance: prior G + receipts(E) - disbursements(F)
-        prev_ref = f'G{next_row - 1}'
+        # Running balance: prior F + receipts(D) - disbursements(E)
+        prev_ref = f'F{next_row - 1}'
         formula  = (f'={prev_ref}'
-                    f'+IFERROR(E{next_row},0)'
-                    f'-IFERROR(F{next_row},0)')
-        c6 = ws.cell(row=next_row, column=BAL_COL, value=formula)
-        _apply(c6, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+                    f'+IFERROR(D{next_row},0)'
+                    f'-IFERROR(E{next_row},0)')
+        c5 = ws.cell(row=next_row, column=BAL_COL, value=formula)
+        _apply(c5, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
                fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
 
         next_row += 1
@@ -1095,7 +1088,7 @@ def build_111100_tab(wb, period: str, property_name: str,
 
     data_start = beg_balance_row + 1
     data_end   = next_row - 2
-    for col_letter, col_idx in [('E', RCPT_COL), ('F', DISB_COL)]:
+    for col_letter, col_idx in [('D', RCPT_COL), ('E', DISB_COL)]:
         if data_end >= data_start:
             tot_f = f'=SUM({col_letter}{data_start}:{col_letter}{data_end})'
         else:
