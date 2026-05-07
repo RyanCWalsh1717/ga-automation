@@ -344,7 +344,6 @@ st.markdown(f"""
             <span class="grp-badge">🏢 revlabpm</span>
             <span class="grp-badge">📐 ~180,000 SF</span>
             <span class="grp-badge">🔬 Life Science</span>
-            <span class="grp-badge">⚙️ GA Automation v2</span>
         </div>
     </div>
     <div class="grp-hero-logo">{_logo_html}</div>
