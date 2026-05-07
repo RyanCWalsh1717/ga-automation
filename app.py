@@ -607,7 +607,13 @@ with tab1:
     if "daca_bank"         not in uploaded_keys: missing_impact.append("No DACA bank rec tab (Pass 2)")
     if "loan"              not in uploaded_keys: missing_impact.append("No debt service tab (Pass 2)")
 
-    uploaded_count = len(uploaded_keys)
+    # Count actual files uploaded — list values (e.g. loan with multiple Berkadia PDFs)
+    # are unfolded so 3 PDFs count as 3, not 1.
+    uploaded_count = sum(
+        len(v) if isinstance(v, list) else 1
+        for v in st.session_state.uploaded_files.values()
+        if v is not None
+    )
     gl_uploaded = "gl" in uploaded_keys
 
     _st_c1, _st_c2 = st.columns(2)

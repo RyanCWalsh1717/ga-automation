@@ -239,11 +239,22 @@ def _classify_pdf(filename: str, file_bytes: bytes) -> Tuple[str, float]:
 
     tl = text.lower()
 
-    # ── Yardi Bank Rec (contains both Yardi header + PNC statement) ───────
+    # ── Yardi DACA Bank Rec (Bank Rec Report for the DACA/KeyBank account) ─
+    # Must check BEFORE the generic "bank reconciliation report" check below,
+    # because the DACA rec PDF also contains that phrase on page 1.
+    if "bank reconciliation report" in tl and (
+        "deposit account" in tl
+        or "daca" in tl
+        or "keybank" in tl
+        or "329681415132" in text
+    ):
+        return "daca_bank", 0.97
+
+    # ── Yardi Bank Rec — PNC Operating (contains "Bank Reconciliation Report") ─
     if "bank reconciliation report" in tl:
         return "bank_rec", 0.97
 
-    # ── KeyBank DACA ──────────────────────────────────────────────────────
+    # ── KeyBank DACA statement (standalone, no Yardi header) ─────────────
     if "keybank" in tl and ("5132" in text or "daca" in tl):
         return "daca_bank", 0.95
 
