@@ -2723,6 +2723,8 @@ with tab3:
 | **12-Month Income Statement** | Reports → 12-Month Statement → trailing 12 months | Used for historical recurring accruals |
 | **Nexus Invoice Detail** | Nexus AP → Export open invoices → .xls format | Open invoices not yet in the GL |
 | **Kardin Budget** | Kardin → Export → qryExportData format | Annual budget; used for payroll bonus accruals |
+| **Yardi Receivable Detail** | Reports → Receivable Detail → current period | Used to calculate management fee on cash received |
+| **Yardi AR Detail Aging** | Reports → AR Aging Detail → current period | Used alongside Receivable Detail to exclude prepayments from the fee basis |
 """)
         st.markdown("#### Bank Statements")
         st.markdown("""
@@ -2737,8 +2739,6 @@ with tab3:
         st.markdown("""
 | File | Where to get it | Notes |
 |------|-----------------|-------|
-| **Yardi Receivable Detail** | Reports → Receivable Detail → current period | Used to calculate management fee on cash received |
-| **Yardi AR Detail Aging** | Reports → AR Aging Detail → current period | Used alongside Receivable Detail to exclude prepayments |
 | **Prior Month Prepaid Ledger** | Downloaded from last month's Pass 1 run | First month (January): use the seed file `GA_Prepaid_Ledger_Seed_Dec2025.xlsx` |
 """)
         st.markdown(
