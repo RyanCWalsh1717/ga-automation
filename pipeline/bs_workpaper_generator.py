@@ -52,6 +52,11 @@ try:
 except ImportError:
     _build_analysis_tabs = None
 
+try:
+    from account_tab_builders import CUSTOM_BUILDERS as _CUSTOM_BUILDERS
+except ImportError:
+    _CUSTOM_BUILDERS = {}
+
 # Regex to detect already-prefixed sheet names like "Mar-2026 Summary"
 _PERIOD_PREFIX_RE = re.compile(
     r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4} '
@@ -361,9 +366,40 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                        je_adjustments, tab_prefix=_tab_pfx,
                        zero_activity_tb_accounts=_zero_activity_tb)
     _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
+
+    # Flat list of all GL transactions as dicts — consumed by custom tab builders
+    # that need cross-account JE context (e.g. 133110 billback, 213100 accruals).
+    _all_je_lines: list = []
+    if gl_result:
+        for _ea in (gl_result.accounts or []):
+            for _et in (_ea.transactions or []):
+                _all_je_lines.append({
+                    'je_number':    str(getattr(_et, 'control',     '') or ''),
+                    'account_code': _ea.account_code,
+                    'account_name': _ea.account_name,
+                    'description':  str(getattr(_et, 'description', '') or ''),
+                    'vendor':       str(getattr(_et, 'remarks',     '') or ''),
+                    'debit':        float(getattr(_et, 'debit',  0) or 0),
+                    'credit':       float(getattr(_et, 'credit', 0) or 0),
+                    'source':       '',
+                })
+
     for acct in bs_accounts:
         _hist = _account_history.get(acct.account_code, [])
-        if acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
+        # ── Custom builder (account-specific layout) ──────────
+        _builder = _CUSTOM_BUILDERS.get(acct.account_code)
+        if _builder:
+            _builder(
+                wb,
+                period=period,
+                property_name=property_name,
+                gl_acct=acct,
+                tb_entry=tb_map.get(acct.account_code),
+                je_lines=_all_je_lines,
+                prepaid_ledger=prepaid_ledger_active,
+                daca_data=daca_bank_data,
+            )
+        elif acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
             _write_accrual_schedule_tab(
                 wb, acct, tb_map.get(acct.account_code), period, property_name,
                 _control_to_expense,
