@@ -1203,35 +1203,61 @@ with tab1:
 
         if dr_lines:
             st.markdown("### Accrual Journal Entries")
+            st.caption(
+                "JE reference prefixes: **IPR** = Invoice Proration · **REC** = Historical Recurring · "
+                "**MGT** = Management Fee · **TUB** = Tenant Utility Billing · **SUP** = One-Off Accrual · "
+                "**BNS** = Bonus Accrual. "
+                "These codes are required for the Yardi import. "
+                "✏️ **Description is editable** — click any cell to annotate for review. "
+                "Edits are for display only; the downloaded CSV uses the original descriptions."
+            )
 
-            source_labels = {
-                'nexus':                  'Nexus AP',
-                'invoice_proration':      'Invoice Proration',
-                'historical':             'Historical Pattern',
-                'prepaid_amortization':   'Prepaid Amort.',
-                'prepaid_ledger':         'Prepaid Release',
+            # ── Source → uploaded file label map ────────────────────────────
+            _SOURCE_FILE_LABEL = {
+                'nexus':                  'Nexus Invoice Detail',
+                'invoice_proration':      'Yardi GL Detail',
+                'historical':             'Yardi Budget Comparison',
+                'prepaid_amortization':   'Prior Month Prepaid Ledger',
+                'prepaid_ledger':         'Prior Month Prepaid Ledger',
                 'management_fee':         'Management Fee',
-                'management_fee_catchup': 'Mgmt Fee Catch-up',
-                'contract_supplement':    'One-Off Accrual',
-                'tenant_utility_billing': 'Tenant Utility',
-                'bonus_accrual':          'Bonus Accrual',
+                'management_fee_catchup': 'Management Fee (Catch-up)',
+                'contract_supplement':    'One-Off Accrual Table',
+                'tenant_utility_billing': 'Tenant Utility Billing',
+                'bonus_accrual':          'Kardin Budget',
             }
 
-            # ── Build CR lookup: je_number → (cr_account_code, cr_description) ──
+            # ── Description cleaner — strip amounts / verbose phrases ────────
+            import re as _re_jed
+            def _clean_je_desc(raw: str) -> str:
+                s = str(raw)
+                s = _re_jed.sub(r'\$[\d,]+(?:\.\d+)?(?:/\w+)?', '', s)   # $1,234.56/mo
+                s = _re_jed.sub(r'\b[\d,]+\.\d+/\w+', '', s)             # 500.00/day
+                s = _re_jed.sub(r'\([A-Za-z]+-?\s*\d{4}\)', '', s)       # (Jan-2026)
+                s = _re_jed.sub(r'Historical recurring\s*[—-]\s*', '', s)
+                s = _re_jed.sub(r'[Pp]roration\s*[—-]\s*', '', s)
+                s = _re_jed.sub(r',?\s*no activity this period.*', '', s, flags=_re_jed.IGNORECASE)
+                s = _re_jed.sub(r',?\s*no T12 uploaded.*', '', s, flags=_re_jed.IGNORECASE)
+                s = _re_jed.sub(r',?\s*upload for.*', '', s, flags=_re_jed.IGNORECASE)
+                s = _re_jed.sub(r'\(annual budget[^)]*\)', '', s, flags=_re_jed.IGNORECASE)
+                s = _re_jed.sub(r'×\s*\d+\s*days?', '', s)
+                s = _re_jed.sub(r'÷\s*\d+', '', s)
+                s = _re_jed.sub(r'\s+', ' ', s).strip().strip('—:,- ').strip()
+                return s[:120] if len(s) > 120 else s
+
+            # ── Build CR lookup: je_number → cr_account_code ────────────────
             _cr_lookup: dict = {}
             for _cl in cr_lines:
                 _je = _cl.get('je_number', '')
                 if _je and _je not in _cr_lookup:
                     _cr_lookup[_je] = {
                         'code': str(_cl.get('account_code', '') or '').strip(),
-                        'desc': str(_cl.get('description') or '').strip(),
                     }
 
             # Friendly labels for well-known CR accounts
             _CR_LABELS = {
                 '115200': 'RE Tax Escrow',
                 '115300': 'Insurance Escrow',
-                '133110': 'Tenant AR Billback (Utility / Elec Recovery)',
+                '133110': 'Tenant AR Billback',
                 '135110': 'Prepaid Insurance',
                 '135120': 'Prepaid RE Taxes',
                 '135150': 'Prepaids',
@@ -1242,64 +1268,42 @@ with tab1:
             def _cr_section_label(code: str) -> str:
                 if code in _CR_LABELS:
                     return f"{code} — {_CR_LABELS[code]}"
-                if code.startswith('115'):
-                    return f"{code} — Escrow"
-                if code.startswith('133'):
-                    return f"{code} — Tenant AR Billback"
-                if code.startswith('135'):
-                    return f"{code} — Prepaids"
-                if code == '213100':
-                    return f"{code} — Accrued Expenses"
-                if code == '213200':
-                    return f"{code} — Accrued Interest Payable"
-                if code.startswith('213'):
-                    return f"{code} — Accrued"
+                if code.startswith('115'):  return f"{code} — Escrow"
+                if code.startswith('133'):  return f"{code} — Tenant AR Billback"
+                if code.startswith('135'):  return f"{code} — Prepaids"
+                if code.startswith('213'):  return f"{code} — Accrued"
                 return f"{code}"
 
-            # ── Sort order for BS sections — pure GL code numerical order ────
-            def _section_sort_key(code: str) -> str:
-                return code.zfill(10)   # zero-pad so string sort == numeric sort
-
             # ── Group DR lines by CR account ────────────────────────────────
-            _groups: dict = {}   # cr_code → list of DR lines
+            _groups: dict = {}
             for _dl in dr_lines:
-                _je = _dl.get('je_number', '')
-                _cr_info = _cr_lookup.get(_je, {})
-                _cr_code = _cr_info.get('code', 'unknown')
+                _cr_code = _cr_lookup.get(_dl.get('je_number', ''), {}).get('code', 'unknown')
                 _groups.setdefault(_cr_code, []).append(_dl)
 
-            _sorted_cr_codes = sorted(_groups.keys(), key=lambda c: (_section_sort_key(c), c))
+            _sorted_cr_codes = sorted(_groups.keys(), key=lambda c: c.zfill(10))
 
-            # ── Summary metrics row (by source type) ────────────────────────
-            source_totals: dict = {}
+            _run_key = st.session_state.get('pass1_run_count', 0)
+
+            # ── Summary metrics row ──────────────────────────────────────────
+            _src_totals: dict = {}
             for _l in dr_lines:
-                _src = _l.get('source', 'other')
-                source_totals[_src] = source_totals.get(_src, 0) + (_l.get('debit') or 0)
-
+                _s = _l.get('source', 'other')
+                _src_totals[_s] = _src_totals.get(_s, 0) + (_l.get('debit') or 0)
             _total_je_count = len(set(_l.get('je_number', '') for _l in dr_lines))
             _total_amount   = sum(_l.get('debit') or 0 for _l in dr_lines)
-
             _metric_items = [('Total JEs', str(_total_je_count)),
                              ('Total Amount', f"${_total_amount:,.0f}")] + \
-                            [(source_labels.get(s, s), f"${t:,.0f}") for s, t in source_totals.items()]
+                            [(_SOURCE_FILE_LABEL.get(s, s), f"${t:,.0f}")
+                             for s, t in _src_totals.items()]
             _n_cols = min(len(_metric_items), 6)
             _metric_cols = st.columns(_n_cols)
             for _mi, (_lbl, _val) in enumerate(_metric_items[:_n_cols]):
                 with _metric_cols[_mi]:
                     st.metric(_lbl, _val)
 
-            st.write("")  # spacer
+            st.write("")
 
-            # ── One expander per CR (BS) account ────────────────────────────
-            _df_col_cfg = {
-                "JE #":        st.column_config.TextColumn(width="small"),
-                "Source":      st.column_config.TextColumn(width="small"),
-                "Review":      st.column_config.TextColumn(width="medium"),
-                "GL Account":  st.column_config.TextColumn(width="small"),
-                "Description": st.column_config.TextColumn(width="large"),
-                "Amount":      st.column_config.NumberColumn(format="$%,.2f"),
-            }
-
+            # ── One expander per CR account ──────────────────────────────────
             for _cr_code in _sorted_cr_codes:
                 _group_lines = sorted(
                     _groups[_cr_code],
@@ -1307,43 +1311,48 @@ with tab1:
                 )
                 _group_total = sum(_l.get('debit') or 0 for _l in _group_lines)
                 _group_count = len(set(_l.get('je_number', '') for _l in _group_lines))
-                _section_title = _cr_section_label(_cr_code)
                 _expander_label = (
-                    f"CR {_section_title}  ·  {_group_count} JE{'s' if _group_count != 1 else ''}  "
-                    f"·  ${_group_total:,.0f}"
+                    f"CR {_cr_section_label(_cr_code)}  ·  "
+                    f"{_group_count} JE{'s' if _group_count != 1 else ''}  ·  "
+                    f"${_group_total:,.0f}"
                 )
 
                 with st.expander(_expander_label, expanded=True):
-                    # Credit account summary line
-                    st.caption(f"Credit account: **{_cr_code}** — all entries below post to this BS account")
+                    st.caption(f"Credit account: **{_cr_code}** — all entries below post to this account")
 
                     _rows = []
                     for _l in _group_lines:
-                        _src_label = source_labels.get(_l.get('source', ''), _l.get('source', ''))
-                        _flag = ''
-                        if _l.get('review_flag'):
-                            _other = ', '.join(
-                                source_labels.get(s, s) for s in (_l.get('review_sources') or [])
-                            )
-                            _flag = f'⚑ Also: {_other}'
+                        _desc = _clean_je_desc(_l.get('description') or '')
                         _rows.append({
                             "JE #":        _l.get('je_number', ''),
-                            "Source":      _src_label,
-                            "Review":      _flag,
+                            "File Source": _SOURCE_FILE_LABEL.get(_l.get('source', ''), _l.get('source', '')),
                             "GL Account":  _l.get('account_code', ''),
-                            "Description": (_l.get('description') or '')[:80],
+                            "Description": _desc,
                             "Amount":      _l.get('debit') or 0,
                         })
 
-                    st.dataframe(_rows, use_container_width=True, hide_index=True,
-                                 column_config=_df_col_cfg)
+                    st.data_editor(
+                        _rows,
+                        num_rows="fixed",
+                        use_container_width=True,
+                        column_config={
+                            "JE #":        st.column_config.TextColumn(width="small",  disabled=True),
+                            "File Source": st.column_config.TextColumn(width="medium", disabled=True),
+                            "GL Account":  st.column_config.TextColumn(width="small",  disabled=True),
+                            "Description": st.column_config.TextColumn(width="large"),   # ← editable for review
+                            "Amount":      st.column_config.NumberColumn(
+                                               format="$%,.2f", width="small", disabled=True),
+                        },
+                        hide_index=True,
+                        key=f"je_ed_{_cr_code}_{_run_key}",
+                    )
 
-                    # Subtotal row
+                    # Subtotal
                     _sub_cols = st.columns([4, 1])
                     with _sub_cols[1]:
                         st.markdown(
-                            f"<div style='text-align:right; font-weight:bold; "
-                            f"padding-top:4px'>Subtotal: ${_group_total:,.2f}</div>",
+                            f"<div style='text-align:right;font-weight:bold;padding-top:4px'>"
+                            f"Subtotal: ${_group_total:,.2f}</div>",
                             unsafe_allow_html=True,
                         )
 
