@@ -931,6 +931,327 @@ def build_115100_tab(wb, period: str, property_name: str,
     return ws
 
 
+# ── 111100 — Operating Cash (PNC Bank Rec) ───────────────────────────────────
+
+def _group_cash_gl_transactions(gl_acct) -> list:
+    """
+    Group 111100 GL transactions by (date, clean description) and net debit-credit.
+
+    For operating cash:
+      - net > 0  → Receipts column  (DR = cash received)
+      - net < 0  → Disbursements column (CR = cash paid out; stored as positive)
+
+    Skips groups that net to near-zero (e.g. APPLY clearing pairs in rare cases).
+    Strips vendor codes "(v/t NNNNNN)" from descriptions.
+    Returns list of dicts: {date, desc, control, receipts, disb, sort_date}
+    sorted chronologically.
+    """
+    from collections import defaultdict
+    from datetime import date as _date
+
+    net_by_key:  Dict[tuple, float] = defaultdict(float)
+    ctrl_by_key: Dict[tuple, str]   = {}
+    meta:        Dict[tuple, dict]  = {}
+
+    for txn in (getattr(gl_acct, 'transactions', []) or []):
+        d = getattr(txn, 'date', None)
+        if isinstance(d, _date):
+            date_str  = d.strftime('%m/%d/%Y')
+            sort_date = d
+        else:
+            date_str  = str(d or '')
+            sort_date = _date(1900, 1, 1)
+
+        desc_raw   = str(getattr(txn, 'description', '') or '')
+        desc_clean = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc_raw).strip()
+        control    = str(getattr(txn, 'control', '') or '')
+
+        debit  = float(getattr(txn, 'debit',  0) or 0)
+        credit = float(getattr(txn, 'credit', 0) or 0)
+
+        key = (sort_date, desc_clean)
+        net_by_key[key] = round(net_by_key[key] + debit - credit, 2)
+        if key not in meta:
+            meta[key]     = {'date_str': date_str, 'sort_date': sort_date,
+                             'desc': desc_clean}
+            ctrl_by_key[key] = control
+
+    rows = []
+    for key in sorted(net_by_key.keys()):
+        net  = net_by_key[key]
+        if abs(net) < 0.01:
+            continue
+        info = meta[key]
+        ctrl = ctrl_by_key.get(key, '')
+        if net > 0:
+            rows.append({'date': info['date_str'], 'desc': info['desc'],
+                         'control': ctrl, 'receipts': net, 'disb': 0.0,
+                         'sort_date': info['sort_date']})
+        else:
+            rows.append({'date': info['date_str'], 'desc': info['desc'],
+                         'control': ctrl, 'receipts': 0.0, 'disb': abs(net),
+                         'sort_date': info['sort_date']})
+
+    return rows
+
+
+def build_111100_tab(wb, period: str, property_name: str,
+                     gl_acct=None, tb_entry=None,
+                     bank_rec_data: Dict = None,
+                     **_):
+    """
+    Operating Cash (PNC x3993) bank reconciliation workpaper.
+
+    Layout:
+      1. GL Activity — Date | Description | Control | Receipts | Disbursements | Balance
+         (transactions from main Yardi GL export, grouped by date × description)
+      2. Bank Reconciliation block — from the Yardi Bank Rec PDF (first 3 pages):
+            Balance Per Bank Statement as of {date}
+            Less: Outstanding Checks
+            Reconciled Bank Balance
+            GL Balance (from TB)
+            Difference (green = $0)
+      3. Outstanding Checks list — date, check#, payee, amount
+      4. GL / TB tie-out
+    """
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    gl_beg    = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    ws = wb.create_sheet('111100 PNC Cash'[:31])
+    ws.sheet_properties.tabColor = '2E75B6'
+
+    RCPT_COL  = 5   # E — Receipts
+    DISB_COL  = 6   # F — Disbursements
+    BAL_COL   = 7   # G — Running Balance
+    NCOLS     = 6   # B-G
+
+    next_row = _write_tab_header(ws, '111100', 'Cash - Operating Account (PNC x3993)',
+                                 period, property_name, ncols=NCOLS)
+    next_row += 1
+    next_row = _write_col_headers(
+        ws, next_row,
+        ['Date', 'Description', 'Control', 'Receipts', 'Disbursements', 'Running Balance'],
+        [14, 46, 12, 16, 18, 18],
+    )
+
+    # ── Balance Forward row ───────────────────────────────────────────────────
+    c_beg = ws.cell(row=next_row, column=3, value='Balance Forward')
+    _apply(c_beg, font=_font(italic=True, color='444444'), border=THIN,
+           align=Alignment(horizontal='left'))
+    ws.merge_cells(start_row=next_row, start_column=3,
+                   end_row=next_row, end_column=BAL_COL - 1)
+    c_beg_bal = ws.cell(row=next_row, column=BAL_COL, value=gl_beg)
+    _apply(c_beg_bal, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+           fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+    beg_balance_row = next_row
+    next_row += 1
+
+    # ── GL transaction rows ───────────────────────────────────────────────────
+    cash_rows = _group_cash_gl_transactions(gl_acct)
+
+    for i, r in enumerate(cash_rows):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+
+        c1 = ws.cell(row=next_row, column=2, value=r['date'])
+        _apply(c1, font=_font(), fill=bg, border=THIN)
+
+        c2 = ws.cell(row=next_row, column=3, value=r['desc'])
+        _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
+
+        c3 = ws.cell(row=next_row, column=4, value=r['control'])
+        _apply(c3, font=_font(color='555555'), fill=bg, border=THIN)
+
+        c4 = ws.cell(row=next_row, column=RCPT_COL, value=r['receipts'] or None)
+        _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+
+        c5 = ws.cell(row=next_row, column=DISB_COL, value=r['disb'] or None)
+        _apply(c5, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+
+        # Running balance: prior G + receipts(E) - disbursements(F)
+        prev_ref = f'G{next_row - 1}'
+        formula  = (f'={prev_ref}'
+                    f'+IFERROR(E{next_row},0)'
+                    f'-IFERROR(F{next_row},0)')
+        c6 = ws.cell(row=next_row, column=BAL_COL, value=formula)
+        _apply(c6, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+               fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+
+        next_row += 1
+
+    if not cash_rows:
+        c = ws.cell(row=next_row, column=2,
+                    value='No operating cash GL activity for this period')
+        _apply(c, font=_font(italic=True, color='666666'))
+        next_row += 1
+
+    # ── Period Totals row ─────────────────────────────────────────────────────
+    next_row += 1
+    c_tot = ws.cell(row=next_row, column=2, value='Period Totals')
+    _apply(c_tot, font=_font(bold=True), border=THICK_BOTTOM)
+
+    data_start = beg_balance_row + 1
+    data_end   = next_row - 2
+    for col_letter, col_idx in [('E', RCPT_COL), ('F', DISB_COL)]:
+        if data_end >= data_start:
+            tot_f = f'=SUM({col_letter}{data_start}:{col_letter}{data_end})'
+        else:
+            tot_f = 0
+        ct = ws.cell(row=next_row, column=col_idx, value=tot_f)
+        _apply(ct, font=_font(bold=True), fmt='$#,##0.00', border=THICK_BOTTOM,
+               align=Alignment(horizontal='right'))
+
+    ct_end = ws.cell(row=next_row, column=BAL_COL, value=gl_ending)
+    _apply(ct_end, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+           fmt='$#,##0.00', border=THICK_BOTTOM, align=Alignment(horizontal='right'))
+    next_row += 2
+
+    # ── Bank Reconciliation block ─────────────────────────────────────────────
+    bank_stmt_bal  = None
+    outstanding    = []
+    total_oc       = 0.0
+    reconciled_bal = None
+    stmt_date      = ''
+    rec_diff       = None
+
+    if bank_rec_data and isinstance(bank_rec_data, dict):
+        bank_stmt_bal  = bank_rec_data.get('bank_statement_balance')
+        outstanding    = bank_rec_data.get('outstanding_checks') or []
+        total_oc       = bank_rec_data.get('total_outstanding_checks') or 0.0
+        reconciled_bal = bank_rec_data.get('reconciled_bank_balance')
+        stmt_date      = bank_rec_data.get('statement_date') or ''
+        rec_diff       = bank_rec_data.get('reconciling_difference')
+
+    # Reconciliation rows
+    date_label = f' as of {stmt_date}' if stmt_date else ''
+    rec_blocks = [
+        (f'Balance Per Bank Statement{date_label}',
+         bank_stmt_bal if bank_stmt_bal is not None else '— upload bank rec to populate —',
+         DARK_BLUE, 'FFFFFF'),
+        ('Less: Outstanding Checks',
+         -total_oc if total_oc else (None if bank_stmt_bal is None else 0.0),
+         MED_BLUE, 'FFFFFF'),
+        ('Reconciled Bank Balance',
+         reconciled_bal if reconciled_bal is not None else (
+             round((bank_stmt_bal or 0) - total_oc, 2) if bank_stmt_bal is not None else None),
+         DARK_BLUE, 'FFFFFF'),
+        ('GL Balance (per Trial Balance)',
+         tb_ending,
+         MED_BLUE, 'FFFFFF'),
+        ('Difference',
+         None,  # computed below
+         None, None),
+    ]
+
+    # Compute difference: reconciled - GL
+    _rec = rec_blocks[2][1]
+    _rec_float = _rec if isinstance(_rec, (int, float)) else None
+    diff_val = round(_rec_float - tb_ending, 2) if _rec_float is not None else None
+    # Replace placeholder
+    rec_blocks[4] = ('Difference', diff_val, None, None)
+
+    c_rec_hdr = ws.cell(row=next_row, column=2, value='Bank Reconciliation')
+    _apply(c_rec_hdr, font=_font(bold=True, size=10, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), border=THIN,
+           align=Alignment(horizontal='left'))
+    ws.merge_cells(start_row=next_row, start_column=2,
+                   end_row=next_row, end_column=BAL_COL)
+    next_row += 1
+
+    for label, val, fill_hex, font_color in rec_blocks:
+        c_lbl = ws.cell(row=next_row, column=2, value=label)
+        _apply(c_lbl,
+               font=_font(bold=True, color=font_color or '000000'),
+               fill=_fill(fill_hex) if fill_hex else None,
+               border=THIN,
+               align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=BAL_COL - 1)
+        c_val = ws.cell(row=next_row, column=BAL_COL, value=val)
+        if label == 'Difference':
+            ok = isinstance(val, (int, float)) and abs(val) < 0.02
+            _apply(c_val,
+                   font=_font(bold=True, color='006400' if ok else 'CC0000'),
+                   fill=_fill(GREEN_FILL if ok else RED_FILL),
+                   fmt='$#,##0.00' if isinstance(val, (int, float)) else None,
+                   border=DOUBLE_BTM)
+        elif val is not None and isinstance(val, (int, float)):
+            _apply(c_val,
+                   font=_font(bold=True, color=font_color or '000000'),
+                   fill=_fill(fill_hex) if fill_hex else None,
+                   fmt='$#,##0.00', border=THIN)
+        else:
+            _apply(c_val, font=_font(italic=True, color='888888'), border=THIN)
+        next_row += 1
+
+    # ── Outstanding Checks list ───────────────────────────────────────────────
+    if outstanding:
+        next_row += 1
+        c_oc_hdr = ws.cell(row=next_row, column=2, value='Outstanding Checks')
+        _apply(c_oc_hdr, font=_font(bold=True, size=10, color='FFFFFF'),
+               fill=_fill(MED_BLUE), border=THIN,
+               align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=BAL_COL)
+        next_row += 1
+
+        oc_hdrs = ['Date', 'Check #', 'Payee', '', '', 'Amount']
+        oc_cols = [2, 3, 4, 5, 6, 7]
+        for h, col in zip(oc_hdrs, oc_cols):
+            if h:
+                c = ws.cell(row=next_row, column=col, value=h)
+                _apply(c, font=_font(bold=True, color='FFFFFF'),
+                       fill=_fill(DARK_BLUE), border=THIN,
+                       align=Alignment(horizontal='center'))
+        # Merge payee across cols 4-6
+        ws.merge_cells(start_row=next_row, start_column=4,
+                       end_row=next_row, end_column=6)
+        next_row += 1
+
+        for i, chk in enumerate(outstanding):
+            alt = i % 2 == 1
+            bg  = _fill(LIGHT_GRAY) if alt else None
+
+            d_val = chk.get('date', '')
+            c1 = ws.cell(row=next_row, column=2, value=d_val)
+            _apply(c1, font=_font(), fill=bg, border=THIN)
+
+            c2 = ws.cell(row=next_row, column=3, value=chk.get('check_number', ''))
+            _apply(c2, font=_font(), fill=bg, border=THIN)
+
+            payee = chk.get('payee', '')
+            c3 = ws.cell(row=next_row, column=4, value=payee)
+            _apply(c3, font=_font(), fill=bg, border=THIN)
+            ws.merge_cells(start_row=next_row, start_column=4,
+                           end_row=next_row, end_column=6)
+
+            amt = float(chk.get('amount', 0) or 0)
+            c4 = ws.cell(row=next_row, column=7, value=amt)
+            _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                   align=Alignment(horizontal='right'))
+            next_row += 1
+
+        # Total Outstanding Checks row
+        c_tot_lbl = ws.cell(row=next_row, column=2, value='Total Outstanding Checks')
+        _apply(c_tot_lbl, font=_font(bold=True), fill=_fill(LIGHT_GRAY),
+               border=THICK_BOTTOM)
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=6)
+        c_tot_val = ws.cell(row=next_row, column=7, value=total_oc)
+        _apply(c_tot_val, font=_font(bold=True), fill=_fill(LIGHT_GRAY),
+               fmt='$#,##0.00', border=THICK_BOTTOM,
+               align=Alignment(horizontal='right'))
+        next_row += 1
+
+    # ── GL / TB tie-out ───────────────────────────────────────────────────────
+    next_row += 1
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=BAL_COL)
+    return ws
+
+
 # ── 131100 — AR Aging Detail ─────────────────────────────────────────────────
 
 def build_131100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
@@ -1342,6 +1663,7 @@ def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── Dispatch table ────────────────────────────────────────────────────────────
 
 CUSTOM_BUILDERS: Dict[str, Any] = {
+    '111100': build_111100_tab,
     '115100': build_115100_tab,
     '115200': build_115200_tab,
     '115300': build_115300_tab,

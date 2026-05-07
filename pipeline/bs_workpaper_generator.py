@@ -400,6 +400,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 je_lines=_all_je_lines,
                 prepaid_ledger=prepaid_ledger_active,
                 daca_data=daca_bank_data,
+                bank_rec_data=bank_rec_data,
                 ar_aging_data=ar_aging_data,
                 capital_schedule_data=capital_schedule_data,
             )
