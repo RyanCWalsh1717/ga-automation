@@ -1873,6 +1873,26 @@ with tab2:
                     except Exception:
                         dev_bank_rec_data = None
 
+                # Parse AR Aging and Capital Schedule before workpaper generation
+                # (both are passed into bs_workpaper_generator.generate())
+                _ar_aging_file_p2 = st.session_state.uploaded_files.get("ar_aging")
+                _ar_aging_parsed_p2 = None
+                if _ar_aging_file_p2 and os.path.exists(_ar_aging_file_p2):
+                    try:
+                        from parsers.yardi_ar_aging import parse as _parse_ar_aging2
+                        _ar_aging_parsed_p2 = _parse_ar_aging2(_ar_aging_file_p2)
+                    except Exception:
+                        _ar_aging_parsed_p2 = None
+
+                _capital_file = st.session_state.uploaded_files.get("capital_schedule")
+                _capital_schedule_data = None
+                if _capital_file and os.path.exists(_capital_file):
+                    try:
+                        from parsers.capital_schedule import parse as _parse_capital
+                        _capital_schedule_data = _parse_capital(_capital_file)
+                    except Exception:
+                        _capital_schedule_data = None
+
                 if tb_result and gl_parsed:
                     try:
                         bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
@@ -1944,25 +1964,6 @@ with tab2:
                             _rd_parsed_p2 = _parse_rd2(_rd_file_p2)
                         except Exception:
                             _rd_parsed_p2 = None
-
-                    _ar_aging_file_p2 = st.session_state.uploaded_files.get("ar_aging")
-                    _ar_aging_parsed_p2 = None
-                    if _ar_aging_file_p2 and os.path.exists(_ar_aging_file_p2):
-                        try:
-                            from parsers.yardi_ar_aging import parse as _parse_ar_aging2
-                            _ar_aging_parsed_p2 = _parse_ar_aging2(_ar_aging_file_p2)
-                        except Exception:
-                            _ar_aging_parsed_p2 = None
-
-                    # Capital accounts schedule (for workpaper tabs)
-                    _capital_file = st.session_state.uploaded_files.get("capital_schedule")
-                    _capital_schedule_data = None
-                    if _capital_file and os.path.exists(_capital_file):
-                        try:
-                            from parsers.capital_schedule import parse as _parse_capital
-                            _capital_schedule_data = _parse_capital(_capital_file)
-                        except Exception:
-                            _capital_schedule_data = None
 
                     fee_result = calculate_mgmt_fee(
                         gl_parsed=gl_parsed,
@@ -2192,18 +2193,7 @@ with tab2:
         st.divider()
         st.markdown(f"## Pass 2 Results — {result.period}  |  {result.property_name}")
 
-        # Status banner
-        status = result.status
-        status_color = {"CLEAN": "#2ecc71", "WARNINGS": "#f39c12"}.get(status, "#e74c3c")
-        status_text_str = {"CLEAN": "✅ CLEAN", "WARNINGS": "⚠️ WARNINGS"}.get(status, "❌ ERRORS")
-        st.markdown(f"""
-        <div style="background-color: {status_color}20; border-left: 5px solid {status_color};
-             padding: 15px; border-radius: 5px; margin: 15px 0;">
-            <h3 style="color: {status_color}; margin: 0;">{status_text_str}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Period-state indicator
+        # Period-state indicator (shown first — informational, not an error)
         _ps = result.period_state
         if _ps and _ps.get('state') != 'unknown':
             _state_labels = {
@@ -2227,6 +2217,17 @@ with tab2:
                         f"213100 GL signal detected: net credit ${_ps['gl_signal_amount']:,.2f} "
                         f"— prior-period auto-reversals have posted."
                     )
+
+        # Status banner (CLEAN / WARNINGS / ERRORS from engine validation)
+        status = result.status
+        status_color = {"CLEAN": "#2ecc71", "WARNINGS": "#f39c12"}.get(status, "#e74c3c")
+        status_text_str = {"CLEAN": "✅ CLEAN", "WARNINGS": "⚠️ WARNINGS"}.get(status, "❌ ERRORS")
+        st.markdown(f"""
+        <div style="background-color: {status_color}20; border-left: 5px solid {status_color};
+             padding: 15px; border-radius: 5px; margin: 15px 0;">
+            <h3 style="color: {status_color}; margin: 0;">{status_text_str}</h3>
+        </div>
+        """, unsafe_allow_html=True)
 
         # ── QC Summary Panel ───────────────────────────────────────────────
         qc_report = p2.get("qc_report")
