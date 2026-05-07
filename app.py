@@ -1256,15 +1256,9 @@ with tab1:
                     return f"{code} — Accrued"
                 return f"{code}"
 
-            # ── Sort order for BS sections ──────────────────────────────────
-            # Prepaids first, accrued expenses last; everything else by code.
-            def _section_sort_key(code: str) -> tuple:
-                if code.startswith('135'):  return (0, code)   # Prepaids — first
-                if code.startswith('115'):  return (1, code)   # Escrow (RE Tax, Insurance)
-                if code.startswith('133'):  return (2, code)   # Tenant AR Billback
-                if code.startswith('641'):  return (3, code)   # RE Tax deferral
-                if code.startswith('213'):  return (9, code)   # Accrued Expenses — last
-                return (5, code)                               # Everything else in code order
+            # ── Sort order for BS sections — pure GL code numerical order ────
+            def _section_sort_key(code: str) -> str:
+                return code.zfill(10)   # zero-pad so string sort == numeric sort
 
             # ── Group DR lines by CR account ────────────────────────────────
             _groups: dict = {}   # cr_code → list of DR lines
