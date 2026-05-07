@@ -135,6 +135,13 @@ _MONTH_MAP = {
     'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
 }
 
+# Seed map used by _get_escrow_seed_rows (below helpers)
+_ESCROW_SEED_MAP = {
+    '115200': _RET_SEED,
+    '115300': _INSUR_SEED,
+    '115600': _LOAN_RESERVE_SEED,
+}
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -166,6 +173,36 @@ def _seed_rows_for_period(seed: List[tuple], close_year: int, close_month: int) 
     # Sort chronologically
     result.sort(key=lambda r: r[0])
     return result
+
+
+def _get_escrow_seed_rows(account_code: str, period: str) -> List[dict]:
+    """
+    Return seed rows for an escrow account that predate the current close period.
+
+    Used as bootstrap history on the first run (when no prior workpaper has been
+    uploaded yet).  Returns list of {date_str, desc, amt} dicts, sorted by date.
+    Returns [] for unknown account codes or unparseable periods.
+    """
+    raw_seed = _ESCROW_SEED_MAP.get(account_code, [])
+    if not raw_seed:
+        return []
+
+    yr, mo = _parse_close_period(period)
+    rows: List[dict] = []
+    for date_str, desc, amt in raw_seed:
+        d = _parse_date(date_str)
+        if d is None:
+            continue
+        # Include only entries strictly before the current close month
+        if (d.year, d.month) < (yr, mo):
+            rows.append({'date_str': d.strftime('%m/%d/%Y'), 'desc': desc, 'amt': amt,
+                         '_sort': d})
+
+    rows.sort(key=lambda r: r['_sort'])
+    for r in rows:
+        del r['_sort']
+    return rows
+
 
 def _write_tab_header(ws, account_code: str, account_name: str,
                       period: str, property_name: str, ncols: int = 5):
@@ -336,14 +373,21 @@ def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
                       period: str, property_name: str,
                       gl_acct, tb_entry,
                       berkadia_balance_key: str = '',
-                      berkadia_loans: list = None) -> Any:
+                      berkadia_loans: list = None,
+                      prior_rows: list = None) -> Any:
     """
     Generic workpaper tab for escrow and reserve accounts (115200, 115300, 115600).
 
-    Layout:
-      Balance Forward  (gl_acct.beginning_balance)
+    Full carry-forward design — each monthly workpaper shows the complete
+    transaction history from inception, not just the current period:
+
+      Balance Forward  = $0.00 when prior history is available
+                       = gl_beg when no history (first run, no seeds or prior rows)
       [one grouped row per real event — duplicates / APPLY pairs removed]
-      Running balance formula: =F_prev + E_cur
+        • prior_rows: full detail rows read from the prior workpaper tab
+        • seed rows:  bootstrap ledger (first run, no prior workpaper uploaded)
+        • current GL: grouped transactions for the close period
+      Running balance formula: =F_prev + E_cur  (chains through all rows)
       ──────────────────────────────────────────
       Berkadia Reconciliation block (if berkadia_loans provided):
         Balance per Berkadia Statement   $X
@@ -352,6 +396,9 @@ def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
       GL / TB tie-out
 
     Columns: Date | Description | Entity | Amount | Running Balance
+
+    prior_rows: list of {date_str, desc, amt} dicts from _read_escrow_tab_detail();
+                pass None when no prior workpaper is available (triggers seed fallback).
     """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
     gl_beg    = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
@@ -372,21 +419,42 @@ def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
         [14, 52, 14, 18, 18],
     )
 
+    # ── Determine historical rows and starting balance ────────────────────────
+    # Priority: prior workpaper rows → seed bootstrap → current-period only
+    if prior_rows is not None:
+        # Full carry-forward: prior workpaper provided all history from inception
+        hist_rows = prior_rows          # list of {date_str, desc, amt}
+        starting_balance = 0.0
+    else:
+        # First run: fall back to seed data for this account
+        hist_rows = _get_escrow_seed_rows(account_code, period)
+        starting_balance = 0.0 if hist_rows else gl_beg
+
+    # Current period GL entries (grouped, current close month only)
+    current_gl_rows = _group_escrow_gl_transactions(gl_acct)
+
+    # Combined list — historical first, then current period
+    all_rows = [
+        {'date_str': r['date_str'], 'desc': r['desc'], 'amt': r['amt']}
+        for r in hist_rows
+    ] + [
+        {'date_str': r['date_str'], 'desc': r['desc'], 'amt': r['amt']}
+        for r in current_gl_rows
+    ]
+
     # ── Balance Forward ───────────────────────────────────────────────────────
     c_beg = ws.cell(row=next_row, column=3, value='Balance Forward')
     _apply(c_beg, font=_font(italic=True, color='444444'), border=THIN,
            align=Alignment(horizontal='left'))
     ws.merge_cells(start_row=next_row, start_column=3,
                    end_row=next_row, end_column=BAL_COL - 1)
-    c_beg_bal = ws.cell(row=next_row, column=BAL_COL, value=gl_beg)
+    c_beg_bal = ws.cell(row=next_row, column=BAL_COL, value=starting_balance)
     _apply(c_beg_bal, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
            fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
     next_row += 1
 
-    # ── Grouped GL transactions ───────────────────────────────────────────────
-    rows = _group_escrow_gl_transactions(gl_acct)
-
-    for i, r in enumerate(rows):
+    # ── All transaction rows (history + current period) ───────────────────────
+    for i, r in enumerate(all_rows):
         alt = i % 2 == 1
         bg  = _fill(LIGHT_GRAY) if alt else None
         is_neg = r['amt'] < 0
@@ -415,7 +483,7 @@ def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
 
         next_row += 1
 
-    if not rows:
+    if not all_rows:
         c = ws.cell(row=next_row, column=2, value='No GL activity this period')
         _apply(c, font=_font(italic=True, color='666666'))
         next_row += 1
@@ -479,33 +547,39 @@ def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
 
 def build_115200_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
-                     berkadia_loans: list = None, **_):
+                     berkadia_loans: list = None,
+                     prior_tab_detail: dict = None, **_):
     return _build_escrow_tab(wb, '115200', 'RET Escrow', '4472C4',
                              period, property_name, gl_acct, tb_entry,
                              berkadia_balance_key='tax_escrow_balance',
-                             berkadia_loans=berkadia_loans)
+                             berkadia_loans=berkadia_loans,
+                             prior_rows=(prior_tab_detail or {}).get('115200'))
 
 
 # ── 115300 — Insurance Escrow ─────────────────────────────────────────────────
 
 def build_115300_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
-                     berkadia_loans: list = None, **_):
+                     berkadia_loans: list = None,
+                     prior_tab_detail: dict = None, **_):
     return _build_escrow_tab(wb, '115300', 'Insurance Escrow', '4472C4',
                              period, property_name, gl_acct, tb_entry,
                              berkadia_balance_key='insurance_escrow_balance',
-                             berkadia_loans=berkadia_loans)
+                             berkadia_loans=berkadia_loans,
+                             prior_rows=(prior_tab_detail or {}).get('115300'))
 
 
 # ── 115600 — Loan Reserve ────────────────────────────────────────────────────
 
 def build_115600_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
-                     berkadia_loans: list = None, **_):
+                     berkadia_loans: list = None,
+                     prior_tab_detail: dict = None, **_):
     return _build_escrow_tab(wb, '115600', 'Loan Reserve', '4472C4',
                              period, property_name, gl_acct, tb_entry,
                              berkadia_balance_key='reserve_balance',
-                             berkadia_loans=berkadia_loans)
+                             berkadia_loans=berkadia_loans,
+                             prior_rows=(prior_tab_detail or {}).get('115600'))
 
 
 # ── 133100 — AR Other ────────────────────────────────────────────────────────
@@ -1615,12 +1689,17 @@ def build_221100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def _build_capital_tab(wb, account_code, account_name, tab_color,
                        period, property_name, gl_acct, tb_entry,
                        capital_account,
-                       has_entity=True, has_commencement=True):
+                       has_entity=True, has_commencement=True,
+                       prior_rows: list = None):
     """
     Shared builder for all 4 capital account tabs (154500, 181200, 181300, 181400).
 
     has_entity=False, has_commencement=False  → 154500 (Description | Date | Amount)
     has_entity=True,  has_commencement=True   → 181200/181300/181400
+
+    Data source priority when capital_schedule_data xlsx is not uploaded:
+      1. prior_rows — full detail read from prior workpaper tab (carry-forward)
+      2. GL transactions — current period only (last-resort fallback)
     """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
@@ -1649,7 +1728,61 @@ def _build_capital_tab(wb, account_code, account_name, tab_color,
                 len(capital_account.rows) > 0)
 
     if not has_data:
-        # No capital schedule uploaded — show message and fall back to GL
+        if prior_rows:
+            # ── Carry-forward from prior workpaper ────────────────────────────
+            for i, row in enumerate(prior_rows):
+                alt = i % 2 == 1
+                bg  = _fill(LIGHT_GRAY) if alt else None
+
+                if has_entity and has_commencement:
+                    # 181xxx: Description | Entity | Commencement Date | Amount
+                    c1 = ws.cell(row=next_row, column=2,
+                                 value=row.get('description', ''))
+                    _apply(c1, font=_font(), fill=bg, border=THIN,
+                           align=Alignment(wrap_text=True))
+                    c2 = ws.cell(row=next_row, column=3,
+                                 value=row.get('entity', ''))
+                    _apply(c2, font=_font(), fill=bg, border=THIN)
+                    c3 = ws.cell(row=next_row, column=4,
+                                 value=row.get('commencement_date', ''))
+                    _apply(c3, font=_font(), fill=bg, border=THIN)
+                    c4 = ws.cell(row=next_row, column=5,
+                                 value=row.get('amount', 0))
+                    _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                           align=Alignment(horizontal='right'))
+                else:
+                    # 154500: Description | Date | Amount
+                    c1 = ws.cell(row=next_row, column=2,
+                                 value=row.get('description', ''))
+                    _apply(c1, font=_font(), fill=bg, border=THIN,
+                           align=Alignment(wrap_text=True))
+                    c2 = ws.cell(row=next_row, column=3,
+                                 value=row.get('date', ''))
+                    _apply(c2, font=_font(), fill=bg, border=THIN)
+                    c3 = ws.cell(row=next_row, column=4,
+                                 value=row.get('amount', 0))
+                    _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                           align=Alignment(horizontal='right'))
+
+                next_row += 1
+
+            # Ending balance row (same style as capital_schedule_data path)
+            c_end_lbl = ws.cell(row=next_row, column=2,
+                                value='Ending Balance per GL')
+            _apply(c_end_lbl, font=_font(bold=True, color='FFFFFF'),
+                   fill=_fill(DARK_BLUE), border=THIN)
+            ws.merge_cells(start_row=next_row, start_column=2,
+                           end_row=next_row, end_column=AMOUNT_COL - 1)
+            c_end_val = ws.cell(row=next_row, column=AMOUNT_COL, value=gl_ending)
+            _apply(c_end_val, font=_font(bold=True, color='FFFFFF'),
+                   fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+                   align=Alignment(horizontal='right'))
+            next_row += 1
+
+            _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+            return ws
+
+        # ── No capital schedule and no prior workpaper — fall back to GL ──────
         c_msg = ws.cell(row=next_row, column=2,
                         value='Upload capital schedule for detailed view')
         _apply(c_msg, font=_font(italic=True, color='888888'), border=THIN)
@@ -1738,41 +1871,45 @@ def _build_capital_tab(wb, account_code, account_name, tab_color,
 # ── 154500 — Building Improvements ───────────────────────────────────────────
 
 def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('154500')
     return _build_capital_tab(wb, '154500', 'Building Improvements', '70AD47',
                               period, property_name, gl_acct, tb_entry,
-                              acct, has_entity=False, has_commencement=False)
+                              acct, has_entity=False, has_commencement=False,
+                              prior_rows=(prior_tab_detail or {}).get('154500'))
 
 
 # ── 181200 — Leasing Commissions ─────────────────────────────────────────────
 
 def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181200')
     return _build_capital_tab(wb, '181200', 'Leasing Commissions', '4472C4',
                               period, property_name, gl_acct, tb_entry,
-                              acct, has_entity=True, has_commencement=True)
+                              acct, has_entity=True, has_commencement=True,
+                              prior_rows=(prior_tab_detail or {}).get('181200'))
 
 
 # ── 181300 — Legal Leasing Costs ─────────────────────────────────────────────
 
 def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181300')
     return _build_capital_tab(wb, '181300', 'Legal Leasing Costs', '4472C4',
                               period, property_name, gl_acct, tb_entry,
-                              acct, has_entity=True, has_commencement=True)
+                              acct, has_entity=True, has_commencement=True,
+                              prior_rows=(prior_tab_detail or {}).get('181300'))
 
 
 # ── 181400 — Tenant Improvement ───────────────────────────────────────────────
 
 def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181400')
     return _build_capital_tab(wb, '181400', 'Tenant Improvement', '4472C4',
                               period, property_name, gl_acct, tb_entry,
-                              acct, has_entity=True, has_commencement=True)
+                              acct, has_entity=True, has_commencement=True,
+                              prior_rows=(prior_tab_detail or {}).get('181400'))
 
 
 # ── Dispatch table ────────────────────────────────────────────────────────────

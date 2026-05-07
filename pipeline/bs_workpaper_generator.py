@@ -251,6 +251,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     # Account tabs are rebuilt as rolling tables (one row per period) so the
     # full balance history lives in a single tab per account.
     _account_history: dict = {}   # {account_code: [sorted period row dicts]}
+    _prior_full_detail: dict = {} # {account_code: [full transaction row dicts]}
 
     if prior_workpaper_path and os.path.exists(prior_workpaper_path):
         try:
@@ -266,6 +267,9 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
             # Extract historical balance data from all prior account tabs.
             _account_history = _extract_account_history(_wb_prior)
+
+            # Extract full transaction detail for escrow + capital accounts.
+            _prior_full_detail = _extract_prior_full_detail(_wb_prior)
 
             # Determine which analysis tab names to carry forward (copy-and-extend).
             # These are the only sheets we keep in the working wb.
@@ -404,6 +408,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 ar_aging_data=ar_aging_data,
                 capital_schedule_data=capital_schedule_data,
                 berkadia_loans=berkadia_loans,
+                prior_tab_detail=_prior_full_detail,
             )
         elif acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
             _write_accrual_schedule_tab(
@@ -973,6 +978,167 @@ def _extract_account_history(wb_prior) -> dict:
         history[acct_code] = sorted(history[acct_code], key=_period_sort_key)
 
     return history
+
+
+# ── Full transaction-level carry-forward for escrow + capital accounts ────────
+
+# Accounts that need full detail rows carried forward month-over-month
+_FULL_DETAIL_ACCOUNTS = frozenset({
+    '115200', '115300', '115600',           # escrow / reserve
+    '154500', '181200', '181300', '181400', # capital
+})
+
+# Capital tab layout info: {account_code: (has_entity, has_commencement)}
+_CAPITAL_TAB_LAYOUTS = {
+    '154500': (False, False),
+    '181200': (True,  True),
+    '181300': (True,  True),
+    '181400': (True,  True),
+}
+
+
+def _read_escrow_tab_detail(ws) -> list:
+    """
+    Extract all transaction rows from an escrow/reserve workpaper tab.
+
+    Tab column layout (written by _build_escrow_tab in account_tab_builders.py):
+      B = Date string ('M/D/YYYY')
+      C = Description
+      D = Entity
+      E = Amount (numeric value, NOT a formula)
+      F = Running Balance (Excel formula — skipped on read-back)
+
+    Skips header rows, the Balance Forward row, and any row without both a
+    date-like value in col B and a numeric value in col E.
+
+    Returns list of {date_str, desc, amt} dicts.
+    """
+    rows = []
+    for row_vals in ws.iter_rows(min_row=1, values_only=True):
+        if len(row_vals) < 5:
+            continue
+        col_b = row_vals[1]   # Date
+        col_c = row_vals[2]   # Description
+        col_e = row_vals[4]   # Amount
+
+        # Col B must look like a date: M/D/YYYY
+        if not isinstance(col_b, str):
+            continue
+        if not re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', col_b.strip()):
+            continue
+        # Col E must be numeric (not a formula string)
+        if not isinstance(col_e, (int, float)):
+            continue
+
+        rows.append({
+            'date_str': col_b.strip(),
+            'desc':     str(col_c or '').strip(),
+            'amt':      float(col_e),
+        })
+    return rows
+
+
+def _read_capital_tab_detail(ws, has_entity: bool, has_commencement: bool) -> list:
+    """
+    Extract all item rows from a capital workpaper tab.
+
+    Tab column layouts (written by _build_capital_tab):
+      154500 (has_entity=False, has_commencement=False):
+        B = Description, C = Date, D = Amount
+      181200/181300/181400 (has_entity=True, has_commencement=True):
+        B = Description, C = Entity, D = Commencement Date, E = Amount
+
+    Skips header rows, the column header row, and the Ending Balance / tieout rows.
+    Detection: col B is a non-empty string AND the last data column is numeric.
+
+    Returns list of dicts matching the column layout.
+    """
+    _SKIP_LABELS = frozenset({
+        'description', 'entity', 'commencement date', 'date', 'amount',
+        'ending balance per gl', 'gl balance', 'tb balance', 'difference',
+        'trial balance', 'tieout', 'tie-out', 'workpaper',
+    })
+
+    rows = []
+    for row_vals in ws.iter_rows(min_row=1, values_only=True):
+        col_b = row_vals[1] if len(row_vals) > 1 else None
+        if not isinstance(col_b, str) or not col_b.strip():
+            continue
+
+        col_b_lower = col_b.strip().lower()
+        # Skip column-header rows and summary/tieout labels
+        if col_b_lower in _SKIP_LABELS:
+            continue
+        if any(kw in col_b_lower for kw in ('ending balance', 'gl balance',
+                                              'tb balance', 'tieout', 'tie-out')):
+            break   # reached summary section — stop reading
+
+        if has_entity and has_commencement:
+            # 181xxx: B=desc, C=entity, D=commencement, E=amount
+            if len(row_vals) < 5:
+                continue
+            col_e = row_vals[4]
+            if not isinstance(col_e, (int, float)):
+                continue
+            rows.append({
+                'description':       col_b.strip(),
+                'entity':            str(row_vals[2] or ''),
+                'commencement_date': str(row_vals[3] or ''),
+                'amount':            float(col_e),
+            })
+        else:
+            # 154500: B=desc, C=date, D=amount
+            if len(row_vals) < 4:
+                continue
+            col_d = row_vals[3]
+            if not isinstance(col_d, (int, float)):
+                continue
+            rows.append({
+                'description': col_b.strip(),
+                'date':        str(row_vals[2] or ''),
+                'amount':      float(col_d),
+            })
+    return rows
+
+
+def _extract_prior_full_detail(wb_prior) -> dict:
+    """
+    Extract full transaction-level detail rows from escrow and capital account
+    tabs in the prior workpaper.
+
+    Covers accounts: 115200, 115300, 115600, 154500, 181200, 181300, 181400.
+
+    Returns {account_code: [list of row dicts]}.
+    If the same account code appears in multiple tabs (e.g., with a period prefix),
+    the last tab encountered is used — in practice there should be only one tab
+    per account in any given workpaper.
+    """
+    detail: dict = {}
+    if not wb_prior:
+        return detail
+
+    for sheet_name in wb_prior.sheetnames:
+        stripped = sheet_name.strip()
+        # Strip any period prefix (e.g., "Mar-2026 115200 RET Escrow" → "115200...")
+        bare = _PERIOD_PREFIX_RE.sub('', stripped).strip()
+        code_m = re.match(r'^(\d{6})', bare)
+        if not code_m:
+            continue
+        acct_code = code_m.group(1)
+        if acct_code not in _FULL_DETAIL_ACCOUNTS:
+            continue
+
+        ws = wb_prior[sheet_name]
+        if acct_code in ('115200', '115300', '115600'):
+            rows = _read_escrow_tab_detail(ws)
+        else:
+            has_entity, has_comm = _CAPITAL_TAB_LAYOUTS[acct_code]
+            rows = _read_capital_tab_detail(ws, has_entity, has_comm)
+
+        if rows:
+            detail[acct_code] = rows
+
+    return detail
 
 
 # ── Account reconciliation tab ────────────────────────────────
