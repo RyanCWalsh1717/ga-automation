@@ -119,8 +119,42 @@ def parse(filepath: str, sheet_name: str = None) -> TBResult:
     total_debits = 0.0
     total_credits = 0.0
 
-    # Data rows start at row 7 (rows 5-6 are column headers)
-    for row_num in range(7, ws.max_row + 1):
+    # ── Detect column positions from header rows (rows 1-8) ──────────────────
+    # Yardi TB exports vary: some have extra columns (YTD Budget, Book, etc.)
+    # inserted before the data columns.  Scan for header keywords to find the
+    # correct column indices rather than assuming fixed positions.
+    _col_fwd    = 3   # defaults: col 3 = Forward Balance
+    _col_debit  = 4   # col 4 = Debit
+    _col_credit = 5   # col 5 = Credit
+    _col_ending = 6   # col 6 = Ending Balance
+    _data_start = 7   # first data row (after two header rows)
+
+    for _hrow in range(1, min(10, ws.max_row + 1)):
+        _hvals = [_safe_str(ws.cell(row=_hrow, column=c).value).lower()
+                  for c in range(1, min(15, ws.max_column + 2))]
+        # Look for a row that has both "debit" and "credit"
+        if 'debit' in _hvals and 'credit' in _hvals:
+            _col_debit  = _hvals.index('debit')  + 1
+            _col_credit = _hvals.index('credit') + 1
+            # Forward balance: column before debit that contains "balance" or "forward"
+            for _ci, _hv in enumerate(_hvals):
+                if ('forward' in _hv or ('balance' in _hv and _ci < _col_debit - 1)):
+                    _col_fwd = _ci + 1
+                    break
+            else:
+                _col_fwd = max(1, _col_debit - 1)
+            # Ending balance: column after credit containing "balance" or "ending"
+            for _ci, _hv in enumerate(_hvals[_col_credit:], start=_col_credit):
+                if 'balance' in _hv or 'ending' in _hv:
+                    _col_ending = _ci + 1
+                    break
+            else:
+                _col_ending = _col_credit + 1
+            _data_start = _hrow + 1
+            break
+
+    # Data rows start after column headers
+    for row_num in range(_data_start, ws.max_row + 1):
         col_a = ws.cell(row=row_num, column=1).value
         col_b = ws.cell(row=row_num, column=2).value
 
@@ -133,18 +167,18 @@ def parse(filepath: str, sheet_name: str = None) -> TBResult:
 
         # Total row: account code is blank/NaN but col_b says "Total"
         if not code or name.lower() == 'total':
-            total_debits = _safe_float(ws.cell(row=row_num, column=4).value)
-            total_credits = _safe_float(ws.cell(row=row_num, column=5).value)
+            total_debits = _safe_float(ws.cell(row=row_num, column=_col_debit).value)
+            total_credits = _safe_float(ws.cell(row=row_num, column=_col_credit).value)
             continue
 
         # Skip rows where code is not numeric (headers that slipped through)
         if not code.replace('-', '').replace(' ', '').isdigit():
             continue
 
-        fwd = _safe_float(ws.cell(row=row_num, column=3).value)
-        debit = _safe_float(ws.cell(row=row_num, column=4).value)
-        credit = _safe_float(ws.cell(row=row_num, column=5).value)
-        ending = _safe_float(ws.cell(row=row_num, column=6).value)
+        fwd    = _safe_float(ws.cell(row=row_num, column=_col_fwd).value)
+        debit  = _safe_float(ws.cell(row=row_num, column=_col_debit).value)
+        credit = _safe_float(ws.cell(row=row_num, column=_col_credit).value)
+        ending = _safe_float(ws.cell(row=row_num, column=_col_ending).value)
 
         accounts.append(TBAccount(
             account_code=code,

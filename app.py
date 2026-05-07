@@ -2064,6 +2064,19 @@ with tab2:
                 bc_parsed    = engine_result.parsed.get('budget_comparison') or []
                 close_period = engine_result.period or ''
 
+                # Initialise variables that may be assigned later in conditional
+                # parse blocks — ensures they are always defined if those blocks
+                # are skipped due to missing files or upstream exceptions.
+                _ar_aging_parsed_p2   = None
+                _capital_schedule_data = None
+                tb_result              = None
+                t12_result             = None
+                bank_rec_data          = None
+                daca_bank_data         = None
+                dev_bank_rec_data      = None
+                gl_cash_balance        = None
+                daca_gl_balance        = None
+
                 # ── Loan statement date validation (Pass 2) ───────────────────
                 _loan_stmts_p2 = engine_result.parsed.get('loan') or []
                 if not isinstance(_loan_stmts_p2, list):
