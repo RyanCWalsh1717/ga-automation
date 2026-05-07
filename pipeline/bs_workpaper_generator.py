@@ -403,6 +403,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 bank_rec_data=bank_rec_data,
                 ar_aging_data=ar_aging_data,
                 capital_schedule_data=capital_schedule_data,
+                berkadia_loans=berkadia_loans,
             )
         elif acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
             _write_accrual_schedule_tab(

@@ -54,10 +54,9 @@ def _apply(cell, font=None, fill=None, fmt=None, border=None, align=None):
     if align:  cell.alignment = align
 
 
-# ── Seed data ─────────────────────────────────────────────────────────────────
+# ── Legacy seed helpers (retained for reference; no longer used by builders) ──
 
-# 115200 — RET Escrow seed ledger
-# Tuple: (date_str, description, amount)
+# 115200 — RET Escrow historical reference
 _RET_SEED: List[tuple] = [
     ('3/25/2024',  'RET Escrow - Per statement due 4.10.24',    232339.00),
     ('5/24/2024',  'RET Escrow - Per statement due 5.10.24',    232339.00),
@@ -283,21 +282,88 @@ def _write_standard_tab(wb, tab_name: str, tab_color: str,
     return ws
 
 
-# ── 115200 — RET Escrow ───────────────────────────────────────────────────────
+# ── Shared GL-based escrow / reserve tab builder ─────────────────────────────
 
-def build_115200_tab(wb, period: str, property_name: str,
-                     gl_acct=None, tb_entry=None,
-                     **_):
-    close_year, close_month = _parse_close_period(period)
-    seed = _seed_rows_for_period(_RET_SEED, close_year, close_month)
+def _group_escrow_gl_transactions(gl_acct) -> list:
+    """
+    Group GL transactions for an escrow/reserve account by (date, clean_desc),
+    net debit-credit, and discard near-zero groups (APPLY clearing pairs).
 
+    Same logic as DACA grouping — gives one clean row per real event rather
+    than regurgitating every raw GL sub-line.
+
+    Returns list of dicts: {date_str, desc, amt, sort_date} sorted by date.
+    """
+    from collections import defaultdict
+    from datetime import date as _date
+
+    net_by_key: Dict[tuple, float] = defaultdict(float)
+    meta:       Dict[tuple, dict]  = {}
+
+    for txn in (getattr(gl_acct, 'transactions', []) or []):
+        d = getattr(txn, 'date', None)
+        if isinstance(d, _date):
+            date_str  = d.strftime('%m/%d/%Y')
+            sort_date = d
+        else:
+            date_str  = str(d or '')
+            sort_date = _date(1900, 1, 1)
+
+        desc_raw   = str(getattr(txn, 'description', '') or '')
+        desc_clean = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc_raw).strip()
+
+        debit  = float(getattr(txn, 'debit',  0) or 0)
+        credit = float(getattr(txn, 'credit', 0) or 0)
+
+        key = (sort_date, desc_clean)
+        net_by_key[key] = round(net_by_key[key] + debit - credit, 2)
+        if key not in meta:
+            meta[key] = {'date_str': date_str, 'sort_date': sort_date,
+                         'desc': desc_clean}
+
+    rows = []
+    for key in sorted(net_by_key.keys()):
+        net = net_by_key[key]
+        if abs(net) < 0.01:
+            continue   # APPLY pairs — skip
+        info = meta[key]
+        rows.append({'date_str': info['date_str'], 'desc': info['desc'],
+                     'amt': net, 'sort_date': info['sort_date']})
+    return rows
+
+
+def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
+                      period: str, property_name: str,
+                      gl_acct, tb_entry,
+                      berkadia_balance_key: str = '',
+                      berkadia_loans: list = None) -> Any:
+    """
+    Generic workpaper tab for escrow and reserve accounts (115200, 115300, 115600).
+
+    Layout:
+      Balance Forward  (gl_acct.beginning_balance)
+      [one grouped row per real event — duplicates / APPLY pairs removed]
+      Running balance formula: =F_prev + E_cur
+      ──────────────────────────────────────────
+      Berkadia Reconciliation block (if berkadia_loans provided):
+        Balance per Berkadia Statement   $X
+        Balance per GL                   $X
+        Difference                       $0
+      GL / TB tie-out
+
+    Columns: Date | Description | Entity | Amount | Running Balance
+    """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    gl_beg    = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
-    ws = wb.create_sheet('115200 RET Escrow'[:31])
-    ws.sheet_properties.tabColor = '4472C4'
+    AMT_COL = 5   # E
+    BAL_COL = 6   # F
 
-    next_row = _write_tab_header(ws, '115200', 'Real Estate Tax Escrow',
+    ws = wb.create_sheet(f'{account_code} {account_name}'[:31])
+    ws.sheet_properties.tabColor = tab_color
+
+    next_row = _write_tab_header(ws, account_code, account_name,
                                  period, property_name, ncols=5)
     next_row += 1
     next_row = _write_col_headers(
@@ -306,149 +372,140 @@ def build_115200_tab(wb, period: str, property_name: str,
         [14, 52, 14, 18, 18],
     )
 
-    running = 0.0
-    for i, (d, desc, amt) in enumerate(seed):
-        running = round(running + amt, 2)
-        alt = i % 2 == 1
-        bg = _fill(LIGHT_GRAY) if alt else None
-        is_payment = amt < 0
+    # ── Balance Forward ───────────────────────────────────────────────────────
+    c_beg = ws.cell(row=next_row, column=3, value='Balance Forward')
+    _apply(c_beg, font=_font(italic=True, color='444444'), border=THIN,
+           align=Alignment(horizontal='left'))
+    ws.merge_cells(start_row=next_row, start_column=3,
+                   end_row=next_row, end_column=BAL_COL - 1)
+    c_beg_bal = ws.cell(row=next_row, column=BAL_COL, value=gl_beg)
+    _apply(c_beg_bal, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+           fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+    next_row += 1
 
-        c1 = ws.cell(row=next_row, column=2, value=d.strftime('%m/%d/%Y'))
+    # ── Grouped GL transactions ───────────────────────────────────────────────
+    rows = _group_escrow_gl_transactions(gl_acct)
+
+    for i, r in enumerate(rows):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+        is_neg = r['amt'] < 0
+
+        c1 = ws.cell(row=next_row, column=2, value=r['date_str'])
         _apply(c1, font=_font(), fill=bg, border=THIN)
 
-        c2 = ws.cell(row=next_row, column=3, value=desc)
-        _apply(c2, font=_font(bold=is_payment), fill=bg, border=THIN)
+        c2 = ws.cell(row=next_row, column=3, value=r['desc'])
+        _apply(c2, font=_font(bold=is_neg), fill=bg, border=THIN,
+               align=Alignment(wrap_text=True))
 
         c3 = ws.cell(row=next_row, column=4, value=_ENTITY)
         _apply(c3, font=_font(), fill=bg, border=THIN)
 
-        c4 = ws.cell(row=next_row, column=5, value=amt)
-        _apply(c4, font=_font(bold=is_payment,
-                              color='CC0000' if is_payment else '000000'),
+        c4 = ws.cell(row=next_row, column=AMT_COL, value=r['amt'])
+        _apply(c4, font=_font(bold=is_neg, color='CC0000' if is_neg else '000000'),
                fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
 
-        c5 = ws.cell(row=next_row, column=6, value=running)
+        prev_ref = f'F{next_row - 1}'
+        formula  = f'={prev_ref}+IFERROR(E{next_row},0)'
+        c5 = ws.cell(row=next_row, column=BAL_COL, value=formula)
         _apply(c5, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
                fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
 
         next_row += 1
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
+    if not rows:
+        c = ws.cell(row=next_row, column=2, value='No GL activity this period')
+        _apply(c, font=_font(italic=True, color='666666'))
+        next_row += 1
+
+    # ── Berkadia statement reconciliation block ───────────────────────────────
+    berkadia_bal = None
+    berkadia_date = ''
+    if berkadia_balance_key and berkadia_loans:
+        for loan in (berkadia_loans or []):
+            val = loan.get(berkadia_balance_key)
+            if val:
+                berkadia_bal = (berkadia_bal or 0) + float(val)
+                berkadia_date = berkadia_date or (loan.get('as_of_date') or '')
+
+    if berkadia_bal is not None:
+        next_row += 1
+        date_label = f' as of {berkadia_date}' if berkadia_date else ''
+        rec_hdr = ws.cell(row=next_row, column=2, value='Berkadia Reconciliation')
+        _apply(rec_hdr, font=_font(bold=True, size=10, color='FFFFFF'),
+               fill=_fill(DARK_BLUE), border=THIN,
+               align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=BAL_COL)
+        next_row += 1
+
+        diff = round(gl_ending - berkadia_bal, 2)
+        rec_rows = [
+            (f'Balance per Berkadia Statement{date_label}', berkadia_bal, DARK_BLUE, 'FFFFFF'),
+            ('Balance per GL',                              gl_ending,    MED_BLUE,  'FFFFFF'),
+            ('Difference',                                  diff,         None,      None),
+        ]
+        for label, val, fill_hex, font_color in rec_rows:
+            c_lbl = ws.cell(row=next_row, column=2, value=label)
+            _apply(c_lbl,
+                   font=_font(bold=True, color=font_color or '000000'),
+                   fill=_fill(fill_hex) if fill_hex else None,
+                   border=THIN, align=Alignment(horizontal='left'))
+            ws.merge_cells(start_row=next_row, start_column=2,
+                           end_row=next_row, end_column=BAL_COL - 1)
+            c_val = ws.cell(row=next_row, column=BAL_COL, value=val)
+            if label == 'Difference':
+                ok = abs(val) < 0.02
+                _apply(c_val,
+                       font=_font(bold=True, color='006400' if ok else 'CC0000'),
+                       fill=_fill(GREEN_FILL if ok else RED_FILL),
+                       fmt='$#,##0.00', border=DOUBLE_BTM)
+            else:
+                _apply(c_val,
+                       font=_font(bold=True, color=font_color or '000000'),
+                       fill=_fill(fill_hex) if fill_hex else None,
+                       fmt='$#,##0.00', border=THIN)
+            next_row += 1
+
+    # ── GL / TB tie-out ───────────────────────────────────────────────────────
+    next_row += 1
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=BAL_COL)
     return ws
+
+
+# ── 115200 — RET Escrow ───────────────────────────────────────────────────────
+
+def build_115200_tab(wb, period: str, property_name: str,
+                     gl_acct=None, tb_entry=None,
+                     berkadia_loans: list = None, **_):
+    return _build_escrow_tab(wb, '115200', 'RET Escrow', '4472C4',
+                             period, property_name, gl_acct, tb_entry,
+                             berkadia_balance_key='tax_escrow_balance',
+                             berkadia_loans=berkadia_loans)
 
 
 # ── 115300 — Insurance Escrow ─────────────────────────────────────────────────
 
 def build_115300_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
-                     **_):
-    close_year, close_month = _parse_close_period(period)
-    seed = _seed_rows_for_period(_INSUR_SEED, close_year, close_month)
-
-    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
-    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
-
-    ws = wb.create_sheet('115300 Insur Escrow'[:31])
-    ws.sheet_properties.tabColor = '4472C4'
-
-    next_row = _write_tab_header(ws, '115300', 'Insurance Escrow',
-                                 period, property_name, ncols=5)
-    next_row += 1
-    next_row = _write_col_headers(
-        ws, next_row,
-        ['Date', 'Description', 'Entity', 'Amount', 'Running Balance'],
-        [14, 52, 14, 18, 18],
-    )
-
-    running = 0.0
-    for i, (d, desc, amt) in enumerate(seed):
-        running = round(running + amt, 2)
-        alt = i % 2 == 1
-        bg = _fill(LIGHT_GRAY) if alt else None
-        is_payment = amt < 0
-
-        c1 = ws.cell(row=next_row, column=2, value=d.strftime('%m/%d/%Y'))
-        _apply(c1, font=_font(), fill=bg, border=THIN)
-
-        c2 = ws.cell(row=next_row, column=3, value=desc)
-        _apply(c2, font=_font(bold=is_payment), fill=bg, border=THIN)
-
-        c3 = ws.cell(row=next_row, column=4, value=_ENTITY)
-        _apply(c3, font=_font(), fill=bg, border=THIN)
-
-        c4 = ws.cell(row=next_row, column=5, value=amt)
-        _apply(c4, font=_font(bold=is_payment,
-                              color='CC0000' if is_payment else '000000'),
-               fill=bg, fmt='$#,##0.00', border=THIN,
-               align=Alignment(horizontal='right'))
-
-        c5 = ws.cell(row=next_row, column=6, value=running)
-        _apply(c5, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
-               fmt='$#,##0.00', border=THIN,
-               align=Alignment(horizontal='right'))
-
-        next_row += 1
-
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
-    return ws
+                     berkadia_loans: list = None, **_):
+    return _build_escrow_tab(wb, '115300', 'Insurance Escrow', '4472C4',
+                             period, property_name, gl_acct, tb_entry,
+                             berkadia_balance_key='insurance_escrow_balance',
+                             berkadia_loans=berkadia_loans)
 
 
 # ── 115600 — Loan Reserve ────────────────────────────────────────────────────
 
 def build_115600_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
-                     **_):
-    close_year, close_month = _parse_close_period(period)
-    seed = _seed_rows_for_period(_LOAN_RESERVE_SEED, close_year, close_month)
-
-    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
-    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
-
-    ws = wb.create_sheet('115600 Loan Reserve'[:31])
-    ws.sheet_properties.tabColor = '4472C4'
-
-    next_row = _write_tab_header(ws, '115600', 'Loan Reserve',
-                                 period, property_name, ncols=5)
-    next_row += 1
-    next_row = _write_col_headers(
-        ws, next_row,
-        ['Date', 'Description', 'Entity', 'Amount', 'Running Balance'],
-        [14, 52, 14, 18, 18],
-    )
-
-    running = 0.0
-    for i, (d, desc, amt) in enumerate(seed):
-        running = round(running + amt, 2)
-        alt = i % 2 == 1
-        bg = _fill(LIGHT_GRAY) if alt else None
-        is_debit = amt < 0
-
-        c1 = ws.cell(row=next_row, column=2, value=d.strftime('%m/%d/%Y'))
-        _apply(c1, font=_font(), fill=bg, border=THIN)
-
-        c2 = ws.cell(row=next_row, column=3, value=desc)
-        _apply(c2, font=_font(bold=is_debit), fill=bg, border=THIN)
-
-        c3 = ws.cell(row=next_row, column=4, value=_ENTITY)
-        _apply(c3, font=_font(), fill=bg, border=THIN)
-
-        c4 = ws.cell(row=next_row, column=5, value=amt)
-        _apply(c4, font=_font(bold=is_debit,
-                              color='CC0000' if is_debit else '000000'),
-               fill=bg, fmt='$#,##0.00', border=THIN,
-               align=Alignment(horizontal='right'))
-
-        c5 = ws.cell(row=next_row, column=6, value=running)
-        _apply(c5, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
-               fmt='$#,##0.00', border=THIN,
-               align=Alignment(horizontal='right'))
-
-        next_row += 1
-
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
-    return ws
+                     berkadia_loans: list = None, **_):
+    return _build_escrow_tab(wb, '115600', 'Loan Reserve', '4472C4',
+                             period, property_name, gl_acct, tb_entry,
+                             berkadia_balance_key='reserve_balance',
+                             berkadia_loans=berkadia_loans)
 
 
 # ── 133100 — AR Other ────────────────────────────────────────────────────────
