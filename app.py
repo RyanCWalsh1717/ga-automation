@@ -461,6 +461,13 @@ FILE_CONFIG = {
         "Upload the BofA Full Analysis Business Checking statement (account x3132). "
         "Without it: development bank rec tab is omitted from the workpaper.",
     ),
+    "capital_schedule": (
+        "Capital Accounts Schedule (.xlsx)", "xlsx", False, "reference",
+        "Capital improvement schedules (154500 Building Improvements, 181200 LC, "
+        "181300 Legal, 181400 TI). Upload the monthly Rev Labs capital schedule. "
+        "Drives the 4 capital account tabs in the workpaper. "
+        "Without it: capital tabs show GL transactions only.",
+    ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
         "Enables DACA bank rec tab in the BS workpaper (KeyBank x5132 vs GL 115100). "
@@ -491,7 +498,7 @@ if "bulk_overrides_p1" not in st.session_state:
 _P1_SLOT_KEYS = [
     "gl", "trial_balance", "budget_comparison", "kardin_budget", "t12_statement",
     "nexus_accrual", "bank_rec", "receivable_detail", "ar_aging",
-    "bank_rec_dev", "daca_bank", "loan", "prepaid_ledger", "unknown",
+    "bank_rec_dev", "capital_schedule", "daca_bank", "loan", "prepaid_ledger", "unknown",
 ]
 _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 
@@ -1907,6 +1914,8 @@ with tab2:
                             prior_period=_prior_period,
                             berkadia_loans=_berkadia_loans,
                             dev_bank_rec_data=dev_bank_rec_data,
+                            ar_aging_data=_ar_aging_parsed_p2,
+                            capital_schedule_data=_capital_schedule_data,
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:
@@ -1938,6 +1947,16 @@ with tab2:
                             _ar_aging_parsed_p2 = _parse_ar_aging2(_ar_aging_file_p2)
                         except Exception:
                             _ar_aging_parsed_p2 = None
+
+                    # Capital accounts schedule (for workpaper tabs)
+                    _capital_file = st.session_state.uploaded_files.get("capital_schedule")
+                    _capital_schedule_data = None
+                    if _capital_file and os.path.exists(_capital_file):
+                        try:
+                            from parsers.capital_schedule import parse as _parse_capital
+                            _capital_schedule_data = _parse_capital(_capital_file)
+                        except Exception:
+                            _capital_schedule_data = None
 
                     fee_result = calculate_mgmt_fee(
                         gl_parsed=gl_parsed,

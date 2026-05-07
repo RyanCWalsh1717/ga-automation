@@ -205,7 +205,9 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            prior_workpaper_path: str = None,
                            prior_period: str = None,
                            berkadia_loans: list = None,
-                           dev_bank_rec_data: dict = None) -> str:
+                           dev_bank_rec_data: dict = None,
+                           ar_aging_data=None,
+                           capital_schedule_data=None) -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
@@ -398,6 +400,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 je_lines=_all_je_lines,
                 prepaid_ledger=prepaid_ledger_active,
                 daca_data=daca_bank_data,
+                ar_aging_data=ar_aging_data,
+                capital_schedule_data=capital_schedule_data,
             )
         elif acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
             _write_accrual_schedule_tab(
@@ -2441,7 +2445,9 @@ def generate(gl_result, tb_result, output_path: str,
              prior_workpaper_path: str = None,
              prior_period: str = None,
              berkadia_loans: list = None,
-             dev_bank_rec_data: dict = None) -> str:
+             dev_bank_rec_data: dict = None,
+             ar_aging_data=None,
+             capital_schedule_data=None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
@@ -2451,4 +2457,6 @@ def generate(gl_result, tb_result, output_path: str,
                                   prior_workpaper_path=prior_workpaper_path,
                                   prior_period=prior_period,
                                   berkadia_loans=berkadia_loans,
-                                  dev_bank_rec_data=dev_bank_rec_data)
+                                  dev_bank_rec_data=dev_bank_rec_data,
+                                  ar_aging_data=ar_aging_data,
+                                  capital_schedule_data=capital_schedule_data)

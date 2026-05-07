@@ -931,14 +931,428 @@ def build_115100_tab(wb, period: str, property_name: str,
     return ws
 
 
+# ── 131100 — AR Aging Detail ─────────────────────────────────────────────────
+
+def build_131100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     ar_aging_data=None, **_):
+    """AR Aging Detail — shows all charge rows EXCEPT Prepay (those go in 221100)."""
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    ws = wb.create_sheet('131100 AR Aging'[:31])
+    ws.sheet_properties.tabColor = 'BF8F00'
+
+    headers   = ['Tenant', 'Charge', 'Tran #', 'Date', 'Current', '0-30', '31-60', '61-90', '90+', 'Total']
+    col_widths = [28,       8,        12,       12,     14,        14,     12,      12,      12,    14]
+    ncols = len(headers)
+
+    next_row = _write_tab_header(ws, '131100', 'Accounts Receivable - AR Aging',
+                                 period, property_name, ncols=ncols)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row, headers, col_widths)
+
+    AMOUNT_COL = 11  # col K = column index 11 (B=2 + 9 offset)
+
+    detail_rows = []
+    if ar_aging_data is not None:
+        try:
+            detail_rows = [r for r in (ar_aging_data.detail_rows or [])
+                           if not r.is_prepayment]
+        except Exception:
+            detail_rows = []
+
+    if detail_rows:
+        # Group by tenant
+        from itertools import groupby
+        # Sort by tenant_name first
+        sorted_rows = sorted(detail_rows, key=lambda r: r.tenant_name)
+        i_row = 0
+        for tenant_name, tenant_group in groupby(sorted_rows, key=lambda r: r.tenant_name):
+            tenant_rows = list(tenant_group)
+            tenant_current_sum = 0.0
+            tenant_total_sum   = 0.0
+            for dr in tenant_rows:
+                alt = i_row % 2 == 1
+                bg  = _fill(LIGHT_GRAY) if alt else None
+
+                # Tenant name
+                c1 = ws.cell(row=next_row, column=2, value=dr.tenant_name)
+                _apply(c1, font=_font(), fill=bg, border=THIN)
+                # Charge code
+                c2 = ws.cell(row=next_row, column=3, value=dr.charge_code)
+                _apply(c2, font=_font(), fill=bg, border=THIN)
+                # Tran #
+                c3 = ws.cell(row=next_row, column=4, value=dr.tran_number)
+                _apply(c3, font=_font(), fill=bg, border=THIN)
+                # Date
+                date_val = dr.date
+                if date_val is not None:
+                    try:
+                        from datetime import datetime, date as _date
+                        if isinstance(date_val, (_date, datetime)):
+                            date_str = date_val.strftime('%m/%d/%Y')
+                        else:
+                            date_str = str(date_val)
+                    except Exception:
+                        date_str = str(date_val)
+                else:
+                    date_str = ''
+                c4 = ws.cell(row=next_row, column=5, value=date_str)
+                _apply(c4, font=_font(), fill=bg, border=THIN)
+                # Money columns: Current, 0-30, 31-60, 61-90, 90+, Total
+                for ci, val in enumerate([
+                    dr.current_owed, dr.owed_0_30, dr.owed_31_60,
+                    dr.owed_61_90, dr.owed_over_90, dr.total_owed
+                ]):
+                    c = ws.cell(row=next_row, column=6 + ci, value=val)
+                    _apply(c, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                           align=Alignment(horizontal='right'))
+
+                tenant_current_sum += dr.current_owed
+                tenant_total_sum   += dr.total_owed
+                next_row += 1
+                i_row    += 1
+
+            # Tenant subtotal row
+            c_lbl = ws.cell(row=next_row, column=2,
+                            value=f'  Subtotal: {tenant_name}')
+            _apply(c_lbl, font=_font(bold=True), fill=_fill(LIGHT_BLUE), border=THIN)
+            ws.merge_cells(start_row=next_row, start_column=2,
+                           end_row=next_row, end_column=5)
+            c_sub_cur = ws.cell(row=next_row, column=6, value=tenant_current_sum)
+            _apply(c_sub_cur, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+                   fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+            # Blank intermediate money cols
+            for ci in range(1, 5):
+                c = ws.cell(row=next_row, column=6 + ci, value=None)
+                _apply(c, fill=_fill(LIGHT_BLUE), border=THIN)
+            c_sub_tot = ws.cell(row=next_row, column=11, value=tenant_total_sum)
+            _apply(c_sub_tot, font=_font(bold=True), fill=_fill(LIGHT_BLUE),
+                   fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+            next_row += 1
+
+    else:
+        # Fallback: GL transactions in standard 4-col format
+        txns = list(getattr(gl_acct, 'transactions', []) or [])
+        if not txns:
+            c = ws.cell(row=next_row, column=2, value='No AR aging data or GL activity')
+            _apply(c, font=_font(italic=True, color='666666'))
+            next_row += 1
+        else:
+            for i, txn in enumerate(txns):
+                alt = i % 2 == 1
+                bg  = _fill(LIGHT_GRAY) if alt else None
+                d = getattr(txn, 'date', None)
+                from datetime import date as _date
+                date_str = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
+                desc = str(getattr(txn, 'description', '') or '')
+                amt  = float(getattr(txn, 'debit', 0) or 0) - float(getattr(txn, 'credit', 0) or 0)
+
+                c1 = ws.cell(row=next_row, column=2, value=date_str)
+                _apply(c1, font=_font(), fill=bg, border=THIN)
+                c2 = ws.cell(row=next_row, column=3, value=desc)
+                _apply(c2, font=_font(), fill=bg, border=THIN,
+                       align=Alignment(wrap_text=True))
+                ws.merge_cells(start_row=next_row, start_column=3,
+                               end_row=next_row, end_column=10)
+                c3 = ws.cell(row=next_row, column=11, value=amt)
+                _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                       align=Alignment(horizontal='right'))
+                next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+    return ws
+
+
+# ── 221100 — Prepaid Rent (AR Aging Prepay rows) ──────────────────────────────
+
+def build_221100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     ar_aging_data=None, **_):
+    """Prepaid Rent — shows ONLY Prepay rows from AR Aging."""
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    ws = wb.create_sheet('221100 Prepaid Rent'[:31])
+    ws.sheet_properties.tabColor = 'FF0000'
+
+    headers    = ['Tenant', 'Tran #', 'Date', 'Pre-payment']
+    col_widths = [32,        14,       14,     18]
+    ncols = len(headers)
+
+    next_row = _write_tab_header(ws, '221100', 'Prepaid Rent',
+                                 period, property_name, ncols=ncols)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row, headers, col_widths)
+
+    AMOUNT_COL = 5  # col E = column index 5
+
+    prepay_rows = []
+    if ar_aging_data is not None:
+        try:
+            prepay_rows = [r for r in (ar_aging_data.detail_rows or [])
+                           if r.is_prepayment]
+        except Exception:
+            prepay_rows = []
+
+    if prepay_rows:
+        for i, dr in enumerate(prepay_rows):
+            alt = i % 2 == 1
+            bg  = _fill(LIGHT_GRAY) if alt else None
+
+            c1 = ws.cell(row=next_row, column=2, value=dr.tenant_name)
+            _apply(c1, font=_font(), fill=bg, border=THIN)
+
+            c2 = ws.cell(row=next_row, column=3, value=dr.tran_number)
+            _apply(c2, font=_font(), fill=bg, border=THIN)
+
+            date_val = dr.date
+            if date_val is not None:
+                try:
+                    from datetime import datetime, date as _date
+                    if isinstance(date_val, (_date, datetime)):
+                        date_str = date_val.strftime('%m/%d/%Y')
+                    else:
+                        date_str = str(date_val)
+                except Exception:
+                    date_str = str(date_val)
+            else:
+                date_str = ''
+            c3 = ws.cell(row=next_row, column=4, value=date_str)
+            _apply(c3, font=_font(), fill=bg, border=THIN)
+
+            # total_owed is negative in Yardi for prepayments (liability)
+            amt = dr.total_owed
+            c4 = ws.cell(row=next_row, column=5, value=amt)
+            _apply(c4, font=_font(color='CC0000'), fill=bg,
+                   fmt='$#,##0.00', border=THIN,
+                   align=Alignment(horizontal='right'))
+            next_row += 1
+
+        # Totals row
+        total_prepay = sum(r.total_owed for r in prepay_rows)
+        c_tot_lbl = ws.cell(row=next_row, column=2, value='Total Prepayments')
+        _apply(c_tot_lbl, font=_font(bold=True), fill=_fill(DARK_BLUE),
+               border=THIN, align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=4)
+        c_tot_val = ws.cell(row=next_row, column=5, value=total_prepay)
+        _apply(c_tot_val, font=_font(bold=True, color='CC0000'),
+               fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+        next_row += 1
+
+    else:
+        # Fallback: GL transactions
+        txns = list(getattr(gl_acct, 'transactions', []) or [])
+        if not txns:
+            c = ws.cell(row=next_row, column=2, value='No prepayment data or GL activity')
+            _apply(c, font=_font(italic=True, color='666666'))
+            next_row += 1
+        else:
+            for i, txn in enumerate(txns):
+                alt = i % 2 == 1
+                bg  = _fill(LIGHT_GRAY) if alt else None
+                d = getattr(txn, 'date', None)
+                from datetime import date as _date
+                date_str = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
+                desc = str(getattr(txn, 'description', '') or '')
+                amt  = float(getattr(txn, 'debit', 0) or 0) - float(getattr(txn, 'credit', 0) or 0)
+
+                c1 = ws.cell(row=next_row, column=2, value=date_str)
+                _apply(c1, font=_font(), fill=bg, border=THIN)
+                c2 = ws.cell(row=next_row, column=3, value=desc)
+                _apply(c2, font=_font(), fill=bg, border=THIN,
+                       align=Alignment(wrap_text=True))
+                ws.merge_cells(start_row=next_row, start_column=3,
+                               end_row=next_row, end_column=4)
+                c3 = ws.cell(row=next_row, column=5, value=amt)
+                _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                       align=Alignment(horizontal='right'))
+                next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+    return ws
+
+
+# ── Capital accounts shared helper ────────────────────────────────────────────
+
+def _build_capital_tab(wb, account_code, account_name, tab_color,
+                       period, property_name, gl_acct, tb_entry,
+                       capital_account,
+                       has_entity=True, has_commencement=True):
+    """
+    Shared builder for all 4 capital account tabs (154500, 181200, 181300, 181400).
+
+    has_entity=False, has_commencement=False  → 154500 (Description | Date | Amount)
+    has_entity=True,  has_commencement=True   → 181200/181300/181400
+    """
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    tab_name = f'{account_code} {account_name}'[:31]
+    ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = tab_color
+
+    if has_entity and has_commencement:
+        headers    = ['Description', 'Entity', 'Commencement Date', 'Amount']
+        col_widths = [44,             12,       30,                  18]
+    else:
+        headers    = ['Description', 'Date', 'Amount']
+        col_widths = [50,             12,     18]
+
+    ncols = len(headers)
+    AMOUNT_COL = 2 + ncols - 1  # last column index (B-based)
+
+    next_row = _write_tab_header(ws, account_code, account_name,
+                                 period, property_name, ncols=ncols)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row, headers, col_widths)
+
+    has_data = (capital_account is not None and
+                capital_account.rows is not None and
+                len(capital_account.rows) > 0)
+
+    if not has_data:
+        # No capital schedule uploaded — show message and fall back to GL
+        c_msg = ws.cell(row=next_row, column=2,
+                        value='Upload capital schedule for detailed view')
+        _apply(c_msg, font=_font(italic=True, color='888888'), border=THIN)
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=AMOUNT_COL)
+        next_row += 2
+
+        # GL transactions fallback
+        txns = list(getattr(gl_acct, 'transactions', []) or [])
+        for i, txn in enumerate(txns):
+            alt = i % 2 == 1
+            bg  = _fill(LIGHT_GRAY) if alt else None
+            d = getattr(txn, 'date', None)
+            from datetime import date as _date
+            date_str = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
+            desc = str(getattr(txn, 'description', '') or '')
+            amt  = float(getattr(txn, 'debit', 0) or 0) - float(getattr(txn, 'credit', 0) or 0)
+
+            c1 = ws.cell(row=next_row, column=2, value=date_str if not has_entity else desc)
+            _apply(c1, font=_font(), fill=bg, border=THIN)
+            if has_entity:
+                c2 = ws.cell(row=next_row, column=3, value='')
+                _apply(c2, font=_font(), fill=bg, border=THIN)
+                c3 = ws.cell(row=next_row, column=4, value='')
+                _apply(c3, font=_font(), fill=bg, border=THIN)
+            else:
+                c2 = ws.cell(row=next_row, column=3, value=date_str)
+                _apply(c2, font=_font(), fill=bg, border=THIN)
+            c_amt = ws.cell(row=next_row, column=AMOUNT_COL, value=amt)
+            _apply(c_amt, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                   align=Alignment(horizontal='right'))
+            next_row += 1
+
+        _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+        return ws
+
+    # ── Write capital schedule rows ───────────────────────────────────────────
+    for i, row in enumerate(capital_account.rows):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+
+        if has_entity and has_commencement:
+            c1 = ws.cell(row=next_row, column=2, value=row.description)
+            _apply(c1, font=_font(), fill=bg, border=THIN,
+                   align=Alignment(wrap_text=True))
+            c2 = ws.cell(row=next_row, column=3, value=row.entity)
+            _apply(c2, font=_font(), fill=bg, border=THIN)
+            c3 = ws.cell(row=next_row, column=4, value=row.commencement_date)
+            _apply(c3, font=_font(), fill=bg, border=THIN)
+            c4 = ws.cell(row=next_row, column=5, value=row.amount)
+            _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                   align=Alignment(horizontal='right'))
+        else:
+            # 154500: Description | Date | Amount
+            c1 = ws.cell(row=next_row, column=2, value=row.description)
+            _apply(c1, font=_font(), fill=bg, border=THIN,
+                   align=Alignment(wrap_text=True))
+            c2 = ws.cell(row=next_row, column=3, value=row.commencement_date)
+            _apply(c2, font=_font(), fill=bg, border=THIN)
+            c3 = ws.cell(row=next_row, column=4, value=row.amount)
+            _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+                   align=Alignment(horizontal='right'))
+
+        next_row += 1
+
+    # ── Ending balance row ────────────────────────────────────────────────────
+    as_of_label = capital_account.as_of_date or ''
+    end_label = (f'Ending Balance per GL as of {as_of_label}'
+                 if as_of_label else 'Ending Balance per GL')
+    c_end_lbl = ws.cell(row=next_row, column=2, value=end_label)
+    _apply(c_end_lbl, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), border=THIN)
+    ws.merge_cells(start_row=next_row, start_column=2,
+                   end_row=next_row, end_column=AMOUNT_COL - 1)
+    c_end_val = ws.cell(row=next_row, column=AMOUNT_COL,
+                        value=capital_account.ending_balance)
+    _apply(c_end_val, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+    next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+    return ws
+
+
+# ── 154500 — Building Improvements ───────────────────────────────────────────
+
+def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, **_):
+    acct = (capital_schedule_data or {}).get('154500')
+    return _build_capital_tab(wb, '154500', 'Building Improvements', '70AD47',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=False, has_commencement=False)
+
+
+# ── 181200 — Leasing Commissions ─────────────────────────────────────────────
+
+def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, **_):
+    acct = (capital_schedule_data or {}).get('181200')
+    return _build_capital_tab(wb, '181200', 'Leasing Commissions', '4472C4',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=True, has_commencement=True)
+
+
+# ── 181300 — Legal Leasing Costs ─────────────────────────────────────────────
+
+def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, **_):
+    acct = (capital_schedule_data or {}).get('181300')
+    return _build_capital_tab(wb, '181300', 'Legal Leasing Costs', '4472C4',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=True, has_commencement=True)
+
+
+# ── 181400 — Tenant Improvement ───────────────────────────────────────────────
+
+def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, **_):
+    acct = (capital_schedule_data or {}).get('181400')
+    return _build_capital_tab(wb, '181400', 'Tenant Improvement', '4472C4',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=True, has_commencement=True)
+
+
 # ── Dispatch table ────────────────────────────────────────────────────────────
 
 CUSTOM_BUILDERS: Dict[str, Any] = {
     '115100': build_115100_tab,
     '115200': build_115200_tab,
     '115300': build_115300_tab,
+    '131100': build_131100_tab,
     '133100': build_133100_tab,
     '133110': build_133110_tab,
     '135150': build_135150_tab,
+    '154500': build_154500_tab,
+    '181200': build_181200_tab,
+    '181300': build_181300_tab,
+    '181400': build_181400_tab,
     '213100': build_213100_tab,
+    '221100': build_221100_tab,
 }

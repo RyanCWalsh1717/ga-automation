@@ -60,6 +60,25 @@ class ARAgingTenant:
 
 
 @dataclass
+class ARAgingDetailRow:
+    property_code: str
+    tenant_name: str
+    status: str
+    tran_number: str
+    charge_code: str
+    date: object   # datetime or None
+    month: str
+    current_owed: float
+    owed_0_30: float
+    owed_31_60: float
+    owed_61_90: float
+    owed_over_90: float
+    prepayments: float
+    total_owed: float
+    is_prepayment: bool  # charge_code.lower() in ('prepay', 'prepayment')
+
+
+@dataclass
 class ARAgingResult:
     property_code:      str
     period:             str                       # e.g. '01/2026'
@@ -67,6 +86,7 @@ class ARAgingResult:
     prepayment_balance: float                     # abs(Grand Total Pre-payments) — amount to subtract
     grand_total_owed:   float
     per_tenant:         List[ARAgingTenant] = field(default_factory=list)
+    detail_rows:        List[ARAgingDetailRow] = field(default_factory=list)
     _parse_error:       Optional[str] = None
     _prepayments_col:   int = 13                  # detected column index
 
@@ -154,12 +174,39 @@ def _parse_rows(rows: list) -> ARAgingResult:
                 grand_total_owed = _safe_float(row[prepayments_col + 1])
             break
 
-    # ── Collect per-tenant subtotals ────────────────────────────────────────────
+    # ── Collect per-tenant subtotals and detail rows ─────────────────────────
     per_tenant: List[ARAgingTenant] = []
+    detail_rows: List[ARAgingDetailRow] = []
+
+    _VALID_STATUSES = {'current', 'past', 'future'}
+
     for row in rows:
         col0 = str(row[0] or '').strip()
         col2 = str(row[2] or '').strip()
         col3 = str(row[3] or '').strip() if len(row) > 3 else ''
+
+        # ── Detail row: col0 == property_code AND col3 is a status string ──────
+        if col0.lower() == property_code.lower() and col3.lower() in _VALID_STATUSES:
+            charge_code = str(row[5] or '') if len(row) > 5 else ''
+            is_prepay = charge_code.lower() in ('prepay', 'prepayment')
+            detail_rows.append(ARAgingDetailRow(
+                property_code=col0,
+                tenant_name=col2,
+                status=col3,
+                tran_number=str(row[4] or '') if len(row) > 4 else '',
+                charge_code=charge_code,
+                date=row[6] if len(row) > 6 else None,
+                month=str(row[7] or '') if len(row) > 7 else '',
+                current_owed=_safe_float(row[8]) if len(row) > 8 else 0.0,
+                owed_0_30=_safe_float(row[9]) if len(row) > 9 else 0.0,
+                owed_31_60=_safe_float(row[10]) if len(row) > 10 else 0.0,
+                owed_61_90=_safe_float(row[11]) if len(row) > 11 else 0.0,
+                owed_over_90=_safe_float(row[12]) if len(row) > 12 else 0.0,
+                prepayments=_safe_float(row[13]) if len(row) > 13 else 0.0,
+                total_owed=_safe_float(row[14]) if len(row) > 14 else 0.0,
+                is_prepayment=is_prepay,
+            ))
+            continue
 
         # Tenant subtotal: col0=None, col2=tenant name, col3=None/empty, has financials
         if row[0] is None and col2 and not col3 and len(row) > prepayments_col:
@@ -184,6 +231,7 @@ def _parse_rows(rows: list) -> ARAgingResult:
         prepayment_balance=abs(grand_prepayments),   # always positive
         grand_total_owed=grand_total_owed,
         per_tenant=per_tenant,
+        detail_rows=detail_rows,
         _parse_error=None,
         _prepayments_col=prepayments_col,
     )
