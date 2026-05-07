@@ -1998,36 +1998,55 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         #
         # GL activity guard: skip each account if already posted to Yardi.
 
-        # ── Determine electric amount ──────────────────────────────────────────
+        # ── Determine electric amount (per-tenant from Receivable Detail) ────────
+        _elec_by_tenant: Dict[str, float] = {}
         _rec_elec_amt = 0.0
         _elec_source  = 'budget'
-        _elec_vendor  = '[Budget Accrual]'
         _elec_conf    = 'medium'
 
-        if receivable_detail and hasattr(receivable_detail, 'charges_by_code'):
+        if receivable_detail and hasattr(receivable_detail, 'elec_by_tenant') and receivable_detail.elec_by_tenant:
+            _elec_by_tenant = {k: v for k, v in receivable_detail.elec_by_tenant.items() if v > 0.0}
+            _rec_elec_amt   = sum(_elec_by_tenant.values())
+            if _rec_elec_amt > 0:
+                _elec_source = 'receivable_detail'
+                _elec_conf   = 'high'
+        elif receivable_detail and hasattr(receivable_detail, 'charges_by_code'):
+            # Fallback: aggregate from charges_by_code (no per-tenant breakdown)
             for _cc, _amt in receivable_detail.charges_by_code.items():
                 if 'ELEC' in _cc.upper():
                     _rec_elec_amt += _amt
             if _rec_elec_amt > 0:
                 _elec_source = 'receivable_detail'
-                _elec_vendor = '[Receivable Detail]'
                 _elec_conf   = 'high'
 
-        # ── Post 440500 electric recovery ─────────────────────────────────────
+        # ── Post 440500 electric recovery — one JE per tenant ─────────────────
         _mode_b_elec_total = 0.0
         _440500_gl = _tub_gl.get('440500')
         if _440500_gl is None or abs(_440500_gl.net_change) < 0.01:
             if _elec_source == 'receivable_detail' and _rec_elec_amt > 0:
-                # Use actual charges from Receivable Detail
-                _post_tub_line(
-                    '440500', 'Recovery - Electricity', _rec_elec_amt,
-                    _elec_vendor,
-                    (f'Tenant electric recovery accrual — ${_rec_elec_amt:,.2f} '
-                     f'per Receivable Detail electric charges '
-                     f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
-                )
-                _tub_accounts.add('440500')
-                _mode_b_elec_total = _rec_elec_amt
+                if _elec_by_tenant:
+                    # Per-tenant breakout from Receivable Detail elec_by_tenant
+                    for _tenant_name, _tenant_amt in sorted(_elec_by_tenant.items()):
+                        _post_tub_line(
+                            '440500', 'Recovery - Electricity', _tenant_amt,
+                            _tenant_name,
+                            (f'Tenant electric recovery — {_tenant_name} '
+                             f'per Receivable Detail '
+                             f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
+                        )
+                    _tub_accounts.add('440500')
+                    _mode_b_elec_total = _rec_elec_amt
+                else:
+                    # Aggregate fallback (elec_by_tenant not available)
+                    _post_tub_line(
+                        '440500', 'Recovery - Electricity', _rec_elec_amt,
+                        '[Receivable Detail]',
+                        (f'Tenant electric recovery accrual — ${_rec_elec_amt:,.2f} '
+                         f'per Receivable Detail electric charges '
+                         f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
+                    )
+                    _tub_accounts.add('440500')
+                    _mode_b_elec_total = _rec_elec_amt
             elif budget_data:
                 # Fallback: budget amount
                 for cand in detect_tenant_utility_billing(gl_data, budget_data):
@@ -2055,14 +2074,17 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _tub_accounts.add('440700')
 
         # ── P&L reclassification for Mode (b) electric ───────────────────────
+        # One aggregate reclass entry regardless of how many per-tenant AR JEs were posted.
         if _round(_mode_b_elec_total) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
             if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
-                _elec_je_id = f'TUB-{je_num:04d}'
-                _src_label  = 'Receivable Detail' if _elec_source == 'receivable_detail' else 'budget'
-                _elec_desc  = (f'Tenant electricity reclassification ({_src_label}) — '
-                               f'${_mode_b_elec_total:,.2f} '
-                               f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
+                _elec_je_id  = f'TUB-{je_num:04d}'
+                _src_label   = 'Receivable Detail' if _elec_source == 'receivable_detail' else 'budget'
+                _n_tenants   = len(_elec_by_tenant) if _elec_by_tenant else 1
+                _tenant_note = f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail' else _src_label
+                _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
+                                f'${_mode_b_elec_total:,.2f} '
+                                f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                 je_lines.append({
                     'je_number':      _elec_je_id, 'line': 1, 'date': '',
                     'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
@@ -2070,7 +2092,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
                     'debit':          _round(_mode_b_elec_total), 'credit': 0,
-                    'vendor':         _elec_vendor,
+                    'vendor':         '[Receivable Detail]' if _elec_source == 'receivable_detail' else '[Budget Accrual]',
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': _elec_conf,
                 })
@@ -2081,7 +2103,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
                     'debit':          0, 'credit': _round(_mode_b_elec_total),
-                    'vendor':         _elec_vendor,
+                    'vendor':         '[Receivable Detail]' if _elec_source == 'receivable_detail' else '[Budget Accrual]',
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': _elec_conf,
                 })

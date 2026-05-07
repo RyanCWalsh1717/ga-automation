@@ -75,6 +75,10 @@ class ReceivableDetailResult:
     # e.g. {'BASE': 280000.0, 'ELEC': 15420.0, 'CAMREC': 4200.0, 'PREPM': 0.0}
     # Used by the accrual engine to detect what was actually charged to tenants
     # for electricity recovery (codes containing 'ELEC') vs. budget.
+    elec_by_tenant:       Dict[str, float]       = field(default_factory=dict)
+    # elec_by_tenant — tenant_name → total electric charges billed (absolute).
+    # e.g. {'Tenant A': 8200.0, 'Tenant B': 7220.0}
+    # Used by Mode (b) TUB to generate one JE per tenant instead of one aggregate.
     _parse_error:         Optional[str]          = None
 
 
@@ -162,6 +166,7 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
     prepayment_detail: List[Dict[str, Any]] = []
     prepayment_receipts = 0.0
     charges_by_code: Dict[str, float] = {}
+    elec_by_tenant: Dict[str, float] = {}
 
     current_tenant = ''
     tenant_prepay_charges = 0.0
@@ -194,6 +199,9 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
             # Accumulate absolute charges per code (upper-cased for consistent lookup)
             code_key = col6.strip().upper()
             charges_by_code[code_key] = charges_by_code.get(code_key, 0.0) + abs(charges)
+            # Per-tenant electric accumulation (for Mode b TUB per-tenant breakout)
+            if 'ELEC' in code_key and current_tenant:
+                elec_by_tenant[current_tenant] = elec_by_tenant.get(current_tenant, 0.0) + abs(charges)
             if _is_prepayment(col6):
                 tenant_prepay_charges += abs(charges)
                 prepayment_detail.append({
@@ -245,5 +253,6 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
         per_tenant=per_tenant,
         prepayment_detail=prepayment_detail,
         charges_by_code=charges_by_code,
+        elec_by_tenant=elec_by_tenant,
         _parse_error=None,
     )
