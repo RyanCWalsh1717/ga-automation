@@ -815,6 +815,53 @@ with tab1:
                 nexus_data = engine_result.parsed.get('nexus_accrual')
                 close_period = engine_result.period or ''
 
+                # ── Loan statement date validation ────────────────────────────
+                # Interest paid on the 7th covers the PRIOR month.  For the
+                # January close, the correct statement is the one due 2/7/2026.
+                # Flag a warning when the uploaded statement's payment_due_date
+                # month doesn't equal close_period month + 1.
+                _loan_stmts = engine_result.parsed.get('loan') or []
+                if not isinstance(_loan_stmts, list):
+                    _loan_stmts = [_loan_stmts]
+                _cp_month_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                                     Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+                _cp_mo = next(
+                    (v for k, v in _cp_month_map.items() if k in close_period), 0
+                )
+                _expected_due_mo = (_cp_mo % 12) + 1  # Jan→2, Dec→1
+                _cp_yr = re.search(r'\d{4}', close_period)
+                _cp_yr = int(_cp_yr.group()) if _cp_yr else 0
+                _expected_due_yr = _cp_yr + 1 if _cp_mo == 12 else _cp_yr
+                for _ls in _loan_stmts:
+                    if not isinstance(_ls, dict):
+                        continue
+                    _due = str(_ls.get('payment_due_date') or '')
+                    if not _due:
+                        continue
+                    _due_parts = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})', _due)
+                    if not _due_parts:
+                        continue
+                    _due_mo, _due_yr = int(_due_parts.group(1)), int(_due_parts.group(3))
+                    if _due_mo != _expected_due_mo or _due_yr != _expected_due_yr:
+                        _loan_num = _ls.get('loan_number', 'unknown')
+                        engine_result.exceptions.append(Exception_(
+                            severity='warning',
+                            category='loan',
+                            source='berkadia_loan',
+                            description=(
+                                f"Loan {_loan_num}: statement due date {_due} does not match "
+                                f"the {close_period} close. For {close_period}, upload the "
+                                f"statement due {_expected_due_mo:02d}/07/{_expected_due_yr} "
+                                f"(interest accrued in {close_period} is paid on the 7th of "
+                                f"the following month)."
+                            ),
+                            details={
+                                'loan_number': _loan_num,
+                                'uploaded_due_date': _due,
+                                'expected_due_month': f'{_expected_due_mo:02d}/{_expected_due_yr}',
+                            },
+                        ))
+
                 # Step 2: Detect accrual entries (4-layer)
                 status_text.text("Step 2/6: Detecting accrual entries (4 layers)...")
                 progress_bar.progress(25)
@@ -1816,6 +1863,49 @@ with tab2:
                 bc_parsed    = engine_result.parsed.get('budget_comparison') or []
                 close_period = engine_result.period or ''
 
+                # ── Loan statement date validation (Pass 2) ───────────────────
+                _loan_stmts_p2 = engine_result.parsed.get('loan') or []
+                if not isinstance(_loan_stmts_p2, list):
+                    _loan_stmts_p2 = [_loan_stmts_p2]
+                _cp_mo_p2 = next(
+                    (v for k, v in dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                                        Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12).items()
+                     if k in close_period), 0
+                )
+                _exp_due_mo_p2 = (_cp_mo_p2 % 12) + 1
+                _cp_yr_p2 = re.search(r'\d{4}', close_period)
+                _cp_yr_p2 = int(_cp_yr_p2.group()) if _cp_yr_p2 else 0
+                _exp_due_yr_p2 = _cp_yr_p2 + 1 if _cp_mo_p2 == 12 else _cp_yr_p2
+                for _ls2 in _loan_stmts_p2:
+                    if not isinstance(_ls2, dict):
+                        continue
+                    _due2 = str(_ls2.get('payment_due_date') or '')
+                    if not _due2:
+                        continue
+                    _due_parts2 = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})', _due2)
+                    if not _due_parts2:
+                        continue
+                    _due_mo2, _due_yr2 = int(_due_parts2.group(1)), int(_due_parts2.group(3))
+                    if _due_mo2 != _exp_due_mo_p2 or _due_yr2 != _exp_due_yr_p2:
+                        _ln2 = _ls2.get('loan_number', 'unknown')
+                        engine_result.exceptions.append(Exception_(
+                            severity='warning',
+                            category='loan',
+                            source='berkadia_loan',
+                            description=(
+                                f"Loan {_ln2}: statement due date {_due2} does not match "
+                                f"the {close_period} close. For {close_period}, upload the "
+                                f"statement due {_exp_due_mo_p2:02d}/07/{_exp_due_yr_p2} "
+                                f"(interest accrued in {close_period} is paid on the 7th of "
+                                f"the following month)."
+                            ),
+                            details={
+                                'loan_number': _ln2,
+                                'uploaded_due_date': _due2,
+                                'expected_due_month': f'{_exp_due_mo_p2:02d}/{_exp_due_yr_p2}',
+                            },
+                        ))
+
                 # Step 2: Parse trial balance + BS workpaper (no je_adjustments — GL is final)
                 # Note: Singerman monthly report is downloaded directly from Yardi by Ryan.
                 status_text.text("Step 2/6: Generating BS workpaper...")
@@ -2748,7 +2838,7 @@ with tab3:
 | **Yardi / PNC Bank Rec** | Yardi Reports → Bank Reconciliation → export as PDF | Preferred source — pipeline reads the pre-computed reconciled balance |
 | **KeyBank DACA Statement** | KeyBank online → account x5132 → monthly statement PDF | Used as management fee cash-received basis |
 | **BofA Development Statement** | BofA online → development account → monthly PDF | Balance only; development account is dormant |
-| **Berkadia Loan Statement(s)** | Berkadia portal → monthly loan statements → PDF (all 3 loans) | Debt service detail + escrow balances |
+| **Berkadia Loan Statement(s)** | Berkadia portal → monthly loan statements → PDF (all 3 loans) | ⚠️ Upload the statement **due the 7th of the following month** — e.g. for the January close, upload the Feb 7 statement. Interest is paid in arrears: the Feb 7 payment covers January's interest. |
 """)
         st.markdown("#### Reference Files")
         st.markdown("""
@@ -2833,7 +2923,7 @@ This is standard accrual accounting — no manual reversal needed.
 | **Yardi Trial Balance** | Final balances after all JEs posted — used for GL ↔ TB tie-out |
 | **Yardi Budget Comparison** | Actuals update after JEs post — needed for accurate variance commentary |
 | **Yardi Bank Rec PDF** | Final reconciliation with outstanding checks as of close |
-| **Berkadia Loan Statements** | Same file as Pass 1 — re-upload or the pipeline reuses the Pass 1 version |
+| **Berkadia Loan Statements** | Same file as Pass 1 (statement due the 7th of the following month) — re-upload or the pipeline reuses the Pass 1 version |
 
 > All other Pass 1 files (Nexus, Kardin, bank statements, T12, etc.) do **not** need to be
 > re-exported — the pipeline reuses them automatically from Pass 1.

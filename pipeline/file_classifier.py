@@ -35,7 +35,7 @@ FILE_LABELS = {
     "ar_aging":              "Yardi AR Detail Aging",
     "bank_rec_dev":          "BofA Development Statement",
     "daca_bank":             "KeyBank DACA Statement",
-    "loan":                  "Berkadia Loan Statement(s)",
+    "loan":                  "Berkadia Loan Statement(s) — due 7th of following month",
     "prepaid_ledger":        "Prior Month Prepaid Ledger",
     "prior_workpaper":       "Prior Month Workpaper",
     # Pass-2 overrides — same classifier routes here via pass2=True
@@ -43,7 +43,7 @@ FILE_LABELS = {
     "budget_comparison_pass2": "Final Budget Comparison (Pass 2)",
     "trial_balance_pass2":   "Final Trial Balance (Pass 2)",
     "t12_statement_pass2":   "Post-Close T12 (Pass 2)",
-    "loan_pass2":            "Berkadia Loan Statements (Pass 2)",
+    "loan_pass2":            "Berkadia Loan Statements (Pass 2) — due 7th of following month",
     "prior_workpaper":       "Prior Month Workpaper",
     "unknown":               "Unknown — select type",
 }
