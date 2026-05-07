@@ -510,7 +510,7 @@ import pandas as pd
 
 tab1, tab2, tab3 = st.tabs([
     "📋  Pass 1 — Generate JEs",
-    "📊  Pass 2 — Generate Reports",
+    "📊  Pass 2 — Generate Reports & JEs",
     "📖  How to Use",
 ])
 
@@ -2477,145 +2477,6 @@ with tab2:
 
         st.divider()
 
-        # ── Post-Close Adjustments ─────────────────────────────────────────
-        # After reviewing the QC workbook the user may identify JEs that still
-        # need to be posted (e.g. a correction entry, a missed re-accrual, a
-        # reclassification).  Enter them here and download as a Yardi-import CSV.
-        # Each JE uses two lines (one DR, one CR).  Debits must equal Credits per JE#.
-        st.markdown("### Post-Close Adjustments")
-        st.caption(
-            "Enter each JE as a Debit line and a Credit line. "
-            "Use **Add JE Lines** to append a new pre-numbered pair. "
-            "Debits must equal Credits for each **JE #** before export."
-        )
-
-        # ── Add JE Lines button ────────────────────────────────────────────
-        if st.button("➕ Add JE Lines", key="pcje_add_btn"):
-            import pandas as _pd_pcje_add
-            _existing_pcje = st.session_state.post_close_je_df
-            _used_jes = (
-                _existing_pcje["JE #"]
-                .str.strip()
-                .replace("", None)
-                .dropna()
-                .unique()
-                .tolist()
-            )
-            _next_n   = len(_used_jes) + 1
-            _next_lbl = f"PC-{_next_n:03d}"
-            _new_pair = _pd_pcje_add.DataFrame({
-                "JE #":           [_next_lbl, _next_lbl],
-                "Description":    ["", ""],
-                "Account Code":   ["", ""],
-                "Debit ($)":      [0.0, 0.0],
-                "Credit ($)":     [0.0, 0.0],
-                "Line Description": ["", ""],
-            })
-            st.session_state.post_close_je_df = _pd_pcje_add.concat(
-                [_existing_pcje, _new_pair], ignore_index=True
-            )
-            st.rerun()
-
-        _pcje_edited = st.data_editor(
-            st.session_state.post_close_je_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "JE #":             st.column_config.TextColumn("JE #", width="small"),
-                "Description":      st.column_config.TextColumn("JE Description", width="medium"),
-                "Account Code":     st.column_config.TextColumn("Account Code", width="small"),
-                "Debit ($)":        st.column_config.NumberColumn("Debit ($)", format="$%,.2f", width="small"),
-                "Credit ($)":       st.column_config.NumberColumn("Credit ($)", format="$%,.2f", width="small"),
-                "Line Description": st.column_config.TextColumn("Line Description", width="large"),
-            },
-            key="post_close_je_editor",
-        )
-        st.session_state.post_close_je_df = _pcje_edited
-
-        _pcje_valid = _pcje_edited[
-            _pcje_edited["Account Code"].fillna("").str.strip().astype(bool) &
-            ((_pcje_edited["Debit ($)"] != 0) | (_pcje_edited["Credit ($)"] != 0))
-        ]
-
-        if not _pcje_valid.empty:
-            # ── Validation: each JE # debits must equal credits ──
-            _pcje_errors = []
-            for _jn, _grp in _pcje_valid.groupby("JE #"):
-                _total_dr = _grp["Debit ($)"].sum()
-                _total_cr = _grp["Credit ($)"].sum()
-                if abs(_total_dr - _total_cr) > 0.01:
-                    _pcje_errors.append(
-                        f"JE #{_jn}: Debits ${_total_dr:,.2f} ≠ Credits ${_total_cr:,.2f}"
-                    )
-
-            if _pcje_errors:
-                for _err in _pcje_errors:
-                    st.error(f"❌ {_err}", icon="❌")
-            else:
-                st.success(
-                    f"✅ {len(_pcje_valid)} line{'s' if len(_pcje_valid) != 1 else ''} "
-                    f"across {_pcje_valid['JE #'].nunique()} JE(s) — balanced",
-                    icon="✅",
-                )
-
-                # ── Build JE lines for CSV export ──
-                _pcje_lines = []
-                _pcje_num   = 1
-                for _jn, _grp in _pcje_valid.groupby("JE #"):
-                    _line_seq = 1
-                    for _, _row in _grp.iterrows():
-                        _dr = float(_row["Debit ($)"] or 0)
-                        _cr = float(_row["Credit ($)"] or 0)
-                        if _dr > 0 or _cr > 0:
-                            _pcje_lines.append({
-                                'je_number':      f'PCJ-{str(_jn).strip() or _pcje_num:04}',
-                                'line':           _line_seq,
-                                'date':           '',
-                                'account_code':   str(_row["Account Code"]).strip(),
-                                'account_name':   str(_row["Line Description"] or _row["Account Code"]).strip(),
-                                'description':    str(_row["Description"] or "Post-close adjustment").strip(),
-                                'reference':      'POST-CLOSE',
-                                'debit':          round(_dr, 2),
-                                'credit':         round(_cr, 2),
-                                'vendor':         '[Post-Close Adj]',
-                                'invoice_number': '',
-                                'source':         'post_close',
-                                'confidence':     'high',
-                            })
-                            _line_seq += 1
-                    _pcje_num += 1
-
-                # ── Generate CSV ──
-                _pcje_csv_path = os.path.join(
-                    st.session_state.temp_dir, "GA_PostClose_JE.csv"
-                )
-                try:
-                    from accrual_entry_generator import generate_yardi_je_csv
-                    generate_yardi_je_csv(
-                        _pcje_lines,
-                        _pcje_csv_path,
-                        period=result.period,
-                        property_code=result.property_name or 'revlabpm',
-                        je_number='PCJ-001',
-                    )
-                    st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
-                except Exception as _pcje_err:
-                    st.warning(f"Post-close JE CSV generation skipped: {_pcje_err}")
-
-                # ── Download button ──
-                _pcje_path = st.session_state.pass2_output_files.get("post_close_je_csv")
-                if _pcje_path and os.path.exists(_pcje_path):
-                    with open(_pcje_path, "rb") as _f:
-                        st.download_button(
-                            label="⬇️ Download Post-Close JE CSV (Yardi import)",
-                            data=_f.read(),
-                            file_name=f"GA_PostClose_JE_{datetime.now().strftime('%Y%m%d')}.csv",
-                            mime="text/csv",
-                            use_container_width=True,
-                        )
-
-        st.divider()
-
         # ── Download Section ───────────────────────────────────────────────
         st.markdown("### Download Reports")
 
@@ -2678,6 +2539,145 @@ with tab2:
                         if mime:
                             kw["mime"] = mime
                         st.download_button(**kw)
+
+    # ── Post-Close Adjustments (always visible in Pass 2 tab) ─────────────────
+    st.divider()
+    st.markdown("### Post-Close Adjustment JEs")
+    st.caption(
+        "After reviewing the QC workbook you may identify corrections, missed re-accruals, "
+        "or reclassifications that still need to post. Enter them here and download as a "
+        "Yardi-import CSV. "
+        "Use **Add JE Lines** to append a pre-numbered pair. "
+        "Debits must equal Credits for each **JE #** before export."
+    )
+
+    # ── Add JE Lines button ────────────────────────────────────────────────────
+    if st.button("➕ Add JE Lines", key="pcje_add_btn"):
+        import pandas as _pd_pcje_add
+        _existing_pcje = st.session_state.post_close_je_df
+        _used_jes = (
+            _existing_pcje["JE #"]
+            .str.strip()
+            .replace("", None)
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        _next_n   = len(_used_jes) + 1
+        _next_lbl = f"PC-{_next_n:03d}"
+        _new_pair = _pd_pcje_add.DataFrame({
+            "JE #":             [_next_lbl, _next_lbl],
+            "Description":      ["", ""],
+            "Account Code":     ["", ""],
+            "Debit ($)":        [0.0, 0.0],
+            "Credit ($)":       [0.0, 0.0],
+            "Line Description": ["", ""],
+        })
+        st.session_state.post_close_je_df = _pd_pcje_add.concat(
+            [_existing_pcje, _new_pair], ignore_index=True
+        )
+        st.rerun()
+
+    _pcje_edited = st.data_editor(
+        st.session_state.post_close_je_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "JE #":             st.column_config.TextColumn("JE #", width="small"),
+            "Description":      st.column_config.TextColumn("JE Description", width="medium"),
+            "Account Code":     st.column_config.TextColumn("Account Code", width="small"),
+            "Debit ($)":        st.column_config.NumberColumn("Debit ($)", format="$%,.2f", width="small"),
+            "Credit ($)":       st.column_config.NumberColumn("Credit ($)", format="$%,.2f", width="small"),
+            "Line Description": st.column_config.TextColumn("Line Description", width="large"),
+        },
+        key="post_close_je_editor",
+    )
+    st.session_state.post_close_je_df = _pcje_edited
+
+    _pcje_valid = _pcje_edited[
+        _pcje_edited["Account Code"].fillna("").str.strip().astype(bool) &
+        ((_pcje_edited["Debit ($)"] != 0) | (_pcje_edited["Credit ($)"] != 0))
+    ]
+
+    if not _pcje_valid.empty:
+        # ── Validation: each JE # debits must equal credits ──────────────────
+        _pcje_errors = []
+        for _jn, _grp in _pcje_valid.groupby("JE #"):
+            _total_dr = _grp["Debit ($)"].sum()
+            _total_cr = _grp["Credit ($)"].sum()
+            if abs(_total_dr - _total_cr) > 0.01:
+                _pcje_errors.append(
+                    f"JE #{_jn}: Debits ${_total_dr:,.2f} ≠ Credits ${_total_cr:,.2f}"
+                )
+
+        if _pcje_errors:
+            for _err in _pcje_errors:
+                st.error(f"❌ {_err}", icon="❌")
+        else:
+            st.success(
+                f"✅ {len(_pcje_valid)} line{'s' if len(_pcje_valid) != 1 else ''} "
+                f"across {_pcje_valid['JE #'].nunique()} JE(s) — balanced",
+                icon="✅",
+            )
+
+            # ── Build JE lines for CSV export ─────────────────────────────────
+            _pcje_lines = []
+            _pcje_num   = 1
+            for _jn, _grp in _pcje_valid.groupby("JE #"):
+                _line_seq = 1
+                for _, _row in _grp.iterrows():
+                    _dr = float(_row["Debit ($)"] or 0)
+                    _cr = float(_row["Credit ($)"] or 0)
+                    if _dr > 0 or _cr > 0:
+                        _pcje_lines.append({
+                            'je_number':      f'PCJ-{str(_jn).strip() or _pcje_num:04}',
+                            'line':           _line_seq,
+                            'date':           '',
+                            'account_code':   str(_row["Account Code"]).strip(),
+                            'account_name':   str(_row["Line Description"] or _row["Account Code"]).strip(),
+                            'description':    str(_row["Description"] or "Post-close adjustment").strip(),
+                            'reference':      'POST-CLOSE',
+                            'debit':          round(_dr, 2),
+                            'credit':         round(_cr, 2),
+                            'vendor':         '[Post-Close Adj]',
+                            'invoice_number': '',
+                            'source':         'post_close',
+                            'confidence':     'high',
+                        })
+                        _line_seq += 1
+                _pcje_num += 1
+
+            # ── Generate CSV ───────────────────────────────────────────────────
+            _pcje_csv_path = os.path.join(
+                st.session_state.temp_dir, "GA_PostClose_JE.csv"
+            )
+            _p2er = st.session_state.pass2_engine_result
+            _pcje_period   = (_p2er.period        if _p2er else '') or ''
+            _pcje_propname = (_p2er.property_name if _p2er else '') or 'revlabpm'
+            try:
+                from accrual_entry_generator import generate_yardi_je_csv
+                generate_yardi_je_csv(
+                    _pcje_lines,
+                    _pcje_csv_path,
+                    period=_pcje_period,
+                    property_code=_pcje_propname,
+                    je_number='PCJ-001',
+                )
+                st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
+            except Exception as _pcje_err:
+                st.warning(f"Post-close JE CSV generation skipped: {_pcje_err}")
+
+            # ── Download button ────────────────────────────────────────────────
+            _pcje_path = st.session_state.pass2_output_files.get("post_close_je_csv")
+            if _pcje_path and os.path.exists(_pcje_path):
+                with open(_pcje_path, "rb") as _f:
+                    st.download_button(
+                        label="⬇️ Download Post-Close JE CSV (Yardi import)",
+                        data=_f.read(),
+                        file_name=f"GA_PostClose_JE_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
 
 
 # ──────────────────────────────────────────────────────────────
