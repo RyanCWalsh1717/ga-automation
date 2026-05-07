@@ -1208,8 +1208,8 @@ with tab1:
                 "**MGT** = Management Fee · **TUB** = Tenant Utility Billing · **SUP** = One-Off Accrual · "
                 "**BNS** = Bonus Accrual. "
                 "These codes are required for the Yardi import. "
-                "✏️ **Description is editable** — click any cell to annotate for review. "
-                "Edits are for display only; the downloaded CSV uses the original descriptions."
+                "✏️ **Description is editable** — click any cell to update the text. "
+                "Edited descriptions are written to the downloaded CSV."
             )
 
             # ── Source → uploaded file label map ────────────────────────────
@@ -1303,6 +1303,12 @@ with tab1:
 
             st.write("")
 
+            # ── Description override state — keyed by run so fresh run resets ─
+            if st.session_state.get('_je_desc_run') != _run_key:
+                st.session_state.je_desc_overrides = {}
+                st.session_state._je_desc_run = _run_key
+            _all_desc_edits: dict = {}   # (je_num, acct_code) → edited description
+
             # ── One expander per CR account ──────────────────────────────────
             for _cr_code in _sorted_cr_codes:
                 _group_lines = sorted(
@@ -1322,30 +1328,48 @@ with tab1:
 
                     _rows = []
                     for _l in _group_lines:
-                        _desc = _clean_je_desc(_l.get('description') or '')
+                        _okey = (_l.get('je_number', ''), _l.get('account_code', ''))
+                        _desc = (st.session_state.je_desc_overrides.get(_okey)
+                                 or _clean_je_desc(_l.get('description') or ''))
+                        _acct_display = _l.get('account_code', '')
+                        if _l.get('account_name'):
+                            _acct_display = f"{_acct_display}  {_l['account_name']}"
                         _rows.append({
                             "JE #":        _l.get('je_number', ''),
                             "File Source": _SOURCE_FILE_LABEL.get(_l.get('source', ''), _l.get('source', '')),
-                            "GL Account":  _l.get('account_code', ''),
+                            "GL Account":  _acct_display,
                             "Description": _desc,
                             "Amount":      _l.get('debit') or 0,
                         })
 
-                    st.data_editor(
+                    _edited = st.data_editor(
                         _rows,
                         num_rows="fixed",
                         use_container_width=True,
                         column_config={
                             "JE #":        st.column_config.TextColumn(width="small",  disabled=True),
                             "File Source": st.column_config.TextColumn(width="medium", disabled=True),
-                            "GL Account":  st.column_config.TextColumn(width="small",  disabled=True),
-                            "Description": st.column_config.TextColumn(width="large"),   # ← editable for review
+                            "GL Account":  st.column_config.TextColumn(width="medium", disabled=True),
+                            "Description": st.column_config.TextColumn(width="large"),   # ← editable
                             "Amount":      st.column_config.NumberColumn(
                                                format="$%,.2f", width="small", disabled=True),
                         },
                         hide_index=True,
                         key=f"je_ed_{_cr_code}_{_run_key}",
                     )
+
+                    # Collect description edits
+                    import pandas as _pd_jed
+                    _edit_rows = (_edited.to_dict('records')
+                                  if isinstance(_edited, _pd_jed.DataFrame) else list(_edited))
+                    for _orig, _edit in zip(_rows, _edit_rows):
+                        _k = (
+                            _orig['JE #'],
+                            # account_code is the first token of GL Account display string
+                            str(_orig['GL Account']).split()[0],
+                        )
+                        if _edit.get('Description', '') != _orig.get('Description', ''):
+                            _all_desc_edits[_k] = _edit['Description']
 
                     # Subtotal
                     _sub_cols = st.columns([4, 1])
@@ -1355,6 +1379,30 @@ with tab1:
                             f"Subtotal: ${_group_total:,.2f}</div>",
                             unsafe_allow_html=True,
                         )
+
+            # ── Apply description edits → update CSV ─────────────────────────
+            if _all_desc_edits:
+                st.session_state.je_desc_overrides = _all_desc_edits
+                _updated_lines = []
+                for _l in p1.get("all_je_lines", []):
+                    _k = (_l.get('je_number', ''), _l.get('account_code', ''))
+                    if _k in _all_desc_edits and (_l.get('debit') or 0) > 0:
+                        _l = dict(_l, description=_all_desc_edits[_k])
+                    _updated_lines.append(_l)
+                p1["all_je_lines"] = _updated_lines
+                _p1_er = st.session_state.pass1_engine_result
+                _p1_prop = (
+                    (_p1_er.parsed.get('gl') and _p1_er.parsed['gl'].metadata.property_code)
+                    if _p1_er else None
+                ) or 'revlabpm'
+                try:
+                    from accrual_entry_generator import generate_yardi_je_csv as _gen_csv_ed
+                    _ed_csv = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
+                    _gen_csv_ed(_updated_lines, _ed_csv,
+                                period=result.period, property_code=_p1_prop, book='')
+                    p1["accrual_je_csv"] = _ed_csv
+                except Exception:
+                    pass
 
             st.divider()
         else:
