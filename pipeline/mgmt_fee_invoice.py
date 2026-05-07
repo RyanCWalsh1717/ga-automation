@@ -116,8 +116,8 @@ def generate_invoice(
     month_lbl  = _MONTH_MAP.get(month, str(month))
 
     total_fee = round(cash_received * _TOTAL_RATE, 2)
-    jll_fee   = round(cash_received * _JLL_RATE,   2)
-    balance   = round(cash_received * _GRP_RATE,   2)
+    jll_fee   = round(max(cash_received * _JLL_RATE, 5_000.0), 2)  # greater of 1.25% or $5,000 minimum
+    balance   = round(max(total_fee - jll_fee, 0.0), 2)
 
     buf = io.BytesIO()
     c   = rl_canvas.Canvas(buf, pagesize=letter)
@@ -212,16 +212,14 @@ def generate_invoice(
     c.setFont('Times-Roman', 6.72)
     c.drawString(79.3, y(ROW1_Y), inv_date_s)
     c.setFont('Times-Bold', 6.72)
-    c.drawString(136.4, y(ROW1_Y), 'Rev Labs Property')
+    c.drawString(136.4, y(ROW1_Y), 'Rev Labs Property Management Fee')
     c.setFont('Times-Roman', 6.72)
     c.drawString(240.0, y(ROW1_Y), f'{month_lbl} {year} Property Management Fee')
     c.drawRightString(R_COLL, y(ROW1_Y), _money(cash_received))
     c.drawRightString(R_RATE, y(ROW1_Y), '3.00%')
     c.drawRightString(R_AMT,  y(ROW1_Y), _money(total_fee))
 
-    # Row 2: less JLL portion
-    c.setFont('Times-Bold', 6.72)
-    c.drawString(136.4, y(ROW2_Y), 'Management Fee')
+    # Row 2: less JLL portion (no bold activity label — description only)
     c.setFont('Times-Roman', 6.72)
     c.drawString(240.0, y(ROW2_Y), 'Less JLL Portion')
     c.drawRightString(R_COLL, y(ROW2_Y), _money(cash_received))
