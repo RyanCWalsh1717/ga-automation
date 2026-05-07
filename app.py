@@ -47,6 +47,7 @@ from management_fee import (
     detect_prior_period_catchup,
     build_catchup_je,
 )
+from mgmt_fee_invoice import generate_invoice as generate_mgmt_fee_invoice
 
 
 # ── Page configuration ───────────────────────────────────────
@@ -1630,9 +1631,30 @@ with tab2:
                         ar_aging=_ar_aging_parsed_p2,
                     )
                     st.session_state.pass2_output_files["fee_result"] = fee_result
+
+                    # Generate management fee invoice PDF
+                    if fee_result and fee_result.cash_received > 0:
+                        try:
+                            _inv_path = os.path.join(
+                                st.session_state.temp_dir,
+                                f"GA_MgmtFee_Invoice_{close_period.replace('-', '')}.pdf",
+                            )
+                            generate_mgmt_fee_invoice(
+                                period=close_period,
+                                cash_received=fee_result.cash_received,
+                                output_path=_inv_path,
+                            )
+                            st.session_state.pass2_output_files["fee_invoice"] = _inv_path
+                        except Exception as _inv_e:
+                            st.warning(f"Management fee invoice skipped: {_inv_e}")
+                            st.session_state.pass2_output_files["fee_invoice"] = None
+                    else:
+                        st.session_state.pass2_output_files["fee_invoice"] = None
+
                 except Exception:
                     fee_result = None
                     st.session_state.pass2_output_files["fee_result"] = None
+                    st.session_state.pass2_output_files["fee_invoice"] = None
 
                 # Step 5: QC engine
                 status_text.text("Step 5/6: Running QC checks...")
@@ -2277,6 +2299,21 @@ with tab2:
                             file_name=fname,
                             use_container_width=True,
                         )
+
+        # Management fee invoice — PDF download
+        _inv_path = p2.get("fee_invoice")
+        if _inv_path and os.path.exists(_inv_path):
+            _inv_period = (result.period or '').replace('-', '')
+            with col1:
+                with open(_inv_path, "rb") as _f:
+                    st.download_button(
+                        label="🧾 Management Fee Invoice",
+                        data=_f.read(),
+                        file_name=f"RevLabsPM_Invoice_{_inv_period}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        help="GRP management fee invoice — ready to send to Revolution Labs Owner, LLC",
+                    )
 
 
 # ──────────────────────────────────────────────────────────────
