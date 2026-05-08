@@ -361,12 +361,31 @@ No CI/CD pipeline — Streamlit builds directly from `requirements.txt`.
 
 ---
 
+## Updating the Annual Kardin Budget (FY2027 and beyond)
+
+The committed budget file lives at `data/revlabpm/GA_Kardin_Budget_FY2026.xlsx`.
+No upload is needed during the year — the app loads it automatically.
+
+**To update for a new fiscal year (Ryan does this directly in GitHub):**
+1. Go to `https://github.com/RyanCWalsh1717/ga-automation`
+2. Navigate to `data/revlabpm/`
+3. Click the existing budget file → click the pencil/edit icon (top right) → **"..."** → **"Delete file"** — OR —
+4. Better: Click **"Add file" → "Upload files"** in the `data/revlabpm/` folder
+5. Upload the new Kardin budget, name it `GA_Kardin_Budget_FY2026.xlsx` (keep same name) or update the filename in `app.py` (`_COMMITTED_BUDGET` line)
+6. Commit directly to `main` — Streamlit redeploys in ~2 minutes
+
+**To add a budget for a new property (e.g., Lex Labs):**
+1. Create folder `data/lexlabspm/` in GitHub (upload a file into it to create the folder)
+2. Upload `GA_Kardin_Budget_FY2026.xlsx` for that property
+3. The `_committed_path(prop_code, filename)` helper in `app.py` auto-loads it once the property selector is wired up
+
+---
+
 ## People
 
 - **Ryan Walsh** — GRP accountant, primary pipeline operator. Reviews all outputs before sign-off.
 - **Natasha** — GRP accountant, co-reviewer. Reviews pipeline outputs alongside Ryan.
 - **Lauren Sullivan** — CFO. Final reviewer only — sees outputs after Ryan/Natasha complete review.
-- **Phil** — Technical collaborator / integration partner.
 
 ---
 
