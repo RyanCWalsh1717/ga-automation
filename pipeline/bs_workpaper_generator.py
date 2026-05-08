@@ -1579,7 +1579,8 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
                        je_adjustments=None, tab_prefix: str = '',
                        history_rows: list = None,
                        entity_label: str = '',
-                       entities: list = None):
+                       entities: list = None,
+                       prepared_by: str = ''):
     """
     One tab per balance sheet account — clean transaction register.
 
