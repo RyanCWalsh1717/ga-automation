@@ -197,7 +197,7 @@ Then: **Generate Reports** button
 7. Variance comments generated against final GL actuals (API or data-driven)
 8. Annotated BC exported with comments in cols L/M
 9. Exception report generated
-10. Ryan and Natasha review all outputs before Lauren sees them
+10. Ryan and Natasha Parker review all outputs before Lauren sees them
 
 ---
 
@@ -384,8 +384,8 @@ No upload is needed during the year — the app loads it automatically.
 ## People
 
 - **Ryan Walsh** — GRP accountant, primary pipeline operator. Reviews all outputs before sign-off.
-- **Natasha** — GRP accountant, co-reviewer. Reviews pipeline outputs alongside Ryan.
-- **Lauren Sullivan** — CFO. Final reviewer only — sees outputs after Ryan/Natasha complete review.
+- **Natasha Parker** — GRP accountant, co-reviewer. Reviews pipeline outputs alongside Ryan.
+- **Lauren Sullivan** — CFO. Final reviewer only — sees outputs after Ryan/Natasha Parker complete review.
 
 ---
 

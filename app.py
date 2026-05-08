@@ -1983,7 +1983,7 @@ with tab2:
     st.progress(_ct_complete_count / _ct_total,
                 text=f"{_ct_complete_count} of {_ct_total} steps complete")
 
-    _ct_reviewers = ["Ryan Walsh", "Natasha", "Lauren Sullivan"]
+    _ct_reviewers = ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"]
 
     for _ct_idx, _ct_desc, _ct_type in _CT_STEPS:
         _ct_entry = _ct.get(_ct_idx)
@@ -2023,7 +2023,7 @@ with tab2:
                             "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
                             "auto":         False,
                         }
-                        # Step 7 auto-detect: QC review complete when Ryan/Natasha mark it
+                        # Step 7 auto-detect: QC review complete when Ryan/Natasha Parker mark it
                         if _ct_idx == 7:
                             pass  # step 7 is manual here — already handled
                         # Step 8: generate close tracker xlsx when final package is released
@@ -3288,7 +3288,7 @@ with tab2:
             "Equity Tabs (311100 / 331100 / 381100)",
             "Exception Report",
         ]
-        _SIGNOFF_REVIEWERS = ["Ryan Walsh", "Natasha", "Lauren Sullivan"]
+        _SIGNOFF_REVIEWERS = ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"]
 
         for _so_idx, _so_item in enumerate(_SIGNOFF_ITEMS):
             _so_existing = st.session_state.signoff_state.get(_so_idx)
