@@ -262,6 +262,8 @@ if "prepared_by" not in st.session_state:
     st.session_state.prepared_by = "Ryan Walsh"
 if "signoff_state" not in st.session_state:
     st.session_state.signoff_state = {}
+if "close_tracker" not in st.session_state:
+    st.session_state.close_tracker = {}
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
     st.session_state.post_close_je_df = _pd_init.DataFrame({
@@ -398,6 +400,7 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.bulk_overrides_p1 = {}
     st.session_state.bulk_overrides_p2 = {}
     st.session_state.signoff_state = {}
+    st.session_state.close_tracker = {}
     st.session_state.upload_key_p1 += 1
     st.session_state.upload_key_p2 += 1
     shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
@@ -1146,6 +1149,40 @@ with tab1:
                 status_text.text("✓ JEs ready for Yardi upload!")
                 st.session_state.pass1_complete = True
                 st.session_state.pass1_run_count = st.session_state.get('pass1_run_count', 0) + 1
+
+                # ── Auto-detect Close Tracker Step 1 ─────────────────────────
+                _ct = st.session_state.close_tracker
+                if 1 not in _ct:
+                    _ct[1] = {
+                        "completed_by": st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
+                        "auto":         True,
+                    }
+
+                # ── Pass 1 Run Log ────────────────────────────────────────────
+                try:
+                    from run_log import append_run_log_pass1 as _append_p1_log
+                    _p1_rl_path  = os.path.join(st.session_state.temp_dir, "GA_Run_Log.csv")
+                    _p1_rl_prior = st.session_state.uploaded_files.get("run_log")
+                    _p1_je_count = len(all_je_lines) // 2 if all_je_lines else 0
+                    _p1_je_total = sum(float(l.get('debit', 0)) for l in (all_je_lines or []))
+                    _append_p1_log(
+                        output_path         = _p1_rl_path,
+                        prior_log_path      = _p1_rl_prior,
+                        timestamp           = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        prepared_by         = st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        property_name       = engine_result.property_name or 'Revolution Labs',
+                        period              = close_period,
+                        je_count            = _p1_je_count,
+                        je_total_dollars    = _p1_je_total,
+                        close_tracker_complete = (
+                            len(st.session_state.close_tracker) == 9
+                        ),
+                    )
+                    st.session_state.pass1_output_files["run_log"] = _p1_rl_path
+                except Exception as _p1_rle:
+                    pass   # run log is non-critical
+
                 st.success("Pass 1 complete! Download the JE CSVs below.", icon="✅")
 
             except Exception as e:
@@ -1894,6 +1931,138 @@ with tab2:
             "JE CSVs to Yardi and have the final GL ready, you can still run Pass 2 independently.",
             icon="ℹ️",
         )
+
+    # ── Close Process Tracker (always visible) ────────────────────────────────
+    st.markdown("### 📋 Close Process Tracker")
+    st.caption(
+        "Tracks every step of the monthly close lifecycle from JLL handoff through "
+        "Lauren's package release. Auto-detected steps are set by the pipeline automatically. "
+        "Manual steps require your confirmation."
+    )
+
+    from close_tracker_generator import CLOSE_TRACKER_STEPS as _CT_STEPS
+
+    _ct = st.session_state.close_tracker
+    _ct_complete_count = sum(1 for i in range(len(_CT_STEPS)) if i in _ct)
+    _ct_total = len(_CT_STEPS)
+
+    # Progress bar
+    st.progress(_ct_complete_count / _ct_total,
+                text=f"{_ct_complete_count} of {_ct_total} steps complete")
+
+    _ct_reviewers = ["Ryan Walsh", "Natasha", "Lauren Sullivan"]
+
+    for _ct_idx, _ct_desc, _ct_type in _CT_STEPS:
+        _ct_entry = _ct.get(_ct_idx)
+        _ct_done  = bool(_ct_entry)
+
+        _ct_col_step, _ct_col_desc, _ct_col_by, _ct_col_btn, _ct_col_status = st.columns(
+            [0.5, 4, 2, 1.2, 3]
+        )
+        with _ct_col_step:
+            st.markdown(f"**{_ct_idx + 1}**")
+        with _ct_col_desc:
+            _ct_badge = " _(auto)_" if _ct_type == 'auto' else ""
+            st.markdown(f"{_ct_desc}{_ct_badge}")
+
+        if _ct_done:
+            with _ct_col_status:
+                _ct_auto_label = " _(auto-detected)_" if _ct_entry.get('auto') else ""
+                st.markdown(
+                    f"<span style='color:#2E7D32;font-weight:600;'>"
+                    f"✅ {_ct_entry['completed_by']} &nbsp;·&nbsp; {_ct_entry['timestamp']}"
+                    f"{_ct_auto_label}</span>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            if _ct_type == 'manual':
+                with _ct_col_by:
+                    _ct_reviewer = st.selectbox(
+                        "Completed by", _ct_reviewers,
+                        key=f"ct_rev_{_ct_idx}",
+                        label_visibility="collapsed",
+                    )
+                with _ct_col_btn:
+                    if st.button("✔ Mark Complete", key=f"ct_btn_{_ct_idx}",
+                                 use_container_width=True):
+                        _ct[_ct_idx] = {
+                            "completed_by": _ct_reviewer,
+                            "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
+                            "auto":         False,
+                        }
+                        # Step 7 auto-detect: QC review complete when Ryan/Natasha mark it
+                        if _ct_idx == 7:
+                            pass  # step 7 is manual here — already handled
+                        # Step 8: generate close tracker xlsx when final package is released
+                        if _ct_idx == 8:
+                            try:
+                                from close_tracker_generator import generate_close_tracker_xlsx as _gen_ct
+                                _ct_xlsx_path = os.path.join(
+                                    st.session_state.temp_dir, "GA_Close_Tracker.xlsx"
+                                )
+                                _p2_result = st.session_state.pass2_engine_result
+                                _ct_period  = (_p2_result.period if _p2_result
+                                               else st.session_state.get('close_period_input', 'Period'))
+                                _ct_prop    = (_p2_result.property_name if _p2_result
+                                               else 'Revolution Labs')
+                                _gen_ct(
+                                    output_path   = _ct_xlsx_path,
+                                    close_tracker = _ct,
+                                    period        = _ct_period,
+                                    property_name = _ct_prop,
+                                )
+                                st.session_state.pass2_output_files["close_tracker"] = _ct_xlsx_path
+                                st.success(
+                                    "Close Tracker exported — included in the ZIP package.",
+                                    icon="✅"
+                                )
+                            except Exception as _ct_e:
+                                st.warning(f"Close Tracker export failed: {_ct_e}")
+                        st.rerun()
+            else:
+                with _ct_col_status:
+                    st.markdown(
+                        "<span style='color:#9E9E9E;'>Pending (pipeline will auto-detect)</span>",
+                        unsafe_allow_html=True,
+                    )
+
+    # Export Close Tracker button (available any time)
+    st.markdown("")
+    _ct_exp_col, _ = st.columns([2, 5])
+    with _ct_exp_col:
+        if st.button("📄 Export Close Tracker", use_container_width=True,
+                     help="Generates GA_Close_Tracker.xlsx and adds it to the ZIP"):
+            try:
+                from close_tracker_generator import generate_close_tracker_xlsx as _gen_ct2
+                _ct_xlsx_path2 = os.path.join(
+                    st.session_state.temp_dir, "GA_Close_Tracker.xlsx"
+                )
+                _p2r = st.session_state.pass2_engine_result
+                _ct_period2 = (_p2r.period if _p2r
+                               else st.session_state.get('close_period_input', 'Period'))
+                _ct_prop2   = (_p2r.property_name if _p2r else 'Revolution Labs')
+                _gen_ct2(
+                    output_path   = _ct_xlsx_path2,
+                    close_tracker = st.session_state.close_tracker,
+                    period        = _ct_period2,
+                    property_name = _ct_prop2,
+                )
+                st.session_state.pass2_output_files["close_tracker"] = _ct_xlsx_path2
+                st.success("Close Tracker exported — included in the ZIP package.", icon="✅")
+                st.rerun()
+            except Exception as _ct_e2:
+                st.error(f"Close Tracker export failed: {_ct_e2}")
+
+    _ct_dl_path = st.session_state.pass2_output_files.get("close_tracker")
+    if _ct_dl_path and os.path.exists(_ct_dl_path):
+        with open(_ct_dl_path, "rb") as _ct_f:
+            st.download_button(
+                label="⬇️ Download Close Tracker",
+                data=_ct_f.read(),
+                file_name="GA_Close_Tracker.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
     st.divider()
 
@@ -2651,25 +2820,39 @@ with tab2:
                     st.warning(f"Audit trail skipped: {_ate}")
                     st.session_state.pass2_output_files["audit_trail"] = None
 
+                # ── Auto-detect Close Tracker Steps 5 & 6 ────────────────────
+                _ct = st.session_state.close_tracker
+                _p2_ts = datetime.now().strftime("%m/%d/%Y %H:%M")
+                _p2_by = st.session_state.get('prepared_by', 'Ryan Walsh')
+                if 5 not in _ct:
+                    _ct[5] = {"completed_by": _p2_by, "timestamp": _p2_ts, "auto": True}
+                if 6 not in _ct:
+                    _ct[6] = {"completed_by": _p2_by, "timestamp": _p2_ts, "auto": True}
+
                 # ── Run Log ───────────────────────────────────────────────────
                 try:
                     from run_log import append_run_log as _append_run_log
                     _rl_path  = os.path.join(st.session_state.temp_dir, "GA_Run_Log.csv")
-                    _rl_prior = st.session_state.uploaded_files.get("run_log")
+                    # Use Pass 1 run log as prior if it exists, else uploaded prior
+                    _rl_prior = (
+                        st.session_state.pass1_output_files.get("run_log")
+                        or st.session_state.uploaded_files.get("run_log")
+                    )
                     _rl_qc    = _at_qc if '_at_qc' in dir() else None
                     _rl_pass  = sum(1 for c in (_rl_qc.checks if _rl_qc else []) if c.status == 'PASS')
                     _rl_fail  = sum(1 for c in (_rl_qc.checks if _rl_qc else []) if c.status in ('FLAG', 'FAIL'))
                     _rl_files = [k for k, v in st.session_state.pass2_output_files.items() if v]
                     _append_run_log(
-                        output_path      = _rl_path,
-                        prior_log_path   = _rl_prior,
-                        timestamp        = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        prepared_by      = st.session_state.get('prepared_by', 'Ryan Walsh'),
-                        property_name    = engine_result.property_name or 'Revolution Labs',
-                        period           = close_period,
-                        files_generated  = _rl_files,
-                        qc_checks_passed = _rl_pass,
-                        qc_checks_failed = _rl_fail,
+                        output_path            = _rl_path,
+                        prior_log_path         = _rl_prior,
+                        timestamp              = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        prepared_by            = st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        property_name          = engine_result.property_name or 'Revolution Labs',
+                        period                 = close_period,
+                        files_generated        = _rl_files,
+                        qc_checks_passed       = _rl_pass,
+                        qc_checks_failed       = _rl_fail,
+                        close_tracker_complete = (len(st.session_state.close_tracker) == 9),
                     )
                     st.session_state.pass2_output_files["run_log"] = _rl_path
                 except Exception as _rle:
@@ -2993,6 +3176,7 @@ with tab2:
             f"RevLabsPM_Invoice_{period_label}.pdf":        p2.get("fee_invoice"),
             f"RevLabs_{period_label}_Run_Log.csv":          p2.get("run_log"),
             f"RevLabs_{period_label}_Signoff_Record.xlsx":  p2.get("signoff_record"),
+            f"RevLabs_{period_label}_Close_Tracker.xlsx":   p2.get("close_tracker"),
         }
         p2_zip_files = {k: v for k, v in p2_zip_files.items() if v and os.path.exists(v)}
 
@@ -3091,6 +3275,17 @@ with tab2:
                             "signed_by": _so_reviewer,
                             "timestamp": datetime.now().strftime("%m/%d/%Y %H:%M"),
                         }
+                        # Auto-detect Close Tracker Step 7 when all sign-offs complete
+                        _so_total = len(_SIGNOFF_ITEMS)
+                        _so_done  = len(st.session_state.signoff_state)
+                        # +1 because we just added one above
+                        if (_so_done >= _so_total and
+                                7 not in st.session_state.close_tracker):
+                            st.session_state.close_tracker[7] = {
+                                "completed_by": _so_reviewer,
+                                "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
+                                "auto":         True,
+                            }
                         st.rerun()
                 with _col_status:
                     st.markdown(
