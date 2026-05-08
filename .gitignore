@@ -7,5 +7,8 @@ __pycache__/
 *.pdf
 *.docx
 !requirements.txt
+# Allow committed reference files in data/ (annual budget, etc.)
+!data/
+!data/**
 .env
 .claude/settings.local.json

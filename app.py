@@ -52,6 +52,22 @@ from mgmt_fee_invoice import generate_invoice as generate_mgmt_fee_invoice
 from audit_trail_generator import generate_audit_trail
 
 
+# ── Committed reference files (auto-loaded, no upload required) ──────────────
+# These live in data/{property_code}/ in the repo and are loaded automatically.
+# Users only need to replace them when a new fiscal year budget is approved.
+# Upload a file in the sidebar to override the committed version for one session.
+_DATA_DIR = Path(__file__).parent / "data"
+
+def _committed_path(prop_code: str, filename: str) -> Optional[str]:
+    """Return path to a committed reference file if it exists, else None."""
+    p = _DATA_DIR / prop_code / filename
+    return str(p) if p.exists() else None
+
+_PROP_CODE = "revlabpm"   # active property — will become dynamic with multi-property selector
+
+_COMMITTED_BUDGET = _committed_path(_PROP_CODE, "GA_Kardin_Budget_FY2026.xlsx")
+
+
 # ── Page configuration ───────────────────────────────────────
 st.set_page_config(
     page_title="Rev Labs Close | GRP",
@@ -655,6 +671,17 @@ with tab1:
     if not gl_uploaded and uploaded_count > 0:
         st.warning("⚠️ GL Detail is required to run either pass.")
 
+    # ── Committed reference file status ───────────────────────────────────────
+    if _COMMITTED_BUDGET:
+        _budget_uploaded = "kardin_budget" in uploaded_keys
+        if _budget_uploaded:
+            st.caption("📊 **Kardin Budget:** Using uploaded file _(overrides committed)_")
+        else:
+            st.caption("📊 **Kardin Budget:** FY2026 on file — no upload needed")
+    else:
+        if "kardin_budget" not in uploaded_keys:
+            st.caption("📊 **Kardin Budget:** Not uploaded — bonus accruals and QC budget check skipped")
+
     st.divider()
 
     # ── Tenant Utility Billing ────────────────────────────────────────────────
@@ -824,6 +851,10 @@ with tab1:
             try:
                 files_dict = {key: st.session_state.uploaded_files.get(key)
                               for key in file_config.keys()}
+
+                # Auto-load committed Kardin budget if not uploaded this session
+                if not files_dict.get("kardin_budget") and _COMMITTED_BUDGET:
+                    files_dict["kardin_budget"] = _COMMITTED_BUDGET
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
@@ -2351,6 +2382,10 @@ with tab2:
                     files_dict["trial_balance"] = st.session_state.uploaded_files["trial_balance_pass2"]
                 if st.session_state.uploaded_files.get("loan_pass2"):
                     files_dict["loan"] = st.session_state.uploaded_files["loan_pass2"]
+
+                # Auto-load committed Kardin budget if not uploaded this session
+                if not files_dict.get("kardin_budget") and _COMMITTED_BUDGET:
+                    files_dict["kardin_budget"] = _COMMITTED_BUDGET
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
