@@ -256,6 +256,12 @@ if "pass2_output_files" not in st.session_state:
     st.session_state.pass2_output_files = {}
 if "upload_key_p2" not in st.session_state:
     st.session_state.upload_key_p2 = 0
+
+# Audit trail & sign-off
+if "prepared_by" not in st.session_state:
+    st.session_state.prepared_by = "Ryan Walsh"
+if "signoff_state" not in st.session_state:
+    st.session_state.signoff_state = {}
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
     st.session_state.post_close_je_df = _pd_init.DataFrame({
@@ -372,6 +378,13 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+st.sidebar.markdown("---")
+st.session_state.prepared_by = st.sidebar.text_input(
+    "Prepared by",
+    value=st.session_state.prepared_by,
+    help="Stamped on every workpaper tab and the run log.",
+)
+
 if st.sidebar.button("🔄 Reset All", use_container_width=True,
                      help="Clear all results and uploaded files"):
     st.session_state.pass1_complete = False
@@ -384,6 +397,7 @@ if st.sidebar.button("🔄 Reset All", use_container_width=True,
     st.session_state.uploaded_files = {}
     st.session_state.bulk_overrides_p1 = {}
     st.session_state.bulk_overrides_p2 = {}
+    st.session_state.signoff_state = {}
     st.session_state.upload_key_p1 += 1
     st.session_state.upload_key_p2 += 1
     shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
@@ -467,6 +481,14 @@ FILE_CONFIG = {
         "181300 Legal, 181400 TI). Upload the monthly Rev Labs capital schedule. "
         "Drives the 4 capital account tabs in the workpaper. "
         "Without it: capital tabs show GL transactions only.",
+    ),
+    "capital_seed": (
+        "Capital Schedule Seed (.xlsx)", "xlsx", False, "reference",
+        "January 2026 seed file (Book3.xlsx) — all 7 capital accounts "
+        "(152100 Land, 154100 Building, 154500 Bldg Improvements, 171100 CIP, "
+        "181200 LC, 181300 Legal, 181400 TI). "
+        "Used only when no Capital Accounts Schedule is uploaded. "
+        "From February onward the prior workpaper carry-forward supersedes this.",
     ),
     "daca_bank": (
         "DACA Bank Statement — KeyBank x5132 (.pdf)", "pdf", False, "bank",
@@ -1994,6 +2016,112 @@ with tab2:
         key="prior_period_label_input",
     )
 
+    _rl_upload = st.file_uploader(
+        "Prior Run Log (optional)",
+        type=["csv"],
+        key=f"run_log_upload_{st.session_state.upload_key_p2}",
+        help="Upload the GA_Run_Log.csv from last month to carry forward the history.",
+    )
+    if _rl_upload:
+        _rl_save = os.path.join(st.session_state.temp_dir, "prior_run_log.csv")
+        with open(_rl_save, "wb") as _f:
+            _f.write(_rl_upload.read())
+        st.session_state.uploaded_files["run_log"] = _rl_save
+
+    # ── Additional workpaper source files (raw Yardi reports per account) ──────
+    # These replace the generated GL transaction tabs for the named accounts with
+    # the raw Yardi export pasted directly into the workpaper.
+    with st.expander("📋 Workpaper raw report overrides (optional)", expanded=False):
+        st.caption(
+            "Upload the raw Yardi Excel exports for specific accounts. "
+            "Each file is copied directly into the workpaper tab for that account."
+        )
+        _col_wp1, _col_wp2 = st.columns(2)
+        with _col_wp1:
+            _ap_aging_uf = st.file_uploader(
+                "AP Aging Detail — 211300 AP Control (.xlsx)",
+                type=["xlsx", "xls"],
+                key=f"ap_aging_p2_{st.session_state.get('upload_key_p2', 0)}",
+                help="Yardi AP Aging Detail report. Populates the 211300 AP Control tab.",
+            )
+            if _ap_aging_uf:
+                _ap_aging_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_ap_aging_uf.name}"
+                )
+                with open(_ap_aging_path, "wb") as _f:
+                    _f.write(_ap_aging_uf.getbuffer())
+                st.session_state.uploaded_files["ap_aging"] = _ap_aging_path
+
+            _br_xlsx_uf = st.file_uploader(
+                "Bank Rec Excel — 111100 PNC Operating (.xlsx)",
+                type=["xlsx", "xls"],
+                key=f"bank_rec_xlsx_{st.session_state.get('upload_key_p2', 0)}",
+                help="Yardi Bank Rec exported as Excel. Replaces the generated 111100 tab and Bank Rec - Operating tab.",
+            )
+            if _br_xlsx_uf:
+                _br_xlsx_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_br_xlsx_uf.name}"
+                )
+                with open(_br_xlsx_path, "wb") as _f:
+                    _f.write(_br_xlsx_uf.getbuffer())
+                st.session_state.uploaded_files["bank_rec_xlsx"] = _br_xlsx_path
+
+        with _col_wp2:
+            _daca_br_xlsx_uf = st.file_uploader(
+                "Bank Rec Excel — 115100 DACA (.xlsx)",
+                type=["xlsx", "xls"],
+                key=f"daca_bank_rec_xlsx_{st.session_state.get('upload_key_p2', 0)}",
+                help="Yardi Bank Rec exported as Excel for DACA. Replaces the generated 115100 tab and Bank Rec - DACA tab.",
+            )
+            if _daca_br_xlsx_uf:
+                _daca_br_xlsx_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_daca_br_xlsx_uf.name}"
+                )
+                with open(_daca_br_xlsx_path, "wb") as _f:
+                    _f.write(_daca_br_xlsx_uf.getbuffer())
+                st.session_state.uploaded_files["daca_bank_rec_xlsx"] = _daca_br_xlsx_path
+
+            _prepaid_ledger_p2_uf = st.file_uploader(
+                "Prepaid Ledger Updated (.xlsx)",
+                type=["xlsx"],
+                key=f"prepaid_ledger_p2_{st.session_state.get('upload_key_p2', 0)}",
+                help="GA_Prepaid_Ledger_Updated.xlsx from Pass 1. Populates the Prepaid Schedule tab with tie-out formulas. "
+                     "If not uploaded, falls back to the current session's Pass 1 data.",
+            )
+            if _prepaid_ledger_p2_uf:
+                _prepaid_ledger_p2_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_prepaid_ledger_p2_uf.name}"
+                )
+                with open(_prepaid_ledger_p2_path, "wb") as _f:
+                    _f.write(_prepaid_ledger_p2_uf.getbuffer())
+                st.session_state.uploaded_files["prepaid_ledger_p2"] = _prepaid_ledger_p2_path
+
+            _capital_seed_uf = st.file_uploader(
+                "Capital Schedule Seed (.xlsx)",
+                type=["xlsx"],
+                key=f"capital_seed_{st.session_state.get('upload_key_p2', 0)}",
+                help="Book3.xlsx — January 2026 seed for all 7 capital accounts "
+                     "(152100 Land, 154100 Building, 154500 Bldg Improvements, 171100 CIP, "
+                     "181200 LC, 181300 Legal, 181400 TI). "
+                     "Only used when no Capital Accounts Schedule is uploaded. "
+                     "From February onward the prior workpaper carry-forward supersedes this.",
+            )
+            if _capital_seed_uf:
+                _capital_seed_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_capital_seed_uf.name}"
+                )
+                with open(_capital_seed_path, "wb") as _f:
+                    _f.write(_capital_seed_uf.getbuffer())
+                st.session_state.uploaded_files["capital_seed"] = _capital_seed_path
+
+        st.caption(
+            "AR Aging Detail (133100 AR Control + 221100 Prepaid Rent) uses the "
+            "AR Aging file already uploaded in the main sidebar — no separate upload needed.  "
+            "Prepaid Ledger falls back to same-session Pass 1 data if not re-uploaded.  "
+            "Capital Seed (Book3.xlsx) bootstraps January capital tabs — ignored once a "
+            "prior workpaper or current-period Capital Schedule is uploaded."
+        )
+
     # Pass 2 requires either a dedicated post-close GL or at minimum the sidebar GL
     _p2_gl_ready = (
         "gl_pass2" in st.session_state.uploaded_files
@@ -2210,6 +2338,17 @@ with tab2:
                     except Exception:
                         _capital_schedule_data = None
 
+                # Seed fallback: use Book3.xlsx when no current-period schedule uploaded
+                # (January only — prior workpaper carry-forward supersedes this from Feb onward)
+                if not _capital_schedule_data:
+                    _capital_seed_file = st.session_state.uploaded_files.get("capital_seed")
+                    if _capital_seed_file and os.path.exists(_capital_seed_file):
+                        try:
+                            from parsers.capital_seed import parse as _parse_capital_seed
+                            _capital_schedule_data = _parse_capital_seed(_capital_seed_file)
+                        except Exception:
+                            pass
+
                 if tb_result and gl_parsed:
                     try:
                         bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
@@ -2242,13 +2381,28 @@ with tab2:
                             _berkadia_loans = _berkadia_loan_data.get('loans', [])
                         elif hasattr(_berkadia_loan_data, 'loans'):
                             _berkadia_loans = _berkadia_loan_data.loans
+
+                        # ── Prepaid ledger active items for workpaper ─────────────
+                        # Priority: Pass 2 upload → same-session Pass 1 output
+                        _prepaid_active = []
+                        _prepaid_p2_path = st.session_state.uploaded_files.get("prepaid_ledger_p2")
+                        if _prepaid_p2_path and os.path.exists(_prepaid_p2_path):
+                            try:
+                                _prepaid_active, _ = prepaid_ledger.load(_prepaid_p2_path)
+                            except Exception as _pe:
+                                st.caption(f"⚠️ Could not read Pass 2 prepaid ledger: {_pe}")
+                        if not _prepaid_active:
+                            # Fall back to same-session Pass 1 data (already post-advance)
+                            _p1_data = st.session_state.get('pass1_output', {})
+                            _prepaid_active = _p1_data.get('ledger_active', [])
+
                         bs_workpaper_generator.generate(
                             gl_result=gl_parsed,
                             tb_result=tb_result,
                             output_path=bs_wp_path,
                             period=close_period,
                             property_name=engine_result.property_name or 'Revolution Labs',
-                            prepaid_ledger_active=[],
+                            prepaid_ledger_active=_prepaid_active,
                             bank_rec_data=bank_rec_data,
                             gl_cash_balance=gl_cash_balance,
                             daca_bank_data=daca_bank_data,
@@ -2259,6 +2413,12 @@ with tab2:
                             dev_bank_rec_data=dev_bank_rec_data,
                             ar_aging_data=_ar_aging_parsed_p2,
                             capital_schedule_data=_capital_schedule_data,
+                            tb_filepath=_tb_file,
+                            ar_aging_filepath=st.session_state.uploaded_files.get("ar_aging"),
+                            ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
+                            bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
+                            daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
+                            prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:
@@ -2490,6 +2650,30 @@ with tab2:
                 except Exception as _ate:
                     st.warning(f"Audit trail skipped: {_ate}")
                     st.session_state.pass2_output_files["audit_trail"] = None
+
+                # ── Run Log ───────────────────────────────────────────────────
+                try:
+                    from run_log import append_run_log as _append_run_log
+                    _rl_path  = os.path.join(st.session_state.temp_dir, "GA_Run_Log.csv")
+                    _rl_prior = st.session_state.uploaded_files.get("run_log")
+                    _rl_qc    = _at_qc if '_at_qc' in dir() else None
+                    _rl_pass  = sum(1 for c in (_rl_qc.checks if _rl_qc else []) if c.status == 'PASS')
+                    _rl_fail  = sum(1 for c in (_rl_qc.checks if _rl_qc else []) if c.status in ('FLAG', 'FAIL'))
+                    _rl_files = [k for k, v in st.session_state.pass2_output_files.items() if v]
+                    _append_run_log(
+                        output_path      = _rl_path,
+                        prior_log_path   = _rl_prior,
+                        timestamp        = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        prepared_by      = st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        property_name    = engine_result.property_name or 'Revolution Labs',
+                        period           = close_period,
+                        files_generated  = _rl_files,
+                        qc_checks_passed = _rl_pass,
+                        qc_checks_failed = _rl_fail,
+                    )
+                    st.session_state.pass2_output_files["run_log"] = _rl_path
+                except Exception as _rle:
+                    pass   # run log is non-critical; never block report generation
 
                 progress_bar.progress(100)
                 status_text.text("✓ Reports complete!")
@@ -2807,6 +2991,8 @@ with tab2:
             f"RevLabs_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
             f"RevLabs_{period_label}_Audit_Trail.xlsx":     p2.get("audit_trail"),
             f"RevLabsPM_Invoice_{period_label}.pdf":        p2.get("fee_invoice"),
+            f"RevLabs_{period_label}_Run_Log.csv":          p2.get("run_log"),
+            f"RevLabs_{period_label}_Signoff_Record.xlsx":  p2.get("signoff_record"),
         }
         p2_zip_files = {k: v for k, v in p2_zip_files.items() if v and os.path.exists(v)}
 
@@ -2856,6 +3042,95 @@ with tab2:
                         if mime:
                             kw["mime"] = mime
                         st.download_button(**kw)
+
+        # ── Sign-off Checklist ─────────────────────────────────────────────────
+        st.divider()
+        st.markdown("### Sign-off Checklist")
+        st.caption(
+            "Review each section below and sign off when complete. "
+            "Sign-offs are locked for this session. Export the sign-off sheet "
+            "before downloading the full package — it will be included automatically."
+        )
+
+        _SIGNOFF_ITEMS = [
+            "Bank Reconciliation — Operating",
+            "Bank Reconciliation — DACA",
+            "Management Fee Invoice",
+            "GL vs TB Workpaper Tie-out",
+            "Variance Commentary",
+            "QC Checklist (7-point)",
+            "Equity Tabs (311100 / 331100 / 381100)",
+            "Exception Report",
+        ]
+        _SIGNOFF_REVIEWERS = ["Ryan Walsh", "Natasha", "Lauren Sullivan"]
+
+        for _so_idx, _so_item in enumerate(_SIGNOFF_ITEMS):
+            _so_existing = st.session_state.signoff_state.get(_so_idx)
+            _col_item, _col_rev, _col_btn, _col_status = st.columns([4, 2, 1.2, 3])
+            with _col_item:
+                st.markdown(f"**{_so_idx + 1}. {_so_item}**")
+            if _so_existing:
+                with _col_status:
+                    st.markdown(
+                        f"<span style='color:#2E7D32;font-weight:600;'>"
+                        f"✅ {_so_existing['signed_by']} &nbsp;·&nbsp; {_so_existing['timestamp']}"
+                        f"</span>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                with _col_rev:
+                    _so_reviewer = st.selectbox(
+                        "Reviewer", _SIGNOFF_REVIEWERS,
+                        key=f"so_rev_{_so_idx}",
+                        label_visibility="collapsed",
+                    )
+                with _col_btn:
+                    if st.button("Sign Off", key=f"so_btn_{_so_idx}",
+                                 use_container_width=True):
+                        st.session_state.signoff_state[_so_idx] = {
+                            "signed_by": _so_reviewer,
+                            "timestamp": datetime.now().strftime("%m/%d/%Y %H:%M"),
+                        }
+                        st.rerun()
+                with _col_status:
+                    st.markdown(
+                        "<span style='color:#9E9E9E;'>Pending</span>",
+                        unsafe_allow_html=True,
+                    )
+
+        # Export sign-off sheet
+        st.markdown("")
+        _so_exp_col, _ = st.columns([2, 5])
+        with _so_exp_col:
+            if st.button("📄 Export Sign-off Sheet", use_container_width=True,
+                         help="Generates GA_Signoff_Record.xlsx and adds it to the ZIP"):
+                try:
+                    from signoff_generator import generate_signoff_xlsx as _gen_so
+                    _so_path = os.path.join(st.session_state.temp_dir,
+                                            "GA_Signoff_Record.xlsx")
+                    _gen_so(
+                        output_path   = _so_path,
+                        signoff_state = st.session_state.signoff_state,
+                        items         = _SIGNOFF_ITEMS,
+                        period        = result.period or close_period,
+                        property_name = result.property_name or 'Revolution Labs',
+                    )
+                    st.session_state.pass2_output_files["signoff_record"] = _so_path
+                    st.success("Sign-off sheet exported — included in the ZIP.", icon="✅")
+                    st.rerun()
+                except Exception as _soe:
+                    st.error(f"Sign-off export failed: {_soe}")
+
+        _so_dl_path = p2.get("signoff_record")
+        if _so_dl_path and os.path.exists(_so_dl_path):
+            with open(_so_dl_path, "rb") as _so_f:
+                st.download_button(
+                    label="⬇️ Download Sign-off Record",
+                    data=_so_f.read(),
+                    file_name=f"RevLabs_{period_label}_Signoff_Record.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
     # ── Post-Close Adjustments (always visible in Pass 2 tab) ─────────────────
     st.divider()

@@ -214,7 +214,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            ar_aging_filepath: str = None,
                            ap_aging_filepath: str = None,
                            bank_rec_xlsx_filepath: str = None,
-                           daca_bank_rec_xlsx_filepath: str = None) -> str:
+                           daca_bank_rec_xlsx_filepath: str = None,
+                           prepared_by: str = '') -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
@@ -486,14 +487,16 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 wb, acct, tb_map.get(acct.account_code), period, property_name,
                 _control_to_expense,
                 tab_prefix='',        # no period prefix — rolling table
-                history_rows=_hist)
+                history_rows=_hist,
+                prepared_by=prepared_by)
         else:
             _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
                                property_name, je_adjustments,
                                tab_prefix='',   # no period prefix
                                history_rows=_hist,
                                entity_label=_entity_label,
-                               entities=_gl_entities)
+                               entities=_gl_entities,
+                               prepared_by=prepared_by)
 
     # ── Stub tabs for TB accounts with no current-period GL activity ──────────
     for _tba in _zero_activity_tb:
@@ -536,6 +539,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             account_label='PNC Operating (x3993)',
             gl_account_code='111100',
             tab_prefix=_tab_pfx,
+            prepared_by=prepared_by,
         )
 
     # ── DACA Bank Rec tab (KeyBank x5132 — account 115100) ────────────────────
@@ -564,6 +568,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             gl_account_code='',
             tab_prefix=_tab_pfx,
             tab_name_override='Bank Rec - Development',
+            prepared_by=prepared_by,
         )
 
     # ── Analysis tabs (Loan, RE Tax, Insurance, Escrow) ──────────────────────
@@ -591,9 +596,11 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     _tb_tab_name = (_tab_pfx + 'Trial Balance')[:31]
     if tb_filepath and os.path.exists(tb_filepath):
         if not _copy_raw_tb_sheet(tb_filepath, wb, tab_name=_tb_tab_name):
-            _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
+            _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx,
+                          prepared_by=prepared_by)
     else:
-        _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
+        _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx,
+                      prepared_by=prepared_by)
 
     # Remove the blank default sheet openpyxl creates for new workbooks
     for _default in ('Sheet', 'Sheet1'):
@@ -656,7 +663,8 @@ def _copy_raw_tb_sheet(source_path: str, dest_wb, tab_name: str = 'Trial Balance
 
 def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
                        je_adjustments=None, tab_prefix: str = '',
-                       zero_activity_tb_accounts: list = None):
+                       zero_activity_tb_accounts: list = None,
+                       prepared_by: str = ''):
     _tab_name = (tab_prefix + 'Summary')[:31]
     ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_SUMMARY
@@ -672,7 +680,10 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
     row += 1
 
-    c = ws.cell(row=row, column=_B, value=f'Period: {period}  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c = ws.cell(row=row, column=_B,
+                value=f'Period: {period}  |  '
+                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  '
+                      f'{datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, size=11, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
@@ -847,7 +858,8 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
 
 # ── Trial Balance tab ─────────────────────────────────────────
 
-def _write_tb_tab(wb, tb_result, period, property_name, tab_prefix: str = ''):
+def _write_tb_tab(wb, tb_result, period, property_name, tab_prefix: str = '',
+                  prepared_by: str = ''):
     _tab_name = (tab_prefix + 'Trial Balance')[:31]
     ws = wb.create_sheet(_tab_name)
     ws.sheet_properties.tabColor = COLOR_TB
@@ -1629,10 +1641,12 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     row += 1
 
     # ── Row 2: Property / period sub-header ──────────────────────────────
+    _preparer = prepared_by or 'Ryan Walsh'
     c = ws.cell(row=row, column=_B,
                 value=f'{property_name or "Revolution Labs"}  |  '
                       f'Period: {period}  |  '
-                      f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+                      f'Prepared by: {_preparer}  |  '
+                      f'{datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF', size=10)
     c.fill = _fill(MED_BLUE)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_LAST_COL)
@@ -1994,7 +2008,8 @@ def _parse_accrual_txn(desc: str, expense_name: str = '') -> dict:
 
 def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
                                  control_to_expense: dict, tab_prefix: str = '',
-                                 history_rows: list = None):
+                                 history_rows: list = None,
+                                 prepared_by: str = ''):
     """
     Write a JLL-style accrual schedule tab for 211200 / 211300 / 213100.
 
@@ -2027,7 +2042,8 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
     c = ws.cell(row=row, column=_B,
                 value=(f'Period: {period}  |  '
                        f'{property_name or "Revolution Labs"}  |  '
-                       f'Prepared: {datetime.now().strftime("%m/%d/%Y")}'))
+                       f'Prepared by: {prepared_by or "Ryan Walsh"}  |  '
+                       f'{datetime.now().strftime("%m/%d/%Y")}'))
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
@@ -2257,7 +2273,8 @@ def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
 
     c = ws.cell(row=row, column=_B,
                 value=f'{property_name or "Revolution Labs"}  |  '
-                      f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  '
+                      f'{datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
@@ -2718,7 +2735,8 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
                         account_label: str = 'PNC Operating (x3993)',
                         gl_account_code: str = '111100',
                         tab_prefix: str = '',
-                        tab_name_override: str = None):
+                        tab_name_override: str = None,
+                        prepared_by: str = ''):
     """
     Writes one Bank Rec tab showing:
       Balance per Bank Statement
@@ -2748,7 +2766,7 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
 
     c = ws.cell(row=row, column=_B,
                 value=f'Account: {account_label}  |  Period: {period}  |  '
-                      f'Prepared by: GRP  |  {datetime.now().strftime("%m/%d/%Y")}')
+                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  {datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(COLOR_BANK_REC)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
@@ -2931,7 +2949,7 @@ def _write_daca_bank_rec_tab(wb, daca_bank_data: dict, gl_daca_balance: float,
     c = ws.cell(row=row, column=_B,
                 value=f'Account: KeyBank DACA (x{acct_num.lstrip("x")})  |  '
                       f'Period: {period_str}  |  GL Account: 115100  |  '
-                      f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  {datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(COLOR_DACA)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
