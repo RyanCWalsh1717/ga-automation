@@ -814,6 +814,8 @@ with tab1:
                                 "trial_balance_pass2", "loan_pass2",
                                 "prior_workpaper", "t12_statement_pass2"):
                     st.session_state.uploaded_files.pop(_clr, None)
+            # Clear Pass 1 close tracker step (step 1 = JEs generated)
+            st.session_state.close_tracker.pop(1, None)
             st.rerun()
 
     # ── Pass 1 Processing ─────────────────────────────────────────────────────
@@ -2326,6 +2328,11 @@ with tab2:
                 st.session_state.uploaded_files.pop(_k, None)
             st.session_state.bulk_overrides_p2 = {}
             st.session_state.upload_key_p2 += 1
+            # Clear Pass 2 close tracker steps (5=files uploaded, 6=reports generated,
+            # 7=QC review complete, 8=package released). Steps 0-4 are pre-Pass-2 and
+            # should be preserved since the work already happened.
+            for _ct_step in (5, 6, 7, 8):
+                st.session_state.close_tracker.pop(_ct_step, None)
             st.rerun()
 
     # ── Pass 2 Processing ─────────────────────────────────────────────────────
