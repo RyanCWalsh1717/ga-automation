@@ -89,10 +89,6 @@ pipeline/
                                   TB-YTD, GL-MTD, GL-YTD, Tenancy) is downloaded directly
                                   from Yardi by Ryan — the pipeline does not generate it.
 
-  workpaper_generator.py        ← Generates institutional workpapers (Pass 2): Bank Rec,
-                                  Debt Service, Rent Roll Tie-Out, Accruals summary.
-                                  Consumes BankReconDetail from engine.
-
   bs_workpaper_generator.py     ← Generates monthly close Workpaper (Pass 2): GL vs TB
                                   tie-out for all BS accounts, DACA reconciliation.
                                   Historical carry-forward: if prior_workpaper_path
@@ -330,7 +326,7 @@ TUB entries appear in `GA_Accruals_JE.csv`.
   - Format A: `"Property = code  name"` (older exports)
   - Format B: `"Name (code)"` e.g. `"Revolution Labs Owner, LLC (revlabpm)"` (current)
 - **Financial data types**: Parsers sometimes return strings for numeric fields.
-  Use defensive float conversion (see `_safe_num()` in workpaper_generator.py).
+  Use defensive float conversion (see `_safe_num()` in bs_workpaper_generator.py).
 - **No circular imports**: GL lookup utilities live in `accrual_entry_generator.py`, not `engine.py`.
 - **Excel output**: Uses `openpyxl` for .xlsx generation. Styles defined per generator module.
 - **PDF parsing**: `pdfplumber` for PNC and Yardi Bank Rec PDFs.

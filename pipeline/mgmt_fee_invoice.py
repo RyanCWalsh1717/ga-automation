@@ -1,77 +1,59 @@
 """
 Management Fee Invoice Generator
 =================================
-Produces a PDF invoice for the monthly property management fee,
-matching the RevLabsPM reference invoice exactly.
+Populates the GRP Excel invoice template and exports to PDF.
 
-Reference invoice extracted via pdfplumber (page 612 × 792 pt = US Letter):
-  Font:     TimesNewRoman Bold (Times-Bold) and Regular (Times-Roman)
-  Sizes:    6.72 pt body, 6.0 pt column headers, 13.44 pt INVOICE title
-  Green:    RGB(0.164, 0.395, 0.109)  — headers and INVOICE title
-  Layout:   text on white, NO colored background blocks
+Template: pipeline/templates/mgmt_fee_invoice_template.xlsx
+  (REv Labs Management fee invoice tempalte.xlsx — exact formatting preserved)
 
-All y-coordinates below are pdfplumber convention (from top of page).
-Converted to reportlab (from bottom) via:  rl_y = PAGE_H - pdf_y
+Only 4 cells need to be written each month:
+  H7  — Invoice number  (RevLabsPM{MM}{YYYY})
+  H8  — Invoice date    (last day of the close month; H9 = =H8 follows automatically)
+  E15 — Period label    ('January 2026 Property Management Fee')
+  F15 — Collections     (cash received — all fee amounts are Excel formulas off this)
 
-Invoice # format:  RevLabsPM{MM}{YYYY}   e.g. RevLabsPM022026
+All fee calculations live as Excel formulas in the template:
+  H15 = =F15 * G15          (3.00% total fee)
+  H16 = =-MAX(F16*G16,5000) (JLL deduction: greater of 1.25% or $5,000)
+  H19 = =IF(SUM(H15:H18)>0, SUM(H15:H18), 0)  (Balance Due = GRP's portion)
+
+PDF conversion priority:
+  1. win32com  — Windows + Microsoft Excel installed (exact rendering)
+  2. LibreOffice headless  — cross-platform if `libreoffice` available
+  3. reportlab fallback  — always works, close match to template
 """
 
 from __future__ import annotations
 
 import io
+import os
 import re
+import shutil
 import calendar
-from datetime import date
+import tempfile
+from datetime import date, datetime
 from typing import Optional
 
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
+# ── Template path ─────────────────────────────────────────────────────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TEMPLATE = os.path.join(_HERE, 'templates', 'mgmt_fee_invoice_template.xlsx')
 
-# ── Palette ──────────────────────────────────────────────────────────────────
-_GREEN = colors.Color(0.164, 0.395, 0.109)   # dark green (table headers / INVOICE title)
-_BLACK = colors.black
-
-# ── GRP / property constants ──────────────────────────────────────────────────
-_GRP_NAME    = 'Greatland Realty Partners LLC'
-_GRP_ADDR1   = 'One Federal Street, 28th Floor'
-_GRP_ADDR2   = 'Boston, MA 02110'
-_GRP_WEB     = 'www.greatlandpartners.com'
-
-_BILL_TO     = 'Revolution Labs Owner, LLC'
-_TERMS       = 'Due on receipt'
-
-_ACH_BANK    = 'Bank of America'
-_ACH_ACCT    = '466007913255'
-_ACH_RTG     = '026009593'
-_ACH_ADDR    = '1 Federal St, Boston, MA 02110'
-
-_CHK_PAYABLE = 'Greatland Realty Partners LLC'
-_CHK_ADDR1   = 'Greatland Realty Partners'
-_CHK_ADDR2   = '1 Federal Street, 28th Floor'
-_CHK_ADDR3   = 'Boston, MA 02110'
-_CHK_ATTN    = 'Lauren Sullivan'
-
-# Fee rates
-_TOTAL_RATE  = 0.0300   # 3.00%
-_JLL_RATE    = 0.0125   # 1.25%
-_GRP_RATE    = 0.0175   # 1.75%
+# ── Constants ─────────────────────────────────────────────────────────────────
+_JLL_MIN   = 5_000.0   # $5,000 minimum for JLL deduction (per template formula)
+_JLL_RATE  = 0.0125
+_TOTAL_RATE = 0.0300
 
 _MONTH_MAP = {
-    1: 'January', 2: 'February', 3: 'March', 4: 'April',
-    5: 'May',     6: 'June',     7: 'July',   8: 'August',
+    1: 'January', 2: 'February', 3: 'March',    4: 'April',
+    5: 'May',     6: 'June',     7: 'July',      8: 'August',
     9: 'September', 10: 'October', 11: 'November', 12: 'December',
 }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _month_end(year: int, month: int) -> date:
-    return date(year, month, calendar.monthrange(year, month)[1])
-
-
 def _parse_period(period: str):
-    """Return (year, month_int) from a string like 'Feb-2026'.  (0, 0) on failure."""
+    """Return (year, month_int) from 'Jan-2026'. Returns (0, 0) on failure."""
     abbr = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
         'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
@@ -83,9 +65,219 @@ def _parse_period(period: str):
     return int(m.group(2)), abbr.get(m.group(1).lower(), 0)
 
 
-def _money(v: float, neg: bool = False) -> str:
-    sign = '-' if neg else ''
-    return f'{sign}${abs(v):,.2f}'
+def _month_end(year: int, month: int) -> date:
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+# ── Excel population ──────────────────────────────────────────────────────────
+
+def _populate_excel(period: str, cash_received: float, out_xlsx: str) -> None:
+    """
+    Copy the invoice template and fill in the 4 dynamic cells.
+    Writes the populated workbook to out_xlsx.
+    """
+    import openpyxl
+
+    if not os.path.exists(_TEMPLATE):
+        raise FileNotFoundError(
+            f'Invoice template not found: {_TEMPLATE}\n'
+            'Place mgmt_fee_invoice_template.xlsx in pipeline/templates/'
+        )
+
+    year, month = _parse_period(period)
+    if not year or not month:
+        raise ValueError(f"Cannot parse period '{period}'")
+
+    inv_date   = _month_end(year, month)
+    inv_num    = f'RevLabsPM{month:02d}{year}'
+    month_lbl  = _MONTH_MAP.get(month, str(month))
+    period_lbl = f'{month_lbl} {year} Property Management Fee'
+
+    shutil.copy2(_TEMPLATE, out_xlsx)
+    wb = openpyxl.load_workbook(out_xlsx)
+    ws = wb.active
+
+    # Only 4 cells need updating — everything else is static or a formula
+    ws['H7'] = inv_num
+    ws['H8'] = datetime(inv_date.year, inv_date.month, inv_date.day)
+    ws['E15'] = period_lbl
+    ws['F15'] = round(cash_received, 2)
+
+    wb.save(out_xlsx)
+
+
+# ── PDF conversion ────────────────────────────────────────────────────────────
+
+def _pdf_via_win32com(xlsx_path: str, pdf_path: str) -> bool:
+    """Convert Excel to PDF using Microsoft Excel (Windows only)."""
+    try:
+        import win32com.client
+        excel = win32com.client.Dispatch('Excel.Application')
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        try:
+            wb = excel.Workbooks.Open(os.path.abspath(xlsx_path))
+            wb.Worksheets(1).ExportAsFixedFormat(
+                0,                          # xlTypePDF
+                os.path.abspath(pdf_path),
+                1,                          # xlQualityStandard
+                True,                       # IncludeDocProperties
+                False,                      # IgnorePrintAreas
+            )
+            wb.Close(False)
+            return True
+        finally:
+            excel.Quit()
+    except Exception:
+        return False
+
+
+def _pdf_via_libreoffice(xlsx_path: str, pdf_dir: str) -> bool:
+    """Convert Excel to PDF using LibreOffice headless."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['libreoffice', '--headless', '--convert-to', 'pdf',
+             '--outdir', pdf_dir, os.path.abspath(xlsx_path)],
+            capture_output=True, timeout=60,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None:
+    """
+    Reportlab fallback — closely matches the template layout.
+    Used when neither win32com nor LibreOffice is available.
+    """
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+
+    GREEN_DARK  = colors.HexColor('#2A651C')
+    GREEN_LIGHT = colors.HexColor('#D4E0D2')
+    BLACK       = colors.black
+
+    GRP_NAME = 'Greatland Realty Partners LLC'
+    GRP_A1   = 'One Federal Street, 28th Floor'
+    GRP_A2   = 'Boston, MA 02110'
+    GRP_WEB  = 'www.greatlandpartners.com'
+
+    year, month = _parse_period(period)
+    inv_date   = _month_end(year, month)
+    inv_date_s = f'{inv_date.month}/{inv_date.day}/{inv_date.year}'
+    inv_num    = f'RevLabsPM{month:02d}{year}'
+    month_lbl  = _MONTH_MAP.get(month, str(month))
+
+    total_fee  = round(cash_received * _TOTAL_RATE, 2)
+    jll_fee    = round(max(cash_received * _JLL_RATE, _JLL_MIN), 2)
+    balance    = round(max(total_fee - jll_fee, 0.0), 2)
+
+    W, H = letter
+    buf  = io.BytesIO()
+    c    = rl_canvas.Canvas(buf, pagesize=letter)
+
+    def _y(top): return H - top
+
+    L, R = 57.0, 555.0
+    DATE_X, ACT_X, DESC_X = 57.0, 135.0, 255.0
+    R_COLL, R_RATE, R_AMT = 420.0, 468.0, 555.0
+
+    # Company header
+    c.setFillColor(BLACK)
+    c.setFont('Times-Bold',   10); c.drawString(L, _y(42), GRP_NAME)
+    c.setFont('Times-Roman',  10)
+    c.drawString(L, _y(56), GRP_A1)
+    c.drawString(L, _y(70), GRP_A2)
+    c.drawString(L, _y(84), GRP_WEB)
+
+    # INVOICE title
+    c.setFillColor(GREEN_DARK)
+    c.setFont('Times-Bold', 20)
+    c.drawString(L, _y(108), 'INVOICE')
+    c.setFillColor(BLACK)
+
+    # Meta block
+    META = [('INVOICE #', inv_num, 112), ('DATE', inv_date_s, 126),
+            ('DUE DATE', inv_date_s, 140), ('TERMS', 'Due on receipt', 154)]
+    for lbl, val, top in META:
+        c.setFont('Times-Bold',  10); c.drawString(355, _y(top), lbl)
+        c.setFont('Times-Roman', 10); c.drawString(460, _y(top), val)
+
+    # Bill To
+    c.setFont('Times-Bold',  10); c.drawString(L, _y(112), 'BILL TO:')
+    c.setFont('Times-Roman', 10); c.drawString(L, _y(126), 'Revolution Labs Owner, LLC')
+
+    # Table
+    c.setStrokeColor(BLACK); c.setLineWidth(0.75)
+    c.line(L, _y(174), R, _y(174))
+
+    # Header fill
+    c.setFillColor(GREEN_LIGHT); c.setStrokeColor(GREEN_LIGHT)
+    c.rect(L, _y(196), R - L, 22, fill=1, stroke=0)
+    c.setStrokeColor(BLACK); c.line(L, _y(196), R, _y(196))
+
+    # Column headers
+    c.setFont('Times-Bold', 9); c.setFillColor(BLACK)
+    c.drawString(DATE_X, _y(188), 'DATE')
+    c.drawString(ACT_X,  _y(188), 'ACTIVITY')
+    c.drawString(DESC_X, _y(188), 'DESCRIPTION')
+    c.setFillColor(GREEN_DARK)
+    c.drawRightString(R_COLL, _y(188), 'COLLECTIONS')
+    c.setFillColor(BLACK)
+    c.drawRightString(R_RATE, _y(188), 'RATE')
+    c.drawRightString(R_AMT,  _y(188), 'AMOUNT')
+
+    def _money(v, neg=False):
+        return f'{"-" if neg else ""}${abs(v):,.2f}'
+
+    # Row 1
+    c.setFont('Times-Roman', 10); c.drawString(DATE_X, _y(214), inv_date_s)
+    c.setFont('Times-Bold',  10); c.drawString(ACT_X,  _y(214), 'Rev Labs Property Management Fee')
+    c.setFont('Times-Roman', 10)
+    c.drawString(DESC_X, _y(214), f'{month_lbl} {year} Property Management Fee')
+    c.drawRightString(R_COLL, _y(214), _money(cash_received))
+    c.drawRightString(R_RATE, _y(214), '3.00%')
+    c.drawRightString(R_AMT,  _y(214), _money(total_fee))
+    c.setLineWidth(0.5); c.line(L, _y(222), R, _y(222))
+
+    # Row 2
+    c.setFont('Times-Roman', 10)
+    c.drawString(DESC_X, _y(238), 'Less JLL Portion')
+    c.drawRightString(R_COLL, _y(238), _money(cash_received))
+    c.drawRightString(R_RATE, _y(238), '1.25%')
+    c.drawRightString(R_AMT,  _y(238), _money(jll_fee, neg=True))
+    c.line(L, _y(246), R, _y(246))
+
+    # Balance Due
+    c.setLineWidth(0.75); c.line(L, _y(272), R, _y(272))
+    c.setFont('Times-Bold', 10)
+    c.drawString(L,     _y(284), 'BALANCE DUE')
+    c.drawRightString(R_AMT, _y(284), _money(balance))
+
+    # Payment instructions
+    c.setFont('Times-Bold', 9); c.drawString(L, _y(464), 'PAYMENT INSTRUCTIONS:')
+    c.drawString(L,     _y(480), 'Electronic Payment:')
+    c.drawString(310.0, _y(480), 'Check Payment:')
+    ach = [('Account Name:', GRP_NAME), ('Bank Name:', 'Bank of America'),
+           ('Bank Account #:', '466007913255'), ('Bank Routing (ABA) #:', '026009593'),
+           ('Bank Address:', '1 Federal St, Boston, MA 02110')]
+    for i, (lbl, val) in enumerate(ach):
+        ry = 496 + i * 13
+        c.setFont('Times-Bold',  9); c.drawString(L,     _y(ry), lbl)
+        c.setFont('Times-Roman', 9); c.drawString(170.0, _y(ry), val)
+    chk = [('Payable to:', GRP_NAME), ('Mailing Address:', ''), ('', GRP_A1[:-16].strip()),
+           ('', GRP_A1), ('', GRP_A2), ('Attention:', 'Lauren Sullivan')]
+    ry = 496
+    for lbl, val in chk:
+        if lbl: c.setFont('Times-Bold', 9);  c.drawString(310.0, _y(ry), lbl)
+        if val: c.setFont('Times-Roman', 9); c.drawString(400.0 if lbl else 310.0, _y(ry), val)
+        ry += 13
+
+    c.showPage(); c.save()
+    with open(pdf_path, 'wb') as fh:
+        fh.write(buf.getvalue())
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -96,207 +288,67 @@ def generate_invoice(
     output_path: Optional[str] = None,
 ) -> bytes:
     """
-    Generate the GRP management fee invoice PDF, matching the RevLabsPM reference.
+    Generate the management fee invoice PDF by populating the Excel template.
+
+    Conversion priority:
+      1. win32com  (Windows + Excel — exact template rendering)
+      2. LibreOffice headless  (cross-platform)
+      3. reportlab  (always works, close match)
 
     Args:
-        period:        Accounting period string, e.g. 'Feb-2026'.
-        cash_received: Management fee basis (cash collected this period).
-        output_path:   Optional path to write PDF file.  Returns bytes always.
+        period:        Period string e.g. 'Jan-2026'.
+        cash_received: Cash collected this period (management fee basis).
+        output_path:   Optional path to write the PDF. Always returns bytes.
 
     Returns:
         PDF bytes.
     """
-    year, month = _parse_period(period)
-    if not year or not month:
-        raise ValueError(f"Cannot parse period '{period}'")
+    if output_path is None:
+        year, month = _parse_period(period)
+        output_path = os.path.join(
+            tempfile.gettempdir(),
+            f'RevLabsPM_Invoice_{period.replace("-", "")}.pdf',
+        )
 
-    inv_date   = _month_end(year, month)
-    inv_date_s = f'{inv_date.month}/{inv_date.day}/{inv_date.year}'
-    inv_num    = f'RevLabsPM{month:02d}{year}'
-    month_lbl  = _MONTH_MAP.get(month, str(month))
+    pdf_path  = output_path
+    xlsx_path = pdf_path.replace('.pdf', '_populated.xlsx')
 
-    total_fee = round(cash_received * _TOTAL_RATE, 2)
-    jll_fee   = round(max(cash_received * _JLL_RATE, 5_000.0), 2)  # greater of 1.25% or $5,000 minimum
-    balance   = round(max(total_fee - jll_fee, 0.0), 2)
+    # Step 1 — populate the Excel template
+    try:
+        _populate_excel(period, cash_received, xlsx_path)
+    except Exception as e:
+        # Template missing or openpyxl issue — skip straight to reportlab
+        _pdf_via_reportlab(period, cash_received, pdf_path)
+        with open(pdf_path, 'rb') as fh:
+            return fh.read()
 
-    buf = io.BytesIO()
-    c   = rl_canvas.Canvas(buf, pagesize=letter)
-    W, H = letter  # 612 × 792 pt
+    # Step 2 — convert populated Excel → PDF
+    pdf_ok = False
 
-    # Convert pdfplumber y-from-top to reportlab y-from-bottom (baseline approx)
-    def y(pdf_y: float) -> float:
-        return H - pdf_y
+    # Try win32com (Windows + Excel)
+    if not pdf_ok:
+        pdf_ok = _pdf_via_win32com(xlsx_path, pdf_path)
 
-    # ── SECTION 1: Company header (top-left) ────────────────────────────────
-    # pdfplumber positions: company name y=64.2, addresses y=72.6/81.1/89.7
-    c.setFillColor(_BLACK)
-    c.setFont('Times-Bold', 6.72)
-    c.drawString(56.9, y(64.2), _GRP_NAME)
+    # Try LibreOffice
+    if not pdf_ok:
+        pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
+        if _pdf_via_libreoffice(xlsx_path, pdf_dir):
+            # LibreOffice names the output after the input file
+            lo_name = os.path.splitext(os.path.basename(xlsx_path))[0] + '.pdf'
+            lo_path = os.path.join(pdf_dir, lo_name)
+            if os.path.exists(lo_path) and lo_path != pdf_path:
+                shutil.move(lo_path, pdf_path)
+            pdf_ok = os.path.exists(pdf_path)
 
-    c.setFont('Times-Roman', 6.72)
-    c.drawString(56.9, y(72.6), _GRP_ADDR1)
-    c.drawString(56.9, y(81.1), _GRP_ADDR2)
-    c.drawString(56.9, y(89.7), _GRP_WEB)
+    # Reportlab fallback
+    if not pdf_ok:
+        _pdf_via_reportlab(period, cash_received, pdf_path)
 
-    # ── SECTION 2: "INVOICE" title (large, green, left-aligned) ─────────────
-    # pdfplumber: x=57.7, y=104.4, size=13.44pt
-    c.setFillColor(_GREEN)
-    c.setFont('Times-Bold', 13.44)
-    c.drawString(57.7, y(104.4), 'INVOICE')
-    c.setFillColor(_BLACK)
+    # Clean up temp xlsx
+    try:
+        os.remove(xlsx_path)
+    except OSError:
+        pass
 
-    # ── SECTION 3: Invoice meta block (right side) ───────────────────────────
-    # Labels at x=382.1, values at x=468.5
-    # pdfplumber y rows: 120.6, 130.6, 139.1, 147.6
-    _meta = [
-        ('INVOICE #', inv_num,    120.6),
-        ('DATE',      inv_date_s, 130.6),
-        ('DUE DATE',  inv_date_s, 139.1),
-        ('TERMS',     _TERMS,     147.6),
-    ]
-    for lbl, val, pdf_y in _meta:
-        c.setFont('Times-Bold', 6.72)
-        c.drawString(382.1, y(pdf_y), lbl)
-        c.setFont('Times-Roman', 6.72)
-        c.drawString(468.5, y(pdf_y), val)
-
-    # ── SECTION 4: Bill To (left side, same vertical band as meta) ───────────
-    # "BILL TO:" at y=122.1; bill-to name one line below
-    c.setFont('Times-Bold', 6.72)
-    c.drawString(56.9, y(122.1), 'BILL TO:')
-    c.setFont('Times-Roman', 6.72)
-    c.drawString(56.9, y(131.0), _BILL_TO)
-
-    # ── SECTION 5: Line-item table ───────────────────────────────────────────
-    # Column x anchors (pdfplumber):
-    #   DATE hdr:        x=85.1   (left-align)
-    #   ACTIVITY hdr:    x=146.5  (left-align)
-    #   DESCRIPTION hdr: x=240.0  (left-align)
-    #   COLLECTIONS hdr: x=375.6  (right-align to col right edge ≈432)
-    #   RATE hdr:        x=434.6  (right-align to col right edge ≈472)
-    #   AMOUNT hdr:      x=473.5  (right-align to col right edge ≈555)
-    #
-    # Data row 1: date at x=79.3, activity bold at x=136.4, desc at x=240.0
-    # Data row 2: activity bold at x=136.4, desc at x=240.0
-
-    TBL_L    = 57.0    # table left edge (horizontal rule)
-    TBL_R    = 555.0   # table right edge
-    R_COLL   = 432.0   # right edge of COLLECTIONS column
-    R_RATE   = 472.0   # right edge of RATE column
-    R_AMT    = 555.0   # right edge of AMOUNT column
-
-    HDR_Y    = 181.7   # header baseline (pdfplumber)
-    ROW1_Y   = 193.1   # row 1 baseline
-    ROW2_Y   = 201.6   # row 2 baseline
-
-    # Horizontal rules (estimated from extracted row spacing)
-    c.setStrokeColor(_BLACK)
-    c.setLineWidth(0.5)
-    c.line(TBL_L, y(175.5), TBL_R, y(175.5))   # above header
-    c.line(TBL_L, y(187.5), TBL_R, y(187.5))   # below header
-    c.line(TBL_L, y(197.0), TBL_R, y(197.0))   # below row 1
-    c.line(TBL_L, y(206.0), TBL_R, y(206.0))   # below row 2
-
-    # Column headers — 6.0pt bold, green
-    c.setFont('Times-Bold', 6.0)
-    c.setFillColor(_GREEN)
-    c.drawString(     85.1, y(HDR_Y), 'DATE')
-    c.drawString(    146.5, y(HDR_Y), 'ACTIVITY')
-    c.drawString(    240.0, y(HDR_Y), 'DESCRIPTION')
-    c.drawRightString(R_COLL, y(HDR_Y), 'COLLECTIONS')
-    c.drawRightString(R_RATE, y(HDR_Y), 'RATE')
-    c.drawRightString(R_AMT,  y(HDR_Y), 'AMOUNT')
-    c.setFillColor(_BLACK)
-
-    # Row 1: total management fee
-    c.setFont('Times-Roman', 6.72)
-    c.drawString(79.3, y(ROW1_Y), inv_date_s)
-    c.setFont('Times-Bold', 6.72)
-    c.drawString(136.4, y(ROW1_Y), 'Rev Labs Property Management Fee')
-    c.setFont('Times-Roman', 6.72)
-    c.drawString(240.0, y(ROW1_Y), f'{month_lbl} {year} Property Management Fee')
-    c.drawRightString(R_COLL, y(ROW1_Y), _money(cash_received))
-    c.drawRightString(R_RATE, y(ROW1_Y), '3.00%')
-    c.drawRightString(R_AMT,  y(ROW1_Y), _money(total_fee))
-
-    # Row 2: less JLL portion (no bold activity label — description only)
-    c.setFont('Times-Roman', 6.72)
-    c.drawString(240.0, y(ROW2_Y), 'Less JLL Portion')
-    c.drawRightString(R_COLL, y(ROW2_Y), _money(cash_received))
-    c.drawRightString(R_RATE, y(ROW2_Y), '1.25%')
-    c.drawRightString(R_AMT,  y(ROW2_Y), _money(jll_fee, neg=True))
-
-    # ── SECTION 6: Balance Due ───────────────────────────────────────────────
-    # pdfplumber: "BALANCE DUE" at y=233.7, bold amount at y=233.8
-    BAL_Y = 233.7
-    c.line(TBL_L, y(227.0), TBL_R, y(227.0))   # rule above balance line
-
-    c.setFont('Times-Bold', 6.72)
-    c.drawString(    TBL_L,  y(BAL_Y), 'BALANCE DUE')
-    c.drawRightString(R_AMT, y(BAL_Y), _money(balance))
-
-    # ── SECTION 7: Payment Instructions ─────────────────────────────────────
-    # "PAYMENT INSTRUCTIONS:" at pdfplumber y=489.3 (bold)
-    # Electronic Payment left col x=56.9; Check Payment right col x=250.1
-    # Data rows y=506.4 through ~574.5 (≈6-7 rows, ~10pt leading)
-    PAY_HDR_Y  = 489.3
-    PAY_SECT_Y = 499.0    # "Electronic Payment:" / "Check Payment:" headers
-    PAY_ROW_Y0 = 510.0    # first data row baseline
-    PAY_LEAD   = 9.5      # row leading (pt)
-
-    # Section heading
-    c.setFont('Times-Bold', 6.72)
-    c.drawString(56.9, y(PAY_HDR_Y), 'PAYMENT INSTRUCTIONS:')
-
-    # Sub-section headings
-    c.drawString( 56.9, y(PAY_SECT_Y), 'Electronic Payment:')
-    c.drawString(250.1, y(PAY_SECT_Y), 'Check Payment:')
-
-    # ACH detail rows (label bold, value regular)
-    _ach_rows = [
-        ('Account Name:',        'Greatland Realty Partners LLC'),
-        ('Bank Name:',           _ACH_BANK),
-        ('Bank Account #:',      _ACH_ACCT),
-        ('Bank Routing (ABA) #:', _ACH_RTG),
-        ('Bank Address:',        _ACH_ADDR),
-    ]
-    ACH_LBL_X  = 56.9
-    ACH_VAL_X  = 160.0   # value indent (right of longest label)
-    for i, (lbl, val) in enumerate(_ach_rows):
-        row_y = PAY_ROW_Y0 + i * PAY_LEAD
-        c.setFont('Times-Bold', 6.72)
-        c.drawString(ACH_LBL_X, y(row_y), lbl)
-        c.setFont('Times-Roman', 6.72)
-        c.drawString(ACH_VAL_X, y(row_y), val)
-
-    # Check detail rows
-    _chk_rows = [
-        ('Payable to:',       _CHK_PAYABLE),
-        ('Mailing Address:',  ''),
-        ('',                  _CHK_ADDR1),
-        ('',                  _CHK_ADDR2),
-        ('',                  _CHK_ADDR3),
-        ('Attention:',        _CHK_ATTN),
-    ]
-    CHK_LBL_X = 250.1
-    CHK_VAL_X = 340.0
-    row_y = PAY_ROW_Y0
-    for lbl, val in _chk_rows:
-        if lbl:
-            c.setFont('Times-Bold', 6.72)
-            c.drawString(CHK_LBL_X, y(row_y), lbl)
-        if val:
-            c.setFont('Times-Roman', 6.72)
-            c.drawString(CHK_VAL_X if lbl else CHK_LBL_X, y(row_y), val)
-        row_y += PAY_LEAD
-
-    # ── Finalise ─────────────────────────────────────────────────────────────
-    c.showPage()
-    c.save()
-    pdf_bytes = buf.getvalue()
-
-    if output_path:
-        with open(output_path, 'wb') as fh:
-            fh.write(pdf_bytes)
-
-    return pdf_bytes
+    with open(pdf_path, 'rb') as fh:
+        return fh.read()

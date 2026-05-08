@@ -135,8 +135,8 @@ def _safe_sheet_name(name: str, max_len: int = 31) -> str:
     return name[:max_len]
 
 # Tab colors
-COLOR_SUMMARY    = '1F4E78'   # dark blue  — summary
-COLOR_TB         = '2E75B6'   # medium blue — trial balance
+COLOR_SUMMARY    = '002060'   # Greatland dark navy  — summary
+COLOR_TB         = '2D6F50'   # Greatland green      — trial balance
 COLOR_BS_STD     = '70AD47'   # green       — standard BS tabs
 COLOR_BS_COMPLEX = 'FF0000'   # red         — complex tabs (accrued exp, prepaids)
 
@@ -147,12 +147,14 @@ COMPLEX_ACCOUNTS = {'213100', '135110', '135150', '213200', '221100'}
 _ACCRUAL_SCHEDULE_ACCOUNTS = {'211200', '211300', '213100', '201000'}
 
 # Styling helpers
-DARK_BLUE  = '1F4E78'
-MED_BLUE   = '2E75B6'
-LIGHT_BLUE = 'D6E4F0'
-LIGHT_GRAY = 'F2F2F2'
-GREEN_FILL = 'E2EFDA'
-RED_FILL   = 'FFCCCC'
+# ── Greatland Brand Palette ────────────────────────────────────────────────────
+# Source: Greatland Theme - New.thmx  (accent5=002060, dk2/accent2=2D6F50)
+DARK_BLUE  = '002060'   # Greatland dark navy   (was 1F4E78)
+MED_BLUE   = '2D6F50'   # Greatland green        (was 2E75B6)
+LIGHT_BLUE = 'D6EAE1'   # light green tint       (was D6E4F0)
+LIGHT_GRAY = 'F2F2F2'   # alternating row shade  (unchanged)
+GREEN_FILL = 'E2EFDA'   # tie-out pass           (unchanged)
+RED_FILL   = 'FFCCCC'   # tie-out fail           (unchanged)
 AMBER_FILL = 'FFF2CC'
 WHITE      = 'FFFFFF'
 
@@ -207,7 +209,12 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            berkadia_loans: list = None,
                            dev_bank_rec_data: dict = None,
                            ar_aging_data=None,
-                           capital_schedule_data=None) -> str:
+                           capital_schedule_data=None,
+                           tb_filepath: str = None,
+                           ar_aging_filepath: str = None,
+                           ap_aging_filepath: str = None,
+                           bank_rec_xlsx_filepath: str = None,
+                           daca_bank_rec_xlsx_filepath: str = None) -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
@@ -325,6 +332,20 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     # Tab prefix for all current-period sheets — sanitized for Excel.
     _tab_pfx = (_safe_sheet_name(period) + ' ') if period else ''
 
+    # Entity columns for workpaper tabs — read from GL metadata.
+    # Multi-entity GL: metadata.entities = ['lexlab-1', 'lexlab-2', ...]
+    #                  → one amount column per entity + Total column.
+    # Single-entity GL: metadata.entities = [] (or single item)
+    #                  → one amount column, labelled with property_code.
+    _gl_entities: list = []
+    _entity_label = 'revlabpm'
+    if gl_result and hasattr(gl_result, 'metadata') and gl_result.metadata:
+        _gl_entities = list(getattr(gl_result.metadata, 'entities', []) or [])
+        _entity_label = (
+            getattr(gl_result.metadata, 'property_code', '') or
+            getattr(gl_result.metadata, 'property_name', '') or 'revlabpm'
+        ).strip().lower() or 'revlabpm'
+
     # Build TB lookup: account_code -> TBAccount
     tb_map = {}
     if tb_result and hasattr(tb_result, 'accounts'):
@@ -365,13 +386,24 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                     and abs(_tba.ending_balance) > 0.01):
                 _zero_activity_tb.append(_tba)
 
+    # ── Raw Yardi report map — accounts whose tabs use a raw file copy ───────────
+    # When a filepath is provided for an account, the tab shows the raw Yardi export
+    # instead of the generated GL transaction register.  The same file may be used
+    # for multiple accounts (e.g. AR Aging covers both 133100 and 221100).
+    _raw_report_map: dict = {}   # {account_code: filepath}
+    if ar_aging_filepath and os.path.exists(ar_aging_filepath):
+        _raw_report_map['133100'] = ar_aging_filepath   # AR Control
+        _raw_report_map['221100'] = ar_aging_filepath   # Prepaid Rent (Pre-payments col)
+    if ap_aging_filepath and os.path.exists(ap_aging_filepath):
+        _raw_report_map['211300'] = ap_aging_filepath   # AP Control
+    if bank_rec_xlsx_filepath and os.path.exists(bank_rec_xlsx_filepath):
+        _raw_report_map['111100'] = bank_rec_xlsx_filepath   # PNC Operating
+    if daca_bank_rec_xlsx_filepath and os.path.exists(daca_bank_rec_xlsx_filepath):
+        _raw_report_map['115100'] = daca_bank_rec_xlsx_filepath  # KeyBank DACA
+
     # ── Build workpaper tabs ──────────────────────────────────
-    # Summary and Trial Balance keep the period prefix (current-period snapshots).
-    # Account tabs have NO period prefix — they grow as rolling history tables.
-    _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
-                       je_adjustments, tab_prefix=_tab_pfx,
-                       zero_activity_tb_accounts=_zero_activity_tb)
-    _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
+    # Trial Balance moved to LAST tab — generated below just before wb.save().
+    # Summary tab removed — not needed for review (account tabs + TB are sufficient).
 
     # Flat list of all GL transactions as dicts — consumed by custom tab builders
     # that need cross-account JE context (e.g. 133110 billback, 213100 accruals).
@@ -390,8 +422,47 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                     'source':       '',
                 })
 
+    # Accounts covered by dedicated Analysis tabs — suppress individual account tabs
+    # so there's no duplication.  The Analysis tabs (Insurance Analysis, RE Tax Analysis)
+    # carry the full history and tie-out; a separate generated GL register would be
+    # confusing and redundant.
+    _ANALYSIS_COVERED = {'135110', '135120'}
+
+    # Current-period-only accounts — history rows are NOT carried forward.
+    # These tabs regenerate fresh each month; reviewers only need this period's data.
+    #
+    # Roll-forward accounts (everything NOT in this set) accumulate history:
+    #   115200/115300/115600 escrow accounts, 133100 AR Control, 154xxx capital,
+    #   211200 security deposits, 231100 mortgage payable, 3xxxxx equity.
+    _CURRENT_PERIOD_ONLY = {
+        '111100',   # PNC Operating        — bank rec is the reference
+        '115100',   # DACA                 — bank rec is the reference
+        '133110',   # AR Billback          — current period activity only
+        '135150',   # Prepaids Other       — covered by Prepaid Schedule tab
+        '211300',   # AP Control           — AP Aging is the reference
+        '213100',   # Accrued Expenses     — only this month's accruals matter
+        '213200',   # Accrued Interest     — covered by Loan Analysis tab
+        '221100',   # Prepaid Rent         — current period only
+    }
+
     for acct in bs_accounts:
-        _hist = _account_history.get(acct.account_code, [])
+        if acct.account_code in _ANALYSIS_COVERED:
+            continue
+
+        # Suppress history for current-period-only accounts
+        _hist = (
+            []
+            if acct.account_code in _CURRENT_PERIOD_ONLY
+            else _account_history.get(acct.account_code, [])
+        )
+        _tab_acct_name = _safe_sheet_name(f'{acct.account_code} {acct.account_name}')
+
+        # ── Raw Yardi report — copy file directly, skip all generated builders ──
+        if acct.account_code in _raw_report_map:
+            _copy_raw_tb_sheet(_raw_report_map[acct.account_code], wb,
+                               tab_name=_tab_acct_name)
+            continue
+
         # ── Custom builder (account-specific layout) ──────────
         _builder = _CUSTOM_BUILDERS.get(acct.account_code)
         if _builder:
@@ -420,21 +491,38 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             _write_account_tab(wb, acct, tb_map.get(acct.account_code), period,
                                property_name, je_adjustments,
                                tab_prefix='',   # no period prefix
-                               history_rows=_hist)
+                               history_rows=_hist,
+                               entity_label=_entity_label,
+                               entities=_gl_entities)
 
     # ── Stub tabs for TB accounts with no current-period GL activity ──────────
     for _tba in _zero_activity_tb:
-        _hist = _account_history.get(_tba.account_code, [])
-        _write_stub_tab(wb, _tba, period, property_name,
-                        tab_prefix='', history_rows=_hist)
+        if _tba.account_code in _ANALYSIS_COVERED:
+            continue   # covered by Insurance Analysis / RE Tax Analysis tabs
+
+        _hist = (
+            []
+            if _tba.account_code in _CURRENT_PERIOD_ONLY
+            else _account_history.get(_tba.account_code, [])
+        )
+        _tab_tba_name = _safe_sheet_name(f'{_tba.account_code} {_tba.account_name}')
+        if _tba.account_code in _raw_report_map:
+            _copy_raw_tb_sheet(_raw_report_map[_tba.account_code], wb,
+                               tab_name=_tab_tba_name)
+        else:
+            _write_stub_tab(wb, _tba, period, property_name,
+                            tab_prefix='', history_rows=_hist)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
         _write_prepaid_schedule_tab(wb, prepaid_ledger_active, period,
-                                    property_name, tab_prefix=_tab_pfx)
+                                    property_name, tab_prefix=_tab_pfx,
+                                    gl_result=gl_result)
 
     # ── Bank Rec tab (PNC Operating — account 111100) ──────────────────────────
-    if bank_rec_data:
+    # Suppressed when an Excel bank rec is provided — raw file is already in the
+    # 111100 account tab and a duplicate generated tab would be redundant.
+    if bank_rec_data and '111100' not in _raw_report_map:
         # If gl_cash_balance not passed in, try to pull it from the GL accounts
         _gl_cash = gl_cash_balance
         if _gl_cash is None and gl_result:
@@ -451,7 +539,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         )
 
     # ── DACA Bank Rec tab (KeyBank x5132 — account 115100) ────────────────────
-    if daca_bank_data is not None:
+    # Suppressed when an Excel bank rec is provided — raw file is in the 115100 tab.
+    if daca_bank_data is not None and '115100' not in _raw_report_map:
         _gl_daca = daca_gl_balance
         if _gl_daca is None and gl_result:
             for _acct in (gl_result.accounts or []):
@@ -497,6 +586,15 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
             print(f"[bs_workpaper_generator] Analysis tab build warning: {_atb_exc}")
             traceback.print_exc()
 
+    # ── Trial Balance tab — always LAST ───────────────────────────────────────
+    # Raw Yardi export when filepath available; generated fallback otherwise.
+    _tb_tab_name = (_tab_pfx + 'Trial Balance')[:31]
+    if tb_filepath and os.path.exists(tb_filepath):
+        if not _copy_raw_tb_sheet(tb_filepath, wb, tab_name=_tb_tab_name):
+            _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
+    else:
+        _write_tb_tab(wb, tb_result, period, property_name, tab_prefix=_tab_pfx)
+
     # Remove the blank default sheet openpyxl creates for new workbooks
     for _default in ('Sheet', 'Sheet1'):
         if _default in wb.sheetnames:
@@ -504,6 +602,54 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
     wb.save(output_path)
     return output_path
+
+
+# ── Raw Yardi TB sheet copy ───────────────────────────────────
+
+def _copy_raw_tb_sheet(source_path: str, dest_wb, tab_name: str = 'Trial Balance') -> bool:
+    """
+    Copy the active sheet from the Yardi TB .xlsx file directly into dest_wb.
+
+    Preserves cell values, number formats, fonts, fills, borders, alignments,
+    merged cell ranges, column widths and row heights exactly as exported from Yardi.
+    Returns True on success, False if the file could not be read.
+    """
+    import copy as _copy_mod
+    try:
+        _src_wb = _load_workbook(source_path, data_only=True)
+        _src_ws = _src_wb.active
+
+        _dst_ws = dest_wb.create_sheet(tab_name[:31])
+        _dst_ws.sheet_properties.tabColor = COLOR_TB
+
+        # Column widths
+        for _col_ltr, _col_dim in _src_ws.column_dimensions.items():
+            _dst_ws.column_dimensions[_col_ltr].width = _col_dim.width or 8
+
+        # Row heights
+        for _row_num, _row_dim in _src_ws.row_dimensions.items():
+            if _row_dim.height:
+                _dst_ws.row_dimensions[_row_num].height = _row_dim.height
+
+        # Merged cells — must be registered before writing cells to avoid conflicts
+        for _mr in list(_src_ws.merged_cells.ranges):
+            _dst_ws.merge_cells(str(_mr))
+
+        # All cell values and styles
+        for _row in _src_ws.iter_rows():
+            for _sc in _row:
+                _dc = _dst_ws.cell(row=_sc.row, column=_sc.column, value=_sc.value)
+                if _sc.has_style:
+                    _dc.font          = _copy_mod.copy(_sc.font)
+                    _dc.fill          = _copy_mod.copy(_sc.fill)
+                    _dc.border        = _copy_mod.copy(_sc.border)
+                    _dc.alignment     = _copy_mod.copy(_sc.alignment)
+                    _dc.number_format = _sc.number_format
+
+        return True
+    except Exception as _e:
+        print(f'[bs_workpaper_generator] Raw TB copy failed: {_e}')
+        return False
 
 
 # ── Summary tab ───────────────────────────────────────────────
@@ -984,13 +1130,18 @@ def _extract_account_history(wb_prior) -> dict:
 
 # Accounts that need full detail rows carried forward month-over-month
 _FULL_DETAIL_ACCOUNTS = frozenset({
-    '115200', '115300', '115600',           # escrow / reserve
-    '154500', '181200', '181300', '181400', # capital
+    '115200', '115300', '115600',                               # escrow / reserve
+    '152100', '154100', '154500', '171100',                     # capital — simple
+    '181200', '181300', '181400',                               # capital — entity/comm
+    '311100', '331100', '381100',                               # equity
 })
 
 # Capital tab layout info: {account_code: (has_entity, has_commencement)}
 _CAPITAL_TAB_LAYOUTS = {
+    '152100': (False, False),
+    '154100': (False, False),
     '154500': (False, False),
+    '171100': (False, False),
     '181200': (True,  True),
     '181300': (True,  True),
     '181400': (True,  True),
@@ -1101,14 +1252,121 @@ def _read_capital_tab_detail(ws, has_entity: bool, has_commencement: bool) -> li
     return rows
 
 
+def _read_equity_contributions_tab_detail(ws) -> list:
+    """
+    Read rows from a 311100 Contributions tab.
+
+    Column layout (written by build_311100_tab):
+      B = Date string ('M/D/YYYY')
+      C = Description
+      D = Amount (numeric)
+
+    Returns list of {date_str, desc, amt} dicts.
+    """
+    rows = []
+    for row_vals in ws.iter_rows(min_row=1, values_only=True):
+        if len(row_vals) < 4:
+            continue
+        col_b = row_vals[1]   # Date
+        col_c = row_vals[2]   # Description
+        col_d = row_vals[3]   # Amount
+
+        if not isinstance(col_b, str):
+            continue
+        if not re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', col_b.strip()):
+            continue
+        if not isinstance(col_d, (int, float)):
+            continue
+
+        rows.append({
+            'date_str': col_b.strip(),
+            'desc':     str(col_c or '').strip(),
+            'amt':      float(col_d),
+        })
+    return rows
+
+
+def _read_equity_distributions_tab_detail(ws) -> list:
+    """
+    Read rows from a 331100 Distributions tab.
+
+    Column layout (written by build_331100_tab):
+      B = Date string ('M/D/YYYY')
+      C = Description
+      D = Revlabs amount
+      E = Revlabpm amount
+      F = Total amount (all numeric)
+
+    Skips header rows, totals row, and tie-out rows.
+    Returns list of {date_str, desc, revlabs, revlabpm, total} dicts.
+    """
+    _SKIP = frozenset({'date', 'description', 'revlabs', 'revlabpm', 'total',
+                       'total distributions', 'ending balance per gl',
+                       'ending balance per tb', 'variance'})
+    rows = []
+    for row_vals in ws.iter_rows(min_row=1, values_only=True):
+        if len(row_vals) < 6:
+            continue
+        col_b = row_vals[1]   # Date
+        col_c = row_vals[2]   # Description
+        col_d = row_vals[3]   # Revlabs
+        col_e = row_vals[4]   # Revlabpm
+        col_f = row_vals[5]   # Total
+
+        if not isinstance(col_b, str):
+            continue
+        if not re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', col_b.strip()):
+            continue
+        if isinstance(col_c, str) and col_c.strip().lower() in _SKIP:
+            continue
+        # Need at least one numeric amount
+        if not isinstance(col_f, (int, float)):
+            continue
+
+        rows.append({
+            'date_str': col_b.strip(),
+            'desc':     str(col_c or '').strip(),
+            'revlabs':  float(col_d) if isinstance(col_d, (int, float)) else 0.0,
+            'revlabpm': float(col_e) if isinstance(col_e, (int, float)) else 0.0,
+            'total':    float(col_f),
+        })
+    return rows
+
+
+def _read_equity_retained_earnings_split(ws) -> dict:
+    """
+    Read the entity split from a 381100 Retained Earnings tab.
+
+    Column layout (written by build_381100_tab):
+      B = Description (look for 'Beginning Balance')
+      C = Revlabpm amount
+      D = Revlabs amount
+
+    Returns {revlabpm: float, revlabs: float}.
+    Falls back to empty dict if the row can't be found.
+    """
+    for row_vals in ws.iter_rows(min_row=1, values_only=True):
+        if len(row_vals) < 4:
+            continue
+        col_b = row_vals[1]
+        col_c = row_vals[2]
+        col_d = row_vals[3]
+        if isinstance(col_b, str) and 'beginning balance' in col_b.lower():
+            if isinstance(col_c, (int, float)) and isinstance(col_d, (int, float)):
+                return {'revlabpm': float(col_c), 'revlabs': float(col_d)}
+    return {}
+
+
 def _extract_prior_full_detail(wb_prior) -> dict:
     """
-    Extract full transaction-level detail rows from escrow and capital account
-    tabs in the prior workpaper.
+    Extract full transaction-level detail rows from escrow, capital, and equity
+    account tabs in the prior workpaper.
 
-    Covers accounts: 115200, 115300, 115600, 154500, 181200, 181300, 181400.
+    Covers accounts: 115200, 115300, 115600, 154500, 181200, 181300, 181400,
+                     311100, 331100, 381100.
 
     Returns {account_code: [list of row dicts]}.
+    For 381100 specifically, returns {account_code: {revlabpm, revlabs}} dict.
     If the same account code appears in multiple tabs (e.g., with a period prefix),
     the last tab encountered is used — in practice there should be only one tab
     per account in any given workpaper.
@@ -1131,12 +1389,25 @@ def _extract_prior_full_detail(wb_prior) -> dict:
         ws = wb_prior[sheet_name]
         if acct_code in ('115200', '115300', '115600'):
             rows = _read_escrow_tab_detail(ws)
+            if rows:
+                detail[acct_code] = rows
+        elif acct_code == '311100':
+            rows = _read_equity_contributions_tab_detail(ws)
+            if rows:
+                detail[acct_code] = rows
+        elif acct_code == '331100':
+            rows = _read_equity_distributions_tab_detail(ws)
+            if rows:
+                detail[acct_code] = rows
+        elif acct_code == '381100':
+            split = _read_equity_retained_earnings_split(ws)
+            if split:
+                detail[acct_code] = split
         else:
             has_entity, has_comm = _CAPITAL_TAB_LAYOUTS[acct_code]
             rows = _read_capital_tab_detail(ws, has_entity, has_comm)
-
-        if rows:
-            detail[acct_code] = rows
+            if rows:
+                detail[acct_code] = rows
 
     return detail
 
@@ -1153,33 +1424,40 @@ _REVERSAL_PREFIX_RE = re.compile(
 )
 
 
-def _fmt_txn_desc(t) -> str:
+_NO_DESC_FLAG = '[!] No Description - Review Required'
+
+
+def _fmt_txn_desc(t, flag_blank: bool = False) -> str:
     """
     Build a clean workpaper description from a GLTransaction.
 
     Priority:
-      1. remarks  — the actual transaction memo/description entered by the user.
-      2. description — often the GL account name that Yardi auto-populates;
-                       used as additional context if it differs from remarks,
-                       or as the sole fallback when remarks is blank.
-      3. control  — last resort when both text fields are empty.
+      1. remarks  — the actual transaction memo entered by the user.
+      2. description — fallback when remarks is blank.
 
-    Strips Yardi auto-reversal boilerplate ('Reversal of J-XXXXX:') from both
-    fields before combining.  No JE control number is prepended.
+    Strips Yardi auto-reversal boilerplate ('Reversal of J-XXXXX: ', 'J-XXXXX: ')
+    and trailing (tXXX)/(vXXX) suffixes.  Control / Reference numbers are never
+    included in the output.
+
+    Args:
+        flag_blank: if True and the cleaned result is empty, return the reviewer
+                    flag string instead of an empty string.
     """
     desc    = (t.description or '').strip()
     remarks = (t.remarks     or '').strip()
-    control = (t.control     or '').strip()
 
-    # Strip Yardi boilerplate from both fields before any comparison
+    # Strip Yardi boilerplate from both fields
     if desc:
         desc = _REVERSAL_PREFIX_RE.sub('', desc).strip(' :–-')
+        desc = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc).strip()
     if remarks:
         remarks = _REVERSAL_PREFIX_RE.sub('', remarks).strip(' :–-')
+        remarks = re.sub(r'\s*\([tv]\d+\)\s*$', '', remarks).strip()
 
-    # remarks is the real description — use it exclusively.
-    # Fall back to description only when remarks is blank, and to control as last resort.
-    return remarks or desc or control
+    result = remarks or desc
+    if not result and flag_blank:
+        return _NO_DESC_FLAG
+    return result
 
 
 # Cash account codes — show Deposits / Disbursements instead of Debit / Credit
@@ -1287,22 +1565,28 @@ def _group_cash_txns_by_day(txns):
 
 def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
                        je_adjustments=None, tab_prefix: str = '',
-                       history_rows: list = None):
+                       history_rows: list = None,
+                       entity_label: str = '',
+                       entities: list = None):
     """
-    One tab per balance sheet account — JLL-style transaction register.
+    One tab per balance sheet account — clean transaction register.
 
     Layout:
-      Row 1: Account# — Account Name                     (dark blue header)
-      Row 2: Entity | Period | Prepared date             (medium blue)
+      Row 1: Account# — Account Name                         (dark blue header)
+      Row 2: Property | Period | Prepared date               (green header)
       Row 3: blank
-      Row 4: column headers (DATE / DESCRIPTION / CONTROL / REF / DR or DEP / CR or DISB / BAL)
-      Row 5: Beginning Balance
-      Row 6+: one row per GL transaction
-      Row N: Ending Balance (bold blue)
+      Row 4: Date | Description | [entity_label]             (column headers)
+      Row 5: Balance Forward                                  [beginning balance]
+      Row 6+: one row per GL transaction                      [date | desc | net amount]
+              → blank description → ⚑ No Description flag
+      Row N: Ending Balance                                   [bold blue]
       Row N+2: GL Ending Balance  ┐
       Row N+3: TB Ending Balance  ├── tie-out block
       Row N+4: Variance           ┘
       Row N+6+: Prior period history (if available)
+
+    entity_label: column header for the amount column — read from the GL file's
+                  property code/name.  Defaults to 'Amount' if not provided.
     """
     acct_label = _safe_sheet_name(f'{gl_acct.account_code} {gl_acct.account_name}')
     ws = wb.create_sheet(acct_label)
@@ -1312,29 +1596,39 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     ws.sheet_properties.tabColor = COLOR_BS_COMPLEX if is_complex else COLOR_BS_STD
     ws.column_dimensions['A'].width = 2
 
-    # Column layout
-    _DT  = _B       # B  Date
-    _DSC = _B + 1   # C  Description
-    _CTL = _B + 2   # D  Control / JE#
-    _REF = _B + 3   # E  Invoice / Reference
-    _DR  = _B + 4   # F  Debit  (or Deposits for cash)
-    _CR  = _B + 5   # G  Credit (or Disbursements for cash)
-    _BAL = _B + 6   # H  Running Balance
-    _LAST_COL = _BAL
+    # Column layout — Date | Description | [entity col(s)] | (Total if multi-entity)
+    # Control and Reference columns removed per review standard.
+    # entities: ordered list from GL metadata. Single-entity → one amount col.
+    #           Multi-entity → one col per entity + Total.
+    _entities = entities if (entities and len(entities) > 1) else []
+    _multi    = bool(_entities)
 
-    dr_label = 'Deposits'      if is_cash else 'Debit'
-    cr_label = 'Disbursements' if is_cash else 'Credit'
+    _DT   = _B           # B  Date
+    _DSC  = _B + 1       # C  Description
+    # Entity cols start at D (col index _B+2)
+    if _multi:
+        _ent_cols  = {ent: _B + 2 + i for i, ent in enumerate(_entities)}
+        _TOT_COL   = _B + 2 + len(_entities)   # Total column
+        _LAST_COL  = _TOT_COL
+        _ent_hdrs  = _entities + ['Total']
+        _ent_widths = [16] * len(_entities) + [18]
+    else:
+        _ent_cols  = {}
+        _AMT       = _B + 2                    # single entity amount col
+        _LAST_COL  = _AMT
+        _ent_hdrs  = [entity_label or 'Amount']
+        _ent_widths = [18]
 
     # ── Row 1: Account header ──────────────────────────────────────────────
     row = 1
     c = ws.cell(row=row, column=_B,
                 value=f'{gl_acct.account_code} — {gl_acct.account_name}')
     c.font = _font(bold=True, size=13, color='FFFFFF')
-    c.fill = _fill(DARK_BLUE)
+    c.fill = _fill('000000')
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_LAST_COL)
     row += 1
 
-    # ── Row 2: Entity / period sub-header ────────────────────────────────
+    # ── Row 2: Property / period sub-header ──────────────────────────────
     c = ws.cell(row=row, column=_B,
                 value=f'{property_name or "Revolution Labs"}  |  '
                       f'Period: {period}  |  '
@@ -1345,14 +1639,15 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     row += 2   # blank row 3
 
     # ── Row 4: Column headers ─────────────────────────────────────────────
-    col_hdrs   = ['Date', 'Description', 'Control', 'Reference', dr_label, cr_label, 'Balance']
-    col_widths = [12,      42,             13,         18,          16,        16,       16]
+    col_hdrs   = ['Date', 'Description'] + _ent_hdrs
+    col_widths = [12,      58 if not _multi else 46] + _ent_widths
     for ci, (h, w) in enumerate(zip(col_hdrs, col_widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
-        _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+        _apply(c, font=_hdr_font(), fill=_fill(MED_BLUE), border=THIN,
                align=Alignment(horizontal='center', wrap_text=True))
         ws.column_dimensions[get_column_letter(col)].width = w
+    ws.column_dimensions['A'].width = 2
     ws.row_dimensions[row].height = 22
     row += 1
 
@@ -1363,77 +1658,71 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
         c.font   = _font(bold=True, italic=True, size=9)
         c.fill   = _fill(LIGHT_GRAY)
         c.border = THIN
-    ws.cell(row=row, column=_DSC, value='Balance Forward').font = _font(bold=True, italic=True, size=9)
-    ws.cell(row=row, column=_DSC).fill   = _fill(LIGHT_GRAY)
-    ws.cell(row=row, column=_DSC).border = THIN
-    beg_cell = ws.cell(row=row, column=_BAL, value=gl_acct.beginning_balance)
+    ws.cell(row=row, column=_DSC, value='Balance Forward')
+    # Show beginning balance in the Total / single-entity column
+    beg_cell = ws.cell(row=row, column=_LAST_COL, value=gl_acct.beginning_balance)
     beg_cell.number_format = _NUM_FMT
-    beg_cell.font   = _font(bold=True, italic=True, size=9)
-    beg_cell.fill   = _fill(LIGHT_GRAY)
-    beg_cell.border = THIN
     row += 1
 
     # ── Transaction rows ──────────────────────────────────────────────────
-    # Show all transactions; if .period is populated, filter to current period
     txns = [t for t in (gl_acct.transactions or []) if t.period == period or not t.period]
     if not txns:
         txns = list(gl_acct.transactions or [])
 
-    # Cash accounts: collapse same-day bank transactions into daily summary rows.
-    # Journal entries always remain individual.  Non-cash accounts: one row per txn.
-    if is_cash:
-        display_rows = _group_cash_txns_by_day(txns)
-    else:
-        display_rows = [
-            {
-                'date': t.date, 'desc': _fmt_txn_desc(t),
-                'control': (t.control or '').strip(),
-                'ref': (t.reference or '').strip(),
-                'debit':  t.debit  if (t.debit  or 0) > 0.005 else None,
-                'credit': t.credit if (t.credit or 0) > 0.005 else None,
-                'balance': t.balance, 'is_summary': False,
-            }
-            for t in txns
-        ]
+    net_activity = 0.0
+    # For multi-entity: track net per entity for Ending Balance row
+    _ent_net: dict = {ent: 0.0 for ent in _entities}
+    display_idx = 0
 
-    total_dr = 0.0
-    total_cr = 0.0
-    for ti, r in enumerate(display_rows):
-        alt    = _fill(LIGHT_GRAY) if ti % 2 == 1 else None
-        dt_val = r['date']
-        t_date = dt_val.strftime('%m/%d/%Y') if hasattr(dt_val, 'strftime') else str(dt_val or '')
-        desc   = r['desc']
-        ctrl   = r['control']
-        ref    = r['ref']
-        dr_val = r['debit']
-        cr_val = r['credit']
-        bal    = r['balance']
+    for t in txns:
+        net = round(float(t.debit or 0) - float(t.credit or 0), 2)
+        if abs(net) < 0.005:
+            continue   # skip zero-net rows — no amount, nothing to flag
 
-        if dr_val:
-            total_dr += dr_val
-        if cr_val:
-            total_cr += cr_val
+        net_activity += net
+        alt = _fill(LIGHT_GRAY) if display_idx % 2 == 1 else None
+        display_idx += 1
 
-        # Summary rows (collapsed daily groups) render in italic to signal aggregation
-        txn_font = _font(size=9, italic=r['is_summary'])
+        d      = t.date
+        t_date = d.strftime('%m/%d/%Y') if hasattr(d, 'strftime') else str(d or '')
+        desc   = _fmt_txn_desc(t, flag_blank=True)
 
-        row_vals = [
-            (_DT,  t_date,       None),
-            (_DSC, desc,         None),
-            (_CTL, ctrl,         None),
-            (_REF, ref,          None),
-            (_DR,  dr_val or '', _NUM_FMT if dr_val else None),
-            (_CR,  cr_val or '', _NUM_FMT if cr_val else None),
-            (_BAL, bal,          _NUM_FMT),
-        ]
-        for col, val, fmt in row_vals:
-            c = ws.cell(row=row, column=col, value=val)
-            c.font   = txn_font
+        # Blank all cells in this row first (consistent borders)
+        for col in range(_B, _LAST_COL + 1):
+            c = ws.cell(row=row, column=col)
             c.border = THIN
             if alt:
                 c.fill = alt
-            if fmt:
-                c.number_format = fmt
+
+        # Date cell
+        c1 = ws.cell(row=row, column=_DT, value=t_date)
+        _apply(c1, font=_font(size=9), fill=alt, border=THIN)
+
+        # Description cell — amber highlight when description is missing but amount exists
+        is_flagged = (desc == _NO_DESC_FLAG)
+        c2 = ws.cell(row=row, column=_DSC, value=desc)
+        _apply(c2,
+               font=_font(size=9, italic=is_flagged, color='7F3F00' if is_flagged else '000000'),
+               fill=_fill(AMBER_FILL) if is_flagged else alt,
+               border=THIN,
+               align=Alignment(wrap_text=True))
+
+        if _multi:
+            # Route amount to entity column; show total in Total col
+            txn_entity = getattr(t, 'entity', '') or ''
+            ent_col = _ent_cols.get(txn_entity, _ent_cols.get(txn_entity.lower()))
+            if ent_col:
+                ce = ws.cell(row=row, column=ent_col, value=net)
+                _apply(ce, font=_font(size=9), fill=alt, fmt=_NUM_FMT, border=THIN,
+                       align=Alignment(horizontal='right'))
+                _ent_net[txn_entity] = round(_ent_net.get(txn_entity, 0.0) + net, 2)
+            ct = ws.cell(row=row, column=_TOT_COL, value=net)
+            _apply(ct, font=_font(size=9), fill=alt, fmt=_NUM_FMT, border=THIN,
+                   align=Alignment(horizontal='right'))
+        else:
+            c3 = ws.cell(row=row, column=_AMT, value=net)
+            _apply(c3, font=_font(size=9), fill=alt, fmt=_NUM_FMT, border=THIN,
+                   align=Alignment(horizontal='right'))
         row += 1
 
     # ── Ending balance row ────────────────────────────────────────────────
@@ -1444,26 +1733,17 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
         c.font   = _font(bold=True, size=9)
         c.fill   = _fill(LIGHT_BLUE)
         c.border = THIN
-    ws.cell(row=row, column=_DSC, value='Ending Balance').font = _font(bold=True, size=9)
-    ws.cell(row=row, column=_DSC).fill   = _fill(LIGHT_BLUE)
-    ws.cell(row=row, column=_DSC).border = THIN
-    if total_dr:
-        tc = ws.cell(row=row, column=_DR, value=total_dr)
+    ws.cell(row=row, column=_DSC, value='Ending Balance')
+    if _multi:
+        for ent, col in _ent_cols.items():
+            ev = round(_ent_net.get(ent, 0.0), 2)
+            ec = ws.cell(row=row, column=col, value=ev or None)
+            ec.number_format = _NUM_FMT
+        tc = ws.cell(row=row, column=_TOT_COL, value=round(net_activity, 2) or None)
         tc.number_format = _NUM_FMT
-        tc.font = _font(bold=True, size=9)
-        tc.fill = _fill(LIGHT_BLUE)
-        tc.border = THIN
-    if total_cr:
-        tc = ws.cell(row=row, column=_CR, value=total_cr)
-        tc.number_format = _NUM_FMT
-        tc.font = _font(bold=True, size=9)
-        tc.fill = _fill(LIGHT_BLUE)
-        tc.border = THIN
-    ec = ws.cell(row=row, column=_BAL, value=gl_end)
-    ec.number_format = _NUM_FMT
-    ec.font   = _font(bold=True, size=9)
-    ec.fill   = _fill(LIGHT_BLUE)
-    ec.border = THIN
+    else:
+        ec = ws.cell(row=row, column=_AMT, value=round(net_activity, 2) or None)
+        ec.number_format = _NUM_FMT
     row += 2   # blank gap
 
     # ── Tie-out block ─────────────────────────────────────────────────────
@@ -1471,29 +1751,28 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     variance = round(gl_end - tb_end, 2) if tb_end is not None else None
     _vzero   = variance is not None and abs(variance) < 0.02
 
-    # Account label
-    lbl = ws.cell(row=row, column=_REF, value=gl_acct.account_code)
+    lbl = ws.cell(row=row, column=_DSC, value=gl_acct.account_code)
     lbl.font = _font(bold=True, size=9)
     row += 1
 
-    gl_lbl = ws.cell(row=row, column=_REF, value='GL Ending Balance')
+    gl_lbl = ws.cell(row=row, column=_DSC, value='GL Ending Balance')
     gl_lbl.font = _font(size=9)
-    gl_val = ws.cell(row=row, column=_BAL, value=gl_end)
+    gl_val = ws.cell(row=row, column=_LAST_COL, value=gl_end)
     gl_val.number_format = _NUM_FMT
     gl_val.font = _font(size=9)
     row += 1
 
     if tb_end is not None:
-        tb_lbl = ws.cell(row=row, column=_REF, value='TB Ending Balance')
+        tb_lbl = ws.cell(row=row, column=_DSC, value='TB Ending Balance')
         tb_lbl.font = _font(size=9)
-        tb_val = ws.cell(row=row, column=_BAL, value=tb_end)
+        tb_val = ws.cell(row=row, column=_LAST_COL, value=tb_end)
         tb_val.number_format = _NUM_FMT
         tb_val.font = _font(size=9)
         row += 1
 
-        var_lbl = ws.cell(row=row, column=_REF, value='Variance')
+        var_lbl = ws.cell(row=row, column=_DSC, value='Variance')
         var_lbl.font = _font(bold=True, size=9)
-        var_val = ws.cell(row=row, column=_BAL, value=variance)
+        var_val = ws.cell(row=row, column=_LAST_COL, value=variance)
         var_val.number_format = _NUM_FMT
         var_val.font  = _font(bold=True, size=9,
                                color='006100' if _vzero else '9C0006')
@@ -2051,7 +2330,7 @@ def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
 # ── Prepaid amortization schedule tab ────────────────────────
 
 def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_name: str,
-                                 tab_prefix: str = ''):
+                                 tab_prefix: str = '', gl_result=None):
     """
     Adds a 'Prepaid Schedule' tab using the Hartwell 13-column format.
     Tied to accounts 135xxx.
@@ -2128,8 +2407,11 @@ def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_na
     ws.row_dimensions[row].height = 28
     row += 1
 
-    total_prepaid = 0.0
-    total_expense = 0.0
+    total_prepaid  = 0.0
+    total_expense  = 0.0
+    total_monthly  = 0.0   # sum of monthly_amount for expense tie-out
+
+    data_start_row = row   # first data row (for Excel SUM formulas)
 
     for i, item in enumerate(active_items):
         alt_fill = _fill(LIGHT_GRAY) if i % 2 == 1 else None
@@ -2141,6 +2423,7 @@ def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_na
         expense_balance = exp_per_month * months_elapsed
         total_prepaid  += prepaid_balance
         total_expense  += expense_balance
+        total_monthly  += exp_per_month
 
         total_months = int(item.get('total_months', 0) or 0)
         total_amount = float(item.get('total_amount', 0) or 0)
@@ -2213,45 +2496,197 @@ def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_na
                         c.font = _font(color='C55A11', bold=True)
         row += 1
 
+    data_end_row = row - 1   # last item data row (for SUM formulas)
+
+    # ── GL lookup for tie-out ──────────────────────────────────────────────────
+    # Prepaid BS balance: sum ending_balance for all 135xxx accounts in GL
+    # Period expense:     sum net PTD debit for expense accounts in the schedule
+    _135_gl_balance  = 0.0
+    _expense_gl_ptd  = 0.0
+    _expense_gl_ytd  = 0.0   # ending_balance for P&L accounts = YTD since fiscal year resets Jan
+    _expense_accts   = {
+        str(item.get('gl_account_number', '')).strip()
+        for item in active_items
+        if item.get('gl_account_number')
+    }
+    if gl_result:
+        for _ga in (gl_result.accounts if hasattr(gl_result, 'accounts') else []):
+            _code = str(_ga.account_code)
+            if _code.startswith('135'):
+                _135_gl_balance += _safe_float(_ga.ending_balance)
+            if _code in _expense_accts:
+                # PTD: net debit activity this period only
+                _expense_gl_ptd += (_safe_float(_ga.total_debits)
+                                    - _safe_float(_ga.total_credits))
+                # YTD: ending_balance accumulates from Jan (P&L resets each fiscal year)
+                _expense_gl_ytd += _safe_float(_ga.ending_balance)
+
+    # Column letters for Excel SUM formulas
+    _col_J_ltr = get_column_letter(_J)   # 'J' — Exp per Month
+    _col_M_ltr = get_column_letter(_M)   # 'M' — Prepaid Balance
+    _col_N_ltr = get_column_letter(_N)   # 'N' — Expense Balance (cumulative)
+
     # ── Footer tie-out rows ────────────────────────────────────────────────────
     row += 1  # blank separator
 
-    # "Ending Balance per GL as of [period]" — label in _D, prepaid total in _M, expense total in _N
-    c_lbl = ws.cell(row=row, column=_D,
-                    value=f'Ending Balance per GL as of {period}')
-    c_lbl.font = _font(bold=True)
-    c_lbl.fill = _fill(LIGHT_BLUE)
-    c_prepaid_tot = ws.cell(row=row, column=_M, value=total_prepaid)
-    _apply(c_prepaid_tot, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+    # ── Section 1: Prepaid Balance Tie-out (135xxx) ────────────────────────────
+    # Row A: Total prepaid balance per schedule
+    r_sched_prepaid = row
+    _lbl = ws.cell(row=row, column=_B, value='Prepaid Balance per Schedule')
+    _lbl.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_L)
+    # Excel SUM formula — references actual data cells so manual edits flow through
+    c_sched_pre = ws.cell(
+        row=row, column=_M,
+        value=(f'=SUM({_col_M_ltr}{data_start_row}:{_col_M_ltr}{data_end_row})'
+               if data_end_row >= data_start_row else total_prepaid)
+    )
+    _apply(c_sched_pre, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
            fill=_fill(LIGHT_BLUE), border=THICK_BOTTOM)
-    c_exp_tot = ws.cell(row=row, column=_N, value=total_expense)
-    _apply(c_exp_tot, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
-           fill=_fill(LIGHT_BLUE), border=THICK_BOTTOM)
-    # Fill data cols with light blue
     for col in range(_B, _N + 1):
-        cell = ws.cell(row=row, column=col)
-        if not cell.fill or cell.fill.fill_type == 'none':
-            cell.fill = _fill(LIGHT_BLUE)
+        _c = ws.cell(row=row, column=col)
+        if not _c.fill or _c.fill.fill_type == 'none':
+            _c.fill = _fill(LIGHT_BLUE)
     row += 1
 
-    # "TB Balance" — label in _L, value in _M
-    c_tb_lbl = ws.cell(row=row, column=_L, value='TB Balance')
-    c_tb_lbl.font = _font(bold=True)
-    c_tb_val = ws.cell(row=row, column=_M, value=total_prepaid)
-    _apply(c_tb_val, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+    # Row B: GL ending balance for 135xxx accounts
+    r_gl_prepaid = row
+    _lbl2 = ws.cell(row=row, column=_B,
+                    value='GL Ending Balance — Accounts 135xxx')
+    _lbl2.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_L)
+    c_gl_pre = ws.cell(row=row, column=_M,
+                       value=_135_gl_balance if (_135_gl_balance or gl_result) else None)
+    _apply(c_gl_pre, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
            fill=_fill(LIGHT_BLUE), border=THIN)
+    for col in range(_B, _N + 1):
+        _c = ws.cell(row=row, column=col)
+        if not _c.fill or _c.fill.fill_type == 'none':
+            _c.fill = _fill(LIGHT_BLUE)
     row += 1
 
-    # "Variance" — label in _L, value in _M; green/red
-    c_var_lbl = ws.cell(row=row, column=_L, value='Variance')
-    c_var_lbl.font = _font(bold=True)
-    variance = 0.0  # prepaid balance ties to itself; placeholder for manual TB entry
-    is_zero = abs(variance) < 0.02
-    var_fill_cell = _fill(GREEN_FILL) if is_zero else _fill(RED_FILL)
-    var_color = '006100' if is_zero else '9C0006'
-    c_var_val = ws.cell(row=row, column=_M, value=variance)
-    _apply(c_var_val, font=_font(bold=True, color=var_color),
-           fmt='#,##0.00;(#,##0.00);"-"', fill=var_fill_cell, border=DOUBLE_BTM)
+    # Row C: Variance — Prepaid (green if zero)
+    _lbl3 = ws.cell(row=row, column=_B, value='Variance')
+    _lbl3.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_L)
+    c_var_pre = ws.cell(
+        row=row, column=_M,
+        value=f'={_col_M_ltr}{r_sched_prepaid}-{_col_M_ltr}{r_gl_prepaid}'
+    )
+    _pre_var_val  = total_prepaid - _135_gl_balance
+    _is_zero_pre  = abs(_pre_var_val) < 0.02
+    _apply(c_var_pre,
+           font=_font(bold=True, color='006100' if _is_zero_pre else '9C0006'),
+           fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(GREEN_FILL) if _is_zero_pre else _fill(RED_FILL),
+           border=DOUBLE_BTM)
+    row += 2
+
+    # ── Section 2: Period Expense Tie-out ──────────────────────────────────────
+    # Row D: Period expense per schedule (sum of Exp per Month column)
+    r_sched_exp = row
+    _exp_acct_lbl = ', '.join(sorted(_expense_accts)) if _expense_accts else 'n/a'
+    _lbl4 = ws.cell(row=row, column=_B,
+                    value=f'Period Expense per Schedule — Accts {_exp_acct_lbl}')
+    _lbl4.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    c_sched_exp = ws.cell(
+        row=row, column=_J,
+        value=(f'=SUM({_col_J_ltr}{data_start_row}:{_col_J_ltr}{data_end_row})'
+               if data_end_row >= data_start_row else total_monthly)
+    )
+    _apply(c_sched_exp, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THICK_BOTTOM)
+    for col in range(_B, _L + 1):
+        _c = ws.cell(row=row, column=col)
+        if not _c.fill or _c.fill.fill_type == 'none':
+            _c.fill = _fill(LIGHT_BLUE)
+    row += 1
+
+    # Row E: GL PTD activity for those expense accounts
+    r_gl_exp = row
+    _lbl5 = ws.cell(row=row, column=_B,
+                    value='PTD Activity per GL — Expense Accounts')
+    _lbl5.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    c_gl_exp = ws.cell(row=row, column=_J,
+                       value=_expense_gl_ptd if (_expense_gl_ptd or gl_result) else None)
+    _apply(c_gl_exp, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THIN)
+    for col in range(_B, _L + 1):
+        _c = ws.cell(row=row, column=col)
+        if not _c.fill or _c.fill.fill_type == 'none':
+            _c.fill = _fill(LIGHT_BLUE)
+    row += 1
+
+    # Row F: Variance — Expense (green if zero)
+    _lbl6 = ws.cell(row=row, column=_B, value='Variance')
+    _lbl6.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_I)
+    c_var_exp = ws.cell(
+        row=row, column=_J,
+        value=f'={_col_J_ltr}{r_sched_exp}-{_col_J_ltr}{r_gl_exp}'
+    )
+    _exp_var_val  = total_monthly - _expense_gl_ptd
+    _is_zero_exp  = abs(_exp_var_val) < 0.02
+    _apply(c_var_exp,
+           font=_font(bold=True, color='006100' if _is_zero_exp else '9C0006'),
+           fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(GREEN_FILL) if _is_zero_exp else _fill(RED_FILL),
+           border=DOUBLE_BTM)
+    row += 2
+
+    # ── Section 3: Cumulative Expense Tie-out (YTD) ────────────────────────────
+    # Row G: Cumulative expense per schedule (sum of col _N = exp_per_month × months_elapsed)
+    r_sched_ytd = row
+    _lbl7 = ws.cell(row=row, column=_B,
+                    value=f'Cumulative Expense per Schedule (YTD) — Accts {_exp_acct_lbl}')
+    _lbl7.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_M)
+    c_sched_ytd = ws.cell(
+        row=row, column=_N,
+        value=(f'=SUM({_col_N_ltr}{data_start_row}:{_col_N_ltr}{data_end_row})'
+               if data_end_row >= data_start_row else total_expense)
+    )
+    _apply(c_sched_ytd, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THICK_BOTTOM)
+    for col in range(_B, _N + 1):
+        _c = ws.cell(row=row, column=col)
+        if not _c.fill or _c.fill.fill_type == 'none':
+            _c.fill = _fill(LIGHT_BLUE)
+    row += 1
+
+    # Row H: GL YTD ending balance for expense accounts (P&L resets Jan → ending_balance = YTD)
+    r_gl_ytd = row
+    _lbl8 = ws.cell(row=row, column=_B,
+                    value='GL YTD Ending Balance — Expense Accounts')
+    _lbl8.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_M)
+    c_gl_ytd = ws.cell(row=row, column=_N,
+                       value=_expense_gl_ytd if (_expense_gl_ytd or gl_result) else None)
+    _apply(c_gl_ytd, font=_font(bold=True), fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(LIGHT_BLUE), border=THIN)
+    for col in range(_B, _N + 1):
+        _c = ws.cell(row=row, column=col)
+        if not _c.fill or _c.fill.fill_type == 'none':
+            _c.fill = _fill(LIGHT_BLUE)
+    row += 1
+
+    # Row I: Variance — YTD (green if zero)
+    _lbl9 = ws.cell(row=row, column=_B, value='Variance')
+    _lbl9.font = _font(bold=True)
+    ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_M)
+    c_var_ytd = ws.cell(
+        row=row, column=_N,
+        value=f'={_col_N_ltr}{r_sched_ytd}-{_col_N_ltr}{r_gl_ytd}'
+    )
+    _ytd_var_val = total_expense - _expense_gl_ytd
+    _is_zero_ytd = abs(_ytd_var_val) < 0.02
+    _apply(c_var_ytd,
+           font=_font(bold=True, color='006100' if _is_zero_ytd else '9C0006'),
+           fmt='#,##0.00;(#,##0.00);"-"',
+           fill=_fill(GREEN_FILL) if _is_zero_ytd else _fill(RED_FILL),
+           border=DOUBLE_BTM)
     row += 2
 
     # "[Add Row]" placeholder for manual additions
@@ -2263,9 +2698,9 @@ def _write_prepaid_schedule_tab(wb, active_items: list, period: str, property_na
     row += 2
 
     note = ws.cell(row=row, column=_B,
-                   value='Prepaid Balance = Exp per Month × # of Mos Prepaid. '
-                         'Expense Balance = Exp per Month × Months Elapsed. '
-                         'These balances should agree to accounts 135xxx in the TB.')
+                   value='Prepaid Balance = Exp per Month × # Mos Prepaid (should agree to 135xxx in TB).  '
+                         'Period Expense = monthly amortization amount (should agree to GL PTD for expense accts).  '
+                         'GL balances populated from Pass 2 GL upload.')
     note.font = _font(italic=True, size=10, color='595959')
     note.alignment = Alignment(wrap_text=True)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_N)
@@ -2615,7 +3050,12 @@ def generate(gl_result, tb_result, output_path: str,
              berkadia_loans: list = None,
              dev_bank_rec_data: dict = None,
              ar_aging_data=None,
-             capital_schedule_data=None) -> str:
+             capital_schedule_data=None,
+             tb_filepath: str = None,
+             ar_aging_filepath: str = None,
+             ap_aging_filepath: str = None,
+             bank_rec_xlsx_filepath: str = None,
+             daca_bank_rec_xlsx_filepath: str = None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
@@ -2627,4 +3067,9 @@ def generate(gl_result, tb_result, output_path: str,
                                   berkadia_loans=berkadia_loans,
                                   dev_bank_rec_data=dev_bank_rec_data,
                                   ar_aging_data=ar_aging_data,
-                                  capital_schedule_data=capital_schedule_data)
+                                  capital_schedule_data=capital_schedule_data,
+                                  tb_filepath=tb_filepath,
+                                  ar_aging_filepath=ar_aging_filepath,
+                                  ap_aging_filepath=ap_aging_filepath,
+                                  bank_rec_xlsx_filepath=bank_rec_xlsx_filepath,
+                                  daca_bank_rec_xlsx_filepath=daca_bank_rec_xlsx_filepath)

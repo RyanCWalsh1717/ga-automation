@@ -24,12 +24,14 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ── Shared palette (matches bs_workpaper_generator) ──────────────────────────
-DARK_BLUE  = '1F4E78'
-MED_BLUE   = '2E75B6'
-LIGHT_BLUE = 'D6E4F0'
-LIGHT_GRAY = 'F2F2F2'
-GREEN_FILL = 'E2EFDA'
-RED_FILL   = 'FFCCCC'
+# ── Greatland Brand Palette ────────────────────────────────────────────────────
+# Source: Greatland Theme - New.thmx  (accent5=002060, dk2/accent2=2D6F50)
+DARK_BLUE  = '002060'   # Greatland dark navy   (was 1F4E78)
+MED_BLUE   = '2D6F50'   # Greatland green        (was 2E75B6)
+LIGHT_BLUE = 'D6EAE1'   # light green tint       (was D6E4F0)
+LIGHT_GRAY = 'F2F2F2'   # alternating row shade  (unchanged)
+GREEN_FILL = 'E2EFDA'   # tie-out pass           (unchanged)
+RED_FILL   = 'FFCCCC'   # tie-out fail           (unchanged)
 AMBER_FILL = 'FFF2CC'
 WHITE      = 'FFFFFF'
 
@@ -722,85 +724,113 @@ def build_133110_tab(wb, period: str, property_name: str,
 
 # ── 213100 — Accrued Expenses ─────────────────────────────────────────────────
 
+def _213100_clean_desc(txn) -> str:
+    """Best description from a GL transaction — strips Yardi JE control prefixes."""
+    remarks = str(getattr(txn, 'remarks',      '') or '').strip()
+    desc    = str(getattr(txn, 'description',  '') or '').strip()
+    raw = remarks or desc
+    # Strip "Reversal of J-XXXXX: " and bare "J-XXXXX: " auto-fill prefixes
+    raw = re.sub(r'^(reversal\s+of\s+)?[Jj]-\d+\s*[:\-–]\s+',
+                 '', raw, flags=re.IGNORECASE).strip()
+    return raw or desc
+
+
 def build_213100_tab(wb, period: str, property_name: str,
-                     gl_acct=None, tb_entry=None,
-                     je_lines: List[Dict] = None, **_):
+                     gl_acct=None, tb_entry=None, **_):
     """
-    Shows only current-month accrual JEs (no auto-reversals).
-    Auto-reversals are J-type controls whose credit hits 213100 (the offset).
-    We show only the DR-side entries that represent the actual accrual expense.
+    One row per current-period accrual posted to account 213100.
+
+    Only credit entries are shown (CR 213100 = new accrual created this period).
+    Debit entries are prior-month auto-reversals and are intentionally excluded.
+
+    Columns:  Date | Description | Amount
     """
-    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
-    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+    gl_ending   = float(getattr(gl_acct, 'ending_balance',   0) or 0)
+    gl_beg      = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
+    tb_ending   = float(getattr(tb_entry, 'ending_balance',   0) or 0) if tb_entry else gl_ending
+    txns        = list(getattr(gl_acct, 'transactions', []) or [])
 
-    # Build from Pass 1 JE lines — exclude auto-reversal source entries
-    # Auto-reversals have source = 'reversal' or have a J-type GL control that
-    # credits 213100 (the auto-reverse leg). We exclude any JE where the
-    # account is 213100 (the liability) and include only the expense-side entries.
-    accrual_rows = []
-    seen_je = set()
-    for je in (je_lines or []):
-        src = str(je.get('source', '') or '')
-        if src in ('reversal', 'auto_reversal'):
-            continue
-        acct = str(je.get('account_code', '') or '').strip()
-        if acct == '213100':
-            continue   # skip the AP credit leg — show expense legs only
-        je_num = str(je.get('je_number', '') or '')
-        # One row per unique JE, using the expense DR side description
-        key = (je_num, acct)
-        if key in seen_je:
-            continue
-        seen_je.add(key)
+    # ── Filter to credit-only entries (current-period accruals) ───────────────
+    # Credit to 213100 = new liability created this period.
+    # Debit to 213100  = auto-reversal of prior month's accrual → excluded.
+    from datetime import date as _date
 
-        amt  = float(je.get('debit', 0) or 0) - float(je.get('credit', 0) or 0)
-        desc = str(je.get('description', '') or '')
-        vendor = str(je.get('vendor', '') or '')
-        why = vendor or desc or ''
-        accrual_rows.append({
-            'je_number':   je_num,
-            'description': why,
-            'account':     acct,
-            'account_name': str(je.get('account_name', '') or ''),
-            'amount':      amt,
-        })
+    def _txn_sort_key(t):
+        d = getattr(t, 'date', None)
+        return d if isinstance(d, _date) else _date(1900, 1, 1)
+
+    accrual_txns = sorted(
+        [t for t in txns
+         if float(getattr(t, 'credit', 0) or 0) > float(getattr(t, 'debit', 0) or 0)],
+        key=_txn_sort_key,
+    )
 
     ws = wb.create_sheet('213100 Accr Exp'[:31])
     ws.sheet_properties.tabColor = 'FF0000'
 
     next_row = _write_tab_header(ws, '213100', 'Accrued Expenses',
-                                 period, property_name, ncols=5)
+                                 period, property_name, ncols=3)
     next_row += 1
     next_row = _write_col_headers(
         ws, next_row,
-        ['JE #', 'Expense Account', 'Description / Vendor', 'Entity', 'Amount'],
-        [12, 28, 48, 14, 18],
+        ['Date', 'Description', 'Amount'],
+        [14, 58, 18],
     )
 
-    for i, r in enumerate(accrual_rows):
-        alt = i % 2 == 1
-        bg = _fill(LIGHT_GRAY) if alt else None
-        acct_label = f"{r['account']} {r['account_name']}".strip()
+    AMOUNT_COL = 4   # column D (B=2 base, 3 data cols → last col = 2+3-1 = 4)
 
-        c1 = ws.cell(row=next_row, column=2, value=r['je_number'])
+    # ── Transaction rows ──────────────────────────────────────────────────────
+    data_start_row = next_row
+
+    for i, txn in enumerate(accrual_txns):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+
+        d = getattr(txn, 'date', None)
+        date_str = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
+        desc   = _213100_clean_desc(txn)
+        credit = float(getattr(txn, 'credit', 0) or 0)
+        debit  = float(getattr(txn, 'debit',  0) or 0)
+        amt    = credit - debit   # positive = net credit = new accrual
+
+        c1 = ws.cell(row=next_row, column=2, value=date_str)
         _apply(c1, font=_font(), fill=bg, border=THIN)
-        c2 = ws.cell(row=next_row, column=3, value=acct_label)
-        _apply(c2, font=_font(), fill=bg, border=THIN)
-        c3 = ws.cell(row=next_row, column=4, value=r['description'])
-        _apply(c3, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
-        c4 = ws.cell(row=next_row, column=5, value=_ENTITY)
-        _apply(c4, font=_font(), fill=bg, border=THIN)
-        c5 = ws.cell(row=next_row, column=6, value=r['amount'])
-        _apply(c5, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+        c2 = ws.cell(row=next_row, column=3, value=desc)
+        _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
+        c3 = ws.cell(row=next_row, column=AMOUNT_COL, value=amt)
+        _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
         next_row += 1
 
-    if not accrual_rows:
-        c = ws.cell(row=next_row, column=2, value='No accrual JEs this period')
-        _apply(c, font=_font(italic=True, color='666666'))
-        next_row += 1
+    data_end_row = next_row - 1
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
+    if not accrual_txns:
+        c = ws.cell(row=next_row, column=2, value='No accrual entries this period')
+        _apply(c, font=_font(italic=True, color='666666'), border=THIN)
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=AMOUNT_COL)
+        next_row += 1
+        data_start_row = data_end_row = next_row - 1
+
+    # ── Total accruals subtotal ───────────────────────────────────────────────
+    next_row += 1
+    amt_col_ltr = get_column_letter(AMOUNT_COL)
+    c_tot_lbl = ws.cell(row=next_row, column=2, value='Total Accruals This Period')
+    _apply(c_tot_lbl, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), border=THIN,
+           align=Alignment(horizontal='left'))
+    ws.merge_cells(start_row=next_row, start_column=2,
+                   end_row=next_row, end_column=AMOUNT_COL - 1)
+    c_tot_val = ws.cell(
+        row=next_row, column=AMOUNT_COL,
+        value=f'=SUM({amt_col_ltr}{data_start_row}:{amt_col_ltr}{data_end_row})',
+    )
+    _apply(c_tot_val, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+    next_row += 2
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
     return ws
 
 
@@ -975,7 +1005,7 @@ def build_115100_tab(wb, period: str, property_name: str,
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
     ws = wb.create_sheet('115100 DACA'[:31])
-    ws.sheet_properties.tabColor = '2E75B6'
+    ws.sheet_properties.tabColor = '2D6F50'
 
     next_row = _write_tab_header(ws, '115100', 'Restricted Cash - DACA (KeyBank x5132)',
                                  period, property_name, ncols=6)
@@ -1211,7 +1241,7 @@ def build_111100_tab(wb, period: str, property_name: str,
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
     ws = wb.create_sheet('111100 PNC Cash'[:31])
-    ws.sheet_properties.tabColor = '2E75B6'
+    ws.sheet_properties.tabColor = '2D6F50'
 
     RCPT_COL  = 4   # D — Receipts
     DISB_COL  = 5   # E — Disbursements
@@ -1868,6 +1898,28 @@ def _build_capital_tab(wb, account_code, account_name, tab_color,
     return ws
 
 
+# ── 152100 — Land ────────────────────────────────────────────────────────────
+
+def build_152100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+    acct = (capital_schedule_data or {}).get('152100')
+    return _build_capital_tab(wb, '152100', 'Land', 'C55A11',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=False, has_commencement=False,
+                              prior_rows=(prior_tab_detail or {}).get('152100'))
+
+
+# ── 154100 — Building ─────────────────────────────────────────────────────────
+
+def build_154100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+    acct = (capital_schedule_data or {}).get('154100')
+    return _build_capital_tab(wb, '154100', 'Building', '70AD47',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=False, has_commencement=False,
+                              prior_rows=(prior_tab_detail or {}).get('154100'))
+
+
 # ── 154500 — Building Improvements ───────────────────────────────────────────
 
 def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
@@ -1877,6 +1929,17 @@ def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
                               prior_rows=(prior_tab_detail or {}).get('154500'))
+
+
+# ── 171100 — CIP Development ─────────────────────────────────────────────────
+
+def build_171100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+    acct = (capital_schedule_data or {}).get('171100')
+    return _build_capital_tab(wb, '171100', 'CIP Development', 'FF0000',
+                              period, property_name, gl_acct, tb_entry,
+                              acct, has_entity=False, has_commencement=False,
+                              prior_rows=(prior_tab_detail or {}).get('171100'))
 
 
 # ── 181200 — Leasing Commissions ─────────────────────────────────────────────
@@ -1912,6 +1975,304 @@ def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                               prior_rows=(prior_tab_detail or {}).get('181400'))
 
 
+# ── Equity account seed data ──────────────────────────────────────────────────
+# Source: Rev Labs Equity - Workpapers.xlsx  (manual workpaper as of Jan 2026)
+
+# 311100 — Contributions - Partner A
+# Each tuple: (date_str 'MM/DD/YYYY', description, amount)
+# Amounts follow GL sign convention: credits to equity are negative
+_EQUITY_311100_SEED: List[tuple] = [
+    ('01/01/2025', 'Funding', -80942266.06),
+]
+
+# 331100 — Distributions - Partner A
+# Each tuple: (date_str 'MM/DD/YYYY', description, revlabs_amt, revlabpm_amt)
+# Distributions are debits to equity → positive amounts
+_EQUITY_331100_SEED: List[tuple] = [
+    ('05/01/2021', '331100-Partner Distributions',                              19711731.39, 0.0),
+    ('07/01/2024', 'Transfer to Rev Lab Ventures',                              0.0,         1250000.0),
+    ('09/01/2024', "Rcd: Distribution_09'24 - Transfer to Rev Lab Ventures",    0.0,         2000000.0),
+    ('12/01/2024', "Rcd: Distribution_12'24",                                   0.0,          825000.0),
+    ('03/01/2025', "Rcd: Distribution_03'25",                                   0.0,          540000.0),
+    ('08/01/2025', "Rcd: Distribution_08'25",                                   0.0,          685000.0),
+    ('09/01/2025', "Rcd: Distribution_09'25",                                   0.0,          700000.0),
+    ('12/01/2025', "Rcd: Distribution_12'25",                                   0.0,         1025000.0),
+]
+
+# 381100 — Retained Earnings - Control
+# Entity split for beginning balance (as of Jan 2026 workpaper)
+_EQUITY_381100_SEED = {
+    'revlabpm': -8184455.73,
+    'revlabs':    251436.26,
+}
+
+
+# ── 311100 — Contributions - Partner A ───────────────────────────────────────
+
+def build_311100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     prior_tab_detail: dict = None, **_):
+    """
+    Contributions - Partner A roll-forward.
+
+    Layout: Date | Description | Amount  (cols B–D)
+    Seed:   One-time funding row from Jan 2025; hardcoded first run.
+    Carry:  prior_tab_detail['311100'] = list of {date_str, desc, amt}.
+    GL:     Any credit activity in current period appended as new rows
+            (credits to equity = contributions).
+    """
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    yr, mo = _parse_close_period(period)
+
+    ws = wb.create_sheet('311100 Contributions-Partner A'[:31])
+    ws.sheet_properties.tabColor = '002060'   # dark navy
+
+    AMOUNT_COL = 4  # col D
+
+    next_row = _write_tab_header(ws, '311100', 'Contributions - Partner A',
+                                 period, property_name, ncols=3)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row,
+                                  ['Date', 'Description', 'Amount'],
+                                  [14, 54, 18])
+
+    # ── Determine historical rows ─────────────────────────────────────────────
+    prior_rows = (prior_tab_detail or {}).get('311100')
+    if prior_rows is not None:
+        hist_rows = prior_rows   # [{date_str, desc, amt}]
+    else:
+        # First run — bootstrap from seed (entries strictly before close period)
+        hist_rows = [
+            {'date_str': ds, 'desc': desc, 'amt': amt}
+            for ds, desc, amt in _EQUITY_311100_SEED
+            if _parse_date(ds) and (_parse_date(ds).year, _parse_date(ds).month) < (yr, mo)
+        ]
+
+    # ── Current-period GL activity (credits to equity = new contributions) ───
+    current_rows = []
+    for txn in (getattr(gl_acct, 'transactions', []) or []):
+        d = getattr(txn, 'date', None)
+        from datetime import date as _date_t
+        if isinstance(d, _date_t) and (d.year, d.month) == (yr, mo):
+            debit  = float(getattr(txn, 'debit',  0) or 0)
+            credit = float(getattr(txn, 'credit', 0) or 0)
+            net    = round(debit - credit, 2)   # negative = contribution
+            if abs(net) > 0.01:
+                desc_raw   = str(getattr(txn, 'description', '') or
+                                 getattr(txn, 'remarks', '')     or '')
+                desc_clean = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc_raw).strip()
+                current_rows.append({
+                    'date_str': d.strftime('%m/%d/%Y'),
+                    'desc': desc_clean,
+                    'amt':  net,
+                })
+
+    all_rows = hist_rows + current_rows
+
+    for i, r in enumerate(all_rows):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+
+        c1 = ws.cell(row=next_row, column=2, value=r.get('date_str', ''))
+        _apply(c1, font=_font(), fill=bg, border=THIN)
+
+        c2 = ws.cell(row=next_row, column=3, value=r.get('desc', ''))
+        _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
+
+        c3 = ws.cell(row=next_row, column=4, value=r.get('amt', 0))
+        _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+        next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+    return ws
+
+
+# ── 331100 — Distributions - Partner A ───────────────────────────────────────
+
+def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     prior_tab_detail: dict = None, **_):
+    """
+    Distributions - Partner A roll-forward with entity split.
+
+    Layout: Date | Description | Revlabs | Revlabpm | Total  (cols B–F)
+    Seed:   8 historical distribution rows; hardcoded first run.
+    Carry:  prior_tab_detail['331100'] = list of
+            {date_str, desc, revlabs, revlabpm, total}.
+    GL:     New debit activity in current period → Revlabpm column.
+            (Revlabs distributions are not in the revlabpm GL — seed only.)
+    """
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    yr, mo = _parse_close_period(period)
+
+    ws = wb.create_sheet('331100 Distributions - A'[:31])
+    ws.sheet_properties.tabColor = '2D6F50'   # Greatland green
+
+    REVLABS_COL  = 4   # col D
+    REVLABPM_COL = 5   # col E
+    TOTAL_COL    = 6   # col F
+
+    next_row = _write_tab_header(ws, '331100', 'Distributions - Partner A',
+                                 period, property_name, ncols=5)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row,
+                                  ['Date', 'Description', 'Revlabs', 'Revlabpm', 'Total'],
+                                  [14, 46, 18, 18, 18])
+
+    # ── Determine historical rows ─────────────────────────────────────────────
+    prior_rows = (prior_tab_detail or {}).get('331100')
+    if prior_rows is not None:
+        hist_rows = prior_rows   # [{date_str, desc, revlabs, revlabpm, total}]
+    else:
+        # First run — bootstrap from seed (entries strictly before close period)
+        hist_rows = []
+        for ds, desc, revlabs, revlabpm in _EQUITY_331100_SEED:
+            d = _parse_date(ds)
+            if d and (d.year, d.month) < (yr, mo):
+                hist_rows.append({
+                    'date_str': ds, 'desc': desc,
+                    'revlabs':  revlabs, 'revlabpm': revlabpm,
+                    'total':    round(revlabs + revlabpm, 2),
+                })
+
+    # ── Current-period GL activity (debits = new distributions, Revlabpm) ────
+    current_rows = []
+    for txn in (getattr(gl_acct, 'transactions', []) or []):
+        d = getattr(txn, 'date', None)
+        from datetime import date as _date_t
+        if isinstance(d, _date_t) and (d.year, d.month) == (yr, mo):
+            debit  = float(getattr(txn, 'debit',  0) or 0)
+            credit = float(getattr(txn, 'credit', 0) or 0)
+            net    = round(debit - credit, 2)   # positive = distribution
+            if abs(net) > 0.01:
+                desc_raw   = str(getattr(txn, 'description', '') or
+                                 getattr(txn, 'remarks', '')     or '')
+                desc_clean = re.sub(r'\s*\([tv]\d+\)\s*$', '', desc_raw).strip()
+                current_rows.append({
+                    'date_str': d.strftime('%m/%d/%Y'),
+                    'desc':     desc_clean,
+                    'revlabs':  0.0,
+                    'revlabpm': net,
+                    'total':    net,
+                })
+
+    all_rows = hist_rows + current_rows
+
+    for i, r in enumerate(all_rows):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+
+        c1 = ws.cell(row=next_row, column=2, value=r.get('date_str', ''))
+        _apply(c1, font=_font(), fill=bg, border=THIN)
+
+        c2 = ws.cell(row=next_row, column=3, value=r.get('desc', ''))
+        _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
+
+        c3 = ws.cell(row=next_row, column=4, value=r.get('revlabs', 0) or 0)
+        _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+
+        c4 = ws.cell(row=next_row, column=5, value=r.get('revlabpm', 0) or 0)
+        _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+
+        c5 = ws.cell(row=next_row, column=6, value=r.get('total', 0) or 0)
+        _apply(c5, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+        next_row += 1
+
+    # Totals row
+    if all_rows:
+        tot_rl  = round(sum(r.get('revlabs',  0) or 0 for r in all_rows), 2)
+        tot_rpm = round(sum(r.get('revlabpm', 0) or 0 for r in all_rows), 2)
+        tot_all = round(tot_rl + tot_rpm, 2)
+        c_lbl = ws.cell(row=next_row, column=2, value='Total Distributions')
+        _apply(c_lbl, font=_font(bold=True, color='FFFFFF'), fill=_fill(MED_BLUE),
+               border=THIN)
+        ws.merge_cells(start_row=next_row, start_column=2,
+                       end_row=next_row, end_column=3)
+        for col, val in [(4, tot_rl), (5, tot_rpm), (6, tot_all)]:
+            c = ws.cell(row=next_row, column=col, value=val)
+            _apply(c, font=_font(bold=True, color='FFFFFF'), fill=_fill(MED_BLUE),
+                   fmt='$#,##0.00', border=THIN, align=Alignment(horizontal='right'))
+        next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=TOTAL_COL)
+    return ws
+
+
+# ── 381100 — Retained Earnings - Control ────────────────────────────────────
+
+def build_381100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     prior_tab_detail: dict = None, **_):
+    """
+    Retained Earnings - Control snapshot.
+
+    Shows the beginning balance with entity split (Revlabpm | Revlabs | Total).
+    Retained earnings does not accumulate new entries intra-year — it represents
+    prior-year accumulated net income and is static until year-end close.
+
+    Layout: Description | Revlabpm | Revlabs | Total  (cols B–E)
+    Seed:   Entity split from Jan 2026 workpaper; hardcoded first run.
+    Carry:  prior_tab_detail['381100'] = {revlabpm, revlabs} for the split.
+    GL:     Ending balance drives the GL/TB tie-out; entity split is from seed/prior.
+    """
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    ws = wb.create_sheet('381100 Retained Earnings - C'[:31])
+    ws.sheet_properties.tabColor = 'ED7D31'   # amber/orange
+
+    TOTAL_COL = 5   # col E
+
+    next_row = _write_tab_header(ws, '381100', 'Retained Earnings - Control',
+                                 period, property_name, ncols=4)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row,
+                                  ['Description', 'Revlabpm', 'Revlabs', 'Total'],
+                                  [40, 18, 18, 18])
+
+    # ── Entity split: prior workpaper → seed fallback ────────────────────────
+    prior_split = (prior_tab_detail or {}).get('381100')  # {revlabpm, revlabs}
+    if prior_split:
+        rpm_bal = prior_split.get('revlabpm', _EQUITY_381100_SEED['revlabpm'])
+        rl_bal  = prior_split.get('revlabs',  _EQUITY_381100_SEED['revlabs'])
+    else:
+        rpm_bal = _EQUITY_381100_SEED['revlabpm']
+        rl_bal  = _EQUITY_381100_SEED['revlabs']
+    total_bal = round(rpm_bal + rl_bal, 2)
+
+    # Beginning Balance row
+    c1 = ws.cell(row=next_row, column=2, value='Beginning Balance')
+    _apply(c1, font=_font(bold=True), border=THIN)
+
+    c2 = ws.cell(row=next_row, column=3, value=rpm_bal)
+    _apply(c2, font=_font(), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+
+    c3 = ws.cell(row=next_row, column=4, value=rl_bal)
+    _apply(c3, font=_font(), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+
+    c4 = ws.cell(row=next_row, column=5, value=total_bal)
+    _apply(c4, font=_font(bold=True), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+    next_row += 1
+
+    # Note row
+    c_note = ws.cell(row=next_row, column=2,
+                     value='Note: Retained earnings updated at fiscal year-end close only.')
+    _apply(c_note, font=_font(italic=True, color='666666', size=9))
+    ws.merge_cells(start_row=next_row, start_column=2, end_row=next_row, end_column=5)
+    next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=TOTAL_COL)
+    return ws
+
+
 # ── Dispatch table ────────────────────────────────────────────────────────────
 
 CUSTOM_BUILDERS: Dict[str, Any] = {
@@ -1924,10 +2285,16 @@ CUSTOM_BUILDERS: Dict[str, Any] = {
     '133100': build_133100_tab,
     '133110': build_133110_tab,
     '135150': build_135150_tab,
+    '152100': build_152100_tab,
+    '154100': build_154100_tab,
     '154500': build_154500_tab,
+    '171100': build_171100_tab,
     '181200': build_181200_tab,
     '181300': build_181300_tab,
     '181400': build_181400_tab,
     '213100': build_213100_tab,
     '221100': build_221100_tab,
+    '311100': build_311100_tab,
+    '331100': build_331100_tab,
+    '381100': build_381100_tab,
 }

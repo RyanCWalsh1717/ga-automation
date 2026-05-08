@@ -52,6 +52,7 @@ class GLTransaction:
     balance: float              # running balance within the account
     remarks: str                # additional notes / description
     row_number: int             # source row in Excel (for audit trail)
+    entity: str = ''            # property/entity code (e.g. "lexlab-1", "revlabpm")
 
     @property
     def net_amount(self) -> float:
@@ -93,12 +94,15 @@ class GLAccount:
 @dataclass
 class GLMetadata:
     """Information from the file header."""
-    property_code: str          # e.g. "revlabpm"
+    property_code: str          # e.g. "revlabpm" (or combined code for multi-entity)
     property_name: str          # e.g. "Revolution Labs Owner, LLC"
     period: str                 # e.g. "Feb-2026"
     book: str                   # e.g. "Accrual"
     source_file: str            # original filename
     parsed_at: str              # timestamp of parsing
+    entities: list = field(default_factory=list)  # ordered entity codes for multi-entity GL
+                                                   # e.g. ['lexlab-1','lexlab-2','lexlab-3',...]
+                                                   # empty for single-entity GL
 
 
 @dataclass
@@ -247,10 +251,19 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
     metadata = parse_metadata(ws)
     metadata.source_file = os.path.basename(filepath)
 
+    # --- Detect multi-entity format ---
+    # Multi-entity (combined GL): row 6 col A = 'Property' column header.
+    # In this format col A on each transaction row holds the property/entity code.
+    # Single-entity: col A is unused on transaction rows; entity = global property_code.
+    _hdr_row6_a = _safe_str(ws.cell(row=6, column=1).value).lower()
+    _is_multi_entity = (_hdr_row6_a == 'property')
+
     # --- Parse accounts and transactions ---
     accounts = []
     all_transactions = []
     validation_warnings = []
+    _seen_entities: list = []   # ordered unique entity codes (first-seen order)
+    _seen_entity_set: set = set()
 
     current_account_code = None
     current_account_name = None
@@ -261,10 +274,10 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
     max_row = ws.max_row
 
     for row_num in range(7, max_row + 1):
-        col_a = _safe_str(ws.cell(row=row_num, column=1).value)   # Property / Account Code
-        col_b = _safe_str(ws.cell(row=row_num, column=2).value)   # Property Name
+        col_a = _safe_str(ws.cell(row=row_num, column=1).value)   # Property code / Account Code
         col_c = ws.cell(row=row_num, column=3).value               # Date
-        col_d = _safe_str(ws.cell(row=row_num, column=4).value)   # Period
+        col_d_raw = ws.cell(row=row_num, column=4).value           # Period (string or datetime)
+        col_d = _safe_str(col_d_raw)
         col_e = _safe_str(ws.cell(row=row_num, column=5).value)   # Person/Description
         col_f = _safe_str(ws.cell(row=row_num, column=6).value)   # Control
         col_g = _safe_str(ws.cell(row=row_num, column=7).value)   # Reference
@@ -275,13 +288,8 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
 
         # --- Detect row type ---
 
-        # Beginning Balance row: account code in A, "= Beginning Balance =" in K
+        # Beginning Balance row: "= Beginning Balance =" in K
         if "beginning balance" in col_k.lower():
-            # Save previous account if exists
-            if current_account_code and current_transactions:
-                # We'll finalize this account when we hit its ending balance
-                pass
-
             current_account_code = col_a
             current_account_name = col_e
             current_beginning_balance = col_j
@@ -291,10 +299,13 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
         # Ending Balance row: "= Ending Balance =" in K
         if "ending balance" in col_k.lower():
             if current_account_code:
-                total_debits = col_h
-                total_credits = col_i
-                ending_balance = col_j
-                net_change = total_debits - total_credits
+                # Compute totals from accumulated transactions.
+                # Multi-entity format: col H/I are empty on ending rows.
+                total_debits  = round(sum(t.debit  for t in current_transactions), 2)
+                total_credits = round(sum(t.credit for t in current_transactions), 2)
+                ending_balance = col_j if col_j != 0.0 else round(
+                    current_beginning_balance + total_debits - total_credits, 2)
+                net_change = round(total_debits - total_credits, 2)
 
                 account = GLAccount(
                     account_code=current_account_code,
@@ -307,7 +318,6 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
                     transactions=current_transactions,
                 )
 
-                # Validate account balance
                 if not account.is_balanced:
                     validation_warnings.append(
                         f"Account {current_account_code} ({current_account_name}) "
@@ -338,13 +348,30 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
                 )
             continue
 
-        # Transaction row â belongs to current account
+        # Transaction row -- belongs to current account
         if current_account_code:
+            # Entity: multi-entity GL -> col A; single-entity -> global property_code
+            if _is_multi_entity and col_a:
+                entity = col_a.strip().lower()
+            else:
+                entity = metadata.property_code
+
+            if entity and entity not in _seen_entity_set:
+                _seen_entities.append(entity)
+                _seen_entity_set.add(entity)
+
+            # Period: may be string like "Jan-2026" or datetime (first of period month)
+            period_str = col_d
+            if hasattr(col_d_raw, "month"):
+                _mo = ["Jan","Feb","Mar","Apr","May","Jun",
+                       "Jul","Aug","Sep","Oct","Nov","Dec"][col_d_raw.month - 1]
+                period_str = f"{_mo}-{col_d_raw.year}"
+
             txn = GLTransaction(
                 account_code=current_account_code,
                 account_name=current_account_name,
                 date=_safe_date(col_c),
-                period=col_d,
+                period=period_str,
                 description=col_e,
                 control=col_f,
                 reference=col_g,
@@ -353,10 +380,14 @@ def parse_gl(filepath: str, sheet_name: str = None) -> GLParseResult:
                 balance=col_j,
                 remarks=col_k,
                 row_number=row_num,
+                entity=entity,
             )
             current_transactions.append(txn)
 
     wb.close()
+
+    # Populate metadata.entities with ordered entity codes found during parse
+    metadata.entities = _seen_entities
 
     # --- Build validation summary ---
     total_debits = sum(a.total_debits for a in accounts)
