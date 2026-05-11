@@ -1363,6 +1363,9 @@ with tab1:
                 '135150': 'Prepaids',
                 '213100': 'Accrued Expenses',
                 '213200': 'Accrued Interest Payable',
+                '440500': 'Recovery - Electricity (Tenant Billing)',
+                '440700': 'Recovery - Misc Utilities (Tenant Billing)',
+                '613110': 'Utilities - Electricity (P&L Reclass)',
                 '641110': 'Real Estate Taxes (deferral)',
             }
             def _cr_section_label(code: str) -> str:
@@ -1372,6 +1375,8 @@ with tab1:
                 if code.startswith('133'):  return f"{code} — Tenant AR Billback"
                 if code.startswith('135'):  return f"{code} — Prepaids"
                 if code.startswith('213'):  return f"{code} — Accrued"
+                if code.startswith('44'):   return f"{code} — Revenue Recovery"
+                if code.startswith('61'):   return f"{code} — Expense Reclassification"
                 return f"{code}"
 
             # ── Group DR lines by CR account ────────────────────────────────
