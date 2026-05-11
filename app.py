@@ -977,6 +977,34 @@ with tab1:
                     except Exception:
                         _rd_parsed = None
 
+                # Step 3: Prepaid ledger — load → merge → release lines
+                # Must run BEFORE build_accrual_entries so insurance accounts
+                # covered by the ledger suppress detect_insurance_amortization()
+                # and avoid double-counting the expense.
+                status_text.text("Step 3/6: Processing prepaid ledger...")
+                progress_bar.progress(45)
+
+                ledger_path = st.session_state.uploaded_files.get("prepaid_ledger")
+                ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
+
+                # Merge Nexus Invoice Detail into ledger
+                ledger_active, newly_added = prepaid_ledger.merge_nexus(
+                    ledger_active, nexus_data or [], close_period
+                )
+
+                # Build visual amortization schedule
+                amort_lines = build_prepaid_amortization(nexus_data or [], close_period=close_period)
+
+                # Get release lines now — used to suppress duplicate amortization
+                # in build_accrual_entries(); build_prepaid_release_je() called
+                # after je_lines so JE numbering stays sequential.
+                ledger_release_lines = prepaid_ledger.get_current_amortization(ledger_active, close_period)
+                _ledger_release_accounts = {
+                    str(item.get('gl_account_number', '')).strip()
+                    for item in ledger_release_lines
+                    if item.get('gl_account_number')
+                }
+
                 _gl_activity_log = []
                 je_lines = build_accrual_entries(
                     nexus_data or [],
@@ -993,28 +1021,11 @@ with tab1:
                     t12_result=_t12_result_p1,
                     gl_activity_log=_gl_activity_log,
                     receivable_detail=_rd_parsed,
+                    ledger_release_accounts=_ledger_release_accounts,
                 )
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
-                # Step 3: Prepaid ledger — load → merge → release JEs → advance
-                status_text.text("Step 3/6: Processing prepaid ledger...")
-                progress_bar.progress(45)
-
-                ledger_path = st.session_state.uploaded_files.get("prepaid_ledger")
-                ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
-
-                # Merge Nexus Invoice Detail into ledger — status filtering in the
-                # parser ensures only In Progress / Pending / Submitted / Completed
-                # invoices reach this point; Rejected, Void, and On Hold are dropped.
-                ledger_active, newly_added = prepaid_ledger.merge_nexus(
-                    ledger_active, nexus_data or [], close_period
-                )
-
-                # Build visual amortization schedule
-                amort_lines = build_prepaid_amortization(nexus_data or [], close_period=close_period)
-
-                # Generate prepaid release JEs (months 2+ from ledger)
-                ledger_release_lines = prepaid_ledger.get_current_amortization(ledger_active, close_period)
+                # Build prepaid release JEs after je_lines so JE numbers are sequential
                 prepaid_release_je = build_prepaid_release_je(
                     ledger_release_lines,
                     period=close_period,

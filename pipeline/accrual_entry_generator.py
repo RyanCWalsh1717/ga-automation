@@ -1762,6 +1762,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           t12_result=None,
                           gl_activity_log: Optional[List[Dict]] = None,
                           receivable_detail=None,
+                          ledger_release_accounts: Optional[set] = None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from four sources (in priority order):
@@ -2294,9 +2295,17 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         je_num += 1
 
     # Insurance: DR 639110/639120 / CR 135110
-    if gl_data and budget_data:
+    # Skip any account already covered by the prepaid ledger release JEs
+    # (ledger releases DR the same expense accounts / CR 135150 — running
+    # detect_insurance_amortization() on top would double-count the expense).
+    _ledger_ins_covered = (ledger_release_accounts or set()) & _INSURANCE_EXPENSE_ACCTS
+    if gl_data and budget_data and not _ledger_ins_covered:
         for ins in detect_insurance_amortization(gl_data, budget_data):
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
+    elif _ledger_ins_covered:
+        # Still mark the accounts as covered so Layer 3 doesn't double-accrue them
+        _amort_accounts.update(_ledger_ins_covered)
+        _amort_accounts.add(_PREPAID_INSURANCE_ACCT)
 
     # RE Taxes — all months when re_tax_bill_amount is entered:
     #   Payment months (Jan/Apr/Jul/Oct):
