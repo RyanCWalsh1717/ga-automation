@@ -129,7 +129,7 @@ _LOAN_RESERVE_SEED: List[tuple] = [
     ('12/25/2025', 'Rcd: 12/25 Interest Income',                 283.78),
 ]
 
-_ENTITY = 'revlabpm'
+_ENTITY = 'Revlabs'
 
 _MONTH_MAP = {
     'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
@@ -229,7 +229,7 @@ def _write_col_headers(ws, row: int, headers: List[str],
         col = 2 + ci
         c = ws.cell(row=row, column=col, value=h)
         _apply(c, font=_font(bold=True, color='FFFFFF'),
-               fill=_fill(DARK_BLUE), border=THIN,
+               fill=_fill('000000'), border=THIN,
                align=Alignment(horizontal='center', vertical='center'))
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.row_dimensions[row].height = 18

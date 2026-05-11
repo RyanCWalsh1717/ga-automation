@@ -339,13 +339,18 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     # Single-entity GL: metadata.entities = [] (or single item)
     #                  → one amount column, labelled with property_code.
     _gl_entities: list = []
-    _entity_label = 'revlabpm'
+    _entity_label = 'Revlabs'
     if gl_result and hasattr(gl_result, 'metadata') and gl_result.metadata:
         _gl_entities = list(getattr(gl_result.metadata, 'entities', []) or [])
         _entity_label = (
             getattr(gl_result.metadata, 'property_code', '') or
             getattr(gl_result.metadata, 'property_name', '') or 'revlabpm'
         ).strip().lower() or 'revlabpm'
+
+    # Apply friendly display names — Yardi codes → workpaper labels
+    _ENTITY_DISPLAY = {'revlabpm': 'Revlabs', 'revla': 'Revla'}
+    _entity_label  = _ENTITY_DISPLAY.get(_entity_label, _entity_label)
+    _gl_entities   = [_ENTITY_DISPLAY.get(e.lower(), e) for e in _gl_entities]
 
     # Build TB lookup: account_code -> TBAccount
     tb_map = {}
@@ -447,11 +452,6 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     }
 
     for acct in bs_accounts:
-        # Skip accounts that net to zero — only auto-reversals, nothing to review
-        if (abs(getattr(acct, 'ending_balance', 0) or 0) < 0.01
-                and abs(getattr(acct, 'beginning_balance', 0) or 0) < 0.01):
-            continue
-
         if acct.account_code in _ANALYSIS_COVERED:
             continue
 
@@ -505,9 +505,6 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
     # ── Stub tabs for TB accounts with no current-period GL activity ──────────
     for _tba in _zero_activity_tb:
-        if (abs(_tba.ending_balance) < 0.01 and abs(_tba.beginning_balance or 0) < 0.01):
-            continue
-
         if _tba.account_code in _ANALYSIS_COVERED:
             continue   # covered by Insurance Analysis / RE Tax Analysis tabs
 
@@ -705,7 +702,7 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
     for ci, (h, w) in enumerate(zip(headers, widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
-        _apply(c, font=_hdr_font(), fill=_fill(DARK_BLUE), border=THIN,
+        _apply(c, font=_hdr_font(), fill=_fill('000000'), border=THIN,
                align=Alignment(horizontal='center', vertical='center', wrap_text=True))
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.row_dimensions[row].height = 28
@@ -1667,7 +1664,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     for ci, (h, w) in enumerate(zip(col_hdrs, col_widths)):
         col = _B + ci
         c = ws.cell(row=row, column=col, value=h)
-        _apply(c, font=_hdr_font(), fill=_fill(MED_BLUE), border=THIN,
+        _apply(c, font=_hdr_font(), fill=_fill('000000'), border=THIN,
                align=Alignment(horizontal='center', wrap_text=True))
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.column_dimensions['A'].width = 2
