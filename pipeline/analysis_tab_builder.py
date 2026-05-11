@@ -393,6 +393,527 @@ def _rebuild_tieout(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Analysis tab seed data — bootstraps first-run tabs without a prior workpaper
+# Source: Analysis Tabs Workpapers.xlsx  (manual workpaper as of Jan-2026)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# RE Tax Analysis seed rows
+# Format: (description, date_str_or_None, acct_135120, acct_641110)
+# None = blank cell  |  Amounts follow GL sign convention
+_RET_ANALYSIS_SEED: List[Tuple] = [
+    # ── Parcel 00011619 ─────────────────────────────────────────────────────
+    ('PARCEL ID:  00011619', None, None, None),
+    ('3QTR Payment by client covering Jan thru March', '01/25/2023', 796749.49, None),
+    ('Reclass January Tax Exp fr PPD',  '01/25/2023', -265583.00, 265583.00),
+    ('Reclass Feb Tax Exp fr PPD',       '02/25/2023', -265583.00, 265583.00),
+    ('Reclass Mar Tax Exp fr PPD',       '03/25/2023', -265583.49, 265583.49),
+    ('4QTR Payment by client covering Apr thru June', '04/25/2023', 796748.99, None),
+    ('Reclass April Tax Exp fr PPD',    '04/25/2023', -265583.00, 265583.00),
+    ('Reclass May Tax Exp fr PPD',      '05/25/2023', -265583.00, 265583.00),
+    ('Reclass June Tax Exp fr PPD',     '06/25/2023', -265582.99, 265582.99),
+    ('FY23/24 1QTR Payment covering July thru Sept', '07/14/2023', None, 433692.41),
+    ('Reclass Aug and Sept Exp to PPD', '07/25/2023', 289128.27, -289128.27),
+    ('Reclass Aug Tax Exp fr PPD',      '08/25/2023', -144564.14, 144564.14),
+    ('Reclass Sept Tax Exp fr PPD',     '09/25/2023', -144564.14, 144564.14),
+    ('Accr 9/23 Tax Increase',          '09/25/2023', None, 239204.01),
+    ('FY23/24 2QTR Payment covering Oct thru Dec-2023', '10/10/2023', None, 433692.41),
+    ('Reclass Nov and Dec -2023 Exp to PPD', '10/25/2023', 289128.27, -289128.27),
+    ('Accr 10/23 Tax Increase',         '10/25/2023', None, 86935.84),
+    ('Reclass Nov Tax Exp fr PPD',      '11/25/2023', -144564.14, 144564.14),
+    ('Accr 11/23 Tax Increase',         '11/25/2023', None, 86935.84),
+    ('Reclass Dec Tax Exp fr PPD',      '12/25/2023', -144564.14, 144564.14),
+    ('Accr 12/23 Tax Increase',         '12/25/2023', None, 86935.84),
+    ('FY 24- Q3 Payment Covering Jan thru March 2024', '01/25/2024', None, 893567.25),
+    ('RE Tax Accrual Adjustment - Q3-FY24', None, None, -229943.16),
+    ('Reclass Feb -24 & March 24',      None, 595711.50, -595711.50),
+    ('RE Tax Accrual Adjustment',       None, -153295.44, 153295.44),
+    ('Amortize Feb-24 RET Expense',     None, -297855.75, 297855.75),
+    ('Feb-24 Tax Accrual Adjustment',   None, 76647.72, -76647.72),
+    ('Amortize March-24 RET Expense',   None, -297855.75, 297855.75),
+    ('Reverse Feb accrual adj to zero out', None, 76647.72, -76647.72),
+    ('FY 24- Q4 Payment Covering April thru June 2024', '04/05/2024', None, 893567.24),
+    ('Reclass May -24 & June 24',       None, 595711.49, -595711.49),
+    ('RE Tax Accrual Adjustment - Q4-FY24', None, -229943.16, None),
+    ('RE Tax due per 5.10.24 Loan Stmt', None, 76647.72, -76647.72),
+    ('Amortize 5.24 RET Expense (a)',   None, -297855.75, 297855.75),
+    ('Amortize Q3-FY24 Accrual Adjustment (a)', None, 76647.72, -76647.72),
+    ('Amortize 5.24 RET Expense (b)',   None, -297855.74, 297855.74),
+    ('Amortize Q3-FY24 Accrual Adjustment (b)', None, 76647.72, -76647.72),
+    ('RE Tax Payment FY 2025 (1st Quarter) July-Sept 2024', '07/25/2024', None, 680220.57),
+    ('Reclass Aug-Sept 2024 RE Tax',    '07/25/2024', 453480.38, -453480.38),
+    ('Amortize 8.24 RET Tax Expense',   '08/25/2024', -226740.19, 226740.19),
+    ('Amortize 09.24 RET Tax Expense',  '09/25/2024', -226740.19, 226740.19),
+    ('RE Tax Payment FY 2025 (2nd Quarter) Oct-Dec 2024', '10/17/2024', None, 680220.57),
+    ('Reclass Nov-Dec 2024 RE Tax',     '10/25/2024', 453480.38, -453480.38),
+    ('Amortize 11.24 RET Tax Expense',  '11/25/2024', -226740.19, 226740.19),
+    ('Amortize 12.24 RET Tax Expense',  '12/25/2024', -226740.19, 226740.19),
+    ('Accr: True-up the RE Tax expense', '12/25/2024', None, 1301023.33),
+    ('RE Tax Payment FY 2025 (3rd Quarter) Jan - Mar 2025', '01/16/2025', None, 651404.28),
+    ('Reclass Feb-Mar 2025 RE Tax',     '01/25/2025', 434269.52, -434269.52),
+    ('Amort: Feb 2025 RE Tax',          '02/25/2025', -217134.76, 217134.76),
+    ('Amort: Mar 2025 RE Tax',          '03/25/2025', -217134.76, 217134.76),
+    ('RE Tax Payment FY 2025 (4th Quarter) April - June 2025', '04/16/2025', None, 651404.28),
+    ('Reclass May-June 2025 RE Tax',    '04/25/2025', 434269.52, -434269.52),
+    ('Amort: May 2025 RE Tax',          '05/25/2025', -217134.76, 217134.76),
+    ('Amort: June 2025 RE Tax',         '06/25/2025', -217134.76, 217134.76),
+    ('RE Tax Payment FY 2025 (4th Quarter) July - Sep 2025', '07/17/2025', None, 682444.67),
+    ('Reclass Aug-Sep 2025 RE Tax',     '07/25/2025', 454963.11, -454963.11),
+    ('Amort: Aug 2025 RE Tax',          '08/25/2025', -227481.56, 227481.56),
+    ('Amort: Sep 2025 RE Tax',          '09/25/2025', -227481.55, 227481.55),
+    ('RE Tax Payment FY 2025 (4th Quarter) Oct - Dec 2025', '10/25/2025', None, 682457.73),
+    ('Reclass Nov-Dec 2025 RE Tax',     '10/25/2025', 454971.82, -454971.82),
+    ('Amort: Nov 2025 RE Tax',          '11/25/2025', -227485.91, 227485.91),
+    ('Amort: Dec 2025 RE Tax',          '12/25/2025', -227485.91, 227485.91),
+    ('RE Tax Payment FY 2026 (1st Quarter) Jan - March 2026', '01/25/2026', None, 498494.07),
+    ('Reclass Feb-March 2026 RE Tax',   '01/25/2026', 332329.38, -332329.38),
+    # ── Parcel R0140050002 ──────────────────────────────────────────────────
+    ('PARCEL ID:  R0140050002', None, None, None),
+    ('4QTR Payment by Client covering Jan thru March', '01/25/2024', None, 206.01),
+    ('Reclass Feb & March 2024 to PPD', '01/25/2024', 137.34, -137.34),
+    ('Reclass Feb Tax Exp fr PPD (R2)',  '02/25/2023', -68.67, 68.67),
+    ('Reclass Mar Tax Exp fr PPD (R2)',  '03/25/2023', -68.67, 68.67),
+    ('FY24-Q4 WALTHAM',                 '04/25/2024', None, 206.00),
+    ('Reclass May & June 2024 to PPD',  '04/25/2024', 137.33, -137.33),
+    ('Amortize May-2024 Exp',           '05/25/2024', -68.67, 68.67),
+    ('Amortize June-2024 Exp',          '05/25/2024', -68.67, 68.67),
+    ('Massachusetts Appellate Tax Board payment', '06/25/2024', None, 5000.00),
+    ('FY25-Q1 WALTHAM',                 '07/25/2024', None, 200.27),
+    ('Reclass Aug & Sept 2024 to PPD',  '07/25/2024', 133.51, -133.51),
+    ('Amortize 8.2024 RET Tax Expense', '08/25/2024', -66.76, 66.76),
+    ('Amortize 09.2024 RET Tax Expense', '09/25/2024', -66.75, 66.75),
+    ('FY25-Q2 WALTHAM',                 '10/17/2024', None, 200.27),
+    ('Reclass Nov-Dec 2024 to PPD',     '10/25/2024', 133.51, -133.51),
+    ('Amortize 11.2024 RET Tax Expense', '11/25/2024', -66.75, 66.75),
+    ('Amortize 12.2024 RET Tax Expense', '12/25/2024', -66.76, 66.76),
+    ('FY25-Q3 WALTHAM',                 '01/16/2025', None, 226.41),
+    ('Reclass Feb-Mar 2025 RE Tax (R2)', '01/25/2025', 150.94, -150.94),
+    ('Amort: Feb 2025 RE Tax (R2)',      '02/25/2025', -75.47, 75.47),
+    ('Amort: Mar 2025 RE Tax (R2)',      '03/25/2025', -75.47, 75.47),
+    ('FY25-Q4 WALTHAM',                 '04/16/2025', None, 226.41),
+    ('Reclass May-June 2025 RE Tax (R2)', '04/25/2025', 150.94, -150.94),
+    ('Amort: May 2025 RE Tax (R2)',      '05/25/2025', -75.47, 75.47),
+    ('Amort: June 2025 RE Tax (R2)',     '06/25/2025', -75.47, 75.47),
+    ('Tax Board Filing Fee 2025',        '06/25/2025', None, 5000.00),
+    ('RE Tax Payment July - Sep 2025 (R2)', '07/17/2025', None, 226.41),
+    ('Reclass Aug-Sep 2025 RE Tax (R2)', '07/25/2025', 150.94, -150.94),
+    ('Amort: Aug 2025 RE Tax (R2)',      '08/25/2025', -75.47, 75.47),
+    ('Amort: Sep 2025 RE Tax (R2)',      '09/25/2025', -75.47, 75.47),
+    ('RE Tax Payment Oct - Dec 2025 (R2)', '10/25/2025', None, 213.34),
+    ('Reclass Nov-Dec 2025 RE Tax (R2)', '10/25/2025', 142.23, -142.23),
+    ('Amort: Nov 2025 RE Tax (R2)',      '11/25/2025', -71.11, 71.11),
+    ('Amort: Dec 2025 RE Tax (R2)',      '12/25/2025', -71.12, 71.12),
+    ('RE Tax Payment FY 2026 Jan - March 2026 (R2)', '01/25/2025', None, 256.74),
+    ('Reclass Feb-March 2026 RE Tax (R2)', '01/25/2025', 171.16, -171.16),
+]
+# Ending balance as of Jan-2026 workpaper
+_RET_ANALYSIS_ENDING = {'135120': 332500.54, '641110': 166250.27}
+
+# Loan Analysis seed rows
+# Format: (loan_num_or_None, description, date_str_or_None,
+#           acct_231100_rl, acct_231100_rpm, acct_213200, acct_801110)
+# None = blank.  Starting mortgage balance is a single header row.
+_LOAN_ANALYSIS_SEED: List[Tuple] = [
+    # ── Starting balance 12/31/24 ────────────────────────────────────────
+    (None, 'Balance at 12/31/24-Dec interest accrual', None, -92104195.17, None, -701314.29, None),
+    # ── Jan 2025 ─────────────────────────────────────────────────────────
+    (None,    'Dec 2024 Accrual Reversal',          '01/25', None, None, 701314.29,  -701314.29),
+    (1159010, 'Dec Interest Payment',               '01/25', None, None, None,        451630.77),
+    (1159011, 'Dec Interest Payment',               '01/25', None, None, None,        224715.17),
+    (1159012, 'Dec Interest Payment',               '01/25', None, None, None,         24968.35),
+    (1159010, 'Accr Jan Interest Due -11159010',    '01/25', None, None, -440923.66,  440923.66),
+    (1159011, 'Accr Jan Interest Due -11159011',    '01/25', None, None, -221503.04,  221503.04),
+    (1159012, 'Accr Jan Interest Due -11159012',    '01/25', None, None,  -24611.45,   24611.45),
+    # ── Feb 2025 ─────────────────────────────────────────────────────────
+    (None,    'Jan 2025 Accrual Reversal',          '02/25', None, None, 687038.15,  -687038.15),
+    (1159010, 'Jan Interest Payment',               '02/25', None, None, None,        440923.66),
+    (1159011, 'Jan Interest Payment',               '02/25', None, None, None,        221503.04),
+    (1159012, 'Jan Interest Payment',               '02/25', None, None, None,         24611.45),
+    (1159010, 'Accr Feb Interest Due -11159010',    '02/25', None, None, -398952.08,  398952.08),
+    (1159011, 'Accr Feb Interest Due -11159011',    '02/25', None, None, -200276.80,  200276.80),
+    (1159012, 'Accr Feb Interest Due -11159012',    '02/25', None, None,  -22252.98,   22252.98),
+    # ── Mar 2025 ─────────────────────────────────────────────────────────
+    (None,    'Feb 2025 Accrual Reversal',          '03/25', None, None, 621481.86,  -621481.86),
+    (1159010, 'Feb Interest Payment',               '03/25', None, None, None,        398952.08),
+    (1159011, 'Feb Interest Payment',               '03/25', None, None, None,        200276.80),
+    (1159012, 'Feb Interest Payment',               '03/25', None, None, None,         22252.98),
+    (1159010, 'Accr Mar Interest Due -11159010',    '03/25', None, None, -442351.27,  442351.27),
+    (1159011, 'Accr Mar Interest Due -11159011',    '03/25', None, None, -221931.32,  221931.32),
+    (1159012, 'Accr Mar Interest Due -11159012',    '03/25', None, None,  -24659.04,   24659.04),
+    # ── Apr 2025 ─────────────────────────────────────────────────────────
+    (None,    'Mar 2025 Accrual Reversal',          '04/25', None, None, 688941.63,  -688941.63),
+    (1159010, 'Mar Interest Payment',               '04/25', None, None, None,        442351.27),
+    (1159011, 'Mar Interest Payment',               '04/25', None, None, None,        221931.32),
+    (1159012, 'Mar Interest Payment',               '04/25', None, None, None,         24659.04),
+    (1159010, 'Accr April Interest Due -11159010',  '04/25', None, None, -426354.98,  426354.98),
+    (1159011, 'Accr April Interest Due -11159011',  '04/25', None, None, -214254.16,  214254.16),
+    (1159012, 'Accr April Interest Due -11159012',  '04/25', None, None,  -23806.02,   23806.02),
+    # ── May 2025 ─────────────────────────────────────────────────────────
+    (None,    'April 2025 Accrual Reversal',        '05/25', None, None, 664415.16,  -664415.16),
+    (1159010, 'April Interest Payment',             '05/25', None, None, None,        426354.92),
+    (1159011, 'April Interest Payment',             '05/25', None, None, None,        214254.16),
+    (1159012, 'April Interest Payment',             '05/25', None, None, None,         23806.02),
+    (1159010, 'Accr May Interest Due -11159010',    '05/25', None, None, -443005.60,  443005.60),
+    (1159011, 'Accr May Interest Due -11159011',    '05/25', None, None, -222127.62,  222127.62),
+    (1159012, 'Accr May Interest Due -11159012',    '05/25', None, None,  -24680.85,   24680.85),
+    # ── Jun 2025 ─────────────────────────────────────────────────────────
+    (None,    'May 2025 Accrual Reversal',          '06/25', None, None, 689814.07,  -689814.07),
+    (1159010, 'May Interest Payment',               '06/25', None, None, None,        443005.60),
+    (1159011, 'May Interest Payment',               '06/25', None, None, None,        222127.62),
+    (1159012, 'May Interest Payment',               '06/25', None, None, None,         24680.85),
+    (None,    'June 2025 Accrual Reversal',         '06/25', None, None, 665950.17,  -665950.17),
+    (1159010, 'Accr June Interest Due -11159010',   '06/25', None, None, -427506.22,  427506.22),
+    (1159011, 'Accr June Interest Due -11159011',   '06/25', None, None, -214599.55,  214599.55),
+    (1159012, 'Accr June Interest Due -11159012',   '06/25', None, None,  -23844.40,   23844.40),
+    # ── Jul 2025 ─────────────────────────────────────────────────────────
+    (1159010, 'June Interest Payment',              '07/25', None, None, None,        427506.22),
+    (1159011, 'June Interest Payment',              '07/25', None, None, None,        214599.55),
+    (1159012, 'June Interest Payment',              '07/25', None, None, None,         23844.40),
+    (1159010, 'Accr July Interest Due -11159010',   '07/25', None, None, -443362.50,  443362.50),
+    (1159011, 'Accr July Interest Due -11159011',   '07/25', None, None, -222234.69,  222234.69),
+    (1159012, 'Accr July Interest Due -11159012',   '07/25', None, None,  -24692.74,   24692.74),
+    # ── Aug 2025 ─────────────────────────────────────────────────────────
+    (None,    'July 2025 Accrual Reversal',         '08/25', None, None, 690289.93,  -690289.93),
+    (1159010, 'july Interest Payment',              '08/25', None, None, None,        443362.50),
+    (1159011, 'july Interest Payment',              '08/25', None, None, None,        222234.69),
+    (1159012, 'july Interest Payment',              '08/25', None, None, None,         24692.74),
+    (None,    'August 2025 Accrual Reversal',       '08/25', None, None, 691796.86,  -691796.86),
+    (1159010, 'Accr Aug Interest Due -11159010',    '08/25', None, None, -444492.69,  444492.69),
+    (1159011, 'Accr Aug Interest Due -11159011',    '08/25', None, None, -222573.75,  222573.75),
+    (1159012, 'Accr Aug Interest Due -11159012',    '08/25', None, None,  -24730.42,   24730.42),
+    # ── Sep 2025 ─────────────────────────────────────────────────────────
+    (1159010, 'Aug Interest Payment',               '09/25', None, None, None,        444492.69),
+    (1159011, 'Aug Interest Payment',               '09/25', None, None, None,        222573.75),
+    (1159012, 'Aug Interest Payment',               '09/25', None, None, None,         24730.42),
+    (1159010, 'Accr Sep Interest Due -11159010',    '09/25', None, None, -420655.98,  420655.98),
+    (1159011, 'Accr Sep Interest Due -11159011',    '09/25', None, None, -212544.48,  212544.48),
+    (1159012, 'Accr Sep Interest Due -11159012',    '09/25', None, None,  -23616.05,   23616.05),
+    # ── Oct 2025 ─────────────────────────────────────────────────────────
+    (None,    'September 2025 Accrual Reversal',    '10/25', None, None, 656816.51,  -656816.51),
+    (1159010, 'Sep Interest Payment',               '10/25', None, None, None,        420655.98),
+    (1159011, 'Sep Interest Payment',               '10/25', None, None, None,        212544.48),
+    (1159012, 'Sep Interest Payment',               '10/25', None, None, None,         23616.05),
+    (1159010, 'Accr Oct Interest Due -11159010',    '10/25', None, None, -427896.67,  427896.67),
+    (1159011, 'Accr Oct Interest Due -11159011',    '10/25', None, None, -217594.94,  217594.94),
+    (1159012, 'Accr Oct Interest Due -11159012',    '10/25', None, None,  -24177.22,   24177.22),
+    # ── Nov 2025 ─────────────────────────────────────────────────────────
+    (None,    'October 2025 Accrual Reversal',      '11/25', None, None, 669668.83,  -669668.83),
+    (1159010, 'Nov Interest Payment',               '11/25', None, None, None,        427896.67),
+    (1159011, 'Nov Interest Payment',               '11/25', None, None, None,        217594.94),
+    (1159012, 'Nov Interest Payment',               '11/25', None, None, None,         24177.22),
+    (1159010, 'Accr Nov Interest Due -11159010',    '11/25', None, None, -407934.08,  407934.08),
+    (1159011, 'Accr Nov Interest Due -11159011',    '11/25', None, None, -208727.91,  208727.91),
+    (1159012, 'Accr Nov Interest Due -11159012',    '11/25', None, None,  -23191.99,   23191.99),
+    # ── Dec 2025 ─────────────────────────────────────────────────────────
+    (None,    'November 2025 Accrual Reversal',     '12/25', None, None, 639853.98,  -639853.98),
+    (1159010, 'Dec Interest Payment',               '12/25', None, None, None,        407934.08),
+    (1159011, 'Dec Interest Payment',               '12/25', None, None, None,        208727.91),
+    (1159012, 'Dec Interest Payment',               '12/25', None, None, None,         23191.99),
+    (1159010, 'Accr Dec Interest Due -11159010',    '12/25', None, None, -409694.58,  409694.58),
+    (1159011, 'Accr Dec Interest Due -11159011',    '12/25', None, None, -212134.31,  212134.31),
+    (1159012, 'Accr Dec Interest Due -11159012',    '12/25', None, None,  -23570.48,   23570.48),
+    # ── Jan 2026 ─────────────────────────────────────────────────────────
+    (None,    'December 2025 Accrual Reversal',     '01/26', None, None, 645399.37,  -645399.37),
+    (1159010, 'Jan Interest Payment',               '01/26', None, None, None,        409694.58),
+    (1159011, 'Jan Interest Payment',               '01/26', None, None, None,        212134.31),
+    (1159012, 'Jan Interest Payment',               '01/26', None, None, None,         23570.48),
+    (1159010, 'Accr Jan Interest Due -11159010',    '01/26', None, None, -403805.67,  403805.67),
+    (1159011, 'Accr Jan Interest Due -11159011',    '01/26', None, None, -210367.64,  210367.64),
+    (1159012, 'Accr Jan Interest Due -11159012',    '01/26', None, None,  -23374.18,   23374.18),
+]
+# Ending balance as of Jan-2026 workpaper
+_LOAN_ANALYSIS_ENDING = {
+    '231100_rl':  -92104195.17,   # Revlab mortgage payable
+    '231100_rpm':          0.00,  # Revlabpm (none)
+    '213200':      -637547.49,    # Accrued interest payable
+    '801110':       637547.49,    # Interest expense
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Seed tab writers  (called instead of _write_stub when no prior workpaper)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict]):
+    """
+    Build a full-history RE Tax Analysis tab from _RET_ANALYSIS_SEED.
+    Replaces _write_stub when no prior workpaper is provided.
+
+    Column layout:
+      A (1): blank gutter
+      B (2): Description
+      D (4): Date
+      F (6): A/C 135120 Prepaid RE Taxes
+      H (8): A/C 641110 RE Tax Expense
+    """
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import column_index_from_string as _ci
+
+    _hdr_fill = PatternFill(start_color='375623', end_color='375623', fill_type='solid')
+    _hdr_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    _bold     = Font(name='Calibri', size=11, bold=True)
+    _std      = Font(name='Calibri', size=11)
+    _alt_fill = PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid')
+    _num_fmt  = '#,##0.00;(#,##0.00);"-"'
+    THIN      = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin'),
+    )
+
+    # Column widths
+    ws.column_dimensions['A'].width = 3
+    ws.column_dimensions['B'].width = 55
+    ws.column_dimensions['C'].width = 3
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 3
+    ws.column_dimensions['F'].width = 18
+    ws.column_dimensions['G'].width = 3
+    ws.column_dimensions['H'].width = 18
+
+    # Row 1: title
+    ws.cell(row=1, column=2).value = 'Revolution Labs — Analysis of Real Estate Taxes'
+    ws.cell(row=1, column=2).font  = Font(name='Calibri', size=13, bold=True)
+    # Row 2: parcel info
+    ws.cell(row=2, column=2).value = 'Lexington, MA  |  Parcel I.D. 00011619 and R0140050002'
+    # Row 3: period
+    ws.cell(row=3, column=2).value = f'Period: {period}'
+
+    # Row 5: column headers
+    HDR = 5
+    for col, label in [(2, 'Description'), (4, 'Date'),
+                       (6, 'A/C 135120\nPrepaid RE Taxes'),
+                       (8, 'A/C 641110\nRE Tax Expense')]:
+        c = ws.cell(row=HDR, column=col, value=label)
+        c.font      = _hdr_font
+        c.fill      = _hdr_fill
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        c.border    = THIN
+    ws.row_dimensions[HDR].height = 30
+
+    # Data rows
+    data_start = 7
+    row = data_start
+    alt_ctr = 0
+    for desc, date_str, acct_135, acct_641 in _RET_ANALYSIS_SEED:
+        is_section = (acct_135 is None and acct_641 is None and date_str is None)
+        if is_section:
+            # Section header row (parcel label)
+            c = ws.cell(row=row, column=2, value=desc)
+            c.font = Font(name='Calibri', size=11, bold=True, underline='single')
+            ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=8)
+            row += 1
+            alt_ctr = 0
+            continue
+        alt = _alt_fill if alt_ctr % 2 == 1 else None
+        alt_ctr += 1
+
+        c_desc = ws.cell(row=row, column=2, value=desc)
+        c_desc.font   = _std
+        c_desc.border = THIN
+        if alt: c_desc.fill = alt
+
+        c_date = ws.cell(row=row, column=4, value=date_str or '')
+        c_date.font   = _std
+        c_date.border = THIN
+        if alt: c_date.fill = alt
+
+        for col, val in [(6, acct_135), (8, acct_641)]:
+            c = ws.cell(row=row, column=col)
+            c.value        = val if val is not None else None
+            c.font         = _std
+            c.border       = THIN
+            c.alignment    = Alignment(horizontal='right')
+            if val is not None:
+                c.number_format = _num_fmt
+            if alt: c.fill = alt
+        row += 1
+
+    data_end = row - 1
+
+    # Ending balance row
+    row += 1
+    TOTAL_ROW = row
+    ws.cell(row=row, column=2).value = f'Ending Balance per GL as of {period}'
+    ws.cell(row=row, column=2).font  = _hdr_font
+    ws.cell(row=row, column=2).fill  = _hdr_fill
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=5)
+    for col, key in [(6, '135120'), (8, '641110')]:
+        seed_val = _RET_ANALYSIS_ENDING.get(key, 0.0)
+        c = ws.cell(row=row, column=col, value=seed_val)
+        c.font          = _hdr_font
+        c.fill          = _hdr_fill
+        c.border        = THIN
+        c.number_format = _num_fmt
+        c.alignment     = Alignment(horizontal='right')
+    row += 2
+
+    # GL / Variance tie-out
+    for account_code, col, label in [
+        ('135120', 6, 'A/C 135120 Prepaid RE Taxes'),
+        ('641110', 8, 'A/C 641110 RE Tax Expense'),
+    ]:
+        col_l   = get_column_letter(col)
+        tb_acct = (tb_map or {}).get(account_code)
+        tb_val  = tb_acct.ending_balance if tb_acct else None
+
+        ws.cell(row=row, column=2).value = label
+        ws.cell(row=row, column=2).font  = _bold
+        ws.cell(row=row, column=col - 1).value = 'GL'
+        ws.cell(row=row, column=col - 1).font  = _bold
+        gl_cell = ws.cell(row=row, column=col, value=tb_val)
+        if tb_val is not None:
+            gl_cell.number_format = _num_fmt
+        gl_row = row
+        row += 1
+
+        ws.cell(row=row, column=col - 1).value = 'Variance'
+        ws.cell(row=row, column=col - 1).font  = _bold
+        var_cell = ws.cell(row=row, column=col,
+                           value=f'={col_l}{gl_row}-{col_l}{TOTAL_ROW}')
+        var_cell.number_format = _num_fmt
+        row += 2
+
+    ws.freeze_panes = 'B6'
+
+
+def _write_seed_loan_analysis(ws, period: str, tb_map: Optional[dict]):
+    """
+    Build a full-history Loan Analysis tab from _LOAN_ANALYSIS_SEED.
+    Replaces _write_stub when no prior workpaper is provided.
+
+    Column layout (matches JLL format):
+      A (1): Loan #
+      B (2): Description
+      D (4): Date (MM/YY)
+      F (6): 231100 Revlab  mortgage payable
+      G (7): 231100 Revlabpm
+      I (9): 213200 Accrued Interest Payable
+      K (11): 801110 Interest Expense
+    """
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    _hdr_fill = PatternFill(start_color='375623', end_color='375623', fill_type='solid')
+    _hdr_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    _bold     = Font(name='Calibri', size=11, bold=True)
+    _std      = Font(name='Calibri', size=11)
+    _alt_fill = PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid')
+    _num_fmt  = '#,##0.00;(#,##0.00);"-"'
+    THIN      = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin'),
+    )
+
+    # Column widths
+    ws.column_dimensions['A'].width = 10
+    ws.column_dimensions['B'].width = 46
+    ws.column_dimensions['C'].width = 3
+    ws.column_dimensions['D'].width = 8
+    ws.column_dimensions['E'].width = 3
+    ws.column_dimensions['F'].width = 18
+    ws.column_dimensions['G'].width = 18
+    ws.column_dimensions['H'].width = 3
+    ws.column_dimensions['I'].width = 18
+    ws.column_dimensions['J'].width = 3
+    ws.column_dimensions['K'].width = 18
+
+    # Title block
+    ws.cell(row=1, column=1).value = 'Revolution Labs'
+    ws.cell(row=1, column=1).font  = Font(name='Calibri', size=13, bold=True)
+    ws.cell(row=2, column=1).value = 'Accrued Interest Payable (213200)'
+    ws.cell(row=3, column=1).value = f'Period: {period}'
+
+    # Column headers row 5
+    ws.cell(row=5, column=6).value = 'Revlab';   ws.cell(row=5, column=7).value = 'Revlabpm'
+    ws.cell(row=5, column=9).value = 'Accrued Interest Payable'
+    ws.cell(row=5, column=11).value = 'Interest Expense'
+    HDR = 6
+    for col, label in [(1, 'Loan #'), (2, 'Description'), (4, 'Date'),
+                       (6, 'A/C 231100\nMortgage Payable'),
+                       (7, 'A/C 231100\nMortgage Payable'),
+                       (9, 'A/C 213200\nAccrued Int Payable'),
+                       (11, 'A/C 801110\nInterest Expense')]:
+        c = ws.cell(row=HDR, column=col, value=label)
+        c.font      = _hdr_font
+        c.fill      = _hdr_fill
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        c.border    = THIN
+    ws.row_dimensions[HDR].height = 30
+
+    # Data rows
+    data_start = 8
+    row = data_start
+    for i, (loan_num, desc, date_str, rl, rpm, acct_213, acct_801) in enumerate(
+            _LOAN_ANALYSIS_SEED):
+        alt = _alt_fill if i % 2 == 1 else None
+
+        for col, val in [(1, str(loan_num) if loan_num else ''),
+                         (2, desc), (4, date_str or '')]:
+            c = ws.cell(row=row, column=col, value=val)
+            c.font   = _std
+            c.border = THIN
+            if alt: c.fill = alt
+
+        for col, val in [(6, rl), (7, rpm), (9, acct_213), (11, acct_801)]:
+            c = ws.cell(row=row, column=col)
+            c.value  = val if val is not None else None
+            c.font   = _std
+            c.border = THIN
+            c.alignment = Alignment(horizontal='right')
+            if val is not None:
+                c.number_format = _num_fmt
+            if alt: c.fill = alt
+        row += 1
+
+    data_end = row - 1
+
+    # Ending balance row
+    row += 1
+    TOTAL_ROW = row
+    ws.cell(row=row, column=2).value = f'Ending Balance per GL as of {period}'
+    ws.cell(row=row, column=2).font  = _hdr_font
+    ws.cell(row=row, column=2).fill  = _hdr_fill
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=5)
+    for col, val in [(6, _LOAN_ANALYSIS_ENDING['231100_rl']),
+                     (7, _LOAN_ANALYSIS_ENDING['231100_rpm']),
+                     (9, _LOAN_ANALYSIS_ENDING['213200']),
+                     (11, _LOAN_ANALYSIS_ENDING['801110'])]:
+        c = ws.cell(row=row, column=col, value=val)
+        c.font          = _hdr_font
+        c.fill          = _hdr_fill
+        c.border        = THIN
+        c.number_format = _num_fmt
+        c.alignment     = Alignment(horizontal='right')
+    row += 2
+
+    # GL / Variance tie-out  (col I for 213200; col K for 801110)
+    for account_code, col, label in [
+        ('213200', 9,  '213200 Accrued Interest Payable'),
+        ('801110', 11, '801110 Interest Expense'),
+    ]:
+        col_l   = get_column_letter(col)
+        tb_acct = (tb_map or {}).get(account_code)
+        tb_val  = tb_acct.ending_balance if tb_acct else None
+
+        ws.cell(row=row, column=2).value = label
+        ws.cell(row=row, column=2).font  = _bold
+        ws.cell(row=row, column=col - 1).value = 'GL'
+        ws.cell(row=row, column=col - 1).font  = _bold
+        gl_cell = ws.cell(row=row, column=col, value=tb_val)
+        if tb_val is not None:
+            gl_cell.number_format = _num_fmt
+        gl_row = row
+        row += 1
+
+        ws.cell(row=row, column=col - 1).value = 'Variance'
+        ws.cell(row=row, column=col - 1).font  = _bold
+        var_cell = ws.cell(row=row, column=col,
+                           value=f'={col_l}{gl_row}-{col_l}{TOTAL_ROW}')
+        var_cell.number_format = _num_fmt
+        row += 2
+
+    ws.freeze_panes = 'B7'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GL helper
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -642,17 +1163,23 @@ def build_ret_analysis_tab(
     current_prefix, tab_prefix, tb_map=None,
 ):
     """
-    RE Tax Analysis: copy prior tab + append the monthly escrow deposit row.
+    RE Tax Analysis: copy prior tab + append the monthly RE tax movements.
 
-    RCW column layout:
+    RCW column layout (matches JLL format):
       B = Description | D = Date
-      F = A/C 135120  Prepaid RE Tax (escrow asset)
-      H = A/C 641110  RE Tax Expense (amortization — usually blank on deposit months)
+      F = A/C 135120  Prepaid RE Taxes
+            DR (positive): payment-month deferral (DR 135120 / CR 641110)
+            CR (negative): release-month amortization (DR 641110 / CR 135120)
+      H = A/C 641110  RE Tax Expense
+            Release months: counterpart of the 135120 CR
+            Payment months: Berkadia's quarterly bill (DR 641110 / CR 115200) also shown here
 
-    Data source: GL 115200 debit transactions (escrow deposit to Berkadia).
-    Fallback: Berkadia payment_re_taxes.
+    Data sources (preference order):
+      1. GL 135120 transactions — drives the F column; release entries also populate H
+      2. GL 641110 transactions — any non-reclass entries fill the H column only
+      3. Berkadia payment_re_taxes — fallback when GL has no 135120 activity
 
-    Amount column for tie-out: F (col 6)
+    Amount column for tie-out: F (col 6) → 135120 ending balance
     """
     prior_ws, _ = _find_prior_tab(
         wb,
@@ -667,44 +1194,259 @@ def build_ret_analysis_tab(
     if prior_ws:
         _copy_tab_values(prior_ws, ws)
 
-    txns_115200 = _get_txns(gl_result, '115200')
+    # 135120 = Prepaid RE Taxes (the asset account that moves each period)
+    # 641110 = RE Tax Expense (debit on release months; net of Berkadia + pipeline JEs)
+    txns_135120 = _get_txns(gl_result, '135120')
     txns_641110 = _get_txns(gl_result, '641110')
 
     new_rows = []
 
-    # Each GL debit to 115200 is an escrow deposit
-    for txn in txns_115200:
-        debit = _safe_float(getattr(txn, 'debit', 0))
-        if debit <= 0:
-            continue
-        date_str = txn.date.strftime('%m/%d/%Y') if getattr(txn, 'date', None) else ''
-        desc     = txn.description or f'RET ESCROW Payment {_fmt_mmy(period)}'
-        new_rows.append({'B': desc[:60], 'D': date_str, 'F': debit})
-
-    # GL 641110 credits → payments/disbursements from escrow
-    for txn in txns_641110:
+    # Each 135120 transaction drives the F column.
+    # DR 135120 (payment month deferral) → positive in F
+    # CR 135120 (release month) → negative in F; counterpart expense in H
+    for txn in txns_135120:
+        debit  = _safe_float(getattr(txn, 'debit',  0))
         credit = _safe_float(getattr(txn, 'credit', 0))
-        if credit <= 0:
+        net    = debit - credit          # positive = added to prepaid, negative = released
+        if net == 0:
             continue
         date_str = txn.date.strftime('%m/%d/%Y') if getattr(txn, 'date', None) else ''
-        desc     = txn.description or f'Reclass {_fmt_long(period)} Tax Exp fr PPD'
-        new_rows.append({'B': desc[:60], 'D': date_str, 'F': -credit, 'H': credit})
+        desc     = txn.description or (
+            f'Reclass {"Tax Exp to PPD" if net > 0 else "Tax Exp fr PPD"} {_fmt_mmy(period)}'
+        )
+        row = {'B': desc[:60], 'D': date_str, 'F': net}
+        if net < 0:
+            # Release: the debit hits 641110 — show in H
+            row['H'] = abs(net)
+        new_rows.append(row)
 
-    # Berkadia fallback
+    # 641110-only transactions (e.g., the Berkadia quarterly posting DR 641110/CR 115200)
+    # that don't have a 135120 counterpart — show in H only so the expense column is complete
+    _135120_descs = {(r.get('B') or '').lower() for r in new_rows}
+    for txn in txns_641110:
+        debit  = _safe_float(getattr(txn, 'debit',  0))
+        credit = _safe_float(getattr(txn, 'credit', 0))
+        net    = debit - credit
+        if net == 0:
+            continue
+        desc = (txn.description or '').lower()
+        # Skip if already captured via the 135120 path (reclass entries appear in both)
+        if any(word in desc for word in ('reclass', 'prepaid', 'ppd', '135120')):
+            continue
+        date_str = txn.date.strftime('%m/%d/%Y') if getattr(txn, 'date', None) else ''
+        new_rows.append({
+            'B': (txn.description or f'RE Tax {_fmt_mmy(period)}')[:60],
+            'D': date_str,
+            'H': net,
+        })
+
+    # Berkadia fallback when GL has no 135120 or 641110 activity yet
     if not new_rows and berkadia_loans:
         total = sum(_safe_float(l.get('payment_re_taxes', 0)) for l in berkadia_loans)
         if total:
             new_rows.append({
-                'B': f'RET ESCROW Payment {_fmt_mmy(period)}- {_quarter_label(period)}',
+                'B': f'RET ESCROW Payment {_fmt_mmy(period)} - {_quarter_label(period)}',
                 'D': '',
                 'F': total,
             })
 
     if prior_ws and new_rows:
         ip = _find_insertion_point(ws, 6)
-        _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '115200')
+        _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '135120')
     elif not prior_ws:
-        _write_stub(ws, 'RE Tax Analysis', period, new_rows, 6, tb_map, '115200')
+        # First-period: write full historical seed data instead of a minimal stub
+        _write_seed_ret_analysis(ws, period, tb_map)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── Insurance Analysis stub writer  (no prior workpaper — first period)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _write_stub_insurance(ws, prepaid_active: list, period: str, tb_map: Optional[dict]):
+    """
+    Build a fresh Insurance Analysis tab for the first close period (no prior workpaper).
+
+    Column layout (matches JLL format):
+      B  Description / Policy Type
+      C  Term  (service_start → service_end)
+      D  Total Premium
+      E  Per Month
+      F  Starting Prepaid Balance  (label = "As of {period start}")
+      G  Current-period expense    (label = period date, e.g. "01/2026")
+      H  Ending Prepaid Balance    (= F − G, formula)
+      I  639110 Total YTD Expense  (formula)
+      J  639120 Total YTD Expense  (formula)
+      K  135110 Ending Prepaid     (formula = H column sum)
+
+    A GL / Variance tie-out block is appended below the data.
+    """
+    ins_expense_accounts = {'639110', '639120'}
+    ins_items = [
+        i for i in prepaid_active
+        if str(i.get('gl_account_number', '')).strip() in ins_expense_accounts
+    ]
+
+    period_dt   = _period_to_dt(period)
+    period_lbl  = period_dt.strftime('%m/%Y') if period_dt else period or ''
+    start_lbl   = f'As of {period_dt.strftime("%m/01/%Y")}' if period_dt else 'Starting Balance'
+
+    # ── Header rows ───────────────────────────────────────────────────────────
+    ws.cell(row=1, column=2).value = 'Revolution Labs — Insurance Analysis'
+    ws.cell(row=2, column=2).value = f'Period: {period}'
+    ws.cell(row=3, column=2).value = 'A/C 639110 / 639120  Insurance Expense  |  A/C 135110  Prepaid Insurance'
+
+    # Column header row
+    HDR = 5
+    headers = [
+        ('B', 'Policy Type / Description'),
+        ('C', 'Term'),
+        ('D', 'Total Premium'),
+        ('E', 'Per Month'),
+        ('F', start_lbl),
+        ('G', period_lbl),
+        ('H', 'Ending Prepaid'),
+        ('I', 'A/C 639110\nExpense'),
+        ('J', 'A/C 639120\nExpense'),
+        ('K', 'A/C 135110\nPrepaid'),
+    ]
+    for col_ltr, label in headers:
+        from openpyxl.utils import column_index_from_string
+        c = ws.cell(row=HDR, column=column_index_from_string(col_ltr), value=label)
+        c.font      = _stub_hdr_font()
+        c.fill      = _stub_hdr_fill()
+        c.alignment = _stub_center_wrap()
+    ws.row_dimensions[HDR].height = 30
+
+    # Column widths
+    col_widths = {'B': 38, 'C': 24, 'D': 14, 'E': 12,
+                  'F': 14, 'G': 12, 'H': 14, 'I': 12, 'J': 12, 'K': 14}
+    for col_ltr, w in col_widths.items():
+        ws.column_dimensions[col_ltr].width = w
+    ws.column_dimensions['A'].width = 2
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    DATA_START = HDR + 1
+
+    def _fmt_date(v):
+        if v and hasattr(v, 'strftime'):
+            return v.strftime('%m/%d/%Y')
+        return str(v) if v else ''
+
+    row = DATA_START
+    for i, item in enumerate(ins_items):
+        gl_acct    = str(item.get('gl_account_number', '')).strip()
+        desc       = item.get('description') or item.get('vendor') or ''
+        svc_start  = item.get('service_start')
+        svc_end    = item.get('service_end')
+        term       = f'{_fmt_date(svc_start)} – {_fmt_date(svc_end)}' if svc_start else ''
+        premium    = _safe_float(item.get('total_amount'))
+        per_month  = _safe_float(item.get('monthly_amount'))
+        rem_months = int(item.get('remaining_months') or 0)
+
+        # Starting prepaid = balance before this period's release
+        #   post-advance remaining + 1 month = (rem_months + 1) × per_month
+        starting_prepaid = per_month * (rem_months + 1)
+        # Ending prepaid = remaining after this period
+        ending_prepaid   = per_month * rem_months
+
+        alt = _stub_alt_fill() if i % 2 == 1 else None
+
+        row_vals = {
+            'B': desc,
+            'C': term,
+            'D': premium,
+            'E': per_month,
+            'F': starting_prepaid,
+            'G': per_month,        # current period expense
+            'H': ending_prepaid,   # = F - G (could also write as formula, value is cleaner)
+        }
+        # Route expense to the correct total column
+        if gl_acct == '639110':
+            row_vals['I'] = per_month
+        elif gl_acct == '639120':
+            row_vals['J'] = per_month
+
+        for col_ltr, val in row_vals.items():
+            ci = column_index_from_string(col_ltr)
+            c  = ws.cell(row=row, column=ci, value=val)
+            if isinstance(val, float) and col_ltr in ('D', 'E', 'F', 'G', 'H', 'I', 'J'):
+                c.number_format = '#,##0.00;(#,##0.00);"-"'
+            if alt:
+                c.fill = alt
+        row += 1
+
+    DATA_END = row - 1
+
+    # ── Totals row ────────────────────────────────────────────────────────────
+    row += 1
+    TOTAL_ROW = row
+    ws.cell(row=row, column=2).value = 'Total'
+    ws.cell(row=row, column=2).font  = _stub_bold_font()
+    for col_ltr in ('D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'):
+        ci   = column_index_from_string(col_ltr)
+        cell = ws.cell(row=row, column=ci)
+        cell.value        = f'=SUM({col_ltr}{DATA_START}:{col_ltr}{DATA_END})'
+        cell.number_format = '#,##0.00;(#,##0.00);"-"'
+        cell.font          = _stub_bold_font()
+        cell.fill          = _stub_blue_fill()
+    row += 2
+
+    # ── GL / TB tie-out ───────────────────────────────────────────────────────
+    for account_code, col_ltr, label in [
+        ('639110', 'I', '639110 Insurance Expense'),
+        ('639120', 'J', '639120 GL Expense'),
+        ('135110', 'K', '135110 Prepaid Insurance'),
+    ]:
+        ci       = column_index_from_string(col_ltr)
+        tb_acct  = (tb_map or {}).get(account_code)
+        tb_val   = tb_acct.ending_balance if tb_acct else None
+
+        ws.cell(row=row, column=2).value = label
+        ws.cell(row=row, column=2).font  = _stub_bold_font()
+
+        ws.cell(row=row, column=ci - 1).value = 'GL'
+        ws.cell(row=row, column=ci - 1).font  = _stub_bold_font()
+        gl_cell = ws.cell(row=row, column=ci, value=tb_val)
+        if tb_val is not None:
+            gl_cell.number_format = '#,##0.00;(#,##0.00);"-"'
+        gl_row = row
+        row += 1
+
+        ws.cell(row=row, column=ci - 1).value = 'Variance'
+        ws.cell(row=row, column=ci - 1).font  = _stub_bold_font()
+        var_cell = ws.cell(
+            row=row, column=ci,
+            value=f'={col_ltr}{gl_row}-{col_ltr}{TOTAL_ROW}',
+        )
+        var_cell.number_format = '#,##0.00;(#,##0.00);"-"'
+        row += 2
+
+    ws.freeze_panes = 'B6'
+
+
+def _stub_hdr_font():
+    from openpyxl.styles import Font
+    return Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+
+def _stub_hdr_fill():
+    from openpyxl.styles import PatternFill
+    return PatternFill(start_color='002060', end_color='002060', fill_type='solid')
+
+def _stub_blue_fill():
+    from openpyxl.styles import PatternFill
+    return PatternFill(start_color='D6EAE1', end_color='D6EAE1', fill_type='solid')
+
+def _stub_alt_fill():
+    from openpyxl.styles import PatternFill
+    return PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid')
+
+def _stub_bold_font():
+    from openpyxl.styles import Font
+    return Font(name='Calibri', size=10, bold=True)
+
+def _stub_center_wrap():
+    from openpyxl.styles import Alignment
+    return Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -750,11 +1492,9 @@ def build_insurance_analysis_tab(
     ws = wb.create_sheet(tab_name)
 
     if not prior_ws:
-        ws.cell(row=1, column=2).value = 'Insurance Analysis'
-        ws.cell(row=2, column=2).value = f'Period: {period}'
-        ws.cell(row=4, column=2).value = (
-            'NOTE: Upload prior workpaper to carry forward insurance analysis.'
-        )
+        # First-period fresh build (January 2026 starting point).
+        # Build the full JLL-style grid directly from the prepaid ledger.
+        _write_stub_insurance(ws, prepaid_active or [], period, tb_map)
         return
 
     _copy_tab_values(prior_ws, ws)
@@ -791,10 +1531,13 @@ def build_insurance_analysis_tab(
     target_letter = get_column_letter(target_col)
 
     # ── Insurance prepaid items ───────────────────────────────────────
-    ins_gl_accounts = {'639110', '639120', '135110', '213300'}
+    # gl_account_number in the ledger is the EXPENSE account (debit side).
+    # 639110 = Property Insurance Expense, 639120 = General Liability Expense.
+    # 135110 / 213300 are the offsetting BS accounts — NOT stored as gl_account_number.
+    ins_expense_accounts = {'639110', '639120'}
     ins_items = [
         i for i in prepaid_active
-        if str(i.get('gl_account_number', '')).strip() in ins_gl_accounts
+        if str(i.get('gl_account_number', '')).strip() in ins_expense_accounts
     ]
 
     # Build a lookup: description keywords → monthly_amount
@@ -972,7 +1715,8 @@ def build_loan_analysis_tab(
         ip = _find_insertion_point(ws, 9)   # col I = 9
         _insert_rows_and_write(ws, ip, new_rows, 9, period, tb_map, '213200')
     elif not prior_ws:
-        _write_stub(ws, 'Loan Analysis', period, new_rows, 9, tb_map, '213200')
+        # First-period: write full historical seed data instead of a minimal stub
+        _write_seed_loan_analysis(ws, period, tb_map)
 
 
 def _extract_loan_ids(txns_213200: list, berkadia_loans: list) -> List[str]:

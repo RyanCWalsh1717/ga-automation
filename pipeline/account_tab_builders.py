@@ -1905,10 +1905,11 @@ def _build_capital_tab(wb, account_code, account_name, tab_color,
 def build_152100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('152100')
+    prior_rows = (prior_tab_detail or {}).get('152100') or _CAPITAL_152100_SEED
     return _build_capital_tab(wb, '152100', 'Land', 'C55A11',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
-                              prior_rows=(prior_tab_detail or {}).get('152100'))
+                              prior_rows=prior_rows)
 
 
 # ── 154100 — Building ─────────────────────────────────────────────────────────
@@ -1916,10 +1917,11 @@ def build_152100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def build_154100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('154100')
+    prior_rows = (prior_tab_detail or {}).get('154100') or _CAPITAL_154100_SEED
     return _build_capital_tab(wb, '154100', 'Building', '70AD47',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
-                              prior_rows=(prior_tab_detail or {}).get('154100'))
+                              prior_rows=prior_rows)
 
 
 # ── 154500 — Building Improvements ───────────────────────────────────────────
@@ -1927,10 +1929,11 @@ def build_154100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('154500')
+    prior_rows = (prior_tab_detail or {}).get('154500') or _CAPITAL_154500_SEED
     return _build_capital_tab(wb, '154500', 'Building Improvements', '70AD47',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
-                              prior_rows=(prior_tab_detail or {}).get('154500'))
+                              prior_rows=prior_rows)
 
 
 # ── 171100 — CIP Development ─────────────────────────────────────────────────
@@ -1938,10 +1941,12 @@ def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def build_171100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('171100')
+    # 171100 CIP has a zero balance — no seed rows; falls through to GL transactions
+    prior_rows = (prior_tab_detail or {}).get('171100')
     return _build_capital_tab(wb, '171100', 'CIP Development', 'FF0000',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
-                              prior_rows=(prior_tab_detail or {}).get('171100'))
+                              prior_rows=prior_rows)
 
 
 # ── 181200 — Leasing Commissions ─────────────────────────────────────────────
@@ -1949,10 +1954,11 @@ def build_171100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181200')
+    prior_rows = (prior_tab_detail or {}).get('181200') or _CAPITAL_181200_SEED
     return _build_capital_tab(wb, '181200', 'Leasing Commissions', '4472C4',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
-                              prior_rows=(prior_tab_detail or {}).get('181200'))
+                              prior_rows=prior_rows)
 
 
 # ── 181300 — Legal Leasing Costs ─────────────────────────────────────────────
@@ -1960,10 +1966,11 @@ def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181300')
+    prior_rows = (prior_tab_detail or {}).get('181300') or _CAPITAL_181300_SEED
     return _build_capital_tab(wb, '181300', 'Legal Leasing Costs', '4472C4',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
-                              prior_rows=(prior_tab_detail or {}).get('181300'))
+                              prior_rows=prior_rows)
 
 
 # ── 181400 — Tenant Improvement ───────────────────────────────────────────────
@@ -1971,10 +1978,158 @@ def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181400')
+    prior_rows = (prior_tab_detail or {}).get('181400') or _CAPITAL_181400_SEED
     return _build_capital_tab(wb, '181400', 'Tenant Improvement', '4472C4',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
-                              prior_rows=(prior_tab_detail or {}).get('181400'))
+                              prior_rows=prior_rows)
+
+
+# ── 187100 — Finance Costs ────────────────────────────────────────────────────
+
+def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
+                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+    """
+    Finance Costs roll-forward.
+    Layout: Date | Description | Revlabs | Revlabpm | Total  (cols B–F)
+    Uses _CAPITAL_187100_SEED as bootstrap when no uploaded schedule or prior workpaper.
+    """
+    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
+    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+
+    tab_name = '187100 Finance Costs'
+    ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = 'C55A11'  # same orange as Land
+
+    headers    = ['Date', 'Description', 'Revlabs', 'Revlabpm', 'Total']
+    col_widths = [14,      44,            16,         16,          16]
+    ncols = len(headers)
+    AMOUNT_COL = 6  # column F (Total)
+
+    next_row = _write_tab_header(ws, '187100', 'Finance Costs',
+                                 period, property_name, ncols=ncols)
+    next_row += 1
+    next_row = _write_col_headers(ws, next_row, headers, col_widths)
+
+    # Data source: uploaded schedule → prior workpaper carry-forward → seed
+    raw_rows = (prior_tab_detail or {}).get('187100') or _CAPITAL_187100_SEED
+
+    rl_total  = 0.0
+    rpm_total = 0.0
+
+    for i, row in enumerate(raw_rows):
+        alt = i % 2 == 1
+        bg  = _fill(LIGHT_GRAY) if alt else None
+
+        rl_amt  = float(row.get('revlabs',  0) or 0)
+        rpm_amt = float(row.get('revlabpm', 0) or 0)
+        tot_amt = round(rl_amt + rpm_amt, 2)
+        rl_total  = round(rl_total  + rl_amt,  2)
+        rpm_total = round(rpm_total + rpm_amt, 2)
+
+        c_date = ws.cell(row=next_row, column=2, value=row.get('date', ''))
+        _apply(c_date, font=_font(), fill=bg, border=THIN)
+        c_desc = ws.cell(row=next_row, column=3, value=row.get('description', ''))
+        _apply(c_desc, font=_font(), fill=bg, border=THIN,
+               align=Alignment(wrap_text=True))
+        c_rl = ws.cell(row=next_row, column=4, value=rl_amt)
+        _apply(c_rl, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+        c_rpm = ws.cell(row=next_row, column=5, value=rpm_amt)
+        _apply(c_rpm, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+        c_tot = ws.cell(row=next_row, column=6, value=tot_amt)
+        _apply(c_tot, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
+               align=Alignment(horizontal='right'))
+        next_row += 1
+
+    # Ending balance row
+    grand_total = round(rl_total + rpm_total, 2)
+    c_end_lbl = ws.cell(row=next_row, column=2, value='Ending Balance per GL')
+    _apply(c_end_lbl, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), border=THIN)
+    ws.merge_cells(start_row=next_row, start_column=2,
+                   end_row=next_row, end_column=3)
+    c_end_rl = ws.cell(row=next_row, column=4, value=rl_total)
+    _apply(c_end_rl, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+    c_end_rpm = ws.cell(row=next_row, column=5, value=rpm_total)
+    _apply(c_end_rpm, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+    c_end_tot = ws.cell(row=next_row, column=6, value=grand_total)
+    _apply(c_end_tot, font=_font(bold=True, color='FFFFFF'),
+           fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
+           align=Alignment(horizontal='right'))
+    next_row += 1
+
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+    return ws
+
+
+# ── Capital account seed data ─────────────────────────────────────────────────
+# Source: Capital tabs - Workpapers.xlsx  (manual workpaper as of Jan 2026)
+# Used as bootstrap when neither capital_schedule_data nor prior workpaper is available.
+# Format mirrors the prior_rows dicts consumed by _build_capital_tab().
+
+# 152100 — Land  (Description | Date | Amount)
+_CAPITAL_152100_SEED: List[dict] = [
+    {'description': 'Move CIP Cost to FA - 12/14/2022', 'date': '12/31/2022', 'amount': 29000000.00},
+]
+
+# 154100 — Building  (single-amount layout; entity noted in description)
+_CAPITAL_154100_SEED: List[dict] = [
+    {'description': 'Beginning Balance (Revlabpm)', 'date': '01/01/2025', 'amount': 78897071.99},
+    {'description': 'Building Allocation (Revlabpm)', 'date': '03/31/2025', 'amount': 520.93},
+    {'description': 'Orum Q2 TI Capital (Revlabs)', 'date': '06/26/2025', 'amount': -10220.91},
+]
+
+# 154500 — Building Improvements  (Description | Date | Amount)
+_CAPITAL_154500_SEED: List[dict] = [
+    {'description': 'Penthouse Floor Epoxy-Black Bear Coatings & Concrete', 'date': '06/2024', 'amount': 49570.00},
+    {'description': 'Electric Whip for Epoxy - S&W Electrical Contractors Inc.', 'date': '06/2024', 'amount': 705.00},
+    {'description': 'Garage Sports Equipment',   'date': '02/2025', 'amount': 12828.10},
+    {'description': '2nd Floor HVAC Corrections', 'date': '02/2025', 'amount': 33400.00},
+]
+
+# 181200 — Leasing Commissions  (Description | Entity | Commencement Date | Amount)
+_CAPITAL_181200_SEED: List[dict] = [
+    {'description': 'Keros',    'entity': 'Revlabs', 'commencement_date': '1/4/2023 - 11/30/2031', 'amount': 599121.60},
+    {'description': 'Triana',   'entity': 'Revlabs', 'commencement_date': '4/13/2023 - 6/12/2033',  'amount': 638190.00},
+    {'description': 'Accent',   'entity': 'Revlabs', 'commencement_date': '4/13/2023 - 6/12/2033',  'amount': 1365063.00},
+    {'description': 'Orum',     'entity': 'Revlabs', 'commencement_date': '7/17/2023 - 8/31/2033',  'amount': 448665.00},
+    {'description': 'Alchemab', 'entity': 'Revlabs', 'commencement_date': 'Moved-Out',              'amount': 568260.00},
+    {'description': 'Rounding', 'entity': '',         'commencement_date': '',                       'amount': 0.40},
+]
+
+# 181300 — Legal Leasing Costs  (Description | Entity | Commencement Date | Amount)
+_CAPITAL_181300_SEED: List[dict] = [
+    {'description': 'Keros',    'entity': 'Revlabs', 'commencement_date': '1/4/2023 - 11/30/2031', 'amount': 48084.48},
+    {'description': 'Triana',   'entity': 'Revlabs', 'commencement_date': '4/13/2023 - 6/12/2033',  'amount': 40976.04},
+    {'description': 'Accent',   'entity': 'Revlabs', 'commencement_date': '4/13/2023 - 6/12/2033',  'amount': 92969.11},
+    {'description': 'Orum',     'entity': 'Revlabs', 'commencement_date': '7/17/2023 - 8/31/2033',  'amount': 28807.27},
+    {'description': 'Alchemab', 'entity': 'Revlabs', 'commencement_date': 'Moved-Out',              'amount': 36486.06},
+]
+
+# 181400 — Tenant Improvement  (Description | Entity | Commencement Date | Amount)
+_CAPITAL_181400_SEED: List[dict] = [
+    {'description': 'Keros',    'entity': 'Revlabs', 'commencement_date': '1/4/2023 - 11/30/2031', 'amount': 6775780.00},
+    {'description': 'Triana',   'entity': 'Revlabs', 'commencement_date': '4/13/2023 - 6/12/2033',  'amount': 6078000.00},
+    {'description': 'Accent',   'entity': 'Revlabs', 'commencement_date': '4/13/2023 - 6/12/2033',  'amount': 12710804.67},
+    {'description': 'Orum',     'entity': 'Revlabs', 'commencement_date': '7/17/2023 - 8/31/2033',  'amount': 4273000.00},
+    {'description': 'Alchemab', 'entity': 'Revlabs', 'commencement_date': 'Moved-Out',              'amount': 6375751.85},
+]
+
+# 187100 — Finance Costs  (Date | Description | Revlabs | Revlabpm | Total)
+# Handled by its own builder (build_187100_tab) due to multi-entity column layout.
+_CAPITAL_187100_SEED: List[dict] = [
+    {'date': '01/01/2024', 'description': 'Beginning Balance',            'revlabs': 0.00,       'revlabpm': 0.00},
+    {'date': '10/31/2024', 'description': 'Rev Labs Extension Fee',       'revlabs': 230260.49,  'revlabpm': 0.00},
+    {'date': '06/25/2025', 'description': 'Frost Brown Todd LLP Invoice', 'revlabs': 3000.00,    'revlabpm': 0.00},
+    {'date': '06/25/2025', 'description': 'Berkadia Commercial Mortgage', 'revlabs': 230260.49,  'revlabpm': 0.00},
+    {'date': '06/25/2025', 'description': 'ACORE Capital, LP Invoice',    'revlabs': 1500.00,    'revlabpm': 0.00},
+]
 
 
 # ── Equity account seed data ──────────────────────────────────────────────────
@@ -2294,6 +2449,7 @@ CUSTOM_BUILDERS: Dict[str, Any] = {
     '181200': build_181200_tab,
     '181300': build_181300_tab,
     '181400': build_181400_tab,
+    '187100': build_187100_tab,
     '213100': build_213100_tab,
     '221100': build_221100_tab,
     '311100': build_311100_tab,
