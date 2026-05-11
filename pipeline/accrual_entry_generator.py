@@ -365,8 +365,8 @@ def detect_retax_amortization(
     re_tax_bill_amount: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     """
-    RE Tax prepaid deferral / release JE.  Required every month when a quarterly
-    bill amount is entered.
+    RE Tax prepaid deferral / release JE.  Fires every month automatically —
+    falls back to GL auto-detection when re_tax_bill_amount is not entered.
 
     Business rule (quarterly invoice cycle — Jan / Apr / Jul / Oct):
     ─────────────────────────────────────────────────────────────────
@@ -383,6 +383,10 @@ def detect_retax_amortization(
         Suppressed if 135120 already carries a net debit > $100 (deferral
         was posted to Yardi before the pipeline ran).
 
+        GL auto-detect: if re_tax_bill_amount not entered, reads net_641110
+        from the GL — Berkadia's auto-post (DR 641110 / CR 115200) makes the
+        quarterly bill directly visible as a net debit in 641110.
+
     Release months (all other months):
         Releases 1/3 of the quarterly bill from prepaid back to expense:
             DR 641110  Real Estate Taxes (1/3 of quarterly bill)
@@ -391,18 +395,23 @@ def detect_retax_amortization(
         Suppressed if 641110 already carries a net debit > $100 (release
         was posted to Yardi before the pipeline ran).
 
-    Both modes suppressed when re_tax_bill_amount = 0 (not entered by user).
+        GL auto-detect: if re_tax_bill_amount not entered, back-calculates
+        the quarterly bill from 135120's beginning_balance:
+          • 1st release month (Feb/May/Aug/Nov): beg_balance = 2/3 × bill
+            → bill = beg_balance × 1.5
+          • 2nd release month (Mar/Jun/Sep/Dec): beg_balance = 1/3 × bill
+            → bill = beg_balance × 3.0
 
     Args:
-        gl_data:             GL parse result (.accounts list with .net_change).
+        gl_data:             GL parse result (.accounts list with .net_change
+                             and .beginning_balance).
         period:              Close period string e.g. 'Jan-2026'.
-        re_tax_bill_amount:  Quarterly RE tax bill (user-entered every month).
+        re_tax_bill_amount:  Quarterly RE tax bill (user-entered); 0 triggers
+                             GL auto-detection.
 
     Returns a JE dict or None.
     """
     if not gl_data or not hasattr(gl_data, 'accounts'):
-        return None
-    if re_tax_bill_amount <= 0:
         return None
 
     # Parse period month ("Jan-2026" → 1)
@@ -419,22 +428,50 @@ def detect_retax_amortization(
     if not period_month:
         return None
 
-    # Collect current-period net changes for both accounts
+    # Collect current-period net changes and beginning balances
     net_641110 = 0.0   # Real Estate Taxes expense (positive = net debit)
     net_135120 = 0.0   # Prepaid RE Taxes asset   (positive = net debit)
+    beg_135120 = 0.0   # Prepaid RE Taxes beginning balance (for release auto-detect)
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         if code == _RETAX_EXPENSE_ACCT:
             net_641110 = float(getattr(acct, 'net_change', 0) or 0)
         elif code == _RETAX_PREPAID_ACCT:
             net_135120 = float(getattr(acct, 'net_change', 0) or 0)
+            beg_135120 = float(getattr(acct, 'beginning_balance', 0) or 0)
+
+    # ── Auto-detect quarterly bill from GL if not user-provided ──────────────
+    bill        = re_tax_bill_amount
+    auto_source = ''
+    if bill <= 0:
+        if period_month in _RETAX_PAYMENT_MONTHS:
+            # Berkadia's auto-post makes net_641110 ≈ quarterly bill this month
+            if net_641110 > 10_000:
+                bill        = net_641110
+                auto_source = f'auto-detected from GL 641110 net debit ${net_641110:,.2f}'
+        else:
+            # Back-calculate from 135120 beginning balance
+            # 1st release months (Feb/May/Aug/Nov): beg = 2/3 × bill → ×1.5
+            # 2nd release months (Mar/Jun/Sep/Dec): beg = 1/3 × bill → ×3.0
+            if beg_135120 > 100:
+                _FIRST_RELEASE = {2, 5, 8, 11}
+                multiplier = 1.5 if period_month in _FIRST_RELEASE else 3.0
+                bill        = _round(beg_135120 * multiplier)
+                auto_source = (
+                    f'auto-detected from GL 135120 beginning balance '
+                    f'${beg_135120:,.2f} × {multiplier}'
+                )
+
+    if bill <= 0:
+        return None
 
     if period_month in _RETAX_PAYMENT_MONTHS:
         # ── Payment month: defer 2/3 → DR 135120 / CR 641110 ────────────────
         if net_135120 > 100.0:
             return None   # deferral already posted in Yardi — suppress
 
-        deferred = _round(re_tax_bill_amount * 2.0 / 3.0)
+        deferred     = _round(bill * 2.0 / 3.0)
+        source_note  = f' ({auto_source})' if auto_source else ''
         return {
             'account_code':   _RETAX_PREPAID_ACCT,
             'account_name':   'Prepaid RE Taxes',
@@ -446,10 +483,11 @@ def detect_retax_amortization(
             'auto_reverse':   False,
             'description': (
                 f'RE Tax prepaid deferral — ${deferred:,.2f} '
-                f'(${re_tax_bill_amount:,.2f} quarterly bill × 2/3; '
+                f'(${bill:,.2f} quarterly bill × 2/3; '
                 f'Berkadia auto-posts full bill; pipeline defers 2/3 to prepaid. '
                 f'DR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes / '
-                f'CR {_RETAX_EXPENSE_ACCT} Real Estate Taxes)'
+                f'CR {_RETAX_EXPENSE_ACCT} Real Estate Taxes'
+                f'{source_note})'
             ),
         }
     else:
@@ -457,7 +495,8 @@ def detect_retax_amortization(
         if net_641110 > 100.0:
             return None   # release already posted in Yardi — suppress
 
-        release = _round(re_tax_bill_amount / 3.0)
+        release      = _round(bill / 3.0)
+        source_note  = f' ({auto_source})' if auto_source else ''
         return {
             'account_code':   _RETAX_EXPENSE_ACCT,
             'account_name':   'Real Estate Taxes',
@@ -469,9 +508,10 @@ def detect_retax_amortization(
             'auto_reverse':   False,
             'description': (
                 f'RE Tax prepaid release — ${release:,.2f} '
-                f'(${re_tax_bill_amount:,.2f} quarterly bill / 3; '
+                f'(${bill:,.2f} quarterly bill / 3; '
                 f'DR {_RETAX_EXPENSE_ACCT} Real Estate Taxes / '
-                f'CR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes)'
+                f'CR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes'
+                f'{source_note})'
             ),
         }
 

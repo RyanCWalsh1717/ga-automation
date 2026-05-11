@@ -244,7 +244,10 @@ Then: **Generate Reports** button
 - Berkadia/Yardi auto-posts the full quarterly bill: `DR 641110 / CR 115200` (NOT by pipeline)
 - Payment month pipeline JE: `DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes` (2/3 of quarterly bill)
 - Release months (next 2 months): `DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes` (1/3 each)
-- User enters the same quarterly bill amount in all 3 months of each cycle
+- Bill amount: user may enter it in the One-Off Accruals table; if not entered, pipeline auto-detects:
+  - Payment months: reads `net_641110` from GL (Berkadia auto-post makes the full bill visible as a net debit)
+  - 1st release month (Feb/May/Aug/Nov): back-calculates from `135120` beginning balance × 1.5
+  - 2nd release month (Mar/Jun/Sep/Dec): back-calculates from `135120` beginning balance × 3.0
 - `detect_retax_escrow_je()` retained in codebase but no longer called (retired May 2026)
 
 **Materiality floor**: Layer 3 → $5,000
