@@ -3074,7 +3074,8 @@ def generate(gl_result, tb_result, output_path: str,
              ar_aging_filepath: str = None,
              ap_aging_filepath: str = None,
              bank_rec_xlsx_filepath: str = None,
-             daca_bank_rec_xlsx_filepath: str = None) -> str:
+             daca_bank_rec_xlsx_filepath: str = None,
+             prepared_by: str = '') -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
