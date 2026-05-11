@@ -136,6 +136,10 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     if any("prepaid" in s for s in sheet_names_lower):
         wb.close()
         return "prepaid_ledger", 0.92
+    # Prepaid ledger seed file uses "Active" and "Completed" sheet names
+    if "active" in sheet_names_lower and "completed" in sheet_names_lower:
+        wb.close()
+        return "prepaid_ledger", 0.90
     if any(s in ("gl vs tb", "bank rec", "debt service", "accruals") for s in sheet_names_lower):
         wb.close()
         return "prior_workpaper", 0.90
@@ -189,6 +193,11 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     if "revlabpm" in all_text:
         # Distinguish GL from TB/BC/T12 (those are already caught above)
         return "gl", 0.85
+
+    # ── Prepaid Ledger (content check before Nexus — seed file has Vendor/Invoice cols) ──
+    if ("monthly amt" in all_text or "months posted" in all_text
+            or "service start" in all_text or "months left" in all_text):
+        return "prepaid_ledger", 0.90
 
     # ── Nexus in xlsx form ────────────────────────────────────────────────
     if "nexus" in all_text or (
