@@ -2955,8 +2955,9 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
     Convert prepaid ledger amortization lines (month 2+) into JE line dicts.
 
     Each entry:
-      DR  [expense account]       monthly_amount   (releasing prepaid to expense)
-      CR  135150 Prepaid Other    monthly_amount
+      DR  [expense account]         monthly_amount   (releasing prepaid to expense)
+      CR  135110 Prepaid Insurance  monthly_amount   (insurance accounts: 639110/639120)
+      CR  135150 Prepaid Other      monthly_amount   (all other accounts)
 
     Args:
         ledger_amort_lines: from prepaid_ledger.get_current_amortization()
@@ -2981,6 +2982,15 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
         if amount == 0:
             continue
 
+        # Insurance expense accounts (639110/639120) offset against 135110 Prepaid
+        # Insurance; all other prepaids offset against 135150 Prepaid Other.
+        if gl_acct in _INSURANCE_EXPENSE_ACCTS:
+            cr_account = _PREPAID_INSURANCE_ACCT
+            cr_name    = 'Prepaid Insurance'
+        else:
+            cr_account = PREPAID_ASSET_ACCOUNT
+            cr_name    = PREPAID_ASSET_NAME
+
         je_id   = f"PPD-{je_num:04d}"
         je_desc = f"Prepaid amortization — {vendor} #{inv_num} ({period_lbl}, mo {month_idx}/{total_mo})"
 
@@ -2999,13 +3009,13 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
             'invoice_number': inv_num,
             'source':         'prepaid_ledger',
         })
-        # CR: Prepaid asset
+        # CR: Prepaid asset (135110 for insurance, 135150 for all others)
         je_lines.append({
             'je_number':      je_id,
             'line':           2,
             'date':           period_lbl,
-            'account_code':   PREPAID_ASSET_ACCOUNT,
-            'account_name':   PREPAID_ASSET_NAME,
+            'account_code':   cr_account,
+            'account_name':   cr_name,
             'description':    je_desc,
             'reference':      inv_num,
             'debit':          0,
