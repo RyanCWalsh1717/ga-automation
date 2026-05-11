@@ -448,9 +448,12 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
 
         # ── Determine anchor and handle first-month logic ────────────────────
         first_added = _period_to_date(item.get('first_added_period', ''))
-        anchor = first_added or date(svc_start.year, svc_start.month, 1)
 
         if months_done == 0:
+            # Anchor for the zero-case: use first_added_period (may be set to a
+            # prior period in seed/legacy files).
+            anchor = first_added or date(svc_start.year, svc_start.month, 1)
+
             # Items added this period: month 1 expense is covered by the Nexus
             # accrual JE — skip to avoid a duplicate.
             if (close_date and anchor.year == close_date.year
@@ -471,6 +474,13 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
                 months_done = 1
             else:
                 continue   # can't determine period; skip
+
+        else:
+            # For items with months already posted, always anchor from service_start.
+            # first_added_period is only reliable for the months_amortized=0 rebase
+            # case; seed/manual ledger files often set it to the ledger-creation date
+            # rather than the true service start, which would produce wrong amort months.
+            anchor = date(svc_start.year, svc_start.month, 1)
 
         # Verify this item is due this period.
         amort_month = anchor + relativedelta(months=months_done)
