@@ -2263,6 +2263,32 @@ with tab2:
         )
         _col_wp1, _col_wp2 = st.columns(2)
         with _col_wp1:
+            _ar_aging_p2_uf = st.file_uploader(
+                "AR Aging Detail — 133100 AR Control (.xlsx)",
+                type=["xlsx", "xls"],
+                key=f"ar_aging_p2_{st.session_state.get('upload_key_p2', 0)}",
+                help=(
+                    "Yardi AR Detail Aging report. Populates the 133100 AR Control and "
+                    "221100 Prepaid Rent tabs with the raw Yardi export. "
+                    "Auto-sourced from Pass 1 uploads within the same session. "
+                    "Re-upload here if starting Pass 2 in a new browser session."
+                ),
+            )
+            if _ar_aging_p2_uf:
+                _ar_aging_p2_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_ar_aging_p2_uf.name}"
+                )
+                with open(_ar_aging_p2_path, "wb") as _f:
+                    _f.write(_ar_aging_p2_uf.getbuffer())
+                st.session_state.uploaded_files["ar_aging_pass2"] = _ar_aging_p2_path
+            else:
+                # Show sourcing status when no Pass 2-specific upload is provided
+                _p1_ar = st.session_state.uploaded_files.get("ar_aging")
+                if _p1_ar and os.path.exists(_p1_ar):
+                    st.caption("✅ Auto-sourced from Pass 1")
+                else:
+                    st.caption("⚠️ Not uploaded — 133100 tab will show GL transactions")
+
             _ap_aging_uf = st.file_uploader(
                 "AP Aging Detail — 211300 AP Control (.xlsx)",
                 type=["xlsx", "xls"],
@@ -2340,8 +2366,8 @@ with tab2:
                 st.session_state.uploaded_files["capital_seed"] = _capital_seed_path
 
         st.caption(
-            "AR Aging Detail (133100 AR Control + 221100 Prepaid Rent) uses the "
-            "AR Aging file already uploaded in the main sidebar — no separate upload needed.  "
+            "AR Aging auto-sources from Pass 1 in the same session — only re-upload above "
+            "if starting Pass 2 in a new browser session.  "
             "Prepaid Ledger falls back to same-session Pass 1 data if not re-uploaded.  "
             "Capital Seed (Book3.xlsx) bootstraps January capital tabs — ignored once a "
             "prior workpaper or current-period Capital Schedule is uploaded."
@@ -2554,7 +2580,11 @@ with tab2:
 
                 # Parse AR Aging and Capital Schedule before workpaper generation
                 # (both are passed into bs_workpaper_generator.generate())
-                _ar_aging_file_p2 = st.session_state.uploaded_files.get("ar_aging")
+                # Pass 2-specific upload takes priority; falls back to Pass 1 sidebar file.
+                _ar_aging_file_p2 = (
+                    st.session_state.uploaded_files.get("ar_aging_pass2")
+                    or st.session_state.uploaded_files.get("ar_aging")
+                )
                 _ar_aging_parsed_p2 = None
                 if _ar_aging_file_p2 and os.path.exists(_ar_aging_file_p2):
                     try:
@@ -2648,7 +2678,7 @@ with tab2:
                             ar_aging_data=_ar_aging_parsed_p2,
                             capital_schedule_data=_capital_schedule_data,
                             tb_filepath=_tb_file,
-                            ar_aging_filepath=st.session_state.uploaded_files.get("ar_aging"),
+                            ar_aging_filepath=_ar_aging_file_p2,
                             ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
                             bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
                             daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),

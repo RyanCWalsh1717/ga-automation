@@ -3092,4 +3092,5 @@ def generate(gl_result, tb_result, output_path: str,
                                   ar_aging_filepath=ar_aging_filepath,
                                   ap_aging_filepath=ap_aging_filepath,
                                   bank_rec_xlsx_filepath=bank_rec_xlsx_filepath,
-                                  daca_bank_rec_xlsx_filepath=daca_bank_rec_xlsx_filepath)
+                                  daca_bank_rec_xlsx_filepath=daca_bank_rec_xlsx_filepath,
+                                  prepared_by=prepared_by)
