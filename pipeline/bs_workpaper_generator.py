@@ -137,8 +137,8 @@ def _safe_sheet_name(name: str, max_len: int = 31) -> str:
 # Tab colors
 COLOR_SUMMARY    = '002060'   # Greatland dark navy  — summary
 COLOR_TB         = '2D6F50'   # Greatland green      — trial balance
-COLOR_BS_STD     = '70AD47'   # green       — standard BS tabs
-COLOR_BS_COMPLEX = 'FF0000'   # red         — complex tabs (accrued exp, prepaids)
+COLOR_BS_STD     = '375623'   # dark green — matches BofA Development tab style
+COLOR_BS_COMPLEX = '375623'   # dark green — matches BofA Development tab style
 
 COMPLEX_ACCOUNTS = {'213100', '135110', '135150', '213200', '221100'}
 
@@ -396,7 +396,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _raw_report_map['133100'] = ar_aging_filepath   # AR Control
         _raw_report_map['221100'] = ar_aging_filepath   # Prepaid Rent (Pre-payments col)
     if ap_aging_filepath and os.path.exists(ap_aging_filepath):
-        _raw_report_map['211300'] = ap_aging_filepath   # AP Control
+        _raw_report_map['211100'] = ap_aging_filepath   # AP Control
     if bank_rec_xlsx_filepath and os.path.exists(bank_rec_xlsx_filepath):
         _raw_report_map['111100'] = bank_rec_xlsx_filepath   # PNC Operating
     if daca_bank_rec_xlsx_filepath and os.path.exists(daca_bank_rec_xlsx_filepath):
@@ -440,13 +440,18 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         '115100',   # DACA                 — bank rec is the reference
         '133110',   # AR Billback          — current period activity only
         '135150',   # Prepaids Other       — covered by Prepaid Schedule tab
-        '211300',   # AP Control           — AP Aging is the reference
+        '211100',   # AP Control           — AP Aging is the reference
         '213100',   # Accrued Expenses     — only this month's accruals matter
         '213200',   # Accrued Interest     — covered by Loan Analysis tab
         '221100',   # Prepaid Rent         — current period only
     }
 
     for acct in bs_accounts:
+        # Skip accounts that net to zero — only auto-reversals, nothing to review
+        if (abs(getattr(acct, 'ending_balance', 0) or 0) < 0.01
+                and abs(getattr(acct, 'beginning_balance', 0) or 0) < 0.01):
+            continue
+
         if acct.account_code in _ANALYSIS_COVERED:
             continue
 
@@ -500,6 +505,9 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
     # ── Stub tabs for TB accounts with no current-period GL activity ──────────
     for _tba in _zero_activity_tb:
+        if (abs(_tba.ending_balance) < 0.01 and abs(_tba.beginning_balance or 0) < 0.01):
+            continue
+
         if _tba.account_code in _ANALYSIS_COVERED:
             continue   # covered by Insurance Analysis / RE Tax Analysis tabs
 
@@ -1623,13 +1631,13 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
         _ent_cols  = {ent: _B + 2 + i for i, ent in enumerate(_entities)}
         _TOT_COL   = _B + 2 + len(_entities)   # Total column
         _LAST_COL  = _TOT_COL
-        _ent_hdrs  = _entities + ['Total']
+        _ent_hdrs  = [f'Entity ({e})' for e in _entities] + ['Total']
         _ent_widths = [16] * len(_entities) + [18]
     else:
         _ent_cols  = {}
         _AMT       = _B + 2                    # single entity amount col
         _LAST_COL  = _AMT
-        _ent_hdrs  = [entity_label or 'Amount']
+        _ent_hdrs  = [f'Entity ({entity_label or "revlabpm"})']
         _ent_widths = [18]
 
     # ── Row 1: Account header ──────────────────────────────────────────────
@@ -1637,7 +1645,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     c = ws.cell(row=row, column=_B,
                 value=f'{gl_acct.account_code} — {gl_acct.account_name}')
     c.font = _font(bold=True, size=13, color='FFFFFF')
-    c.fill = _fill('000000')
+    c.fill = _fill('375623')
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_LAST_COL)
     row += 1
 
@@ -1649,7 +1657,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
                       f'Prepared by: {_preparer}  |  '
                       f'{datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF', size=10)
-    c.fill = _fill(MED_BLUE)
+    c.fill = _fill('375623')
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_LAST_COL)
     row += 2   # blank row 3
 
@@ -1754,25 +1762,26 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
             ev = round(_ent_net.get(ent, 0.0), 2)
             ec = ws.cell(row=row, column=col, value=ev or None)
             ec.number_format = _NUM_FMT
-        tc = ws.cell(row=row, column=_TOT_COL, value=round(net_activity, 2) or None)
+        tc = ws.cell(row=row, column=_TOT_COL, value=round(gl_acct.beginning_balance + net_activity, 2) or None)
         tc.number_format = _NUM_FMT
     else:
-        ec = ws.cell(row=row, column=_AMT, value=round(net_activity, 2) or None)
+        ec = ws.cell(row=row, column=_AMT, value=round(gl_acct.beginning_balance + net_activity, 2) or None)
         ec.number_format = _NUM_FMT
     row += 2   # blank gap
 
     # ── Tie-out block ─────────────────────────────────────────────────────
+    workpaper_total = round(gl_acct.beginning_balance + net_activity + _je_delta, 2)
     tb_end   = tb_acct.ending_balance if tb_acct else None
-    variance = round(gl_end - tb_end, 2) if tb_end is not None else None
+    variance = round(workpaper_total - tb_end, 2) if tb_end is not None else None
     _vzero   = variance is not None and abs(variance) < 0.02
 
     lbl = ws.cell(row=row, column=_DSC, value=gl_acct.account_code)
     lbl.font = _font(bold=True, size=9)
     row += 1
 
-    gl_lbl = ws.cell(row=row, column=_DSC, value='GL Ending Balance')
+    gl_lbl = ws.cell(row=row, column=_DSC, value='Workpaper Total')
     gl_lbl.font = _font(size=9)
-    gl_val = ws.cell(row=row, column=_LAST_COL, value=gl_end)
+    gl_val = ws.cell(row=row, column=_LAST_COL, value=workpaper_total)
     gl_val.number_format = _NUM_FMT
     gl_val.font = _font(size=9)
     row += 1

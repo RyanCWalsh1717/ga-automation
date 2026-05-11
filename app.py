@@ -2332,6 +2332,30 @@ with tab2:
                     _f.write(_daca_br_xlsx_uf.getbuffer())
                 st.session_state.uploaded_files["daca_bank_rec_xlsx"] = _daca_br_xlsx_path
 
+            _capital_schedule_p2_uf = st.file_uploader(
+                "Capital Accounts Schedule (.xlsx)",
+                type=["xlsx"],
+                key=f"capital_schedule_p2_{st.session_state.get('upload_key_p2', 0)}",
+                help=(
+                    "Capital improvement schedule (154xxx, 181xxx accounts). "
+                    "Auto-sourced from Pass 1 uploads within the same session. "
+                    "Re-upload here if starting Pass 2 in a new browser session."
+                ),
+            )
+            if _capital_schedule_p2_uf:
+                _cap_sched_p2_path = os.path.join(
+                    st.session_state.temp_dir, f"p2_{_capital_schedule_p2_uf.name}"
+                )
+                with open(_cap_sched_p2_path, "wb") as _f:
+                    _f.write(_capital_schedule_p2_uf.getbuffer())
+                st.session_state.uploaded_files["capital_schedule_pass2"] = _cap_sched_p2_path
+            else:
+                _p1_cap = st.session_state.uploaded_files.get("capital_schedule")
+                if _p1_cap and os.path.exists(_p1_cap):
+                    st.caption("✅ Auto-sourced from Pass 1")
+                else:
+                    st.caption("⚠️ Not uploaded — capital tabs show GL transactions")
+
             _prepaid_ledger_p2_uf = st.file_uploader(
                 "Prepaid Ledger Updated (.xlsx)",
                 type=["xlsx"],
@@ -2593,7 +2617,10 @@ with tab2:
                     except Exception:
                         _ar_aging_parsed_p2 = None
 
-                _capital_file = st.session_state.uploaded_files.get("capital_schedule")
+                _capital_file = (
+                    st.session_state.uploaded_files.get("capital_schedule_pass2")
+                    or st.session_state.uploaded_files.get("capital_schedule")
+                )
                 _capital_schedule_data = None
                 if _capital_file and os.path.exists(_capital_file):
                     try:

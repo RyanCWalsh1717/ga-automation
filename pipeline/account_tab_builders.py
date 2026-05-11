@@ -212,13 +212,13 @@ def _write_tab_header(ws, account_code: str, account_name: str,
     ws.column_dimensions['A'].width = 2
     row = 1
     c = ws.cell(row=row, column=2, value=f'{account_code}  {account_name}')
-    _apply(c, font=_font(bold=True, size=13, color='FFFFFF'), fill=_fill(DARK_BLUE),
+    _apply(c, font=_font(bold=True, size=13, color='FFFFFF'), fill=_fill('375623'),
            align=Alignment(horizontal='left', vertical='center'))
     ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=2 + ncols - 1)
     row += 1
     c = ws.cell(row=row, column=2,
                 value=f'{property_name}  |  Period: {period}  |  Prepared: {datetime.now().strftime("%m/%d/%Y")}')
-    _apply(c, font=_font(italic=True, size=10, color='FFFFFF'), fill=_fill(MED_BLUE),
+    _apply(c, font=_font(italic=True, size=10, color='FFFFFF'), fill=_fill('375623'),
            align=Alignment(horizontal='left', vertical='center'))
     ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=2 + ncols - 1)
     return 3   # next available row
@@ -615,7 +615,7 @@ def build_133100_tab(wb, period: str, property_name: str,
     next_row += 1
     next_row = _write_col_headers(
         ws, next_row,
-        ['Date', 'Description', 'Entity', 'Amount', 'Flag'],
+        ['Date', 'Description', f'Entity ({_ENTITY})', 'Amount', 'Flag'],
         [14, 52, 14, 18, 22],
     )
 
@@ -769,15 +769,15 @@ def build_213100_tab(wb, period: str, property_name: str,
     ws.sheet_properties.tabColor = 'FF0000'
 
     next_row = _write_tab_header(ws, '213100', 'Accrued Expenses',
-                                 period, property_name, ncols=3)
+                                 period, property_name, ncols=4)
     next_row += 1
     next_row = _write_col_headers(
         ws, next_row,
-        ['Date', 'Description', 'Amount'],
-        [14, 58, 18],
+        ['Date', 'Description', f'Entity ({_ENTITY})', 'Amount'],
+        [14, 58, 16, 18],
     )
 
-    AMOUNT_COL = 4   # column D (B=2 base, 3 data cols → last col = 2+3-1 = 4)
+    AMOUNT_COL = 5   # column E (B=2 base, 4 data cols → last col = 2+4-1 = 5)
 
     # ── Transaction rows ──────────────────────────────────────────────────────
     data_start_row = next_row
@@ -797,6 +797,8 @@ def build_213100_tab(wb, period: str, property_name: str,
         _apply(c1, font=_font(), fill=bg, border=THIN)
         c2 = ws.cell(row=next_row, column=3, value=desc)
         _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
+        c_ent = ws.cell(row=next_row, column=4, value=_ENTITY)
+        _apply(c_ent, font=_font(), fill=bg, border=THIN)
         c3 = ws.cell(row=next_row, column=AMOUNT_COL, value=amt)
         _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
@@ -830,7 +832,7 @@ def build_213100_tab(wb, period: str, property_name: str,
            align=Alignment(horizontal='right'))
     next_row += 2
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=AMOUNT_COL)
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=5)
     return ws
 
 
