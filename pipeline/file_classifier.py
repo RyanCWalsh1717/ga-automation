@@ -189,6 +189,13 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     # ── Receivable Detail / AR Aging ──────────────────────────────────────
     # Must come before the revlabpm→GL fallback: Yardi receivable reports
     # carry the property header ("revlabpm") just like the GL export.
+    # AR Aging: Yardi titles it "AR Detail Aging" — "receivable" may not appear.
+    if "ar detail aging" in all_text or "ar aging" in all_text:
+        return "ar_aging", 0.92
+    if ("aging" in all_text and (
+        "charge code" in all_text or "tenant" in all_text
+    ) and ("30" in all_text or "60" in all_text or "90" in all_text)):
+        return "ar_aging", 0.85
     if "receivable" in all_text and (
         "charge code" in all_text or "tenant" in all_text
     ):
