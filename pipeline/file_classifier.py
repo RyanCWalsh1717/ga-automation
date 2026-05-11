@@ -258,14 +258,22 @@ def _classify_pdf(filename: str, file_bytes: bytes) -> Tuple[str, float]:
 
     tl = text.lower()
 
+    # ── Bank of America (development account) — check FIRST ─────────────
+    # BofA bank rec PDFs contain "bank reconciliation report" AND generic terms
+    # like "deposit account" that would otherwise trigger the DACA check below.
+    if "bank of america" in tl or "bofa" in tl:
+        return "bank_rec_dev", 0.95
+
     # ── Yardi DACA Bank Rec (Bank Rec Report for the DACA/KeyBank account) ─
     # Must check BEFORE the generic "bank reconciliation report" check below,
     # because the DACA rec PDF also contains that phrase on page 1.
+    # "deposit account" removed — too broad, matches BofA statements.
+    # Only use KeyBank/DACA-specific identifiers.
     if "bank reconciliation report" in tl and (
-        "deposit account" in tl
-        or "daca" in tl
+        "daca" in tl
         or "keybank" in tl
         or "329681415132" in text
+        or "x5132" in tl
     ):
         return "daca_bank", 0.97
 
@@ -276,10 +284,6 @@ def _classify_pdf(filename: str, file_bytes: bytes) -> Tuple[str, float]:
     # ── KeyBank DACA statement (standalone, no Yardi header) ─────────────
     if "keybank" in tl and ("5132" in text or "daca" in tl):
         return "daca_bank", 0.95
-
-    # ── Bank of America (development account) ────────────────────────────
-    if "bank of america" in tl or "bofa" in tl:
-        return "bank_rec_dev", 0.95
 
     # ── Berkadia loan statements ──────────────────────────────────────────
     if "berkadia" in tl:
