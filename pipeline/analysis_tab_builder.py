@@ -647,6 +647,7 @@ def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict]):
     """
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import column_index_from_string as _ci
+    ws.sheet_properties.tabColor = '375623'
 
     _hdr_fill = PatternFill(start_color='375623', end_color='375623', fill_type='solid')
     _hdr_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
@@ -790,6 +791,7 @@ def _write_seed_loan_analysis(ws, period: str, tb_map: Optional[dict]):
       K (11): 801110 Interest Expense
     """
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    ws.sheet_properties.tabColor = '375623'
 
     _hdr_fill = PatternFill(start_color='375623', end_color='375623', fill_type='solid')
     _hdr_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
@@ -1045,6 +1047,7 @@ def build_ret_escrow_tab(
         _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '115200')
     elif not prior_ws:
         _write_stub(ws, '115200 Escrow RET', period, new_rows, 6, tb_map, '115200')
+    ws.sheet_properties.tabColor = '375623'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1107,6 +1110,7 @@ def build_insurance_escrow_tab(
         _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '115300')
     elif not prior_ws:
         _write_stub(ws, '115300 Escrow Insurance', period, new_rows, 6, tb_map, '115300')
+    ws.sheet_properties.tabColor = '375623'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1152,6 +1156,7 @@ def build_restricted_cash_tab(
         _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '115600')
     elif not prior_ws:
         _write_stub(ws, '115600 Restricted Cash - Other', period, new_rows, 6, tb_map, '115600')
+    ws.sheet_properties.tabColor = '375623'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1256,6 +1261,7 @@ def build_ret_analysis_tab(
     elif not prior_ws:
         # First-period: write full historical seed data instead of a minimal stub
         _write_seed_ret_analysis(ws, period, tb_map)
+    ws.sheet_properties.tabColor = '375623'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1490,6 +1496,7 @@ def build_insurance_analysis_tab(
         return
 
     ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = '375623'
 
     if not prior_ws:
         # First-period fresh build (January 2026 starting point).
@@ -1498,6 +1505,7 @@ def build_insurance_analysis_tab(
         return
 
     _copy_tab_values(prior_ws, ws)
+    ws.sheet_properties.tabColor = '375623'
 
     if not prepaid_active:
         return
@@ -1717,6 +1725,7 @@ def build_loan_analysis_tab(
     elif not prior_ws:
         # First-period: write full historical seed data instead of a minimal stub
         _write_seed_loan_analysis(ws, period, tb_map)
+    ws.sheet_properties.tabColor = '375623'
 
 
 def _extract_loan_ids(txns_213200: list, berkadia_loans: list) -> List[str]:

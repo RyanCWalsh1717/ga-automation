@@ -1906,7 +1906,7 @@ def build_152100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('152100')
     prior_rows = (prior_tab_detail or {}).get('152100') or _CAPITAL_152100_SEED
-    return _build_capital_tab(wb, '152100', 'Land', 'C55A11',
+    return _build_capital_tab(wb, '152100', 'Land', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
                               prior_rows=prior_rows)
@@ -1918,7 +1918,7 @@ def build_154100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('154100')
     prior_rows = (prior_tab_detail or {}).get('154100') or _CAPITAL_154100_SEED
-    return _build_capital_tab(wb, '154100', 'Building', '70AD47',
+    return _build_capital_tab(wb, '154100', 'Building', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
                               prior_rows=prior_rows)
@@ -1930,7 +1930,7 @@ def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('154500')
     prior_rows = (prior_tab_detail or {}).get('154500') or _CAPITAL_154500_SEED
-    return _build_capital_tab(wb, '154500', 'Building Improvements', '70AD47',
+    return _build_capital_tab(wb, '154500', 'Building Improvements', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
                               prior_rows=prior_rows)
@@ -1943,7 +1943,7 @@ def build_171100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     acct = (capital_schedule_data or {}).get('171100')
     # 171100 CIP has a zero balance — no seed rows; falls through to GL transactions
     prior_rows = (prior_tab_detail or {}).get('171100')
-    return _build_capital_tab(wb, '171100', 'CIP Development', 'FF0000',
+    return _build_capital_tab(wb, '171100', 'CIP Development', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
                               prior_rows=prior_rows)
@@ -1955,7 +1955,7 @@ def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181200')
     prior_rows = (prior_tab_detail or {}).get('181200') or _CAPITAL_181200_SEED
-    return _build_capital_tab(wb, '181200', 'Leasing Commissions', '4472C4',
+    return _build_capital_tab(wb, '181200', 'Leasing Commissions', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
                               prior_rows=prior_rows)
@@ -1967,7 +1967,7 @@ def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181300')
     prior_rows = (prior_tab_detail or {}).get('181300') or _CAPITAL_181300_SEED
-    return _build_capital_tab(wb, '181300', 'Legal Leasing Costs', '4472C4',
+    return _build_capital_tab(wb, '181300', 'Legal Leasing Costs', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
                               prior_rows=prior_rows)
@@ -1979,7 +1979,7 @@ def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      capital_schedule_data=None, prior_tab_detail: dict = None, **_):
     acct = (capital_schedule_data or {}).get('181400')
     prior_rows = (prior_tab_detail or {}).get('181400') or _CAPITAL_181400_SEED
-    return _build_capital_tab(wb, '181400', 'Tenant Improvement', '4472C4',
+    return _build_capital_tab(wb, '181400', 'Tenant Improvement', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
                               prior_rows=prior_rows)
@@ -1999,7 +1999,7 @@ def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 
     tab_name = '187100 Finance Costs'
     ws = wb.create_sheet(tab_name)
-    ws.sheet_properties.tabColor = 'C55A11'  # same orange as Land
+    ws.sheet_properties.tabColor = '375623'
 
     headers    = ['Date', 'Description', 'Revlabs', 'Revlabpm', 'Total']
     col_widths = [14,      44,            16,         16,          16]
