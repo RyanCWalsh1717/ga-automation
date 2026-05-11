@@ -539,7 +539,8 @@ if "bulk_overrides_p1" not in st.session_state:
 _P1_SLOT_KEYS = [
     "gl", "trial_balance", "budget_comparison", "kardin_budget", "t12_statement",
     "nexus_accrual", "bank_rec", "receivable_detail", "ar_aging",
-    "bank_rec_dev", "capital_schedule", "daca_bank", "loan", "prepaid_ledger", "unknown",
+    "bank_rec_dev", "capital_schedule", "capital_seed", "daca_bank", "loan",
+    "prepaid_ledger", "unknown",
 ]
 _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 
@@ -648,14 +649,20 @@ with tab1:
     if "daca_bank"         not in uploaded_keys: missing_impact.append("No DACA bank rec tab (Pass 2)")
     if "loan"              not in uploaded_keys: missing_impact.append("No debt service tab (Pass 2)")
 
-    # Count Pass 1 files only — scope to P1 slot keys so Pass 2 files in the same
-    # session-state dict don't inflate the sidebar count.  List values (e.g. loan
-    # with multiple Berkadia PDFs) are unfolded so 3 PDFs count as 3, not 1.
-    _p1_count_keys = set(_P1_SLOT_KEYS) - {"unknown"}
+    # Count all Pass 1 uploaded files — exclude Pass 2-only keys so the sidebar
+    # count reflects exactly what was dropped in the bulk uploader.
+    # List values (e.g. loan with 3 Berkadia PDFs) are unfolded so each PDF counts.
+    _P2_ONLY_KEYS = {
+        "gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
+        "t12_statement_pass2", "loan_pass2", "bank_rec_pass2",
+        "prior_workpaper", "run_log", "ap_aging_pass2",
+        "bank_rec_xlsx_pass2", "daca_bank_xlsx_pass2",
+        "prepaid_ledger_pass2", "capital_seed_pass2",
+    }
     uploaded_count = sum(
         len(v) if isinstance(v, list) else 1
         for k, v in st.session_state.uploaded_files.items()
-        if k in _p1_count_keys and v is not None
+        if k not in _P2_ONLY_KEYS and k != "unknown" and v is not None
     )
     gl_uploaded = "gl" in uploaded_keys
 
