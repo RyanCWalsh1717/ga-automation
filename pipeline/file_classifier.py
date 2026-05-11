@@ -186,6 +186,16 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     if "ptd budget" in all_text and "ptd actual" in all_text:
         return "budget_comparison", 0.88
 
+    # ── Receivable Detail / AR Aging ──────────────────────────────────────
+    # Must come before the revlabpm→GL fallback: Yardi receivable reports
+    # carry the property header ("revlabpm") just like the GL export.
+    if "receivable" in all_text and (
+        "charge code" in all_text or "tenant" in all_text
+    ):
+        if "aging" in all_text or "30" in all_text:
+            return "ar_aging", 0.85
+        return "receivable_detail", 0.85
+
     # ── GL: "General Ledger" OR property code + transaction structure ─────
     if "general ledger" in all_text:
         return "gl", 0.95
@@ -208,14 +218,6 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     # ── Berkadia (xlsx version) ───────────────────────────────────────────
     if "berkadia" in all_text:
         return "loan", 0.92
-
-    # ── Receivable Detail ─────────────────────────────────────────────────
-    if "receivable" in all_text and (
-        "charge code" in all_text or "tenant" in all_text
-    ):
-        if "aging" in all_text or "30" in all_text:
-            return "ar_aging", 0.82
-        return "receivable_detail", 0.82
 
     # ── Prepaid Ledger (column-name fallback) ─────────────────────────────
     if "monthly_amount" in all_text or (
