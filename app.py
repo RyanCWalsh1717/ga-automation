@@ -2656,7 +2656,9 @@ with tab2:
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:
+                        import traceback as _tb
                         st.warning(f"Workpaper generation skipped: {_e}")
+                        st.code(_tb.format_exc(), language="text")
                 else:
                     if not tb_result:
                         st.info("Upload a Trial Balance file to enable the Workpaper.", icon="ℹ️")
