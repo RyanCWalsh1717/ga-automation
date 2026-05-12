@@ -2058,6 +2058,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             getattr(_440500_diag, 'total_credits', None) if _440500_diag else None
         )
         if gl_activity_log is not None:
+            _440500_diag_j = sum(
+                t.credit for t in getattr(_440500_diag, 'transactions', [])
+                if t.credit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
+            ) if _440500_diag else 0.0
             gl_activity_log.append({
                 'account_code': 'TUB-MODE-B',
                 'account_name': 'Tenant Utility — Mode (b) diagnostic',
@@ -2066,7 +2070,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     f"elec_by_tenant populated: {_rd_has_elec_by_tenant} | "
                     f"charges_by_code populated: {_rd_has_charges} | "
                     f"440500 in GL: {_440500_diag is not None} | "
-                    f"440500 total_credits: {_diag_credits}"
+                    f"440500 total_credits (all types): {_diag_credits} | "
+                    f"440500 J-only credits: {_440500_diag_j:.2f}"
                 ),
                 'suppressed': False,
             })
@@ -2095,21 +2100,18 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # ── Post 440500 electric recovery — one JE per tenant ─────────────────
         _mode_b_elec_total = 0.0
         _440500_gl = _tub_gl.get('440500')
-        # Use total_credits (not net_change) so auto-reversals — which are debits
-        # in a revenue account — don't falsely trigger the "already posted" flag.
-        # A real recovery entry is always a credit to 440500.
-        _440500_already_posted = (
-            _440500_gl is not None
-            and getattr(_440500_gl, 'total_credits', abs(_440500_gl.net_change)) >= 0.01
-        )
+        # Only J-type (journal) credits indicate a pipeline accrual already posted.
+        # C-type charges (JLL billing transactions) and R-type receipts are NOT
+        # accruals and must not suppress the pipeline's monthly J-entry.
+        _440500_j_credits = sum(
+            t.credit for t in getattr(_440500_gl, 'transactions', [])
+            if t.credit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
+        ) if _440500_gl else 0.0
+        _440500_already_posted = _440500_j_credits >= 0.01
 
         # Generate 440500 AR recovery JE whenever Receivable Detail has per-tenant
-        # data or a budget amount is available.  The GL activity guard is intentionally
-        # NOT applied here: JLL's posting to 440500 is the actual charge transaction;
-        # with last month's pipeline accrual auto-reversing in the same period the net
-        # in 440500 is ≈ $0, so a new accrual is still required each month.
-        # The budget/GL-only fallbacks below DO retain the guard to avoid accruing
-        # against an account that Yardi already has fully covered.
+        # data.  When only budget/GL fallbacks are available we still respect the
+        # _440500_already_posted (J-only) guard to avoid double-posting a J-entry.
         if _elec_source == 'receivable_detail' and _rec_elec_amt > 0:
             if _elec_by_tenant:
                 # Per-tenant breakout from Receivable Detail elec_by_tenant
@@ -2149,12 +2151,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     _tub_accounts.add('440500')
                     _mode_b_elec_total += cand['amount']
         else:
-            # No Receivable Detail and 440500 already in GL — read posted amount
-            # for the P&L reclass check below (no new AR recovery JE generated).
-            # Use total_credits not abs(net_change) so auto-reversal debits don't
-            # cancel out the amount and suppress the 613115/613110 reclass.
-            _mode_b_elec_total = getattr(_440500_gl, 'total_credits',
-                                         abs(_440500_gl.net_change))
+            # No Receivable Detail and a J-type accrual already in GL for 440500 —
+            # read that J-entry amount for the P&L reclass check; no new JE needed.
+            _mode_b_elec_total = _440500_j_credits
             _elec_source = 'gl_activity'
             _elec_conf   = 'high'
             if gl_activity_log is not None:
@@ -2162,8 +2161,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_code': '440500',
                     'account_name': 'Recovery - Electricity',
                     'reason': (
-                        f'No Receivable Detail uploaded — JLL posted '
-                        f'${_mode_b_elec_total:,.2f} in credits this period. '
+                        f'No Receivable Detail uploaded — J-type accrual of '
+                        f'${_mode_b_elec_total:,.2f} already in GL for 440500. '
                         f'AR recovery JE skipped; P&L reclass (613115/613110) '
                         f'will be checked separately.'
                     ),
