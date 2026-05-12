@@ -2112,6 +2112,29 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _elec_source = 'gl_activity'
             _elec_conf   = 'high'
 
+        # ── Fallback: derive 440500 from 613115 when JLL posted the reclass ──
+        # Scenario: JLL posted the P&L reclass (DR 613115 / CR 613110) but
+        # NOT the AR recovery (440500). Receivable Detail not uploaded and no
+        # PTD budget for 440500 (common — it's a passthrough account in Kardin).
+        # 613115 net_change == the electric total billed, so it's a reliable
+        # basis for generating the missing 440500 AR recovery JE.
+        if _round(_mode_b_elec_total) == 0:
+            _613115_fb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
+            if _613115_fb_gl is not None and abs(_613115_fb_gl.net_change) >= 0.01:
+                _fb_amt = abs(_613115_fb_gl.net_change)
+                _post_tub_line(
+                    '440500', 'Recovery - Electricity', _fb_amt,
+                    '[JLL Reclass Basis]',
+                    (f'Tenant electric recovery — derived from JLL 613115 reclass '
+                     f'${_fb_amt:,.2f} '
+                     f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500). '
+                     f'Upload Receivable Detail for per-tenant breakdown.'),
+                )
+                _tub_accounts.add('440500')
+                _mode_b_elec_total = _fb_amt
+                _elec_source = 'gl_613115_basis'
+                _elec_conf   = 'medium'
+
         # ── Post 440700 gas recovery (budget only) ────────────────────────────
         _440700_gl = _tub_gl.get('440700')
         if budget_data and (_440700_gl is None or abs(_440700_gl.net_change) < 0.01):
@@ -2137,6 +2160,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _src_label   = {
                     'receivable_detail': 'Receivable Detail',
                     'gl_activity':       'GL activity — 440500 posted by JLL',
+                    'gl_613115_basis':   'GL activity — 613115 reclass posted by JLL',
                     'budget':            'budget',
                 }.get(_elec_source, _elec_source)
                 _n_tenants   = len(_elec_by_tenant) if _elec_by_tenant else 1
@@ -2150,6 +2174,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _elec_vendor = {
                     'receivable_detail': '[Receivable Detail]',
                     'gl_activity':       '[JLL GL Activity]',
+                    'gl_613115_basis':   '[JLL GL Activity — 613115 basis]',
                     'budget':            '[Budget Accrual]',
                 }.get(_elec_source, '[Budget Accrual]')
                 je_lines.append({
