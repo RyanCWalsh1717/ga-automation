@@ -72,13 +72,19 @@ class ReceivableDetailResult:
     prepayment_detail:    List[Dict[str, Any]]   = field(default_factory=list)
     charges_by_code:      Dict[str, float]       = field(default_factory=dict)
     # charges_by_code — upper-cased charge code → total charges billed (absolute).
-    # e.g. {'BASE': 280000.0, 'ELEC': 15420.0, 'CAMREC': 4200.0, 'PREPM': 0.0}
+    # e.g. {'ELECT': 15420.0, 'UTILI': 3200.0, 'BASE': 280000.0, 'CAMREC': 4200.0}
     # Used by the accrual engine to detect what was actually charged to tenants
-    # for electricity recovery (codes containing 'ELEC') vs. budget.
+    # for electricity/gas recovery vs. budget.
     elec_by_tenant:       Dict[str, float]       = field(default_factory=dict)
     # elec_by_tenant — tenant_name → total electric charges billed (absolute).
+    # Charge code: ELECT (Recovery - Electricity).
     # e.g. {'Tenant A': 8200.0, 'Tenant B': 7220.0}
-    # Used by Mode (b) TUB to generate one JE per tenant instead of one aggregate.
+    # Used by Mode (b) TUB to generate one JE per tenant (440500) instead of one aggregate.
+    utili_by_tenant:      Dict[str, float]       = field(default_factory=dict)
+    # utili_by_tenant — tenant_name → total misc utility charges billed (absolute).
+    # Charge code: UTILI (Recovery - Misc Utilities / Gas).
+    # e.g. {'Tenant A': 1600.0, 'Tenant B': 1600.0}
+    # Used by Mode (b) TUB to generate one JE per tenant (440700) instead of budget fallback.
     _parse_error:         Optional[str]          = None
 
 
@@ -111,6 +117,7 @@ def parse(filepath: str) -> ReceivableDetailResult:
             net_receipts=0.0,
             ending_balance=0.0,
             elec_by_tenant={},
+            utili_by_tenant={},
             _parse_error=str(exc),
         )
 
@@ -127,6 +134,20 @@ def _safe_float(v) -> float:
 def _is_prepayment(charge_code: str) -> bool:
     cc = str(charge_code or '').lower().strip()
     return any(kw in cc for kw in _PREPAYMENT_KEYWORDS)
+
+
+def _is_elec_code(code_key: str) -> bool:
+    """True for Yardi electric recovery charge codes (ELECT, ELECTRIC, ELEC, ELECRECOV, etc.)."""
+    # code_key is already upper-cased and stripped.
+    # Match exact known codes first; fall back to substring 'ELEC' for variants.
+    ck = code_key.upper()
+    return ck in ('ELECT', 'ELECTRIC', 'ELEC', 'ELECRECOV', 'TELECTRIC') or 'ELEC' in ck
+
+
+def _is_utili_code(code_key: str) -> bool:
+    """True for Yardi misc utility / gas recovery charge codes (UTILI, UTIL, GAS, etc.)."""
+    ck = code_key.upper()
+    return ck in ('UTILI', 'UTIL', 'UTILITIES', 'UTILITY', 'GAS', 'GASREC') or ck.startswith('UTILI')
 
 
 def _parse_rows(rows: list) -> ReceivableDetailResult:
@@ -167,7 +188,8 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
     prepayment_detail: List[Dict[str, Any]] = []
     prepayment_receipts = 0.0
     charges_by_code: Dict[str, float] = {}
-    elec_by_tenant: Dict[str, float] = {}
+    elec_by_tenant:  Dict[str, float] = {}
+    utili_by_tenant: Dict[str, float] = {}
 
     current_tenant = ''
     tenant_prepay_charges = 0.0
@@ -200,9 +222,12 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
             # Accumulate absolute charges per code (upper-cased for consistent lookup)
             code_key = col6.strip().upper()
             charges_by_code[code_key] = charges_by_code.get(code_key, 0.0) + abs(charges)
-            # Per-tenant electric accumulation (for Mode b TUB per-tenant breakout)
-            if 'ELEC' in code_key and current_tenant:
+            # Per-tenant electric accumulation — charge code ELECT (Recovery - Electricity)
+            if _is_elec_code(code_key) and current_tenant:
                 elec_by_tenant[current_tenant] = elec_by_tenant.get(current_tenant, 0.0) + abs(charges)
+            # Per-tenant gas/misc utility accumulation — charge code UTILI (Recovery - Misc Utilities)
+            if _is_utili_code(code_key) and current_tenant:
+                utili_by_tenant[current_tenant] = utili_by_tenant.get(current_tenant, 0.0) + abs(charges)
             if _is_prepayment(col6):
                 tenant_prepay_charges += abs(charges)
                 prepayment_detail.append({
@@ -255,5 +280,6 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
         prepayment_detail=prepayment_detail,
         charges_by_code=charges_by_code,
         elec_by_tenant=elec_by_tenant,
+        utili_by_tenant=utili_by_tenant,
         _parse_error=None,
     )

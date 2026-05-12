@@ -2181,18 +2181,54 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _elec_source = 'budget'
                 _elec_conf   = 'low'
 
-        # ── Post 440700 gas recovery (budget only) ────────────────────────────
+        # ── Post 440700 gas/misc utility recovery ─────────────────────────────
         _440700_gl = _tub_gl.get('440700')
-        if budget_data and (_440700_gl is None or abs(_440700_gl.net_change) < 0.01):
-            for cand in detect_tenant_utility_billing(gl_data, budget_data):
-                if cand['account_code'] != '440700':
-                    continue
-                _post_tub_line(
-                    '440700', 'Recovery - Misc Utilities', cand['amount'],
-                    '[Budget Accrual]',
-                    cand['description'],
-                )
+        _440700_already_posted = (
+            _440700_gl is not None
+            and getattr(_440700_gl, 'total_credits', abs(_440700_gl.net_change)) >= 0.01
+        )
+        if not _440700_already_posted:
+            # Priority 1: Receivable Detail UTILI charges (per-tenant)
+            _utili_by_tenant: Dict[str, float] = {}
+            if (receivable_detail and hasattr(receivable_detail, 'utili_by_tenant')
+                    and receivable_detail.utili_by_tenant):
+                _utili_by_tenant = {k: v for k, v in receivable_detail.utili_by_tenant.items() if v > 0.0}
+            if _utili_by_tenant:
+                for _ut_name, _ut_amt in sorted(_utili_by_tenant.items()):
+                    _post_tub_line(
+                        '440700', 'Recovery - Misc Utilities', _ut_amt,
+                        _ut_name,
+                        (f'Tenant misc utility recovery — {_ut_name} '
+                         f'per Receivable Detail '
+                         f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440700)'),
+                    )
                 _tub_accounts.add('440700')
+            elif (receivable_detail and hasattr(receivable_detail, 'charges_by_code')):
+                # Aggregate fallback from charges_by_code
+                _utili_total = sum(
+                    v for k, v in receivable_detail.charges_by_code.items()
+                    if 'UTILI' in k.upper() or k.upper() in ('UTIL', 'GAS', 'GASREC', 'UTILITIES', 'UTILITY')
+                )
+                if _utili_total >= 1.0:
+                    _post_tub_line(
+                        '440700', 'Recovery - Misc Utilities', _utili_total,
+                        '[Receivable Detail]',
+                        (f'Tenant misc utility recovery — ${_utili_total:,.2f} '
+                         f'per Receivable Detail UTILI charges '
+                         f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440700)'),
+                    )
+                    _tub_accounts.add('440700')
+            elif budget_data:
+                # Priority 2: budget fallback
+                for cand in detect_tenant_utility_billing(gl_data, budget_data):
+                    if cand['account_code'] != '440700':
+                        continue
+                    _post_tub_line(
+                        '440700', 'Recovery - Misc Utilities', cand['amount'],
+                        '[Budget Accrual]',
+                        cand['description'],
+                    )
+                    _tub_accounts.add('440700')
 
         # ── P&L reclassification for Mode (b) electric ───────────────────────
         # One aggregate reclass entry regardless of how many per-tenant AR JEs were posted.
