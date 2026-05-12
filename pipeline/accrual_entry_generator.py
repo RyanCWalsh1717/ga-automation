@@ -641,8 +641,10 @@ def detect_tenant_utility_billing(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     for code, info in TENANT_UTILITY_ACCOUNTS.items():
         acct = gl_accounts_by_code.get(code)
-        # Activity = any net_change (income = credit = negative net_change)
-        if acct and abs(acct.net_change) > 0.01:
+        # 440500/440700 are income accounts — a real posting is a CREDIT.
+        # Use total_credits so auto-reversal debits don't falsely suppress the
+        # budget candidate (net_change would be non-zero from the reversal alone).
+        if acct and getattr(acct, 'total_credits', abs(acct.net_change)) > 0.01:
             continue   # already posted this period
 
         budget_amt = budget_by_code.get(code, 0.0)
@@ -1994,7 +1996,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # from the real electricity bill and must NOT suppress the reclassification).
         if _round(_total_elec_billed) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
+            # Use total_debits: the reclass is DR 613115, so a real posting is a
+            # debit. Auto-reversals are credits and must not suppress this JE.
+            _reimb_posted = (
+                _reimb_gl is not None
+                and getattr(_reimb_gl, 'total_debits', abs(_reimb_gl.net_change)) >= 0.01
+            )
+            if not _reimb_posted:
                 _elec_je_id = f'TUB-{je_num:04d}'
                 _elec_desc  = (f'Tenant electricity reclassification — '
                                f'total billed ${_total_elec_billed:,.2f} '
@@ -2060,8 +2068,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # ── Post 440500 electric recovery — one JE per tenant ─────────────────
         _mode_b_elec_total = 0.0
         _440500_gl = _tub_gl.get('440500')
+        # Use total_credits (not net_change) so auto-reversals — which are debits
+        # in a revenue account — don't falsely trigger the "already posted" flag.
+        # A real recovery entry is always a credit to 440500.
         _440500_already_posted = (
-            _440500_gl is not None and abs(_440500_gl.net_change) >= 0.01
+            _440500_gl is not None
+            and getattr(_440500_gl, 'total_credits', abs(_440500_gl.net_change)) >= 0.01
         )
 
         if not _440500_already_posted:
@@ -2120,8 +2132,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # basis for generating the missing 440500 AR recovery JE.
         if _round(_mode_b_elec_total) == 0:
             _613115_fb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            if _613115_fb_gl is not None and abs(_613115_fb_gl.net_change) >= 0.01:
-                _fb_amt = abs(_613115_fb_gl.net_change)
+            # total_debits: JLL's reclass is DR 613115 — a credit-only entry is
+            # just an auto-reversal and must not trigger the fallback.
+            if (_613115_fb_gl is not None
+                    and getattr(_613115_fb_gl, 'total_debits', abs(_613115_fb_gl.net_change)) >= 0.01):
+                _fb_amt = getattr(_613115_fb_gl, 'total_debits', abs(_613115_fb_gl.net_change))
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', _fb_amt,
                     '[JLL Reclass Basis]',
@@ -2155,7 +2170,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # AR JE is generated, but the 613115/613110 reclass is still needed.
         if _round(_mode_b_elec_total) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
+            # Use total_debits: the reclass is DR 613115, so a real posting is a
+            # debit. Auto-reversals are credits and must not suppress this JE.
+            _reimb_b_posted = (
+                _reimb_gl is not None
+                and getattr(_reimb_gl, 'total_debits', abs(_reimb_gl.net_change)) >= 0.01
+            )
+            if not _reimb_b_posted:
                 _elec_je_id  = f'TUB-{je_num:04d}'
                 _src_label   = {
                     'receivable_detail': 'Receivable Detail',
