@@ -519,7 +519,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                                tab_name=_tab_tba_name)
         else:
             _write_stub_tab(wb, _tba, period, property_name,
-                            tab_prefix='', history_rows=_hist)
+                            tab_prefix='', history_rows=_hist,
+                            prepared_by=prepared_by)
 
     # ── Prepaid amortization schedule tab (if ledger data available) ──
     if prepaid_ledger_active:
@@ -560,6 +561,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _write_daca_bank_rec_tab(
             wb, daca_bank_data, _gl_daca, period, property_name,
             tab_prefix=_tab_pfx,
+            prepared_by=prepared_by,
         )
 
     # ── Development Bank Rec tab (revlabs entity — BofA x3132) ───────────────
@@ -2259,7 +2261,8 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
 
 def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
                     tab_prefix: str = '',
-                    history_rows: list = None):
+                    history_rows: list = None,
+                    prepared_by: str = ''):
     """
     Stub tab for a BS account in the TB with no current-period GL transactions.
     Uses the same rolling-table format as _write_account_tab.
@@ -2911,7 +2914,8 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
 
 def _write_daca_bank_rec_tab(wb, daca_bank_data: dict, gl_daca_balance: float,
                               period: str, property_name: str,
-                              tab_prefix: str = ''):
+                              tab_prefix: str = '',
+                              prepared_by: str = ''):
     """
     Writes the DACA Bank Rec tab for KeyBank x5132 (GL account 115100).
 
