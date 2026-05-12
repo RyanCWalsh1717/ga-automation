@@ -2147,6 +2147,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
                                 f'${_mode_b_elec_total:,.2f} '
                                 f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
+                _elec_vendor = {
+                    'receivable_detail': '[Receivable Detail]',
+                    'gl_activity':       '[JLL GL Activity]',
+                    'budget':            '[Budget Accrual]',
+                }.get(_elec_source, '[Budget Accrual]')
                 je_lines.append({
                     'je_number':      _elec_je_id, 'line': 1, 'date': '',
                     'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
@@ -2154,7 +2159,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
                     'debit':          _round(_mode_b_elec_total), 'credit': 0,
-                    'vendor':         '[Receivable Detail]' if _elec_source == 'receivable_detail' else '[Budget Accrual]',
+                    'vendor':         _elec_vendor,
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': _elec_conf,
                 })
@@ -2165,7 +2170,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
                     'debit':          0, 'credit': _round(_mode_b_elec_total),
-                    'vendor':         '[Receivable Detail]' if _elec_source == 'receivable_detail' else '[Budget Accrual]',
+                    'vendor':         _elec_vendor,
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': _elec_conf,
                 })
