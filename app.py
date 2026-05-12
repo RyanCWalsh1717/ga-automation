@@ -262,6 +262,8 @@ if "pass1_run_count" not in st.session_state:
     st.session_state.pass1_run_count = 0
 if "upload_key_p1" not in st.session_state:
     st.session_state.upload_key_p1 = 0
+if "tub_key" not in st.session_state:
+    st.session_state.tub_key = 0
 
 # Pass 2 — Report Generation
 if "pass2_complete" not in st.session_state:
@@ -444,9 +446,7 @@ else:
         })
         if "manual_accruals_df" in st.session_state:
             st.session_state.manual_accruals_df["Amount ($)"] = 0.0
-        for _tkey, _ in _TUB_TENANTS:
-            st.session_state[f"tub_elec_{_tkey}"] = 0.0
-            st.session_state[f"tub_gas_{_tkey}"]  = 0.0
+        st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
         st.rerun()
     if _ra_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_all_btn"):
         st.session_state.confirm_reset_all = False
@@ -724,11 +724,11 @@ with tab1:
                 st.caption(f"**{_tname}**")
                 _telec = st.number_input(
                     "Electric ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
-                    key=f"tub_elec_{_tkey}",
+                    key=f"tub_elec_{_tkey}_{st.session_state.tub_key}",
                 )
                 _tgas = st.number_input(
                     "Gas ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
-                    key=f"tub_gas_{_tkey}",
+                    key=f"tub_gas_{_tkey}_{st.session_state.tub_key}",
                 )
             if _telec > 0 or _tgas > 0:
                 _tenant_utility_rows.append({'tenant': _tname, 'electric': _telec, 'gas': _tgas})
