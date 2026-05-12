@@ -2060,7 +2060,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # ── Post 440500 electric recovery — one JE per tenant ─────────────────
         _mode_b_elec_total = 0.0
         _440500_gl = _tub_gl.get('440500')
-        if _440500_gl is None or abs(_440500_gl.net_change) < 0.01:
+        _440500_already_posted = (
+            _440500_gl is not None and abs(_440500_gl.net_change) >= 0.01
+        )
+
+        if not _440500_already_posted:
+            # Standard path — 440500 not yet in GL, generate the AR recovery JE.
             if _elec_source == 'receivable_detail' and _rec_elec_amt > 0:
                 if _elec_by_tenant:
                     # Per-tenant breakout from Receivable Detail elec_by_tenant
@@ -2097,6 +2102,15 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     )
                     _tub_accounts.add('440500')
                     _mode_b_elec_total += cand['amount']
+        else:
+            # 440500 already posted in GL (JLL activity) — do NOT generate a new
+            # AR recovery JE (would double-count). Instead read the posted amount
+            # so the 613115 / 613110 P&L reclassification can still fire below.
+            # 440500 is a revenue account: credits are positive recoveries, so
+            # net_change is typically negative (credit-side) — take abs().
+            _mode_b_elec_total = abs(_440500_gl.net_change)
+            _elec_source = 'gl_activity'
+            _elec_conf   = 'high'
 
         # ── Post 440700 gas recovery (budget only) ────────────────────────────
         _440700_gl = _tub_gl.get('440700')
@@ -2113,13 +2127,23 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         # ── P&L reclassification for Mode (b) electric ───────────────────────
         # One aggregate reclass entry regardless of how many per-tenant AR JEs were posted.
+        # Also fires when 440500 was already posted by JLL — in that case
+        # _mode_b_elec_total is read from the existing GL balance and no new
+        # AR JE is generated, but the 613115/613110 reclass is still needed.
         if _round(_mode_b_elec_total) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
             if _reimb_gl is None or abs(_reimb_gl.net_change) < 0.01:
                 _elec_je_id  = f'TUB-{je_num:04d}'
-                _src_label   = 'Receivable Detail' if _elec_source == 'receivable_detail' else 'budget'
+                _src_label   = {
+                    'receivable_detail': 'Receivable Detail',
+                    'gl_activity':       'GL activity — 440500 posted by JLL',
+                    'budget':            'budget',
+                }.get(_elec_source, _elec_source)
                 _n_tenants   = len(_elec_by_tenant) if _elec_by_tenant else 1
-                _tenant_note = f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail' else _src_label
+                _tenant_note = (
+                    f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail'
+                    else _src_label
+                )
                 _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
                                 f'${_mode_b_elec_total:,.2f} '
                                 f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
