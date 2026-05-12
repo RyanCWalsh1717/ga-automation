@@ -2646,7 +2646,15 @@ with tab2:
                         except Exception:
                             pass
 
-                if tb_result and gl_parsed:
+                if gl_parsed:
+                    # tb_result is optional — generator writes "No TB data" in the TB tab
+                    # when None; never block the whole workpaper just because TB is absent.
+                    if not tb_result:
+                        st.info(
+                            "Trial Balance not uploaded — workpaper TB tab will show 'No TB data available'. "
+                            "Upload a Trial Balance in the Pass 2 section to enable the full tie-out.",
+                            icon="ℹ️",
+                        )
                     try:
                         bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
                         # GL is final — no je_adjustments needed. The GL already reflects
@@ -2723,8 +2731,7 @@ with tab2:
                         st.warning(f"Workpaper generation skipped: {_e}")
                         st.code(_tb.format_exc(), language="text")
                 else:
-                    if not tb_result:
-                        st.info("Upload a Trial Balance file to enable the Workpaper.", icon="ℹ️")
+                    st.warning("Workpaper skipped — no GL parsed. Upload a GL in Pass 2.", icon="⚠️")
 
                 # Step 3: (Institutional workpapers removed — not needed)
 
