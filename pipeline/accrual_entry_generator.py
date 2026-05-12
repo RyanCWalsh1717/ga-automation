@@ -1558,12 +1558,18 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         if not is_expense_account(code):
             continue
 
-        # Skip only if there is net NEW expense activity (positive net_change = net debit).
-        # A net CREDIT (net_change < 0) means prior-month accruals auto-reversed with no
-        # new invoice yet — the account still needs an accrual this period.
-        # Using abs() would incorrectly suppress these auto-reversal-only accounts.
-        if acct.net_change > 0.01:
-            continue
+        # Partial-coverage detection: if some (but not enough) invoices have already
+        # posted this period, don't suppress entirely — compute the expected monthly
+        # amount and accrue only the shortfall.
+        #
+        # _gl_partial_offset > 0 means we'll subtract it from est_monthly below.
+        # The coverage threshold is 25%: if GL has ≥ 25% of expected → fully covered,
+        # skip.  If GL has < 25% → partial posting (e.g. one of three Casella invoices
+        # arrived), generate top-up for the remainder.
+        #
+        # A net CREDIT (net_change ≤ 0) means prior-month accrual auto-reversed with
+        # no replacement — account still needs a full accrual; _gl_partial_offset = 0.
+        _gl_partial_offset = acct.net_change if acct.net_change > 0.01 else 0.0
 
         # ── January fallback: no prior-year YTD data available ────────────────
         # Prefer T12 December actual when uploaded; otherwise use annual budget ÷ 12.
@@ -1611,17 +1617,25 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             if est_monthly < 5000:
                 continue
 
+            # Partial-coverage check (Jan path B)
+            if _gl_partial_offset >= est_monthly * 0.25:
+                continue  # GL has ≥25% of expected — treat as fully covered
+            _accrual_amt = est_monthly - _gl_partial_offset
+            if _accrual_amt < 500:
+                continue
+            _partial_note = (f' (partial top-up — ${_gl_partial_offset:,.0f} already in GL)'
+                             if _gl_partial_offset > 0 else '')
             candidates.append({
                 'account_code': code,
                 'account_name': acct.account_name,
-                'estimated_amount': _round(est_monthly),
+                'estimated_amount': _round(_accrual_amt),
                 'ytd_prior': 0.0,
                 'months_prior': 0,
                 'source': 'historical',
                 'description': (
                     f'Historical recurring (Jan est.) — {acct.account_name}: '
-                    f'${est_monthly:,.0f}/mo (annual budget ${bi_annual:,.0f} ÷ 12), '
-                    f'no T12 uploaded — upload for December actuals'
+                    f'${est_monthly:,.0f}/mo (annual budget ${bi_annual:,.0f} ÷ 12)'
+                    f'{_partial_note}, no T12 uploaded — upload for December actuals'
                 ),
             })
             continue
@@ -1655,19 +1669,30 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
 
         # Only flag if estimated monthly > $5,000 (material recurring expense)
         if est_monthly >= 5000:
+            # Partial-coverage check: if some invoices already in GL but < 25% of
+            # expected monthly, accrue the shortfall instead of the full amount.
+            # This catches vendors like Casella where multiple invoices arrive
+            # throughout the month and only some post before the close export.
+            if _gl_partial_offset >= est_monthly * 0.25:
+                continue  # GL has ≥25% of expected — treat as fully covered
+            _accrual_amt = est_monthly - _gl_partial_offset
+            if _accrual_amt < 500:
+                continue
+            _partial_note = (f' (partial top-up — ${_gl_partial_offset:,.0f} already in GL)'
+                             if _gl_partial_offset > 0 else '')
             source_note = 'BC YTD' if not use_gl_fallback else 'GL YTD (est.)'
             candidates.append({
                 'account_code': code,
                 'account_name': acct.account_name,
-                'estimated_amount': _round(est_monthly),
+                'estimated_amount': _round(_accrual_amt),
                 'ytd_prior': ytd_prior,
                 'months_prior': months_elapsed,
                 'source': 'historical',
                 'description': (
                     f'Historical recurring — {acct.account_name}: '
                     f'${est_monthly:,.0f}/mo avg '
-                    f'({source_note} ${ytd_prior:,.0f} ÷ {months_elapsed} mo), '
-                    f'no activity this period'
+                    f'({source_note} ${ytd_prior:,.0f} ÷ {months_elapsed} mo)'
+                    f'{_partial_note}, no activity this period'
                 ),
             })
 
@@ -2694,6 +2719,63 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # was already claimed by an earlier layer, the earlier entry is flagged for
     # reviewer attention (first-layer-wins, but the reviewer knows why).
     _other_claimants: Dict[str, List[str]] = {}
+
+    # ── Layer 1b: Berkadia actual interest expense ────────────────────────────
+    # Uses the payment_interest field from each parsed Berkadia loan statement
+    # instead of the Layer 3 historical average.  Only fires when loan_data is
+    # provided and 801110 is not already posted in the GL (J-type entries only).
+    if loan_data:
+        _loans = loan_data if isinstance(loan_data, list) else [loan_data]
+        _berkadia_interest_total = 0.0
+        _berkadia_interest_detail: List[str] = []
+        for _ln in _loans:
+            if isinstance(_ln, dict):
+                _pi = _safe_float(_ln.get('payment_interest', 0))
+                _loan_num = _ln.get('loan_number') or _ln.get('account_number') or ''
+            else:
+                _pi = _safe_float(getattr(_ln, 'payment_interest', 0))
+                _loan_num = getattr(_ln, 'loan_number', '') or getattr(_ln, 'account_number', '')
+            if _pi > 0:
+                _berkadia_interest_total += _pi
+                _berkadia_interest_detail.append(
+                    f'Loan {_loan_num} ${_pi:,.2f}' if _loan_num else f'${_pi:,.2f}'
+                )
+
+        if _berkadia_interest_total >= 1.0 and '801110' not in _covered:
+            # Check GL — skip if J-type interest already posted this period
+            _int_gl = next((a for a in (gl_data.accounts if gl_data else [])
+                            if str(a.account_code).strip() == '801110'), None)
+            _int_already = _j_debits(_int_gl) >= 1.0
+            if not _int_already:
+                je_id = f"INT-{je_num:04d}"
+                je_num += 1
+                _detail_str = ' + '.join(_berkadia_interest_detail)
+                _int_desc = (
+                    f'Mortgage interest accrual — Berkadia actual '
+                    f'({_detail_str}) (BERKADIA-INT)'
+                )
+                je_lines += [
+                    {
+                        'je_number': je_id, 'line': 1, 'date': period,
+                        'account_code': '801110',
+                        'account_name': 'Interest Expense',
+                        'description': _int_desc, 'reference': '',
+                        'debit': round(_berkadia_interest_total, 2), 'credit': 0.0,
+                        'vendor': 'Berkadia', 'invoice_number': '',
+                        'source': 'berkadia_interest',
+                    },
+                    {
+                        'je_number': je_id, 'line': 2, 'date': period,
+                        'account_code': '213200',
+                        'account_name': 'Accrued Interest Payable',
+                        'description': _int_desc, 'reference': '',
+                        'debit': 0.0, 'credit': round(_berkadia_interest_total, 2),
+                        'vendor': 'Berkadia', 'invoice_number': '',
+                        'source': 'berkadia_interest',
+                    },
+                ]
+                _covered.add('801110')
+                _covered.add('213200')
 
     # ── Layer 2: Invoice-period proration ──
     if gl_data:
