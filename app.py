@@ -2431,6 +2431,10 @@ with tab2:
                 # should be preserved since the work already happened.
                 for _ct_step in (5, 6, 7, 8):
                     st.session_state.close_tracker.pop(_ct_step, None)
+                # Clear monthly meter reads (TUB table)
+                for _tkey, _ in _TUB_TENANTS:
+                    st.session_state[f"tub_elec_{_tkey}"] = 0.0
+                    st.session_state[f"tub_gas_{_tkey}"]  = 0.0
                 # NOTE: upload_key_p2 is NOT incremented — uploaded files stay in
                 # the uploader widgets so Generate Reports can be re-run immediately
                 # without re-dropping any files.
