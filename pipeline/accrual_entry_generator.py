@@ -3304,17 +3304,14 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
         if amount == 0:
             continue
 
-        # Insurance expense accounts (639110/639120) normally offset against
-        # 135110 Prepaid Insurance (Berkadia-escrowed property & GL policies).
-        # Exception: umbrella premium is paid directly (not Berkadia-escrowed),
-        # so it offsets against 135150 Prepaid Other instead.
-        # All other prepaids also use 135150 Prepaid Other.
-        _is_umbrella = 'umbrella' in desc.lower()
-        if gl_acct in _INSURANCE_EXPENSE_ACCTS and not _is_umbrella:
-            cr_account = _PREPAID_INSURANCE_ACCT   # 135110 — Berkadia-escrowed
+        # Insurance expense accounts (639110/639120) offset against 135110 Prepaid
+        # Insurance (includes property, GL, and umbrella policies).
+        # All other prepaids offset against 135150 Prepaid Other.
+        if gl_acct in _INSURANCE_EXPENSE_ACCTS:
+            cr_account = _PREPAID_INSURANCE_ACCT   # 135110
             cr_name    = 'Prepaid Insurance'
         else:
-            cr_account = PREPAID_ASSET_ACCOUNT     # 135150 — umbrella & all others
+            cr_account = PREPAID_ASSET_ACCOUNT     # 135150
             cr_name    = PREPAID_ASSET_NAME
 
         je_id   = f"PPD-{je_num:04d}"
