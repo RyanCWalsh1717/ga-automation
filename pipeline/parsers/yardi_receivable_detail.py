@@ -136,18 +136,41 @@ def _is_prepayment(charge_code: str) -> bool:
     return any(kw in cc for kw in _PREPAYMENT_KEYWORDS)
 
 
+def _extract_pure_code(raw: str) -> str:
+    """
+    Yardi sometimes exports Charge Code cells as 'Description (CODE   )'.
+    Extract the bare code from inside the trailing parentheses if present;
+    otherwise return the raw string unchanged.
+
+    Examples:
+      'Recovery - Electricity (ELECT   )' → 'ELECT'
+      'Recovery - Misc Utilities (UTILI   )' → 'UTILI'
+      'ELECT' → 'ELECT'
+      'BASE'  → 'BASE'
+    """
+    import re as _re
+    m = _re.search(r'\(([A-Z0-9_\-]+)\s*\)\s*$', raw.upper())
+    return m.group(1).strip() if m else raw
+
+
 def _is_elec_code(code_key: str) -> bool:
-    """True for Yardi electric recovery charge codes (ELECT, ELECTRIC, ELEC, ELECRECOV, etc.)."""
-    # code_key is already upper-cased and stripped.
-    # Match exact known codes first; fall back to substring 'ELEC' for variants.
-    ck = code_key.upper()
-    return ck in ('ELECT', 'ELECTRIC', 'ELEC', 'ELECRECOV', 'TELECTRIC') or 'ELEC' in ck
+    """True for Yardi electric recovery charge codes (ELECT, ELECTRIC, ELEC, ELECRECOV, etc.).
+
+    Handles both bare codes ('ELECT') and Yardi description format
+    ('Recovery - Electricity (ELECT   )').
+    """
+    pure = _extract_pure_code(code_key.upper())
+    return pure in ('ELECT', 'ELECTRIC', 'ELEC', 'ELECRECOV', 'TELECTRIC') or 'ELEC' in pure
 
 
 def _is_utili_code(code_key: str) -> bool:
-    """True for Yardi misc utility / gas recovery charge codes (UTILI, UTIL, GAS, etc.)."""
-    ck = code_key.upper()
-    return ck in ('UTILI', 'UTIL', 'UTILITIES', 'UTILITY', 'GAS', 'GASREC') or ck.startswith('UTILI')
+    """True for Yardi misc utility / gas recovery charge codes (UTILI, UTIL, GAS, etc.).
+
+    Handles both bare codes ('UTILI') and Yardi description format
+    ('Recovery - Misc Utilities (UTILI   )').
+    """
+    pure = _extract_pure_code(code_key.upper())
+    return pure in ('UTILI', 'UTIL', 'UTILITIES', 'UTILITY', 'GAS', 'GASREC') or 'UTILI' in pure
 
 
 def _parse_rows(rows: list) -> ReceivableDetailResult:
@@ -219,8 +242,9 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
         # C-XXXX charge rows — accumulate by charge code and check for prepayments
         if col3.upper().startswith('C-') and col6 and col6 not in ('Balance Forward', 'Charge', 'Code'):
             tenant_total_charges += charges
-            # Accumulate absolute charges per code (upper-cased for consistent lookup)
-            code_key = col6.strip().upper()
+            # Normalise charge code: extract bare code from 'Description (CODE   )' format
+            # if Yardi exported the long form; otherwise use the raw value upper-cased.
+            code_key = _extract_pure_code(col6.strip().upper())
             charges_by_code[code_key] = charges_by_code.get(code_key, 0.0) + abs(charges)
             # Per-tenant electric accumulation — charge code ELECT (Recovery - Electricity)
             if _is_elec_code(code_key) and current_tenant:
