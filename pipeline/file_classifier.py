@@ -189,20 +189,38 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     # ── Receivable Detail / AR Aging ──────────────────────────────────────
     # Must come before the revlabpm→GL fallback: Yardi receivable reports
     # carry the property header ("revlabpm") just like the GL export.
-    # AR Aging: Yardi titles it "AR Detail Aging" — "receivable" may not appear.
+    #
+    # AR Aging:         titled "AR Detail Aging"; has aging-bucket columns
+    #                   labelled "30 days", "60 days", "90 days".
+    # Receivable Detail: titled "Receivable Detail"; has "Control #", "Charge Code",
+    #                   "Charges", "Receipts" columns — no aging buckets.
+    #
+    # IMPORTANT: do NOT use bare "30" / "60" / "90" substring checks — any dollar
+    # amount or date containing those digits triggers a false positive.  Use the
+    # full phrase "30 days" / "60 days" / "90 days" which only appears in AR Aging.
     if ("ar detail aging" in all_text or "ar aging" in all_text
             or "aging detail" in all_text):
         return "ar_aging", 0.92
+    # Secondary AR Aging signal: aging-bucket column headers
     if ("aging" in all_text and (
         "charge code" in all_text or "tenant" in all_text
-    ) and ("30" in all_text or "60" in all_text or "90" in all_text)):
+    ) and ("30 days" in all_text or "60 days" in all_text or "90 days" in all_text)):
         return "ar_aging", 0.85
+    if "receivable detail" in all_text and (
+        "charge code" in all_text or "control" in all_text
+    ):
+        # Receivable Detail confirmed by title + Control # column.
+        # If aging buckets also present, lean toward ar_aging — but title wins.
+        if "ar aging" in all_text or "aging detail" in all_text:
+            return "ar_aging", 0.85
+        return "receivable_detail", 0.90
+    # Weaker signal: "receivable" without the full title (fallback)
     if "receivable" in all_text and (
         "charge code" in all_text or "tenant" in all_text
     ):
-        if "aging" in all_text or "30" in all_text:
-            return "ar_aging", 0.85
-        return "receivable_detail", 0.85
+        if "aging" in all_text or "30 days" in all_text:
+            return "ar_aging", 0.80
+        return "receivable_detail", 0.80
 
     # ── GL: "General Ledger" OR property code + transaction structure ─────
     if "general ledger" in all_text:

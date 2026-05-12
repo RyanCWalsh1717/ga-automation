@@ -737,7 +737,14 @@ with tab1:
         if _tenant_utility_rows:
             st.caption(f"✓ {len(_tenant_utility_rows)} tenant(s) — Electric ${_tu_elec_total:,.2f} / Gas ${_tu_gas_total:,.2f}")
         else:
-            st.caption("↳ No entries — pipeline will auto-accrue budget amounts if meter read not in GL")
+            _rd_loaded = bool(st.session_state.uploaded_files.get("receivable_detail"))
+            if _rd_loaded:
+                st.caption("↳ No entries — pipeline will read electric amounts from Receivable Detail (per-tenant)")
+            else:
+                st.caption(
+                    "↳ No entries — upload **Yardi Receivable Detail** in the sidebar for automatic "
+                    "per-tenant electric amounts, or enter amounts above manually"
+                )
 
     # ── Payroll Bonus Accrual ─────────────────────────────────────────────────
     with st.expander("💰 Payroll Bonus Accrual — Monthly (optional)", expanded=False):
