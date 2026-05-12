@@ -339,32 +339,50 @@ def build_management_fee_je(
     je_number: str = 'MGT-001',
 ) -> list[dict]:
     """
-    Build the two-line journal entry for the management fee accrual.
+    Build the four-line journal entry for the management fee accrual,
+    broken out by JLL (1.25%) and GRP (1.75%) as separate balanced pairs.
 
-    Debit  637130  Admin-Management Fees     (total fee)
-    Credit 213100  Accrued Management Fees   (total fee)
+    Lines 1 & 2 — JLL portion:
+      Debit  637130  Admin-Management Fees   (JLL fee)
+      Credit 213100  Accrued Management Fees (JLL fee)
 
+    Lines 3 & 4 — GRP portion:
+      Debit  637130  Admin-Management Fees   (GRP fee)
+      Credit 213100  Accrued Management Fees (GRP fee)
+
+    Both pairs share the same je_number so they import as a single Yardi batch.
     Returns a list of dicts matching the format expected by
     generate_yardi_je_import() in accrual_entry_generator.py.
     """
     if fee_result.cash_received <= 0:
         return []
 
-    desc = fee_result.accrual_description()
-    total = fee_result.total_fee
+    cash = fee_result.cash_received
+    jll_amt = _round(fee_result.jll_fee)
+    grp_amt = _round(fee_result.grp_fee)
+
+    jll_desc = (
+        f'JLL management fee accrual — {fee_result.jll_rate:.2%} '
+        f'on ${cash:,.2f} cash received'
+    )
+    grp_desc = (
+        f'GRP management fee accrual — {fee_result.grp_rate:.2%} '
+        f'on ${cash:,.2f} cash received'
+    )
 
     return [
+        # ── JLL portion ────────────────────────────────────────────────────
         {
             'je_number': je_number,
             'line': 1,
             'date': period,
             'account_code': _MGMT_FEE_CODE,
             'account_name': 'Admin-Management Fees',
-            'description': desc,
-            'reference': 'MGMT-FEE',
-            'debit': _round(total),
+            'description': jll_desc,
+            'reference': 'MGMT-FEE-JLL',
+            'debit': jll_amt,
             'credit': 0.0,
-            'vendor': 'Management Fee Accrual',
+            'vendor': 'JLL Management Fee',
             'invoice_number': '',
             'source': 'management_fee',
         },
@@ -374,11 +392,40 @@ def build_management_fee_je(
             'date': period,
             'account_code': ap_account,
             'account_name': ap_account_name,
-            'description': desc,
-            'reference': 'MGMT-FEE',
+            'description': jll_desc,
+            'reference': 'MGMT-FEE-JLL',
             'debit': 0.0,
-            'credit': _round(total),
-            'vendor': 'Management Fee Accrual',
+            'credit': jll_amt,
+            'vendor': 'JLL Management Fee',
+            'invoice_number': '',
+            'source': 'management_fee',
+        },
+        # ── GRP portion ────────────────────────────────────────────────────
+        {
+            'je_number': je_number,
+            'line': 3,
+            'date': period,
+            'account_code': _MGMT_FEE_CODE,
+            'account_name': 'Admin-Management Fees',
+            'description': grp_desc,
+            'reference': 'MGMT-FEE-GRP',
+            'debit': grp_amt,
+            'credit': 0.0,
+            'vendor': 'GRP Management Fee',
+            'invoice_number': '',
+            'source': 'management_fee',
+        },
+        {
+            'je_number': je_number,
+            'line': 4,
+            'date': period,
+            'account_code': ap_account,
+            'account_name': ap_account_name,
+            'description': grp_desc,
+            'reference': 'MGMT-FEE-GRP',
+            'debit': 0.0,
+            'credit': grp_amt,
+            'vendor': 'GRP Management Fee',
             'invoice_number': '',
             'source': 'management_fee',
         },

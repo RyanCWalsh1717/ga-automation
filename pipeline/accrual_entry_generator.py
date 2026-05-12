@@ -845,6 +845,8 @@ def detect_invoice_proration_accruals(
 
         # ── VENDOR BILLING-PERIOD PRORATION ───────────────────────────────────
         # Group transactions that carry a billing date range by their end date.
+        # Store (start, end, amount, vendor_desc) so electricity can be split
+        # by vendor (electric service vs. electric supplier).
         by_end: Dict[date, List[tuple]] = defaultdict(list)
         has_range_txns = False
 
@@ -856,7 +858,9 @@ def detect_invoice_proration_accruals(
             if start is None:
                 start, end = _parse_date_range(txn.description or '')
             if start and end:
-                by_end[end].append((start, end, amt))
+                # Capture vendor description for electricity breakout
+                _vdesc = (txn.description or '').split('(')[0].strip()
+                by_end[end].append((start, end, amt, _vdesc))
                 has_range_txns = True
 
         if has_range_txns:
@@ -867,18 +871,14 @@ def detect_invoice_proration_accruals(
                 # Latest invoice already covers the full month
                 continue
 
-            # Build amounts from the most recently invoiced period.
-            # Combine all vendors that share this billing end date.
-            group = by_end[latest_end]
-            total_amount = sum(g[2] for g in group)
-            min_start    = min(g[0] for g in group)
-            period_days  = max(1, (latest_end - min_start).days)
-
             # ── Electricity vs. all other accounts ─────────────────────────
             # Electricity (613110 only):
             #   Prorate by day: daily rate × uncovered days.  Electric bills
             #   span a metered cycle that rarely aligns to month-end, so the
             #   exact uncovered days gives the most accurate accrual.
+            #   BREAKOUT: generate one candidate per vendor so electric service
+            #   (Eversource delivery) and electric supplier (competitive supplier,
+            #   e.g. Constellation) appear as separate JE lines.
             #
             # Everything else (gas, water, sewer, janitorial, HVAC, security,
             #   elevator, etc.):
@@ -889,42 +889,69 @@ def detect_invoice_proration_accruals(
 
             if _is_electricity:
                 # Sanity cap: don't extrapolate more than 2× the billing period.
-                if uncovered > period_days * 2.0:
+                group_for_cap = by_end[latest_end]
+                _cap_period_days = max(1, (latest_end - min(g[0] for g in group_for_cap)).days)
+                if uncovered > _cap_period_days * 2.0:
                     continue
-                daily_rate = total_amount / period_days
-                accrual    = daily_rate * uncovered
-                accrual_desc = (
-                    f'Electricity proration — {acct.account_name}: '
-                    f'last invoice {min_start.strftime("%m/%d/%y")}'
-                    f'-{latest_end.strftime("%m/%d/%y")} '
-                    f'(${total_amount:,.0f}/{period_days}d = '
-                    f'${daily_rate:,.2f}/day × {uncovered} days uncovered)'
-                )
+
+                # Group by vendor within the latest billing end date so each
+                # vendor (service vs. supplier) gets its own proration entry.
+                _vendor_groups: Dict[str, List[tuple]] = defaultdict(list)
+                for _g in by_end[latest_end]:
+                    _vendor_groups[_g[3]].append(_g)   # key on vendor_desc
+
+                for _vname, _vgroup in _vendor_groups.items():
+                    _vamt       = sum(g[2] for g in _vgroup)
+                    _vstart     = min(g[0] for g in _vgroup)
+                    _vdays      = max(1, (latest_end - _vstart).days)
+                    _vrate      = _vamt / _vdays
+                    _vaccrual   = _vrate * uncovered
+                    if _vaccrual < materiality:
+                        continue
+                    _vendor_label = _vname if _vname else acct.account_name
+                    _vdesc = (
+                        f'Electricity proration — {_vendor_label}: '
+                        f'last invoice {_vstart.strftime("%m/%d/%y")}'
+                        f'-{latest_end.strftime("%m/%d/%y")} '
+                        f'(${_vamt:,.0f}/{_vdays}d = '
+                        f'${_vrate:,.2f}/day × {uncovered} days uncovered)'
+                    )
+                    candidates.append({
+                        'account_code':   code,
+                        'account_name':   acct.account_name,
+                        'accrual_amount': _round(_vaccrual),
+                        'source':         'invoice_proration',
+                        'description':    _vdesc,
+                        'vendor':         _vendor_label,
+                        'daily_rate':     round(_vrate, 4),
+                        'uncovered_days': uncovered,
+                        'period_days':    _vdays,
+                        'invoice_total':  _round(_vamt),
+                    })
             else:
-                # All other accounts: accrue the full last invoice amount
-                daily_rate = 0.0
-                accrual    = total_amount
+                # All other accounts: combine all vendors, accrue the full last invoice
+                group      = by_end[latest_end]
+                total_amount = sum(g[2] for g in group)
+                min_start    = min(g[0] for g in group)
+                period_days  = max(1, (latest_end - min_start).days)
                 accrual_desc = (
                     f'Invoice accrual — {acct.account_name}: '
                     f'last invoice {min_start.strftime("%m/%d/%y")}'
                     f'-{latest_end.strftime("%m/%d/%y")} '
                     f'(${total_amount:,.0f})'
                 )
-
-            if accrual < materiality:
-                continue
-
-            candidates.append({
-                'account_code':   code,
-                'account_name':   acct.account_name,
-                'accrual_amount': _round(accrual),
-                'source':         'invoice_proration',
-                'description':    accrual_desc,
-                'daily_rate':     round(daily_rate, 4),
-                'uncovered_days': uncovered,
-                'period_days':    period_days,
-                'invoice_total':  _round(total_amount),
-            })
+                if total_amount >= materiality:
+                    candidates.append({
+                        'account_code':   code,
+                        'account_name':   acct.account_name,
+                        'accrual_amount': _round(total_amount),
+                        'source':         'invoice_proration',
+                        'description':    accrual_desc,
+                        'daily_rate':     0.0,
+                        'uncovered_days': uncovered,
+                        'period_days':    period_days,
+                        'invoice_total':  _round(total_amount),
+                    })
             continue   # Don't also run payroll check for this account
 
         # ── PAYROLL PRORATION ─────────────────────────────────────────────────
@@ -2720,60 +2747,66 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # reviewer attention (first-layer-wins, but the reviewer knows why).
     _other_claimants: Dict[str, List[str]] = {}
 
-    # ── Layer 1b: Berkadia actual interest expense ────────────────────────────
+    # ── Layer 1b: Berkadia actual interest expense — per tranche ─────────────
     # Uses the payment_interest field from each parsed Berkadia loan statement
-    # instead of the Layer 3 historical average.  Only fires when loan_data is
-    # provided and 801110 is not already posted in the GL (J-type entries only).
+    # instead of the Layer 3 historical average.  One balanced JE is generated
+    # per loan tranche so each tranche is visible in the import CSV and workpaper.
+    # Only fires when loan_data is provided and 801110 is not already posted in
+    # the GL via J-type entries.
     if loan_data:
         _loans = loan_data if isinstance(loan_data, list) else [loan_data]
-        _berkadia_interest_total = 0.0
-        _berkadia_interest_detail: List[str] = []
-        for _ln in _loans:
-            if isinstance(_ln, dict):
-                _pi = _safe_float(_ln.get('payment_interest', 0))
-                _loan_num = _ln.get('loan_number') or _ln.get('account_number') or ''
-            else:
-                _pi = _safe_float(getattr(_ln, 'payment_interest', 0))
-                _loan_num = getattr(_ln, 'loan_number', '') or getattr(_ln, 'account_number', '')
-            if _pi > 0:
-                _berkadia_interest_total += _pi
-                _berkadia_interest_detail.append(
-                    f'Loan {_loan_num} ${_pi:,.2f}' if _loan_num else f'${_pi:,.2f}'
-                )
+        # Check GL once — skip all tranches if J-type interest already posted
+        _int_gl = next((a for a in (gl_data.accounts if gl_data else [])
+                        if str(a.account_code).strip() == '801110'), None)
+        _int_already = _j_debits(_int_gl) >= 1.0
 
-        if _berkadia_interest_total >= 1.0 and '801110' not in _covered:
-            # Check GL — skip if J-type interest already posted this period
-            _int_gl = next((a for a in (gl_data.accounts if gl_data else [])
-                            if str(a.account_code).strip() == '801110'), None)
-            _int_already = _j_debits(_int_gl) >= 1.0
-            if not _int_already:
+        if not _int_already and '801110' not in _covered:
+            _any_interest_posted = False
+            for _ln in _loans:
+                if isinstance(_ln, dict):
+                    _pi       = _safe_float(_ln.get('payment_interest', 0))
+                    _loan_num = _ln.get('loan_number') or _ln.get('account_number') or ''
+                    _prop     = _ln.get('property_name', '')
+                else:
+                    _pi       = _safe_float(getattr(_ln, 'payment_interest', 0))
+                    _loan_num = getattr(_ln, 'loan_number', '') or getattr(_ln, 'account_number', '')
+                    _prop     = getattr(_ln, 'property_name', '')
+
+                if _pi < 1.0:
+                    continue   # no interest on this tranche this period
+
+                # Build a readable tranche label: prefer loan_number, fallback to property
+                _tranche_label = (f'Loan #{_loan_num}' if _loan_num
+                                  else (_prop or 'Tranche'))
+                _int_desc = (
+                    f'Mortgage interest accrual — Berkadia {_tranche_label} '
+                    f'(actual payment_interest ${_pi:,.2f})'
+                )
                 je_id = f"INT-{je_num:04d}"
                 je_num += 1
-                _detail_str = ' + '.join(_berkadia_interest_detail)
-                _int_desc = (
-                    f'Mortgage interest accrual — Berkadia actual '
-                    f'({_detail_str}) (BERKADIA-INT)'
-                )
                 je_lines += [
                     {
                         'je_number': je_id, 'line': 1, 'date': period,
                         'account_code': '801110',
                         'account_name': 'Interest Expense',
-                        'description': _int_desc, 'reference': '',
-                        'debit': round(_berkadia_interest_total, 2), 'credit': 0.0,
-                        'vendor': 'Berkadia', 'invoice_number': '',
+                        'description': _int_desc, 'reference': _loan_num,
+                        'debit': round(_pi, 2), 'credit': 0.0,
+                        'vendor': 'Berkadia', 'invoice_number': _loan_num,
                         'source': 'berkadia_interest',
                     },
                     {
                         'je_number': je_id, 'line': 2, 'date': period,
                         'account_code': '213200',
                         'account_name': 'Accrued Interest Payable',
-                        'description': _int_desc, 'reference': '',
-                        'debit': 0.0, 'credit': round(_berkadia_interest_total, 2),
-                        'vendor': 'Berkadia', 'invoice_number': '',
+                        'description': _int_desc, 'reference': _loan_num,
+                        'debit': 0.0, 'credit': round(_pi, 2),
+                        'vendor': 'Berkadia', 'invoice_number': _loan_num,
                         'source': 'berkadia_interest',
                     },
                 ]
+                _any_interest_posted = True
+
+            if _any_interest_posted:
                 _covered.add('801110')
                 _covered.add('213200')
 
@@ -3271,13 +3304,17 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
         if amount == 0:
             continue
 
-        # Insurance expense accounts (639110/639120) offset against 135110 Prepaid
-        # Insurance; all other prepaids offset against 135150 Prepaid Other.
-        if gl_acct in _INSURANCE_EXPENSE_ACCTS:
-            cr_account = _PREPAID_INSURANCE_ACCT
+        # Insurance expense accounts (639110/639120) normally offset against
+        # 135110 Prepaid Insurance (Berkadia-escrowed property & GL policies).
+        # Exception: umbrella premium is paid directly (not Berkadia-escrowed),
+        # so it offsets against 135150 Prepaid Other instead.
+        # All other prepaids also use 135150 Prepaid Other.
+        _is_umbrella = 'umbrella' in desc.lower()
+        if gl_acct in _INSURANCE_EXPENSE_ACCTS and not _is_umbrella:
+            cr_account = _PREPAID_INSURANCE_ACCT   # 135110 — Berkadia-escrowed
             cr_name    = 'Prepaid Insurance'
         else:
-            cr_account = PREPAID_ASSET_ACCOUNT
+            cr_account = PREPAID_ASSET_ACCOUNT     # 135150 — umbrella & all others
             cr_name    = PREPAID_ASSET_NAME
 
         je_id   = f"PPD-{je_num:04d}"
