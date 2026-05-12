@@ -2150,6 +2150,37 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _elec_source = 'gl_613115_basis'
                 _elec_conf   = 'medium'
 
+        # ── Last-resort: use 613115 PTD budget as proxy for 440500 ───────────
+        # 440500 (Recovery - Electricity) is a passthrough account that is
+        # typically not budgeted in Kardin, so the budget fallback above returns
+        # $0.  But 613115 (Tenant Electric Reimbursement) IS usually budgeted —
+        # and since 440500 and 613115 always pair, the 613115 PTD budget is the
+        # best available estimate of the monthly electric recovery amount.
+        if _round(_mode_b_elec_total) == 0 and budget_data:
+            _budget_rows = (budget_data if isinstance(budget_data, list)
+                            else getattr(budget_data, 'line_items', []))
+            _613115_ptd_budget = 0.0
+            for _br in _budget_rows:
+                _br_code = str((_br.get('account_code') if isinstance(_br, dict)
+                                else getattr(_br, 'account_code', '')) or '').strip()
+                if _br_code == ELEC_TENANT_REIMB_ACCOUNT:
+                    _br_ptd = ((_br.get('ptd_budget') if isinstance(_br, dict)
+                                else getattr(_br, 'ptd_budget', 0)) or 0)
+                    _613115_ptd_budget = abs(float(_br_ptd))
+                    break
+            if _613115_ptd_budget >= 1.0:
+                _post_tub_line(
+                    '440500', 'Recovery - Electricity', _613115_ptd_budget,
+                    '[Budget Accrual]',
+                    (f'Tenant electric recovery accrual — ${_613115_ptd_budget:,.2f} '
+                     f'derived from 613115 PTD budget (440500 not separately budgeted). '
+                     f'Upload Receivable Detail or enter meter reads for actuals.'),
+                )
+                _tub_accounts.add('440500')
+                _mode_b_elec_total = _613115_ptd_budget
+                _elec_source = 'budget'
+                _elec_conf   = 'low'
+
         # ── Post 440700 gas recovery (budget only) ────────────────────────────
         _440700_gl = _tub_gl.get('440700')
         if budget_data and (_440700_gl is None or abs(_440700_gl.net_change) < 0.01):
