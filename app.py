@@ -3503,8 +3503,8 @@ with tab2:
             "JE #":             st.column_config.TextColumn("JE #", width="small"),
             "Description":      st.column_config.TextColumn("JE Description", width="medium"),
             "Account Code":     st.column_config.TextColumn("Account Code", width="small"),
-            "Debit ($)":        st.column_config.NumberColumn("Debit ($)", format="$%,.2f", width="small"),
-            "Credit ($)":       st.column_config.NumberColumn("Credit ($)", format="$%,.2f", width="small"),
+            "Debit ($)":        st.column_config.NumberColumn("Debit ($)", format="%.2f", min_value=0.0, width="small"),
+            "Credit ($)":       st.column_config.NumberColumn("Credit ($)", format="%.2f", min_value=0.0, width="small"),
             "Line Description": st.column_config.TextColumn("Line Description", width="large"),
         },
         key="post_close_je_editor",
@@ -3518,8 +3518,18 @@ with tab2:
 
     if not _pcje_valid.empty:
         # ── Validation: each JE # debits must equal credits ──────────────────
+        # Only validate a JE when ALL its rows have both account code and amount
+        # filled — skip JEs still being entered to avoid mid-entry errors.
         _pcje_errors = []
         for _jn, _grp in _pcje_valid.groupby("JE #"):
+            _all_rows = _pcje_edited[_pcje_edited["JE #"] == _jn]
+            _incomplete = _all_rows[
+                ~_all_rows["Account Code"].fillna("").str.strip().astype(bool) |
+                ((_all_rows["Debit ($)"].fillna(0) == 0) &
+                 (_all_rows["Credit ($)"].fillna(0) == 0))
+            ]
+            if not _incomplete.empty:
+                continue  # still being filled in — don't flag yet
             _total_dr = _grp["Debit ($)"].sum()
             _total_cr = _grp["Credit ($)"].sum()
             if abs(_total_dr - _total_cr) > 0.01:
