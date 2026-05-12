@@ -1571,6 +1571,10 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # of the fiscal year when BC YTD and GL beginning balance are both zero.
         if months_elapsed < 1:
             # Path A: T12 December actual (more accurate than annual/12)
+            # Only use T12 if December shows meaningful activity (≥$5K).
+            # For semi-annual / quarterly accounts (e.g. 613310 Water/Sewer,
+            # 631110 Elevator) December T12 will be $0 — fall through to Path B
+            # so the Kardin annual÷12 estimate is used instead.
             if t12_result is not None and hasattr(t12_result, 'prior_month'):
                 dec_actual = abs(t12_result.prior_month(code, 1))  # Dec = prior to Jan
                 if dec_actual >= 5000:
@@ -1587,7 +1591,9 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                             f'no activity this period'
                         ),
                     })
-                continue  # whether used or not, don't fall through to annual/12
+                    continue  # T12 gave a good signal — skip annual/12 fallback
+                # Dec actual < $5K (semi-annual / quarterly billing) — fall through
+                # to Path B so the Kardin annual÷12 estimate still fires.
 
             # Path B: annual budget ÷ 12 (no T12 available)
             if code not in budget_by_code:
