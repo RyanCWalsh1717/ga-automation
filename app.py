@@ -280,6 +280,11 @@ if "signoff_state" not in st.session_state:
     st.session_state.signoff_state = {}
 if "close_tracker" not in st.session_state:
     st.session_state.close_tracker = {}
+if "confirm_reset_all" not in st.session_state:
+    st.session_state.confirm_reset_all = False
+if "confirm_reset_p2" not in st.session_state:
+    st.session_state.confirm_reset_p2 = False
+
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
     st.session_state.post_close_je_df = _pd_init.DataFrame({
@@ -403,37 +408,49 @@ st.session_state.prepared_by = st.sidebar.text_input(
     help="Stamped on every workpaper tab and the run log.",
 )
 
-if st.sidebar.button("🔄 Reset All", use_container_width=True,
-                     help="Clear all results and uploaded files"):
-    st.session_state.pass1_complete = False
-    st.session_state.pass1_engine_result = None
-    st.session_state.pass1_output_files = {}
-    st.session_state['pass1_gl_activity_log'] = []
-    st.session_state.pass2_complete = False
-    st.session_state.pass2_engine_result = None
-    st.session_state.pass2_output_files = {}
-    st.session_state.uploaded_files = {}
-    st.session_state.bulk_overrides_p1 = {}
-    st.session_state.bulk_overrides_p2 = {}
-    st.session_state.signoff_state = {}
-    st.session_state.close_tracker = {}
-    st.session_state.upload_key_p1 += 1
-    st.session_state.upload_key_p2 += 1
-    shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
-    st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
-    import pandas as _pd
-    st.session_state.post_close_je_df = _pd.DataFrame({
-        "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
-        "Account Code": ["", ""],
-        "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
-        "Line Description": ["", ""],
-    })
-    if "manual_accruals_df" in st.session_state:
-        st.session_state.manual_accruals_df["Amount ($)"] = 0.0
-    for _tkey, _ in _TUB_TENANTS:
-        st.session_state[f"tub_elec_{_tkey}"] = 0.0
-        st.session_state[f"tub_gas_{_tkey}"]  = 0.0
-    st.rerun()
+if not st.session_state.confirm_reset_all:
+    if st.sidebar.button("🔄 Reset All", use_container_width=True,
+                         help="Clear all results and uploaded files"):
+        st.session_state.confirm_reset_all = True
+        st.rerun()
+else:
+    st.sidebar.warning("⚠️ This will wipe **all** uploads, results, and sign-offs.")
+    _ra_col1, _ra_col2 = st.sidebar.columns(2)
+    if _ra_col1.button("✅ Confirm", use_container_width=True, key="confirm_reset_all_btn"):
+        st.session_state.confirm_reset_all = False
+        st.session_state.pass1_complete = False
+        st.session_state.pass1_engine_result = None
+        st.session_state.pass1_output_files = {}
+        st.session_state['pass1_gl_activity_log'] = []
+        st.session_state.pass2_complete = False
+        st.session_state.pass2_engine_result = None
+        st.session_state.pass2_output_files = {}
+        st.session_state.uploaded_files = {}
+        st.session_state.bulk_overrides_p1 = {}
+        st.session_state.bulk_overrides_p2 = {}
+        st.session_state.bulk_overrides_wp = {}
+        st.session_state.signoff_state = {}
+        st.session_state.close_tracker = {}
+        st.session_state.upload_key_p1 += 1
+        st.session_state.upload_key_p2 += 1
+        shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
+        st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
+        import pandas as _pd
+        st.session_state.post_close_je_df = _pd.DataFrame({
+            "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+            "Account Code": ["", ""],
+            "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
+            "Line Description": ["", ""],
+        })
+        if "manual_accruals_df" in st.session_state:
+            st.session_state.manual_accruals_df["Amount ($)"] = 0.0
+        for _tkey, _ in _TUB_TENANTS:
+            st.session_state[f"tub_elec_{_tkey}"] = 0.0
+            st.session_state[f"tub_gas_{_tkey}"]  = 0.0
+        st.rerun()
+    if _ra_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_all_btn"):
+        st.session_state.confirm_reset_all = False
+        st.rerun()
 
 
 FILE_CONFIG = {
@@ -2258,136 +2275,102 @@ with tab2:
     # the raw Yardi export pasted directly into the workpaper.
     with st.expander("📋 Workpaper raw report overrides (optional)", expanded=False):
         st.caption(
-            "Upload the raw Yardi Excel exports for specific accounts. "
-            "Each file is copied directly into the workpaper tab for that account."
+            "Drop raw Yardi Excel exports here — each file is assigned a type and copied "
+            "directly into the matching workpaper tab. AR Aging and Capital Schedule "
+            "auto-source from Pass 1 when available."
         )
-        _col_wp1, _col_wp2 = st.columns(2)
-        with _col_wp1:
-            _ar_aging_p2_uf = st.file_uploader(
-                "AR Aging Detail — 133100 AR Control (.xlsx)",
-                type=["xlsx", "xls"],
-                key=f"ar_aging_p2_{st.session_state.get('upload_key_p2', 0)}",
-                help=(
-                    "Yardi AR Detail Aging report. Populates the 133100 AR Control and "
-                    "221100 Prepaid Rent tabs with the raw Yardi export. "
-                    "Auto-sourced from Pass 1 uploads within the same session. "
-                    "Re-upload here if starting Pass 2 in a new browser session."
-                ),
-            )
-            if _ar_aging_p2_uf:
-                _ar_aging_p2_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_ar_aging_p2_uf.name}"
+
+        # ── WP bulk uploader session state ────────────────────────────────────
+        if "bulk_overrides_wp" not in st.session_state:
+            st.session_state.bulk_overrides_wp = {}
+
+        _WP_SLOT_KEYS = [
+            "ar_aging_pass2", "ap_aging", "bank_rec_xlsx", "daca_bank_rec_xlsx",
+            "capital_schedule_pass2", "prepaid_ledger_p2", "capital_seed", "unknown",
+        ]
+        _WP_SLOT_LABELS = [
+            "AR Aging Detail — 133100 AR Control",
+            "AP Aging Detail — 211300 AP Control",
+            "Bank Rec Excel — 111100 PNC Operating",
+            "Bank Rec Excel — 115100 DACA",
+            "Capital Accounts Schedule",
+            "Prepaid Ledger Updated",
+            "Capital Schedule Seed",
+            "Unknown — select type",
+        ]
+
+        # Clear WP slots so stale entries don't persist after file removal
+        for _clr_kwp in set(_WP_SLOT_KEYS) - {"unknown"}:
+            st.session_state.uploaded_files.pop(_clr_kwp, None)
+
+        _bulk_wp = st.file_uploader(
+            "Drop all workpaper override files here",
+            accept_multiple_files=True,
+            type=["xlsx", "xls"],
+            key=f"bulk_upload_wp_{st.session_state.get('upload_key_p2', 0)}",
+        )
+
+        if _bulk_wp:
+            for _ufwp in _bulk_wp:
+                _raw_wp = bytes(_ufwp.getbuffer())
+                # These are custom Yardi reports — auto-detection is unreliable;
+                # always show the type selectbox for explicit user assignment.
+                _eff_key_wp = st.session_state.bulk_overrides_wp.get(_ufwp.name, "unknown")
+
+                _ic_wp, _fn_wp, _tp_wp = st.columns([1, 3, 4])
+                _ic_wp.markdown("✅" if _eff_key_wp != "unknown" else "⚠️")
+
+                _short_wp = _ufwp.name if len(_ufwp.name) <= 22 else _ufwp.name[:19] + "…"
+                _fn_wp.caption(_short_wp)
+
+                _cur_idx_wp = (
+                    _WP_SLOT_KEYS.index(_eff_key_wp)
+                    if _eff_key_wp in _WP_SLOT_KEYS
+                    else len(_WP_SLOT_KEYS) - 1
                 )
-                with open(_ar_aging_p2_path, "wb") as _f:
-                    _f.write(_ar_aging_p2_uf.getbuffer())
-                st.session_state.uploaded_files["ar_aging_pass2"] = _ar_aging_p2_path
-            else:
-                # Show sourcing status when no Pass 2-specific upload is provided
+                _sel_label_wp = _tp_wp.selectbox(
+                    "type", _WP_SLOT_LABELS, index=_cur_idx_wp,
+                    key=f"ovr_wp_{_ufwp.name}", label_visibility="collapsed",
+                )
+                _eff_key_wp = _WP_SLOT_KEYS[_WP_SLOT_LABELS.index(_sel_label_wp)]
+                st.session_state.bulk_overrides_wp[_ufwp.name] = _eff_key_wp
+
+                if _eff_key_wp != "unknown":
+                    _wp_path = os.path.join(st.session_state.temp_dir, f"wp_{_ufwp.name}")
+                    if not os.path.exists(_wp_path) or os.path.getsize(_wp_path) != _ufwp.size:
+                        with open(_wp_path, "wb") as _f_wp:
+                            _f_wp.write(_raw_wp)
+                    st.session_state.uploaded_files[_eff_key_wp] = _wp_path
+
+            # Auto-source status for optional slots not yet uploaded
+            _wp_loaded = set(st.session_state.uploaded_files.keys())
+            if "ar_aging_pass2" not in _wp_loaded:
                 _p1_ar = st.session_state.uploaded_files.get("ar_aging")
                 if _p1_ar and os.path.exists(_p1_ar):
-                    st.caption("✅ Auto-sourced from Pass 1")
+                    st.caption("↳ AR Aging: auto-sourced from Pass 1")
                 else:
-                    st.caption("⚠️ Not uploaded — 133100 tab will show GL transactions")
-
-            _ap_aging_uf = st.file_uploader(
-                "AP Aging Detail — 211300 AP Control (.xlsx)",
-                type=["xlsx", "xls"],
-                key=f"ap_aging_p2_{st.session_state.get('upload_key_p2', 0)}",
-                help="Yardi AP Aging Detail report. Populates the 211300 AP Control tab.",
-            )
-            if _ap_aging_uf:
-                _ap_aging_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_ap_aging_uf.name}"
-                )
-                with open(_ap_aging_path, "wb") as _f:
-                    _f.write(_ap_aging_uf.getbuffer())
-                st.session_state.uploaded_files["ap_aging"] = _ap_aging_path
-
-            _br_xlsx_uf = st.file_uploader(
-                "Bank Rec Excel — 111100 PNC Operating (.xlsx)",
-                type=["xlsx", "xls"],
-                key=f"bank_rec_xlsx_{st.session_state.get('upload_key_p2', 0)}",
-                help="Yardi Bank Rec exported as Excel. Replaces the generated 111100 tab and Bank Rec - Operating tab.",
-            )
-            if _br_xlsx_uf:
-                _br_xlsx_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_br_xlsx_uf.name}"
-                )
-                with open(_br_xlsx_path, "wb") as _f:
-                    _f.write(_br_xlsx_uf.getbuffer())
-                st.session_state.uploaded_files["bank_rec_xlsx"] = _br_xlsx_path
-
-        with _col_wp2:
-            _daca_br_xlsx_uf = st.file_uploader(
-                "Bank Rec Excel — 115100 DACA (.xlsx)",
-                type=["xlsx", "xls"],
-                key=f"daca_bank_rec_xlsx_{st.session_state.get('upload_key_p2', 0)}",
-                help="Yardi Bank Rec exported as Excel for DACA. Replaces the generated 115100 tab and Bank Rec - DACA tab.",
-            )
-            if _daca_br_xlsx_uf:
-                _daca_br_xlsx_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_daca_br_xlsx_uf.name}"
-                )
-                with open(_daca_br_xlsx_path, "wb") as _f:
-                    _f.write(_daca_br_xlsx_uf.getbuffer())
-                st.session_state.uploaded_files["daca_bank_rec_xlsx"] = _daca_br_xlsx_path
-
-            _capital_schedule_p2_uf = st.file_uploader(
-                "Capital Accounts Schedule (.xlsx)",
-                type=["xlsx"],
-                key=f"capital_schedule_p2_{st.session_state.get('upload_key_p2', 0)}",
-                help=(
-                    "Capital improvement schedule (154xxx, 181xxx accounts). "
-                    "Auto-sourced from Pass 1 uploads within the same session. "
-                    "Re-upload here if starting Pass 2 in a new browser session."
-                ),
-            )
-            if _capital_schedule_p2_uf:
-                _cap_sched_p2_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_capital_schedule_p2_uf.name}"
-                )
-                with open(_cap_sched_p2_path, "wb") as _f:
-                    _f.write(_capital_schedule_p2_uf.getbuffer())
-                st.session_state.uploaded_files["capital_schedule_pass2"] = _cap_sched_p2_path
-            else:
+                    st.caption("⚠️ AR Aging not uploaded — 133100 tab will show GL transactions")
+            if "capital_schedule_pass2" not in _wp_loaded:
                 _p1_cap = st.session_state.uploaded_files.get("capital_schedule")
                 if _p1_cap and os.path.exists(_p1_cap):
-                    st.caption("✅ Auto-sourced from Pass 1")
+                    st.caption("↳ Capital Schedule: auto-sourced from Pass 1")
                 else:
-                    st.caption("⚠️ Not uploaded — capital tabs show GL transactions")
+                    st.caption("⚠️ Capital Schedule not uploaded — capital tabs show GL transactions")
 
-            _prepaid_ledger_p2_uf = st.file_uploader(
-                "Prepaid Ledger Updated (.xlsx)",
-                type=["xlsx"],
-                key=f"prepaid_ledger_p2_{st.session_state.get('upload_key_p2', 0)}",
-                help="GA_Prepaid_Ledger_Updated.xlsx from Pass 1. Populates the Prepaid Schedule tab with tie-out formulas. "
-                     "If not uploaded, falls back to the current session's Pass 1 data.",
+            # File count
+            _wp_count = sum(
+                1 for k in _WP_SLOT_KEYS
+                if k != "unknown" and st.session_state.uploaded_files.get(k)
             )
-            if _prepaid_ledger_p2_uf:
-                _prepaid_ledger_p2_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_prepaid_ledger_p2_uf.name}"
-                )
-                with open(_prepaid_ledger_p2_path, "wb") as _f:
-                    _f.write(_prepaid_ledger_p2_uf.getbuffer())
-                st.session_state.uploaded_files["prepaid_ledger_p2"] = _prepaid_ledger_p2_path
+            if _wp_count > 0:
+                st.caption(f"**{_wp_count} file(s) assigned**")
 
-            _capital_seed_uf = st.file_uploader(
-                "Capital Schedule Seed (.xlsx)",
-                type=["xlsx"],
-                key=f"capital_seed_{st.session_state.get('upload_key_p2', 0)}",
-                help="Book3.xlsx — January 2026 seed for all 7 capital accounts "
-                     "(152100 Land, 154100 Building, 154500 Bldg Improvements, 171100 CIP, "
-                     "181200 LC, 181300 Legal, 181400 TI). "
-                     "Only used when no Capital Accounts Schedule is uploaded. "
-                     "From February onward the prior workpaper carry-forward supersedes this.",
-            )
-            if _capital_seed_uf:
-                _capital_seed_path = os.path.join(
-                    st.session_state.temp_dir, f"p2_{_capital_seed_uf.name}"
-                )
-                with open(_capital_seed_path, "wb") as _f:
-                    _f.write(_capital_seed_uf.getbuffer())
-                st.session_state.uploaded_files["capital_seed"] = _capital_seed_path
+            # Clean up overrides for files no longer in uploader
+            _active_wp = {_ufwp.name for _ufwp in _bulk_wp}
+            st.session_state.bulk_overrides_wp = {
+                k: v for k, v in st.session_state.bulk_overrides_wp.items()
+                if k in _active_wp
+            }
 
         st.caption(
             "AR Aging auto-sources from Pass 1 in the same session — only re-upload above "
@@ -2416,28 +2399,38 @@ with tab2:
             help="Parse final post-close GL and generate all workpapers and reports",
         )
     with col_p2b:
-        if st.button("🔄 Reset Pass 2", use_container_width=True, key="reset_pass2"):
-            st.session_state.pass2_complete = False
-            st.session_state.pass2_engine_result = None
-            st.session_state.pass2_output_files = {}
-            import pandas as _pd_r2
-            st.session_state.post_close_je_df = _pd_r2.DataFrame({
-                "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
-                "Account Code": ["", ""],
-                "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
-                "Line Description": ["", ""],
-            })
-            for _k in ("gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
-                       "t12_statement_pass2", "loan_pass2", "prior_workpaper"):
-                st.session_state.uploaded_files.pop(_k, None)
-            st.session_state.bulk_overrides_p2 = {}
-            st.session_state.upload_key_p2 += 1
-            # Clear Pass 2 close tracker steps (5=files uploaded, 6=reports generated,
-            # 7=QC review complete, 8=package released). Steps 0-4 are pre-Pass-2 and
-            # should be preserved since the work already happened.
-            for _ct_step in (5, 6, 7, 8):
-                st.session_state.close_tracker.pop(_ct_step, None)
-            st.rerun()
+        if not st.session_state.confirm_reset_p2:
+            if st.button("🔄 Reset Pass 2", use_container_width=True, key="reset_pass2"):
+                st.session_state.confirm_reset_p2 = True
+                st.rerun()
+        else:
+            st.warning("⚠️ Clears results — uploaded files stay loaded.")
+            _rp2_col1, _rp2_col2 = st.columns(2)
+            if _rp2_col1.button("✅ Confirm", use_container_width=True, key="confirm_reset_p2_btn"):
+                st.session_state.confirm_reset_p2 = False
+                st.session_state.pass2_complete = False
+                st.session_state.pass2_engine_result = None
+                st.session_state.pass2_output_files = {}
+                st.session_state.signoff_state = {}
+                import pandas as _pd_r2
+                st.session_state.post_close_je_df = _pd_r2.DataFrame({
+                    "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+                    "Account Code": ["", ""],
+                    "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
+                    "Line Description": ["", ""],
+                })
+                # Clear Pass 2 close tracker steps (5=files uploaded, 6=reports generated,
+                # 7=QC review complete, 8=package released). Steps 0-4 are pre-Pass-2 and
+                # should be preserved since the work already happened.
+                for _ct_step in (5, 6, 7, 8):
+                    st.session_state.close_tracker.pop(_ct_step, None)
+                # NOTE: upload_key_p2 is NOT incremented — uploaded files stay in
+                # the uploader widgets so Generate Reports can be re-run immediately
+                # without re-dropping any files.
+                st.rerun()
+            if _rp2_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_p2_btn"):
+                st.session_state.confirm_reset_p2 = False
+                st.rerun()
 
     # ── Pass 2 Processing ─────────────────────────────────────────────────────
     if pass2_button:
@@ -3453,7 +3446,7 @@ with tab2:
 
     # ── Post-Close Adjustments (always visible in Pass 2 tab) ─────────────────
     st.divider()
-    st.markdown("### Post-Close Adjustment JEs")
+    st.markdown("### Closing JE Entries")
     st.caption(
         "After reviewing the QC workbook you may identify corrections, missed re-accruals, "
         "or reclassifications that still need to post. Enter them here and download as a "
