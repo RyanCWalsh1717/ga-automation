@@ -3604,7 +3604,6 @@ with tab2:
                     _pcje_csv_path,
                     period=_pcje_period,
                     property_code=_pcje_propname,
-                    je_number='PCJ-001',
                 )
                 st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
             except Exception as _pcje_err:
