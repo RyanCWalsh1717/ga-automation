@@ -31,10 +31,51 @@ The result is consumed by:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 from accounting_utils import _round
+
+
+# ── Period formatting ──────────────────────────────────────────────────────────
+
+_MONTH_ABBR = {
+    'jan': 'January', 'feb': 'February', 'mar': 'March',
+    'apr': 'April',   'may': 'May',       'jun': 'June',
+    'jul': 'July',    'aug': 'August',    'sep': 'September',
+    'oct': 'October', 'nov': 'November',  'dec': 'December',
+}
+
+
+def _fmt_period(period: str) -> str:
+    """
+    Format an accounting period string as 'Month YYYY' for use in descriptions.
+
+    Accepts:
+      'Apr-2026'  → 'April 2026'
+      '04/2026'   → 'April 2026'
+      'April 2026' → 'April 2026' (pass-through)
+
+    Falls back to the raw string if the format is unrecognised.
+    """
+    if not period:
+        return period
+    # 'Apr-2026' or 'Apr 2026'
+    m = re.match(r'([A-Za-z]{3,})[- ](\d{4})', period.strip())
+    if m:
+        month_key = m.group(1)[:3].lower()
+        year = m.group(2)
+        return f"{_MONTH_ABBR.get(month_key, m.group(1).capitalize())} {year}"
+    # '04/2026' or '04-2026'
+    m = re.match(r'(\d{1,2})[/\-](\d{4})', period.strip())
+    if m:
+        month_num = int(m.group(1))
+        year = m.group(2)
+        month_names = list(_MONTH_ABBR.values())
+        if 1 <= month_num <= 12:
+            return f"{month_names[month_num - 1]} {year}"
+    return period
 
 
 # ── Account codes ──────────────────────────────────────────────────────────────
@@ -360,14 +401,15 @@ def build_management_fee_je(
     cash = fee_result.cash_received
     jll_amt = _round(fee_result.jll_fee)
     grp_amt = _round(fee_result.grp_fee)
+    _period_label = _fmt_period(period)
 
     jll_desc = (
-        f'JLL management fee accrual — {fee_result.jll_rate:.2%} '
-        f'on ${cash:,.2f} cash received'
+        f'Accrual {_period_label} — JLL Management Fee '
+        f'({fee_result.jll_rate:.2%} on ${cash:,.2f} cash received)'
     )
     grp_desc = (
-        f'GRP management fee accrual — {fee_result.grp_rate:.2%} '
-        f'on ${cash:,.2f} cash received'
+        f'Accrual {_period_label} — GRP Management Fee '
+        f'({fee_result.grp_rate:.2%} on ${cash:,.2f} cash received)'
     )
 
     return [
@@ -534,9 +576,10 @@ def build_catchup_je(
     if catchup_amount <= 0:
         return []
 
+    _period_label = _fmt_period(period)
     desc = (
-        f'Management fee catch-up — prior month accrual reversed without '
-        f'matching invoice; reinstating ${catchup_amount:,.2f} expense'
+        f'Accrual {_period_label} — Management Fee Catch-Up '
+        f'(prior month auto-reversal; reinstating ${catchup_amount:,.2f})'
     )
 
     return [

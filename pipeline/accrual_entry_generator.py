@@ -33,6 +33,37 @@ from property_config import is_expense_account
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 
+# ── Period formatting ────────────────────────────────────────
+
+_MONTH_ABBR_AEG = {
+    'jan': 'January', 'feb': 'February', 'mar': 'March',
+    'apr': 'April',   'may': 'May',       'jun': 'June',
+    'jul': 'July',    'aug': 'August',    'sep': 'September',
+    'oct': 'October', 'nov': 'November',  'dec': 'December',
+}
+
+def _fmt_period(period: str) -> str:
+    """
+    Format an accounting period string as 'Month YYYY' for JE descriptions.
+
+    'Apr-2026' → 'April 2026'   |  '04/2026' → 'April 2026'
+    Falls back to the raw string if unrecognised.
+    """
+    if not period:
+        return period
+    m = re.match(r'([A-Za-z]{3,})[- ](\d{4})', period.strip())
+    if m:
+        key = m.group(1)[:3].lower()
+        return f"{_MONTH_ABBR_AEG.get(key, m.group(1).capitalize())} {m.group(2)}"
+    m = re.match(r'(\d{1,2})[/\-](\d{4})', period.strip())
+    if m:
+        mon = int(m.group(1))
+        names = list(_MONTH_ABBR_AEG.values())
+        if 1 <= mon <= 12:
+            return f"{names[mon - 1]} {m.group(2)}"
+    return period
+
+
 # ── GL dedup utilities ──────────────────────────────────────
 
 def _normalize_vendor(name: str) -> str:
@@ -2778,9 +2809,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 # Build a readable tranche label: prefer loan_number, fallback to property
                 _tranche_label = (f'Loan #{_loan_num}' if _loan_num
                                   else (_prop or 'Tranche'))
+                _period_label = _fmt_period(period)
                 _int_desc = (
-                    f'Mortgage interest accrual — Berkadia {_tranche_label} '
-                    f'(actual payment_interest ${_pi:,.2f})'
+                    f'Accrual {_period_label} — Berkadia {_tranche_label} '
+                    f'Mortgage Interest (${_pi:,.2f})'
                 )
                 je_id = f"INT-{je_num:04d}"
                 je_num += 1
