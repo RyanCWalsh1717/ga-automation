@@ -56,6 +56,7 @@ class ManagementFeeResult:
     """Output of the management fee calculation."""
     cash_received:       float          # Net cash receipts used as fee basis
     cash_source:         str            # 'receivable_detail+ar_aging' | 'receivable_detail' | 'daca_additions' | ...
+                                       # Note: when AR Aging is uploaded, prepayment exclusion = max(ar_aging, scan)
     prepayment_excluded: float = 0.0   # Amount subtracted as prepayments (from AR Aging or charge-code scan)
 
     jll_rate: float = JLL_RATE
@@ -102,11 +103,24 @@ def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
 
     Returns (net_cash: Optional[float], prepayment_excluded: float).
 
-    Prepayment exclusion priority:
-      1. AR Detail Aging — if uploaded, uses Grand Total Pre-payments column
-         (exact balance of unapplied tenant credits in the system)
-      2. Charge-code scan — fallback built into ReceivableDetailResult.net_receipts
-         (scans C-XXXX rows for 'prepay' in the charge code — less reliable)
+    Prepayment exclusion — uses the MAXIMUM of two independent sources:
+
+      1. AR Aging Grand Total Pre-payments column (when uploaded)
+         Authoritative Yardi balance, but reports the NET of all tenant
+         pre-payment column values.  If one tenant's applied prepayment
+         (negative) offsets another's new prepayment (positive), the net
+         understates the true amount to exclude.
+         Example: Santi +$100K new prepayment, Keros −$50K applied Dec
+         prepayment → AR Aging Grand Total = $50K (under-excludes $50K).
+
+      2. Charge-code scan built into ReceivableDetailResult.prepayment_receipts
+         Scans C-XXXX rows for 'prepay' charge codes and sums ABS per tenant
+         independently.  Not affected by cross-tenant netting.
+         Example above → scan gives $100K (Santi) + $50K (Keros) = $150K.
+
+      Taking max() ensures we exclude at least as much as either source
+      found.  In the normal case (no cross-tenant netting) both sources
+      should agree; using max() is conservative and safe.
 
     Returns (None, 0.0) if the report was not parsed or total receipts are zero.
     """
@@ -124,18 +138,22 @@ def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
     if total <= 0:
         return None, 0.0
 
-    # Prepayment exclusion
+    # Prepayment exclusion — collect both sources and take the maximum
+    ar_prepay = 0.0
+    scan_prepay = 0.0
+
     if ar_aging is not None and hasattr(ar_aging, 'prepayment_balance'):
-        # Preferred: AR Aging Pre-payments column — authoritative Yardi balance
-        prepay = float(ar_aging.prepayment_balance or 0)
-    else:
-        # Fallback: charge-code scan built into ReceivableDetailResult
-        if hasattr(rd_parsed, 'prepayment_receipts'):
-            prepay = float(rd_parsed.prepayment_receipts or 0)
-        elif isinstance(rd_parsed, dict):
-            prepay = float(rd_parsed.get('prepayment_receipts', 0) or 0)
-        else:
-            prepay = 0.0
+        ar_prepay = float(ar_aging.prepayment_balance or 0)
+
+    if hasattr(rd_parsed, 'prepayment_receipts'):
+        scan_prepay = float(rd_parsed.prepayment_receipts or 0)
+    elif isinstance(rd_parsed, dict):
+        scan_prepay = float(rd_parsed.get('prepayment_receipts', 0) or 0)
+
+    # max() handles cross-tenant netting: charge-code scan wins when AR Aging
+    # net under-states true prepayments; AR Aging wins when scan misses a
+    # prepayment not flagged by its charge code.
+    prepay = max(ar_prepay, scan_prepay)
 
     net = max(0.0, total - prepay)
     return (net if net > 0 else None), prepay
@@ -249,7 +267,10 @@ def calculate(
         daca_parsed:       Parsed KeyBank DACA statement dict
         receivable_detail: ReceivableDetailResult from parsers.yardi_receivable_detail.parse()
         ar_aging:          ARAgingResult from parsers.yardi_ar_aging.parse() — used to
-                           identify prepayment balance from the Pre-payments column
+                           supplement the charge-code scan prepayment exclusion.
+                           Both AR Aging and charge-code scan are always evaluated;
+                           the larger exclusion wins (protects against cross-tenant
+                           netting in the AR Aging Grand Total Pre-payments column).
         jll_rate:          JLL management fee rate (default 1.25%)
         grp_rate:          GRP management fee rate (default 1.75%)
 
