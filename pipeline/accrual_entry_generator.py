@@ -197,6 +197,32 @@ TENANT_UTILITY_ACCOUNTS: dict = {
     '440700': {'label': 'Tenant Gas Recovery',          'budget_key': '440700'},
 }
 
+
+def _j_credits(gl_acct) -> float:
+    """Sum of J-type (Journal) credit amounts on a GLAccount.
+
+    Yardi transaction control codes: C=Charge, R=Receipt, P=Payable,
+    K=Check/PCard, J=Journal.  Only J-type entries are pipeline accruals;
+    C/R/P/K entries are real billing/payment transactions and must NOT
+    suppress the pipeline's monthly accrual JE.
+    """
+    if gl_acct is None:
+        return 0.0
+    return sum(
+        t.credit for t in getattr(gl_acct, 'transactions', [])
+        if t.credit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
+    )
+
+
+def _j_debits(gl_acct) -> float:
+    """Sum of J-type (Journal) debit amounts on a GLAccount."""
+    if gl_acct is None:
+        return 0.0
+    return sum(
+        t.debit for t in getattr(gl_acct, 'transactions', [])
+        if t.debit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
+    )
+
 PREPAID_ASSET_ACCOUNT = '135150'
 PREPAID_ASSET_NAME    = 'Prepaid Other'
 
@@ -641,11 +667,11 @@ def detect_tenant_utility_billing(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     for code, info in TENANT_UTILITY_ACCOUNTS.items():
         acct = gl_accounts_by_code.get(code)
-        # 440500/440700 are income accounts — a real posting is a CREDIT.
-        # Use total_credits so auto-reversal debits don't falsely suppress the
-        # budget candidate (net_change would be non-zero from the reversal alone).
-        if acct and getattr(acct, 'total_credits', abs(acct.net_change)) > 0.01:
-            continue   # already posted this period
+        # Only J-type (Journal) credits indicate a pipeline accrual already posted.
+        # C-type charges, R-type receipts, etc. are real billing transactions
+        # and must not suppress the monthly budget accrual candidate.
+        if _j_credits(acct) > 0.01:
+            continue   # J-accrual already posted this period
 
         budget_amt = budget_by_code.get(code, 0.0)
         if budget_amt < 1.0:
@@ -1996,12 +2022,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # from the real electricity bill and must NOT suppress the reclassification).
         if _round(_total_elec_billed) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            # Use total_debits: the reclass is DR 613115, so a real posting is a
-            # debit. Auto-reversals are credits and must not suppress this JE.
-            _reimb_posted = (
-                _reimb_gl is not None
-                and getattr(_reimb_gl, 'total_debits', abs(_reimb_gl.net_change)) >= 0.01
-            )
+            # Only J-type debits indicate a prior J accrual for this reclass.
+            # C/R/P/K debits in 613115 are not pipeline accruals.
+            _reimb_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_posted:
                 _elec_je_id = f'TUB-{je_num:04d}'
                 _elec_desc  = (f'Tenant electricity reclassification — '
@@ -2058,10 +2081,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             getattr(_440500_diag, 'total_credits', None) if _440500_diag else None
         )
         if gl_activity_log is not None:
-            _440500_diag_j = sum(
-                t.credit for t in getattr(_440500_diag, 'transactions', [])
-                if t.credit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
-            ) if _440500_diag else 0.0
+            _440500_diag_j = _j_credits(_440500_diag)
             gl_activity_log.append({
                 'account_code': 'TUB-MODE-B',
                 'account_name': 'Tenant Utility — Mode (b) diagnostic',
@@ -2103,10 +2123,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # Only J-type (journal) credits indicate a pipeline accrual already posted.
         # C-type charges (JLL billing transactions) and R-type receipts are NOT
         # accruals and must not suppress the pipeline's monthly J-entry.
-        _440500_j_credits = sum(
-            t.credit for t in getattr(_440500_gl, 'transactions', [])
-            if t.credit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
-        ) if _440500_gl else 0.0
+        _440500_j_credits = _j_credits(_440500_gl)
         _440500_already_posted = _440500_j_credits >= 0.01
 
         # Generate 440500 AR recovery JE whenever Receivable Detail has per-tenant
@@ -2180,8 +2197,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # total_debits: JLL's reclass is DR 613115 — a credit-only entry is
             # just an auto-reversal and must not trigger the fallback.
             if (_613115_fb_gl is not None
-                    and getattr(_613115_fb_gl, 'total_debits', abs(_613115_fb_gl.net_change)) >= 0.01):
-                _fb_amt = getattr(_613115_fb_gl, 'total_debits', abs(_613115_fb_gl.net_change))
+                    and _j_debits(_613115_fb_gl) >= 0.01):
+                _fb_amt = _j_debits(_613115_fb_gl)
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', _fb_amt,
                     '[JLL Reclass Basis]',
@@ -2228,10 +2245,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         # ── Post 440700 gas/misc utility recovery ─────────────────────────────
         _440700_gl = _tub_gl.get('440700')
-        _440700_already_posted = (
-            _440700_gl is not None
-            and getattr(_440700_gl, 'total_credits', abs(_440700_gl.net_change)) >= 0.01
-        )
+        # J-only credits — same rule as 440500: C-type charges are real billing
+        # transactions, not accruals, and must not suppress the pipeline JE.
+        _440700_already_posted = _j_credits(_440700_gl) >= 0.01
         if not _440700_already_posted:
             # Priority 1: Receivable Detail UTILI charges (per-tenant)
             _utili_by_tenant: Dict[str, float] = {}
@@ -2282,12 +2298,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # AR JE is generated, but the 613115/613110 reclass is still needed.
         if _round(_mode_b_elec_total) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            # Use total_debits: the reclass is DR 613115, so a real posting is a
-            # debit. Auto-reversals are credits and must not suppress this JE.
-            _reimb_b_posted = (
-                _reimb_gl is not None
-                and getattr(_reimb_gl, 'total_debits', abs(_reimb_gl.net_change)) >= 0.01
-            )
+            # Only J-type debits indicate a prior pipeline reclass for 613115.
+            _reimb_b_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_b_posted:
                 _elec_je_id  = f'TUB-{je_num:04d}'
                 _src_label   = {
