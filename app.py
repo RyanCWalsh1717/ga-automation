@@ -444,6 +444,7 @@ else:
             "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
             "Line Description": ["", ""],
         })
+        st.session_state.pop("_pcje_latest", None)
         if "manual_accruals_df" in st.session_state:
             st.session_state.manual_accruals_df["Amount ($)"] = 0.0
         st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
@@ -2432,6 +2433,7 @@ with tab2:
                     "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
                     "Line Description": ["", ""],
                 })
+                st.session_state.pop("_pcje_latest", None)
                 # Clear Pass 2 close tracker steps (5=files uploaded, 6=reports generated,
                 # 7=QC review complete, 8=package released). Steps 0-4 are pre-Pass-2 and
                 # should be preserved since the work already happened.
@@ -3476,9 +3478,12 @@ with tab2:
     )
 
     # ── Add JE Lines button ────────────────────────────────────────────────────
+    # Use _pcje_latest (saved from the previous render's editor output) so that
+    # any account codes / amounts the user already typed are preserved when new
+    # rows are appended.  Falls back to post_close_je_df on first render.
     if st.button("➕ Add JE Lines", key="pcje_add_btn"):
         import pandas as _pd_pcje_add
-        _existing_pcje = st.session_state.post_close_je_df
+        _existing_pcje = st.session_state.get("_pcje_latest", st.session_state.post_close_je_df)
         _used_jes = (
             _existing_pcje["JE #"]
             .str.strip()
@@ -3516,7 +3521,11 @@ with tab2:
         },
         key="post_close_je_editor",
     )
-    st.session_state.post_close_je_df = _pcje_edited
+    # Save latest edits for use by Add JE Lines on next render.
+    # Do NOT feed _pcje_edited back into post_close_je_df here — doing so changes
+    # the base DataFrame on every rerender, which causes Streamlit's data_editor
+    # to reset its internal delta state and lose whatever the user just typed.
+    st.session_state["_pcje_latest"] = _pcje_edited
 
     _pcje_valid = _pcje_edited[
         _pcje_edited["Account Code"].fillna("").str.strip().astype(bool) &
