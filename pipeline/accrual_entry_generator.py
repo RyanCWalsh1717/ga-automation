@@ -2103,34 +2103,41 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             and getattr(_440500_gl, 'total_credits', abs(_440500_gl.net_change)) >= 0.01
         )
 
-        if not _440500_already_posted:
-            # Standard path — 440500 not yet in GL, generate the AR recovery JE.
-            if _elec_source == 'receivable_detail' and _rec_elec_amt > 0:
-                if _elec_by_tenant:
-                    # Per-tenant breakout from Receivable Detail elec_by_tenant
-                    for _tenant_name, _tenant_amt in sorted(_elec_by_tenant.items()):
-                        _post_tub_line(
-                            '440500', 'Recovery - Electricity', _tenant_amt,
-                            _tenant_name,
-                            (f'Tenant electric recovery — {_tenant_name} '
-                             f'per Receivable Detail '
-                             f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
-                        )
-                    _tub_accounts.add('440500')
-                    _mode_b_elec_total = _rec_elec_amt
-                else:
-                    # Aggregate fallback (elec_by_tenant not available)
+        # Generate 440500 AR recovery JE whenever Receivable Detail has per-tenant
+        # data or a budget amount is available.  The GL activity guard is intentionally
+        # NOT applied here: JLL's posting to 440500 is the actual charge transaction;
+        # with last month's pipeline accrual auto-reversing in the same period the net
+        # in 440500 is ≈ $0, so a new accrual is still required each month.
+        # The budget/GL-only fallbacks below DO retain the guard to avoid accruing
+        # against an account that Yardi already has fully covered.
+        if _elec_source == 'receivable_detail' and _rec_elec_amt > 0:
+            if _elec_by_tenant:
+                # Per-tenant breakout from Receivable Detail elec_by_tenant
+                for _tenant_name, _tenant_amt in sorted(_elec_by_tenant.items()):
                     _post_tub_line(
-                        '440500', 'Recovery - Electricity', _rec_elec_amt,
-                        '[Receivable Detail]',
-                        (f'Tenant electric recovery accrual — ${_rec_elec_amt:,.2f} '
-                         f'per Receivable Detail electric charges '
+                        '440500', 'Recovery - Electricity', _tenant_amt,
+                        _tenant_name,
+                        (f'Tenant electric recovery — {_tenant_name} '
+                         f'per Receivable Detail '
                          f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
                     )
-                    _tub_accounts.add('440500')
-                    _mode_b_elec_total = _rec_elec_amt
-            elif budget_data:
-                # Fallback: budget amount
+                _tub_accounts.add('440500')
+                _mode_b_elec_total = _rec_elec_amt
+            else:
+                # Aggregate fallback (elec_by_tenant not available)
+                _post_tub_line(
+                    '440500', 'Recovery - Electricity', _rec_elec_amt,
+                    '[Receivable Detail]',
+                    (f'Tenant electric recovery accrual — ${_rec_elec_amt:,.2f} '
+                     f'per Receivable Detail electric charges '
+                     f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
+                )
+                _tub_accounts.add('440500')
+                _mode_b_elec_total = _rec_elec_amt
+        elif not _440500_already_posted:
+            # No Receivable Detail — fall back to budget only when 440500 is not
+            # already covered in GL (budget accrual would double-post if JLL posted).
+            if budget_data:
                 for cand in detect_tenant_utility_billing(gl_data, budget_data):
                     if cand['account_code'] != '440500':
                         continue
@@ -2142,12 +2149,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     _tub_accounts.add('440500')
                     _mode_b_elec_total += cand['amount']
         else:
-            # 440500 already posted in GL (JLL activity) — do NOT generate a new
-            # AR recovery JE (would double-count). Instead read the posted amount
-            # so the 613115 / 613110 P&L reclassification can still fire below.
-            # Use total_credits (not abs(net_change)) — if an auto-reversal debit
-            # is also present this period, net_change ≈ 0 and would incorrectly
-            # suppress the P&L reclass.  total_credits = the actual new posting.
+            # No Receivable Detail and 440500 already in GL — read posted amount
+            # for the P&L reclass check below (no new AR recovery JE generated).
+            # Use total_credits not abs(net_change) so auto-reversal debits don't
+            # cancel out the amount and suppress the 613115/613110 reclass.
             _mode_b_elec_total = getattr(_440500_gl, 'total_credits',
                                          abs(_440500_gl.net_change))
             _elec_source = 'gl_activity'
@@ -2157,9 +2162,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_code': '440500',
                     'account_name': 'Recovery - Electricity',
                     'reason': (
-                        f'JLL already posted ${_mode_b_elec_total:,.2f} in credits '
-                        f'this period — AR recovery JE skipped (no double-post). '
-                        f'P&L reclass (613115/613110) will be checked separately.'
+                        f'No Receivable Detail uploaded — JLL posted '
+                        f'${_mode_b_elec_total:,.2f} in credits this period. '
+                        f'AR recovery JE skipped; P&L reclass (613115/613110) '
+                        f'will be checked separately.'
                     ),
                     'suppressed': True,
                 })
