@@ -2145,11 +2145,24 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # 440500 already posted in GL (JLL activity) — do NOT generate a new
             # AR recovery JE (would double-count). Instead read the posted amount
             # so the 613115 / 613110 P&L reclassification can still fire below.
-            # 440500 is a revenue account: credits are positive recoveries, so
-            # net_change is typically negative (credit-side) — take abs().
-            _mode_b_elec_total = abs(_440500_gl.net_change)
+            # Use total_credits (not abs(net_change)) — if an auto-reversal debit
+            # is also present this period, net_change ≈ 0 and would incorrectly
+            # suppress the P&L reclass.  total_credits = the actual new posting.
+            _mode_b_elec_total = getattr(_440500_gl, 'total_credits',
+                                         abs(_440500_gl.net_change))
             _elec_source = 'gl_activity'
             _elec_conf   = 'high'
+            if gl_activity_log is not None:
+                gl_activity_log.append({
+                    'account_code': '440500',
+                    'account_name': 'Recovery - Electricity',
+                    'reason': (
+                        f'JLL already posted ${_mode_b_elec_total:,.2f} in credits '
+                        f'this period — AR recovery JE skipped (no double-post). '
+                        f'P&L reclass (613115/613110) will be checked separately.'
+                    ),
+                    'suppressed': True,
+                })
 
         # ── Fallback: derive 440500 from 613115 when JLL posted the reclass ──
         # Scenario: JLL posted the P&L reclass (DR 613115 / CR 613110) but
