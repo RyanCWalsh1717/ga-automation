@@ -9,9 +9,9 @@ print(f'Output dir: {OUT}')
 
 FILES = {
     'bank_rec':          r'C:\Users\RyanCWalsh\AppData\Local\Temp\Bank_Rec (41) (1).pdf',
-    'gl':                r'C:\Users\RyanCWalsh\Downloads\GeneralLedger_revlabpm_Accrual (2).xlsx',
-    'trial_balance':     r'C:\Users\RyanCWalsh\Downloads\Trial_Balance_revlabpm_Accrual (2).xlsx',
-    'budget_comparison': r'C:\Users\RyanCWalsh\Downloads\Budget_Comparison_revlabpm_Accrual (2).xlsx',
+    'gl':                r'C:\Users\RyanCWalsh\Downloads\GeneralLedger_revlabspm_Accrual (2).xlsx',
+    'trial_balance':     r'C:\Users\RyanCWalsh\Downloads\Trial_Balance_revlabspm_Accrual (2).xlsx',
+    'budget_comparison': r'C:\Users\RyanCWalsh\Downloads\Budget_Comparison_revlabspm_Accrual (2).xlsx',
     'loan': [
         r'C:\Users\RyanCWalsh\Greatland Realty Partners\Greatland Partners - Documents\Portfolio\Revolution Labs\10 - Finance\Accounting\Workpapers + Financials\2026.03\Billing__011159010__2026__Apr.PDF',
         r'C:\Users\RyanCWalsh\Greatland Realty Partners\Greatland Partners - Documents\Portfolio\Revolution Labs\10 - Finance\Accounting\Workpapers + Financials\2026.03\Billing__011159011__2026__Apr.pdf',
@@ -133,7 +133,7 @@ try:
     print(f'JLL ({fee.jll_rate:.2%}):    ${fee.jll_fee:>12,.2f}')
     print(f'GRP ({fee.grp_rate:.2%}):    ${fee.grp_fee:>12,.2f}')
     print(f'Total ({fee.total_rate:.2%}): ${fee.total_fee:>12,.2f}')
-    fee_je = build_management_fee_je(fee, period=period, property_code='revlabpm', je_number='MGT-001')
+    fee_je = build_management_fee_je(fee, period=period, property_code='revlabspm', je_number='MGT-001')
     fee_dr = [l for l in fee_je if (l.get('debit') or 0) > 0]
     for l in fee_dr:
         print(f'  {l.get("account_code",""):8s}  DR ${(l.get("debit") or 0):>10,.2f}  {(l.get("description") or "")[:60]}')
@@ -210,7 +210,7 @@ try:
     accrual_lines = [l for l in all_je if l.get('source') in accrual_sources]
     if accrual_lines:
         path = os.path.join(OUT, 'RevLabs_Mar2026_Accruals_JE.csv')
-        generate_yardi_je_csv(accrual_lines, path, period=period, property_code='revlabpm')
+        generate_yardi_je_csv(accrual_lines, path, period=period, property_code='revlabspm')
         print(f'Accruals JE CSV: {path}  ({len(accrual_lines)} lines)')
     else:
         print('Accruals JE: no lines')

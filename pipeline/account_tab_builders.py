@@ -816,7 +816,7 @@ def build_213100_tab(wb, period: str, property_name: str,
            align=Alignment(horizontal='left', vertical='center'))
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=AMOUNT_COL)
 
-    prop_line = (f'{property_name or "revlabpm"}  |  Period: {period}  |  '
+    prop_line = (f'{property_name or "revlabspm"}  |  Period: {period}  |  '
                  f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c3 = ws.cell(row=3, column=FIRST_COL, value=prop_line)
     _apply(c3, font=_font(italic=True, size=10, color='FFFFFF'),
@@ -977,7 +977,7 @@ def build_135150_tab(wb, period: str, property_name: str,
            align=Alignment(horizontal='left', vertical='center'))
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
 
-    prop_line = (f'{property_name or "revlabpm"}  |  Period: {period}  |  '
+    prop_line = (f'{property_name or "revlabspm"}  |  Period: {period}  |  '
                  f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c3 = ws.cell(row=3, column=FIRST_COL, value=prop_line)
     _apply(c3, font=_font(italic=True, size=10, color='FFFFFF'),
@@ -2238,7 +2238,7 @@ def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
         bg  = _fill(LIGHT_GRAY) if alt else None
 
         rl_amt  = float(row.get('revlabs',  0) or 0)
-        rpm_amt = float(row.get('revlabpm', 0) or 0)
+        rpm_amt = float(row.get('revlabspm', 0) or 0)
         tot_amt = round(rl_amt + rpm_amt, 2)
         rl_total  = round(rl_total  + rl_amt,  2)
         rpm_total = round(rpm_total + rpm_amt, 2)
@@ -2340,11 +2340,11 @@ _CAPITAL_181400_SEED: List[dict] = [
 # 187100 — Finance Costs  (Date | Description | Revlabs | Revlabpm | Total)
 # Handled by its own builder (build_187100_tab) due to multi-entity column layout.
 _CAPITAL_187100_SEED: List[dict] = [
-    {'date': '01/01/2024', 'description': 'Beginning Balance',            'revlabs': 0.00,       'revlabpm': 0.00},
-    {'date': '10/31/2024', 'description': 'Rev Labs Extension Fee',       'revlabs': 230260.49,  'revlabpm': 0.00},
-    {'date': '06/25/2025', 'description': 'Frost Brown Todd LLP Invoice', 'revlabs': 3000.00,    'revlabpm': 0.00},
-    {'date': '06/25/2025', 'description': 'Berkadia Commercial Mortgage', 'revlabs': 230260.49,  'revlabpm': 0.00},
-    {'date': '06/25/2025', 'description': 'ACORE Capital, LP Invoice',    'revlabs': 1500.00,    'revlabpm': 0.00},
+    {'date': '01/01/2024', 'description': 'Beginning Balance',            'revlabs': 0.00,       'revlabspm': 0.00},
+    {'date': '10/31/2024', 'description': 'Rev Labs Extension Fee',       'revlabs': 230260.49,  'revlabspm': 0.00},
+    {'date': '06/25/2025', 'description': 'Frost Brown Todd LLP Invoice', 'revlabs': 3000.00,    'revlabspm': 0.00},
+    {'date': '06/25/2025', 'description': 'Berkadia Commercial Mortgage', 'revlabs': 230260.49,  'revlabspm': 0.00},
+    {'date': '06/25/2025', 'description': 'ACORE Capital, LP Invoice',    'revlabs': 1500.00,    'revlabspm': 0.00},
 ]
 
 
@@ -2359,7 +2359,7 @@ _EQUITY_311100_SEED: List[tuple] = [
 ]
 
 # 331100 — Distributions - Partner A
-# Each tuple: (date_str 'MM/DD/YYYY', description, revlabs_amt, revlabpm_amt)
+# Each tuple: (date_str 'MM/DD/YYYY', description, revlabs_amt, revlabspm_amt)
 # Distributions are debits to equity → positive amounts
 _EQUITY_331100_SEED: List[tuple] = [
     ('05/01/2021', '331100-Partner Distributions',                              19711731.39, 0.0),
@@ -2375,7 +2375,7 @@ _EQUITY_331100_SEED: List[tuple] = [
 # 381100 — Retained Earnings - Control
 # Entity split for beginning balance (as of Jan 2026 workpaper)
 _EQUITY_381100_SEED = {
-    'revlabpm': -8184455.73,
+    'revlabspm': -8184455.73,
     'revlabs':    251436.26,
 }
 
@@ -2472,9 +2472,9 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     Layout: Date | Description | Revlabs | Revlabpm | Total  (cols B–F)
     Seed:   8 historical distribution rows; hardcoded first run.
     Carry:  prior_tab_detail['331100'] = list of
-            {date_str, desc, revlabs, revlabpm, total}.
+            {date_str, desc, revlabs, revlabspm, total}.
     GL:     New debit activity in current period → Revlabpm column.
-            (Revlabs distributions are not in the revlabpm GL — seed only.)
+            (Revlabs distributions are not in the revlabspm GL — seed only.)
     """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
@@ -2498,17 +2498,17 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     # ── Determine historical rows ─────────────────────────────────────────────
     prior_rows = (prior_tab_detail or {}).get('331100')
     if prior_rows is not None:
-        hist_rows = prior_rows   # [{date_str, desc, revlabs, revlabpm, total}]
+        hist_rows = prior_rows   # [{date_str, desc, revlabs, revlabspm, total}]
     else:
         # First run — bootstrap from seed (entries strictly before close period)
         hist_rows = []
-        for ds, desc, revlabs, revlabpm in _EQUITY_331100_SEED:
+        for ds, desc, revlabs, revlabspm in _EQUITY_331100_SEED:
             d = _parse_date(ds)
             if d and (d.year, d.month) < (yr, mo):
                 hist_rows.append({
                     'date_str': ds, 'desc': desc,
-                    'revlabs':  revlabs, 'revlabpm': revlabpm,
-                    'total':    round(revlabs + revlabpm, 2),
+                    'revlabs':  revlabs, 'revlabspm': revlabspm,
+                    'total':    round(revlabs + revlabspm, 2),
                 })
 
     # ── Current-period GL activity (debits = new distributions, Revlabpm) ────
@@ -2528,7 +2528,7 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                     'date_str': d.strftime('%m/%d/%Y'),
                     'desc':     desc_clean,
                     'revlabs':  0.0,
-                    'revlabpm': net,
+                    'revlabspm': net,
                     'total':    net,
                 })
 
@@ -2548,7 +2548,7 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
         _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
 
-        c4 = ws.cell(row=next_row, column=5, value=r.get('revlabpm', 0) or 0)
+        c4 = ws.cell(row=next_row, column=5, value=r.get('revlabspm', 0) or 0)
         _apply(c4, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
                align=Alignment(horizontal='right'))
 
@@ -2560,7 +2560,7 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     # Totals row
     if all_rows:
         tot_rl  = round(sum(r.get('revlabs',  0) or 0 for r in all_rows), 2)
-        tot_rpm = round(sum(r.get('revlabpm', 0) or 0 for r in all_rows), 2)
+        tot_rpm = round(sum(r.get('revlabspm', 0) or 0 for r in all_rows), 2)
         tot_all = round(tot_rl + tot_rpm, 2)
         c_lbl = ws.cell(row=next_row, column=2, value='Total Distributions')
         _apply(c_lbl, font=_font(bold=True, color='FFFFFF'), fill=_fill(MED_BLUE),
@@ -2590,7 +2590,7 @@ def build_381100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 
     Layout: Description | Revlabpm | Revlabs | Total  (cols B–E)
     Seed:   Entity split from Jan 2026 workpaper; hardcoded first run.
-    Carry:  prior_tab_detail['381100'] = {revlabpm, revlabs} for the split.
+    Carry:  prior_tab_detail['381100'] = {revlabspm, revlabs} for the split.
     GL:     Ending balance drives the GL/TB tie-out; entity split is from seed/prior.
     """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
@@ -2609,12 +2609,12 @@ def build_381100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                                   [40, 18, 18, 18])
 
     # ── Entity split: prior workpaper → seed fallback ────────────────────────
-    prior_split = (prior_tab_detail or {}).get('381100')  # {revlabpm, revlabs}
+    prior_split = (prior_tab_detail or {}).get('381100')  # {revlabspm, revlabs}
     if prior_split:
-        rpm_bal = prior_split.get('revlabpm', _EQUITY_381100_SEED['revlabpm'])
+        rpm_bal = prior_split.get('revlabspm', _EQUITY_381100_SEED['revlabspm'])
         rl_bal  = prior_split.get('revlabs',  _EQUITY_381100_SEED['revlabs'])
     else:
-        rpm_bal = _EQUITY_381100_SEED['revlabpm']
+        rpm_bal = _EQUITY_381100_SEED['revlabspm']
         rl_bal  = _EQUITY_381100_SEED['revlabs']
     total_bal = round(rpm_bal + rl_bal, 2)
 

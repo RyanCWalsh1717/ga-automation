@@ -2,7 +2,7 @@
 Parser for Yardi Trial Balance export (.xlsx format).
 
 Expected format:
-  Row 1: "Revolution Labs Owner, LLC (revlabpm)"
+  Row 1: "Revolution Labs Owner, LLC (revlabspm)"
   Row 2: "Trial Balance"
   Row 3: "Period = Apr 2026"
   Row 4: "Book = Accrual ; Tree = ysi_tb"
@@ -100,7 +100,7 @@ def parse(filepath: str, sheet_name: str = None) -> TBResult:
     row3 = _safe_str(ws.cell(row=3, column=1).value)
     row4 = _safe_str(ws.cell(row=4, column=1).value)
 
-    # "Revolution Labs Owner, LLC (revlabpm)"
+    # "Revolution Labs Owner, LLC (revlabspm)"
     match = re.match(r'^(.+?)\s*\((\w+)\)', row1)
     if match:
         metadata.entity_name = match.group(1).strip()

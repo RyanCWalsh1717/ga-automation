@@ -3608,7 +3608,7 @@ def generate_yardi_je_import(je_lines: List[Dict], output_path: str,
 # ── Generate Yardi CSV import (exact Yardi format) ────────────
 
 def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
-                           period: str = '', property_code: str = 'revlabpm',
+                           period: str = '', property_code: str = 'revlabspm',
                            book: str = '') -> str:
     """
     Generate a Yardi-compatible journal entry import CSV.
@@ -3639,7 +3639,7 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
         je_lines:      List of JE line dicts from build_accrual_entries()
         output_path:   Where to write the .csv file
         period:        Accounting period label (e.g. 'Mar-2026') — used to derive date
-        property_code: Yardi property code (default 'revlabpm')
+        property_code: Yardi property code (default 'revlabspm')
         book:          Unused — kept for signature compatibility (Yardi uses blank)
 
     Returns:
@@ -3725,7 +3725,7 @@ _ETL_IDX = {h: i for i, h in enumerate(_ETL_HEADERS)}
 
 
 def generate_etl_csv(je_lines: List[Dict], output_path: str,
-                     period: str = '', property_code: str = 'revlabpm',
+                     period: str = '', property_code: str = 'revlabspm',
                      book: str = '', auto_reverse: bool = False) -> str:
     """
     Generate a Yardi ETL FinJournals import CSV.
@@ -3753,7 +3753,7 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
         je_lines:      List of JE line dicts from build_accrual_entries()
         output_path:   Where to write the .csv file
         period:        Accounting period label e.g. 'Jan-2026' — used to derive date
-        property_code: Yardi property code (default 'revlabpm')
+        property_code: Yardi property code (default 'revlabspm')
         book:          Unused — kept for signature compatibility
         auto_reverse:  If True, BM = -1 (auto-reverse); if False, BM = 0.
                        Accruals pass True; prepaid / post-close pass False.

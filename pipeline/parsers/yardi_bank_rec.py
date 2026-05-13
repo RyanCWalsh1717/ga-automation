@@ -72,13 +72,13 @@ def is_yardi_bank_rec(filepath: str) -> bool:
         return False
 
 
-def parse(filepath: str, property_code: str = 'revlabpm') -> Dict[str, Any]:
+def parse(filepath: str, property_code: str = 'revlabspm') -> Dict[str, Any]:
     """
     Parse a Yardi Bank Reconciliation PDF.
 
     Args:
         filepath:      Path to the PDF file.
-        property_code: Yardi property code (e.g. 'revlabpm').  Used to detect
+        property_code: Yardi property code (e.g. 'revlabspm').  Used to detect
                        the GL detail section in the PDF, which begins every
                        transaction line with the property code.  Must match the
                        code Yardi prints in the exported PDF exactly (lowercase).
@@ -121,7 +121,7 @@ def parse(filepath: str, property_code: str = 'revlabpm') -> Dict[str, Any]:
         #   Pages 6-9: Yardi GL detail for account 111100
         #   Page 10:   JLL cash worksheet
         # The PNC statement starts with "Corporate Business Account Statement"
-        # The GL detail section starts with "111100" on a line (or "revlabpm")
+        # The GL detail section starts with "111100" on a line (or "revlabspm")
         pnc_start_page = None
         gl_start_page = None
 
@@ -579,13 +579,13 @@ def _extract_pnc_deposits(text: str) -> List[dict]:
 
 # ── Yardi GL section parser (pages 6-9) ──────────────────────────────────────
 
-def parse_gl_section(text: str, property_code: str = 'revlabpm') -> List[dict]:
+def parse_gl_section(text: str, property_code: str = 'revlabspm') -> List[dict]:
     """
     Parse the Yardi GL detail section (account 111100, Cash - Operating) from
     the text of pages 6-9 of the bank rec PDF.
 
     pdfplumber renders each transaction as a single line starting with the
-    Yardi property code (e.g. 'revlabpm').  Pass the correct property_code
+    Yardi property code (e.g. 'revlabspm').  Pass the correct property_code
     so the parser can identify GL transaction lines.
 
     Three line formats appear in practice:
@@ -640,7 +640,7 @@ def parse_gl_section(text: str, property_code: str = 'revlabpm') -> List[dict]:
         prefix = line[:amt_m.start()].strip()
 
         # Tokenize the prefix; date and period are anchors
-        # Expected token order: revlabpm, entity..., date, period, description..., control, [reference]
+        # Expected token order: revlabspm, entity..., date, period, description..., control, [reference]
         tokens = prefix.split()
         if len(tokens) < 7:
             continue

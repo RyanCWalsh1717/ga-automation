@@ -25,6 +25,67 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 
+def _detect_bc_columns(ws) -> Tuple[Dict[str, int], int]:
+    """
+    Scan header rows (1-9) for the row that contains both 'actual' and 'budget'
+    keywords, then map each field to its 0-based column index dynamically.
+
+    Returns (col_map, data_start_row) where:
+      col_map       — field name → 0-based column index
+      data_start_row — 1-based row number where account data begins
+
+    Falls back to the original hardcoded defaults when no header row is found.
+    """
+    _DEFAULTS: Dict[str, int] = {
+        'ptd_actual':      2,
+        'ptd_budget':      3,
+        'ptd_variance':    4,
+        'ptd_percent_var': 5,
+        'ytd_actual':      6,
+        'ytd_budget':      7,
+        'ytd_variance':    8,
+        'ytd_percent_var': 9,
+        'annual':          10,
+    }
+
+    max_col = min(getattr(ws, 'max_column', 15) + 2, 20)
+
+    for hrow in range(1, min(10, ws.max_row + 1)):
+        hvals = [
+            str(ws.cell(row=hrow, column=c).value or '').strip().lower()
+            for c in range(1, max_col + 1)
+        ]
+
+        has_actual = any('actual' in h for h in hvals)
+        has_budget = any('budget' in h for h in hvals)
+        if not (has_actual and has_budget):
+            continue
+
+        # Columns by keyword occurrence — first = PTD, second = YTD
+        actual_cols   = [i for i, h in enumerate(hvals) if 'actual' in h]
+        # Exclude "annual budget" from the regular budget list
+        budget_cols   = [i for i, h in enumerate(hvals) if 'budget' in h and 'annual' not in h]
+        variance_cols = [i for i, h in enumerate(hvals) if 'variance' in h]
+        pct_cols      = [i for i, h in enumerate(hvals) if '%' in h or 'percent' in h]
+        annual_cols   = [i for i, h in enumerate(hvals) if 'annual' in h]
+
+        col_map = dict(_DEFAULTS)
+
+        if len(actual_cols) >= 1:   col_map['ptd_actual']      = actual_cols[0]
+        if len(actual_cols) >= 2:   col_map['ytd_actual']      = actual_cols[1]
+        if len(budget_cols) >= 1:   col_map['ptd_budget']      = budget_cols[0]
+        if len(budget_cols) >= 2:   col_map['ytd_budget']      = budget_cols[1]
+        if len(variance_cols) >= 1: col_map['ptd_variance']    = variance_cols[0]
+        if len(variance_cols) >= 2: col_map['ytd_variance']    = variance_cols[1]
+        if len(pct_cols) >= 1:      col_map['ptd_percent_var'] = pct_cols[0]
+        if len(pct_cols) >= 2:      col_map['ytd_percent_var'] = pct_cols[1]
+        if annual_cols:             col_map['annual']          = annual_cols[0]
+
+        return col_map, hrow + 1
+
+    return _DEFAULTS, 6  # default: data starts at row 6
+
+
 def parse(filepath: str) -> List[Dict]:
     """
     Parse a Yardi Budget Comparison export file.
@@ -50,14 +111,16 @@ def parse(filepath: str) -> List[Dict]:
     # Meta information is in rows 1-4
     metadata = _extract_metadata(ws)
 
-    # Row 5 contains column headers
-    headers = _extract_headers(ws, row=5)
+    # Detect column positions dynamically from header rows
+    col_map, data_start_row = _detect_bc_columns(ws)
 
+    # Validate that at least one header was found (extract_headers used only for validation)
+    headers = _extract_headers(ws, row=5)
     if not headers:
         raise ValueError("Cannot extract headers from Budget Comparison file")
 
-    # Process data rows starting from row 6
-    for row_num in range(6, ws.max_row + 1):
+    # Process data rows starting after the detected header row
+    for row_num in range(data_start_row, ws.max_row + 1):
         row = ws[row_num]
         row_values = [cell.value for cell in row]
 
@@ -79,28 +142,15 @@ def parse(filepath: str) -> List[Dict]:
             'account_name': str(_normalize_value(account_name) or '').strip(),
         }
 
-        # Extract values in order: PTD Actual, PTD Budget, PTD Variance, PTD % Var,
-        #                          YTD Actual, YTD Budget, YTD Variance, YTD % Var, Annual
-        column_map = [
-            (2, 'ptd_actual'),
-            (3, 'ptd_budget'),
-            (4, 'ptd_variance'),
-            (5, 'ptd_percent_var'),
-            (6, 'ytd_actual'),
-            (7, 'ytd_budget'),
-            (8, 'ytd_variance'),
-            (9, 'ytd_percent_var'),
-            (10, 'annual'),
-        ]
-
-        for col_idx, col_name in column_map:
+        # Extract values using dynamically detected column positions.
+        # Percent-variance fields (ending '_var') may contain 'N/A' — use flexible normalizer.
+        for field_name, col_idx in col_map.items():
             if col_idx < len(row_values):
                 value = row_values[col_idx]
-                # Percentage columns may have 'N/A'
-                if col_name.endswith('_var'):
-                    record[col_name] = _normalize_flexible_numeric(value)
+                if field_name.endswith('_var'):
+                    record[field_name] = _normalize_flexible_numeric(value)
                 else:
-                    record[col_name] = _normalize_numeric(value)
+                    record[field_name] = _normalize_numeric(value)
 
         # Add metadata
         record.update(metadata)

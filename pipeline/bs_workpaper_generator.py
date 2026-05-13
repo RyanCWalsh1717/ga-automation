@@ -345,11 +345,11 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _gl_entities = list(getattr(gl_result.metadata, 'entities', []) or [])
         _entity_label = (
             getattr(gl_result.metadata, 'property_code', '') or
-            getattr(gl_result.metadata, 'property_name', '') or 'revlabpm'
-        ).strip().lower() or 'revlabpm'
+            getattr(gl_result.metadata, 'property_name', '') or 'revlabspm'
+        ).strip().lower() or 'revlabspm'
 
     # Apply friendly display names — Yardi codes → workpaper labels
-    _ENTITY_DISPLAY = {'revlabpm': 'Revlabs', 'revla': 'Revla'}
+    _ENTITY_DISPLAY = {'revlabspm': 'Revlabs', 'revla': 'Revla'}
     _entity_label  = _ENTITY_DISPLAY.get(_entity_label, _entity_label)
     _gl_entities   = [_ENTITY_DISPLAY.get(e.lower(), e) for e in _gl_entities]
 
@@ -571,7 +571,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
     # ── Development Bank Rec tab (revlabs entity — BofA x3132) ───────────────
     if dev_bank_rec_data is not None:
-        # GL balance defaults to 0.0 — revlabs has no activity in the revlabpm
+        # GL balance defaults to 0.0 — revlabs has no activity in the revlabspm
         # GL export; the tab shows the BofA statement balance for reference.
         _gl_dev = float(dev_bank_rec_data.get('gl_balance') or 0)
         _write_bank_rec_tab(
@@ -1392,9 +1392,9 @@ def _read_equity_distributions_tab_detail(ws) -> list:
       F = Total amount (all numeric)
 
     Skips header rows, totals row, and tie-out rows.
-    Returns list of {date_str, desc, revlabs, revlabpm, total} dicts.
+    Returns list of {date_str, desc, revlabs, revlabspm, total} dicts.
     """
-    _SKIP = frozenset({'date', 'description', 'revlabs', 'revlabpm', 'total',
+    _SKIP = frozenset({'date', 'description', 'revlabs', 'revlabspm', 'total',
                        'total distributions', 'ending balance per gl',
                        'ending balance per tb', 'variance'})
     rows = []
@@ -1421,7 +1421,7 @@ def _read_equity_distributions_tab_detail(ws) -> list:
             'date_str': col_b.strip(),
             'desc':     str(col_c or '').strip(),
             'revlabs':  float(col_d) if isinstance(col_d, (int, float)) else 0.0,
-            'revlabpm': float(col_e) if isinstance(col_e, (int, float)) else 0.0,
+            'revlabspm': float(col_e) if isinstance(col_e, (int, float)) else 0.0,
             'total':    float(col_f),
         })
     return rows
@@ -1436,7 +1436,7 @@ def _read_equity_retained_earnings_split(ws) -> dict:
       C = Revlabpm amount
       D = Revlabs amount
 
-    Returns {revlabpm: float, revlabs: float}.
+    Returns {revlabspm: float, revlabs: float}.
     Falls back to empty dict if the row can't be found.
     """
     for row_vals in ws.iter_rows(min_row=1, values_only=True):
@@ -1447,7 +1447,7 @@ def _read_equity_retained_earnings_split(ws) -> dict:
         col_d = row_vals[3]
         if isinstance(col_b, str) and 'beginning balance' in col_b.lower():
             if isinstance(col_c, (int, float)) and isinstance(col_d, (int, float)):
-                return {'revlabpm': float(col_c), 'revlabs': float(col_d)}
+                return {'revlabspm': float(col_c), 'revlabs': float(col_d)}
     return {}
 
 
@@ -1460,7 +1460,7 @@ def _extract_prior_full_detail(wb_prior) -> dict:
                      311100, 331100, 381100.
 
     Returns {account_code: [list of row dicts]}.
-    For 381100 specifically, returns {account_code: {revlabpm, revlabs}} dict.
+    For 381100 specifically, returns {account_code: {revlabspm, revlabs}} dict.
     If the same account code appears in multiple tabs (e.g., with a period prefix),
     the last tab encountered is used — in practice there should be only one tab
     per account in any given workpaper.
@@ -1711,7 +1711,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
         _ent_cols  = {}
         _AMT       = _B + 2                    # single entity amount col
         _LAST_COL  = _AMT
-        _ent_hdrs  = [f'Entity ({entity_label or "revlabpm"})']
+        _ent_hdrs  = [f'Entity ({entity_label or "revlabspm"})']
         _ent_widths = [18]
 
     # ── Row 1: Account header ──────────────────────────────────────────────

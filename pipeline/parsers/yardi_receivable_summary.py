@@ -6,13 +6,13 @@ cash-received calculation.
 
 Report layout (Report1 sheet):
   Row 1:  Title   — 'Receivable Summary'
-  Row 2:  Caption — 'DB Caption: ... Property: revlabpm  Month From: MM/YYYY ...'
+  Row 2:  Caption — 'DB Caption: ... Property: revlabspm  Month From: MM/YYYY ...'
   Rows 3-4: Column headers — Property | Charge Code | Balance Forward | Charge | Receipt | Ending Balance
   Data rows: one row per charge code (property in col 0, charge code label in col 1)
-    e.g. ('revlabpm', 'BRLAB',       214388.06, 1006377.60, -1220765.66,      0)
-         ('revlabpm', 'Prepayment', -328546.57,       0.00,    34383.86, -294162.71)
-         ('revlabpm', 'ELECT',        43437.70,   15354.18,   -43437.70,   15354.18)
-         ('revlabpm', 'UTILI',         1712.04,    1736.95,    -1712.04,    1736.95)
+    e.g. ('revlabspm', 'BRLAB',       214388.06, 1006377.60, -1220765.66,      0)
+         ('revlabspm', 'Prepayment', -328546.57,       0.00,    34383.86, -294162.71)
+         ('revlabspm', 'ELECT',        43437.70,   15354.18,   -43437.70,   15354.18)
+         ('revlabspm', 'UTILI',         1712.04,    1736.95,    -1712.04,    1736.95)
   Subtotal row:    (property_code, 'Subtotal', ..., total_charge, total_receipt, ending)
   Grand Total row: ('Grand Total',  None, ...,      total_charge, total_receipt, ending)
 
@@ -146,10 +146,10 @@ def _is_skip_row(col0: str, col1: str) -> bool:
 def _parse_rows(rows: list) -> ReceivableSummaryResult:
     # ── Extract period and property from caption rows ──────────────────────────
     # Only scan the title/caption rows (first 6) and require a colon after
-    # 'Property' to distinguish the caption ('Property: revlabpm') from the
+    # 'Property' to distinguish the caption ('Property: revlabspm') from the
     # column header row (bare word 'Property' with no colon).
     period = ''
-    property_code = 'revlabpm'
+    property_code = 'revlabspm'
     for row in rows[:6]:
         caption = str(row[0] or '') + ' ' + str(row[1] if len(row) > 1 else '')
         m = re.search(r'Month\s+From[:\s]+(\d{2}/\d{4})', caption, re.IGNORECASE)

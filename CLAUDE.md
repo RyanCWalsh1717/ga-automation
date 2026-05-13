@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Monthly accounting close automation for **Greatland Realty Partners** (GRP), a CRE firm managing 2M+ SF in Greater Boston. The beta property is **Revolution Labs** at 1050 Waltham Street, Lexington, MA (Yardi property code: `revlabpm`). The capital partner is **Singerman Real Estate Partners**, who receives institutional-quality deliverables each month.
+Monthly accounting close automation for **Greatland Realty Partners** (GRP), a CRE firm managing 2M+ SF in Greater Boston. The beta property is **Revolution Labs** at 1050 Waltham Street, Lexington, MA (Yardi property code: `revlabspm`). The capital partner is **Singerman Real Estate Partners**, who receives institutional-quality deliverables each month.
 
 Deployed as a Streamlit web app at: `https://ga-automation-v2ebmljbewawn5pj9ivvbd.streamlit.app/`
 GitHub repo: `https://github.com/RyanCWalsh1717/ga-automation`
@@ -331,7 +331,7 @@ TUB entries appear in `GA_Accruals_JE.csv`.
   GL returns a `GLParseResult` with `.accounts` list and `.transactions` rollup.
 - **GL header formats**: `yardi_gl.py` handles two formats:
   - Format A: `"Property = code  name"` (older exports)
-  - Format B: `"Name (code)"` e.g. `"Revolution Labs Owner, LLC (revlabpm)"` (current)
+  - Format B: `"Name (code)"` e.g. `"Revolution Labs Owner, LLC (revlabspm)"` (current)
 - **Financial data types**: Parsers sometimes return strings for numeric fields.
   Use defensive float conversion (see `_safe_num()` in bs_workpaper_generator.py).
 - **No circular imports**: GL lookup utilities live in `accrual_entry_generator.py`, not `engine.py`.
@@ -370,14 +370,14 @@ No CI/CD pipeline — Streamlit builds directly from `requirements.txt`.
 
 ## Updating the Annual Kardin Budget (FY2027 and beyond)
 
-The committed budget file lives at `data/revlabpm/GA_Kardin_Budget_FY2026.xlsx`.
+The committed budget file lives at `data/revlabspm/GA_Kardin_Budget_FY2026.xlsx`.
 No upload is needed during the year — the app loads it automatically.
 
 **To update for a new fiscal year (Ryan does this directly in GitHub):**
 1. Go to `https://github.com/RyanCWalsh1717/ga-automation`
-2. Navigate to `data/revlabpm/`
+2. Navigate to `data/revlabspm/`
 3. Click the existing budget file → click the pencil/edit icon (top right) → **"..."** → **"Delete file"** — OR —
-4. Better: Click **"Add file" → "Upload files"** in the `data/revlabpm/` folder
+4. Better: Click **"Add file" → "Upload files"** in the `data/revlabspm/` folder
 5. Upload the new Kardin budget, name it `GA_Kardin_Budget_FY2026.xlsx` (keep same name) or update the filename in `app.py` (`_COMMITTED_BUDGET` line)
 6. Commit directly to `main` — Streamlit redeploys in ~2 minutes
 

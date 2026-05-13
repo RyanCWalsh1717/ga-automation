@@ -1,8 +1,8 @@
 """
-Parser for Yardi 12-Month Income Statement export (revlabpm).
+Parser for Yardi 12-Month Income Statement export (revlabspm).
 
 Expected layout:
-  Row 1: "Revolution Labs Owner, LLC (revlabpm)"
+  Row 1: "Revolution Labs Owner, LLC (revlabspm)"
   Row 2: "Statement (12 months)"
   Row 3: "Period = Feb 2025-Jan 2026"
   Row 4: "Book = Accrual"

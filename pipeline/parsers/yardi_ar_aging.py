@@ -6,7 +6,7 @@ balance for use in the management fee cash-received calculation.
 
 Report layout (Report1 sheet):
   Row 1:  Title   — 'Aging Detail'
-  Row 2:  Caption — 'DB Caption: ...  Property: revlabpm  ...  Age As Of: MM/DD/YYYY  Post To: MM/YYYY'
+  Row 2:  Caption — 'DB Caption: ...  Property: revlabspm  ...  Age As Of: MM/DD/YYYY  Post To: MM/YYYY'
   Row 3:  Column headers (top half of split header)
   Row 4:  Column headers (bottom half)
   ...
@@ -16,7 +16,7 @@ Report layout (Report1 sheet):
     R-XXXX rows         — receipt entries (Prepay rows land in Pre-payments col)
     Tenant subtotal     — (None, None, 'Tenant Name', None, ..., subtotals)
   ...
-  Property total row:   ('revlabpm', ...)
+  Property total row:   ('revlabspm', ...)
   Grand Total row:      ('Grand Total', ...)
 
 Column layout (0-based, standard Yardi Aging Detail format):
@@ -135,7 +135,7 @@ def _parse_rows(rows: list) -> ARAgingResult:
     # ── Extract period and as_of_date from caption row ─────────────────────────
     period        = ''
     as_of_date    = ''
-    property_code = 'revlabpm'
+    property_code = 'revlabspm'
 
     for row in rows[:5]:
         caption = str(row[0] or '')
@@ -160,6 +160,17 @@ def _parse_rows(rows: list) -> ARAgingResult:
             if cell_str in ('pre-', 'pre-payments', 'prepayments', 'payments'):
                 prepayments_col = i
                 break
+
+    # Derive aging-bucket column indices relative to prepayments_col.
+    # Standard Yardi layout has exactly 5 numeric columns before Pre-payments:
+    #   Current Owed, 0-30 Owed, 31-60 Owed, 61-90 Owed, Over 90 Owed
+    # and one column after: Total Owed.
+    _col_current  = max(0, prepayments_col - 5)
+    _col_0_30     = max(0, prepayments_col - 4)
+    _col_31_60    = max(0, prepayments_col - 3)
+    _col_61_90    = max(0, prepayments_col - 2)
+    _col_over_90  = max(0, prepayments_col - 1)
+    _col_total    = prepayments_col + 1
 
     # ── Find Grand Total row ────────────────────────────────────────────────────
     grand_prepayments = 0.0
@@ -197,13 +208,13 @@ def _parse_rows(rows: list) -> ARAgingResult:
                 charge_code=charge_code,
                 date=row[6] if len(row) > 6 else None,
                 month=str(row[7] or '') if len(row) > 7 else '',
-                current_owed=_safe_float(row[8]) if len(row) > 8 else 0.0,
-                owed_0_30=_safe_float(row[9]) if len(row) > 9 else 0.0,
-                owed_31_60=_safe_float(row[10]) if len(row) > 10 else 0.0,
-                owed_61_90=_safe_float(row[11]) if len(row) > 11 else 0.0,
-                owed_over_90=_safe_float(row[12]) if len(row) > 12 else 0.0,
-                prepayments=_safe_float(row[13]) if len(row) > 13 else 0.0,
-                total_owed=_safe_float(row[14]) if len(row) > 14 else 0.0,
+                current_owed=_safe_float(row[_col_current])  if len(row) > _col_current  else 0.0,
+                owed_0_30   =_safe_float(row[_col_0_30])     if len(row) > _col_0_30     else 0.0,
+                owed_31_60  =_safe_float(row[_col_31_60])    if len(row) > _col_31_60    else 0.0,
+                owed_61_90  =_safe_float(row[_col_61_90])    if len(row) > _col_61_90    else 0.0,
+                owed_over_90=_safe_float(row[_col_over_90])  if len(row) > _col_over_90  else 0.0,
+                prepayments =_safe_float(row[prepayments_col]) if len(row) > prepayments_col else 0.0,
+                total_owed  =_safe_float(row[_col_total])    if len(row) > _col_total    else 0.0,
                 is_prepayment=is_prepay,
             ))
             continue
@@ -211,10 +222,10 @@ def _parse_rows(rows: list) -> ARAgingResult:
         # Tenant subtotal: col0=None, col2=tenant name, col3=None/empty, has financials
         if row[0] is None and col2 and not col3 and len(row) > prepayments_col:
             # Skip header rows that match this pattern but have no numbers
-            has_financials = any(isinstance(row[i], (int, float)) for i in range(8, min(15, len(row))))
+            has_financials = any(isinstance(row[i], (int, float)) for i in range(_col_current, min(_col_total + 1, len(row))))
             if not has_financials:
                 continue
-            current_owed = _safe_float(row[8]) if len(row) > 8 else 0.0
+            current_owed = _safe_float(row[_col_current]) if len(row) > _col_current else 0.0
             prepay_val   = _safe_float(row[prepayments_col])
             total_owed   = _safe_float(row[prepayments_col + 1]) if len(row) > prepayments_col + 1 else 0.0
             per_tenant.append(ARAgingTenant(

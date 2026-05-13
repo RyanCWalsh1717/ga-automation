@@ -23,6 +23,64 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 
+def _detect_is_columns(ws) -> Tuple[int, int, int, int, int]:
+    """
+    Scan header rows (1-8) to locate the PTD and YTD amount / percent columns.
+
+    Handles single-row headers ("Period to Date", "Year to Date") and two-row
+    split headers (group header on one row, "Amount" / "%" on the next).
+
+    Returns (ptd_col, ptd_pct_col, ytd_col, ytd_pct_col, data_start_row)
+    where all column indices are 0-based and data_start_row is 1-based.
+    Falls back to (2, 3, 4, 5, 6) if no header row is detected.
+    """
+    max_col = min(getattr(ws, 'max_column', 8) + 2, 12)
+
+    # Accumulate text across all header rows per column (handles split headers).
+    combined = [''] * max_col
+    last_header_row = 5
+
+    for hrow in range(1, min(9, ws.max_row + 1)):
+        hvals = [
+            str(ws.cell(row=hrow, column=c).value or '').strip().lower()
+            for c in range(1, max_col + 1)
+        ]
+        # Stop scanning once we hit a data row (col A looks like an account code)
+        col_a = str(ws.cell(row=hrow, column=1).value or '').strip()
+        if col_a and col_a.replace('-', '').replace(' ', '').isdigit():
+            break
+        # Only absorb rows that have something interesting beyond cols A/B
+        if any(hvals[2:]):
+            last_header_row = hrow
+            for i, v in enumerate(hvals[:max_col]):
+                if v:
+                    combined[i] += ' ' + v
+
+    data_start = last_header_row + 1
+
+    # Build candidate lists from combined column text
+    period_cols = [i for i, t in enumerate(combined) if i >= 2 and ('period' in t or 'ptd' in t)]
+    year_cols   = [i for i, t in enumerate(combined) if i >= 2 and ('year' in t or 'ytd' in t)]
+    amount_cols = [i for i, t in enumerate(combined) if i >= 2 and 'amount' in t]
+    pct_cols    = [i for i, t in enumerate(combined) if i >= 2 and ('%' in t or 'percent' in t)]
+
+    # PTD column: prefer explicit 'period'/'ptd' keyword, else first 'amount'
+    ptd_col = period_cols[0] if period_cols else (amount_cols[0] if amount_cols else 2)
+
+    # YTD column: prefer explicit 'year'/'ytd', else second 'amount'
+    ytd_col = year_cols[0] if year_cols else (
+        amount_cols[1] if len(amount_cols) >= 2 else ptd_col + 2
+    )
+
+    # Percent columns: first/second '%' occurrence after their respective amount cols
+    ptd_pct_cols = [c for c in pct_cols if c > ptd_col and c < ytd_col]
+    ytd_pct_cols = [c for c in pct_cols if c > ytd_col]
+    ptd_pct_col = ptd_pct_cols[0] if ptd_pct_cols else ptd_col + 1
+    ytd_pct_col = ytd_pct_cols[0] if ytd_pct_cols else ytd_col + 1
+
+    return ptd_col, ptd_pct_col, ytd_col, ytd_pct_col, data_start
+
+
 def parse(filepath: str) -> List[Dict]:
     """
     Parse a Yardi Income Statement export file.
@@ -48,14 +106,16 @@ def parse(filepath: str) -> List[Dict]:
     # Meta information is in rows 1-4
     metadata = _extract_metadata(ws)
 
-    # Row 5 contains column headers
-    headers = _extract_headers(ws, row=5)
+    # Detect column positions dynamically from header rows
+    ptd_col, ptd_pct_col, ytd_col, ytd_pct_col, data_start_row = _detect_is_columns(ws)
 
+    # Validate headers (extract_headers used only for the None-check)
+    headers = _extract_headers(ws, row=5)
     if not headers:
         raise ValueError("Cannot extract headers from Income Statement file")
 
-    # Process data rows starting from row 6
-    for row_num in range(6, ws.max_row + 1):
+    # Process data rows starting after the detected header row
+    for row_num in range(data_start_row, ws.max_row + 1):
         row = ws[row_num]
         row_values = [cell.value for cell in row]
 
@@ -77,15 +137,15 @@ def parse(filepath: str) -> List[Dict]:
             'account_name': str(_normalize_value(account_name) or '').strip(),
         }
 
-        # Extract numeric values from remaining columns
-        if len(row_values) > 2:
-            record['ptd_amount'] = _normalize_numeric(row_values[2])
-        if len(row_values) > 3:
-            record['ptd_percent'] = _normalize_numeric(row_values[3])
-        if len(row_values) > 4:
-            record['ytd_amount'] = _normalize_numeric(row_values[4])
-        if len(row_values) > 5:
-            record['ytd_percent'] = _normalize_numeric(row_values[5])
+        # Extract numeric values using dynamically detected column positions
+        if len(row_values) > ptd_col:
+            record['ptd_amount']  = _normalize_numeric(row_values[ptd_col])
+        if len(row_values) > ptd_pct_col:
+            record['ptd_percent'] = _normalize_numeric(row_values[ptd_pct_col])
+        if len(row_values) > ytd_col:
+            record['ytd_amount']  = _normalize_numeric(row_values[ytd_col])
+        if len(row_values) > ytd_pct_col:
+            record['ytd_percent'] = _normalize_numeric(row_values[ytd_pct_col])
 
         # Add metadata
         record.update(metadata)

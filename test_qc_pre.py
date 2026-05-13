@@ -13,9 +13,9 @@ from parsers.keybank_daca import parse as parse_daca
 from management_fee import calculate as calc_fee, build_management_fee_je
 
 FILES = {
-    'gl':                r'C:\Users\RyanCWalsh\Downloads\GeneralLedger_revlabpm_Accrual (2).xlsx',
-    'trial_balance':     r'C:\Users\RyanCWalsh\Downloads\Trial_Balance_revlabpm_Accrual (2).xlsx',
-    'budget_comparison': r'C:\Users\RyanCWalsh\Downloads\Budget_Comparison_revlabpm_Accrual (2).xlsx',
+    'gl':                r'C:\Users\RyanCWalsh\Downloads\GeneralLedger_revlabspm_Accrual (2).xlsx',
+    'trial_balance':     r'C:\Users\RyanCWalsh\Downloads\Trial_Balance_revlabspm_Accrual (2).xlsx',
+    'budget_comparison': r'C:\Users\RyanCWalsh\Downloads\Budget_Comparison_revlabspm_Accrual (2).xlsx',
     'bank_rec':          r'C:\Users\RyanCWalsh\AppData\Local\Temp\Bank_Rec (41) (1).pdf',
     'daca_bank':         r'C:\Users\RyanCWalsh\Greatland Realty Partners\Greatland Partners - Documents\Portfolio\Revolution Labs\10 - Finance\Accounting\Bank Statements\2026\2026.3 Revolution Labs Owner LLC x5132.pdf',
     'loan': [
@@ -46,7 +46,7 @@ je_lines = build_accrual_entries([], period=period, property_name=prop,
     gl_data=gl, budget_data=bc, manual_accruals=manual)
 fee     = calc_fee(gl_parsed=gl, budget_rows=bc, daca_parsed=daca)
 fee_je  = build_management_fee_je(fee, period=period,
-              property_code='revlabpm', je_number='MGT-001')
+              property_code='revlabspm', je_number='MGT-001')
 je_lines = je_lines + fee_je
 
 dr = [l for l in je_lines if (l.get('debit') or 0) > 0]

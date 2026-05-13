@@ -189,8 +189,8 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
         return "budget_comparison", 0.88
 
     # ── Receivable Summary / Detail / AR Aging ────────────────────────────
-    # Must come before the revlabpm→GL fallback: Yardi receivable reports
-    # carry the property header ("revlabpm") just like the GL export.
+    # Must come before the revlabspm→GL fallback: Yardi receivable reports
+    # carry the property header ("revlabspm") just like the GL export.
     #
     # Receivable Summary: titled "Receivable Summary"; columns are
     #                     Property | Charge Code | Balance Forward | Charge | Receipt | Ending Balance
@@ -255,8 +255,8 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     # ── GL: "General Ledger" OR property code + transaction structure ─────
     if "general ledger" in all_text:
         return "gl", 0.95
-    # Yardi GL header: "Revolution Labs Owner, LLC (revlabpm)" in row 1
-    if "revlabpm" in all_text:
+    # Yardi GL header: "Revolution Labs Owner, LLC (revlabspm)" in row 1
+    if "revlabspm" in all_text:
         # Distinguish GL from TB/BC/T12 (those are already caught above)
         return "gl", 0.85
 

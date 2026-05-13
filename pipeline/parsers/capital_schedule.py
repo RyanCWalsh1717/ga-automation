@@ -23,7 +23,7 @@ from typing import List, Dict, Optional, Any
 @dataclass
 class CapitalRow:
     description: str
-    entity: str           # 'revlabs', 'revlabpm', or ''
+    entity: str           # 'revlabs', 'revlabspm', or ''
     commencement_date: str  # e.g. '1/4/2023 - 11/30/2031' or '6/24'
     amount: float
     notes: str = ''

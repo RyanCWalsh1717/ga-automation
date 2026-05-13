@@ -52,7 +52,7 @@ class GLTransaction:
     balance: float              # running balance within the account
     remarks: str                # additional notes / description
     row_number: int             # source row in Excel (for audit trail)
-    entity: str = ''            # property/entity code (e.g. "lexlab-1", "revlabpm")
+    entity: str = ''            # property/entity code (e.g. "lexlab-1", "revlabspm")
 
     @property
     def net_amount(self) -> float:
@@ -94,7 +94,7 @@ class GLAccount:
 @dataclass
 class GLMetadata:
     """Information from the file header."""
-    property_code: str          # e.g. "revlabpm" (or combined code for multi-entity)
+    property_code: str          # e.g. "revlabspm" (or combined code for multi-entity)
     property_name: str          # e.g. "Revolution Labs Owner, LLC"
     period: str                 # e.g. "Feb-2026"
     book: str                   # e.g. "Accrual"
@@ -183,7 +183,7 @@ def _safe_date(val) -> Optional[date]:
 
 def parse_metadata(ws) -> GLMetadata:
     """Extract metadata from the header rows (rows 1-5)."""
-    # Row 1: "Property = revlabpm Revolution Labs Owner, LLC"
+    # Row 1: "Property = revlabspm Revolution Labs Owner, LLC"
     # Row 2: "General Ledger"
     # Row 3: "Period = Feb-2026"
     # Row 4: "Book = Accrual"
@@ -195,8 +195,8 @@ def parse_metadata(ws) -> GLMetadata:
 
     # Parse property code and name from the header row.
     # Two formats observed in the wild:
-    #   Format A: "Property = revlabpm Revolution Labs Owner, LLC"
-    #   Format B: "Revolution Labs Owner, LLC (revlabpm)"
+    #   Format A: "Property = revlabspm Revolution Labs Owner, LLC"
+    #   Format B: "Revolution Labs Owner, LLC (revlabspm)"
     property_code = ""
     property_name = ""
     if "=" in raw_property:

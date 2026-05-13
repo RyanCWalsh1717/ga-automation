@@ -6,7 +6,7 @@ cash-received calculation.
 
 Report layout (Report1 sheet):
   Row 1:  Title   — 'Receivable Detail'
-  Row 2:  Caption — 'DB Caption: ... Property: revlabpm  Month From: MM/YYYY ...'
+  Row 2:  Caption — 'DB Caption: ... Property: revlabspm  Month From: MM/YYYY ...'
   Row 3:  Column headers  — Property | Customer | Tenant | Control # | ...
   Row 4:  Sub-headers     — (blank)  | (blank)  | (blank) | '#'      | ...
   ...
@@ -17,7 +17,7 @@ Report layout (Report1 sheet):
     R-XXXX rows         — receipt entries (Charges = 0, Receipts < 0)
     Tenant subtotal     — (None, None, 'Tenant Name', None, ..., total_charges, total_receipts, ending_balance, None)
   ...
-  Property total row:   ('revlabpm', None, None, None, ..., total, total, total, None)
+  Property total row:   ('revlabspm', None, None, None, ..., total, total, total, None)
   Grand Total row:      ('Grand Total', None, ..., total_charges, total_receipts, ending_balance, None)
 
 Management fee basis:
@@ -176,7 +176,7 @@ def _is_utili_code(code_key: str) -> bool:
 def _parse_rows(rows: list) -> ReceivableDetailResult:
     # ── Extract period from caption row ───────────────────────────────────────
     period = ''
-    property_code = 'revlabpm'
+    property_code = 'revlabspm'
     for row in rows[:5]:
         caption = str(row[0] or '')
         # "Month From: 03/2026  To  03/2026"
@@ -227,7 +227,7 @@ def _parse_rows(rows: list) -> ReceivableDetailResult:
         charges  = _safe_float(row[7])
         receipts = _safe_float(row[8])     # negative = cash in
 
-        # Tenant group header: col0 = 'revlabpm', col2 = tenant name, col3 = None
+        # Tenant group header: col0 = 'revlabspm', col2 = tenant name, col3 = None
         if col0 == property_code and col2 and not col3 and not row[3]:
             current_tenant = col2
             tenant_prepay_charges = 0.0

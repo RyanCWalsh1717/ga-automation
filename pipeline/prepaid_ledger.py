@@ -654,7 +654,7 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -
     c.alignment = Alignment(horizontal='left', vertical='center')
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
 
-    prop_line = (f'revlabpm  |  Period: {period}  |  '
+    prop_line = (f'revlabspm  |  Period: {period}  |  '
                  f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c = ws.cell(row=3, column=FIRST_COL, value=prop_line)
     c.font      = Font(name='Calibri', size=10, italic=True, color='FFFFFF')

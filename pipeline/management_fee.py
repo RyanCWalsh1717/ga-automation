@@ -438,7 +438,7 @@ def calculate(
 def build_management_fee_je(
     fee_result: ManagementFeeResult,
     period: str = '',
-    property_code: str = 'revlabpm',
+    property_code: str = 'revlabspm',
     ap_account: str = '213100',        # Accrued Management Fees payable
     ap_account_name: str = 'Accrued Management Fees',
     je_number: str = 'MGT-001',
@@ -620,7 +620,7 @@ def detect_prior_period_catchup(gl_data) -> Optional[float]:
 def build_catchup_je(
     catchup_amount: float,
     period: str = '',
-    property_code: str = 'revlabpm',
+    property_code: str = 'revlabspm',
     ap_account: str = '213100',
     ap_account_name: str = 'Accrued Expenses',
     je_number: str = 'MGT-002',

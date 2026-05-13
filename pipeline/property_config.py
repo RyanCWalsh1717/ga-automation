@@ -8,7 +8,7 @@ values.
 
 Adding a new property
 ---------------------
-1. Copy the ``revlabpm`` entry below and update every field.
+1. Copy the ``revlabspm`` entry below and update every field.
 2. Set the management fee rates to whatever the PM/AM agreement specifies.
 3. Run a test close to verify the bank-rec parser can detect the GL section
    (the ``property_code`` prefix must match what Yardi prints in the GL PDF).
@@ -103,8 +103,8 @@ class PropertyConfig:
 
 _REGISTRY: Dict[str, PropertyConfig] = {
 
-    'revlabpm': PropertyConfig(
-        property_code         = 'revlabpm',
+    'revlabspm': PropertyConfig(
+        property_code         = 'revlabspm',
         property_name         = 'Revolution Labs Owner, LLC',
         property_display_name = 'Revolution Labs',
         property_address      = '275 Grove Street, Newton, MA 02466',

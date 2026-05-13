@@ -63,7 +63,7 @@ def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     p = _DATA_DIR / prop_code / filename
     return str(p) if p.exists() else None
 
-_PROP_CODE = "revlabpm"   # active property — will become dynamic with multi-property selector
+_PROP_CODE = "revlabspm"   # active property — will become dynamic with multi-property selector
 
 _COMMITTED_BUDGET = _committed_path(_PROP_CODE, "GA_Kardin_Budget_FY2026.xlsx")
 
@@ -376,7 +376,7 @@ st.markdown(f"""
         <div class="grp-hero-title">Revolution Labs Monthly Close</div>
         <div class="grp-hero-sub">1050 Waltham Street · Lexington, MA &nbsp;|&nbsp; Managed by GRP for Singerman Real Estate</div>
         <div class="grp-hero-badges">
-            <span class="grp-badge">🏢 revlabpm</span>
+            <span class="grp-badge">🏢 revlabspm</span>
             <span class="grp-badge">📐 ~180,000 SF</span>
             <span class="grp-badge">🔬 Life Science</span>
         </div>
@@ -397,7 +397,7 @@ _sb_logo = (
 st.sidebar.markdown(f"""
 <div class="grp-sidebar-card">
     {_sb_logo}
-    <div class="grp-sidebar-prop">Revolution Labs — revlabpm</div>
+    <div class="grp-sidebar-prop">Revolution Labs — revlabspm</div>
     <div class="grp-sidebar-addr">1050 Waltham St · Lexington, MA<br>
     Greatland Realty Partners · Singerman RE</div>
 </div>
@@ -1136,7 +1136,7 @@ with tab1:
                 fee_je = build_management_fee_je(
                     fee_result,
                     period=close_period,
-                    property_code=engine_result.property_name or 'revlabpm',
+                    property_code=engine_result.property_name or 'revlabspm',
                     je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
                 )
 
@@ -1146,7 +1146,7 @@ with tab1:
                     _catchup_je = build_catchup_je(
                         _catchup_amount,
                         period=close_period,
-                        property_code=engine_result.property_name or 'revlabpm',
+                        property_code=engine_result.property_name or 'revlabspm',
                         je_number=f'MGT-{len(je_lines)//2 + 2:03d}',
                     )
 
@@ -1278,7 +1278,7 @@ with tab1:
                 _accrual_csv_path = None
 
                 _prop_code = (engine_result.parsed.get('gl') and
-                              engine_result.parsed['gl'].metadata.property_code) or 'revlabpm'
+                              engine_result.parsed['gl'].metadata.property_code) or 'revlabspm'
 
                 if all_je_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
@@ -1616,7 +1616,7 @@ with tab1:
                 _p1_prop = (
                     (_p1_er.parsed.get('gl') and _p1_er.parsed['gl'].metadata.property_code)
                     if _p1_er else None
-                ) or 'revlabpm'
+                ) or 'revlabspm'
                 try:
                     from accrual_entry_generator import generate_etl_csv as _gen_etl_ed
                     _ed_csv = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
@@ -1722,7 +1722,7 @@ with tab1:
                             (_p1_er_add.parsed.get('gl') and
                              _p1_er_add.parsed['gl'].metadata.property_code)
                             if _p1_er_add else None
-                        ) or 'revlabpm'
+                        ) or 'revlabspm'
                         try:
                             from accrual_entry_generator import generate_etl_csv as _gen_etl_add
                             _add_csv_path = os.path.join(
@@ -3685,7 +3685,7 @@ with tab2:
             )
             _p2er = st.session_state.pass2_engine_result
             _pcje_period   = (_p2er.period        if _p2er else '') or ''
-            _pcje_propname = (_p2er.property_name if _p2er else '') or 'revlabpm'
+            _pcje_propname = (_p2er.property_name if _p2er else '') or 'revlabspm'
             try:
                 from accrual_entry_generator import generate_etl_csv as _gen_etl_pc
                 _gen_etl_pc(
