@@ -1994,6 +1994,34 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         if amount <= 0:
             continue  # account registered for dedup; no JE generated
 
+        # ── GL activity guard ─────────────────────────────────────────────────
+        # If the GL already shows a net debit >= the manual accrual amount for
+        # this account (any transaction type: K=check, P=payable, C=charge, J=journal),
+        # the real invoice has posted this period — suppress the accrual to avoid
+        # double-posting.
+        #
+        # Why "any type" (not just J): manual accruals target semi-annual or
+        # irregular bills (water/sewer, HVAC, etc.) that post as K-type checks
+        # or P-type payables — not journal entries.  The J-only gate used by
+        # Layers 3-4 would miss these and still generate an accrual on top of the
+        # real payment.
+        #
+        # Safe because:
+        #   - Normal non-payment months: net_change = 0 (no invoice yet) or
+        #     slightly negative (prior-month accrual auto-reversed) → no suppression.
+        #   - Payment months: net_change = real invoice − prior auto-reversal,
+        #     which is large and positive → suppressed correctly.
+        _man_gl_net = 0.0
+        if gl_data and hasattr(gl_data, 'accounts'):
+            for _mga in gl_data.accounts:
+                if str(_mga.account_code).strip() == acct_code:
+                    _man_gl_net = float(getattr(_mga, 'net_change', 0) or 0)
+                    break
+        if _man_gl_net >= amount:
+            # Real invoice already covers this period — skip accrual.
+            # Account remains in _manual_accounts so Layers 1-4 don't double-accrue.
+            continue
+
         je_id = f'MAN-{je_num:04d}'
         je_lines.append({
             'je_number':      je_id,

@@ -1159,9 +1159,33 @@ with tab1:
                             'cr_account_name': 'Accrued Expenses',
                         })
 
-                for _si, _sup in enumerate(_periodic_supplement_rows):
-                    _sje_id  = f'SUP-{_sup_base + _si + 1:04d}'
+                # Build a quick GL net_change lookup (all transaction types) so we can
+                # suppress one-off accruals when the real invoice has already posted.
+                _sup_gl_net: dict = {}
+                if gl_parsed and hasattr(gl_parsed, 'accounts'):
+                    for _sga in gl_parsed.accounts:
+                        _sga_code = str(_sga.account_code).strip()
+                        _sup_gl_net[_sga_code] = float(getattr(_sga, 'net_change', 0) or 0)
+
+                _sup_counter = 0
+                for _sup in _periodic_supplement_rows:
+                    _sup_acct_code = _sup['account_code']
                     _sup_amt = round(float(_sup['amount']), 2)
+
+                    # ── GL activity guard ────────────────────────────────────────
+                    # If the GL already has a net debit >= the one-off accrual amount
+                    # for this account (K/P/C/J all included), the real invoice has
+                    # posted — skip to avoid double-posting.
+                    # Typical case: semi-annual water/sewer bill arrives → net_change
+                    # >> monthly accrual amount → suppressed automatically.
+                    # Non-payment months: net_change ≈ 0 or negative (prior J accrual
+                    # auto-reversed) → below threshold → accrual fires as expected.
+                    _sup_gl_activity = _sup_gl_net.get(_sup_acct_code, 0.0)
+                    if _sup_gl_activity >= _sup_amt:
+                        continue   # real invoice covers it — no accrual needed
+
+                    _sje_id  = f'SUP-{_sup_base + _sup_counter + 1:04d}'
+                    _sup_counter += 1
                     _sup_desc   = _sup.get('description') or f"{_sup['account_name']} — one-off accrual"
                     _sup_vendor = _sup.get('vendor') or _sup['account_name']
                     _sup_cr_acct = _sup.get('cr_account', '213100')
