@@ -325,7 +325,7 @@ def _subhdr_fill():
 _PREPAID_INSURANCE_ACCT = '135110'   # Restricted Insurance / Prepaid Insurance
 _INSURANCE_EXPENSE_ACCTS = {'639110', '639120'}
 
-def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
+def detect_insurance_amortization(gl_data, budget_data, period: str = '') -> List[Dict[str, Any]]:
     """
     Generate monthly insurance expense entries from Prepaid Insurance (135110).
 
@@ -352,6 +352,8 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     if not gl_data or not budget_data:
         return results
+
+    _period_label = _fmt_period(period)
 
     # 1. Check that 135110 has a positive balance to amortise from
     prepaid_balance = 0.0
@@ -395,8 +397,8 @@ def detect_insurance_amortization(gl_data, budget_data) -> List[Dict[str, Any]]:
             'source':         'prepaid_amortization',
             'confidence':     'high',
             'description': (
-                f'Insurance prepaid amortization — {name}: '
-                f'${monthly:,.2f}/month (DR {code} / CR {_PREPAID_INSURANCE_ACCT}; '
+                f'Accrual {_period_label} — {name} '
+                f'(insurance prepaid amortization ${monthly:,.2f}/mo, '
                 f'prepaid balance ${prepaid_balance:,.2f})'
             ),
         })
@@ -485,6 +487,8 @@ def detect_retax_amortization(
     if not period_month:
         return None
 
+    _period_label = _fmt_period(period)
+
     # Collect current-period net changes and beginning balances
     net_641110 = 0.0   # Real Estate Taxes expense (positive = net debit)
     net_135120 = 0.0   # Prepaid RE Taxes asset   (positive = net debit)
@@ -539,11 +543,10 @@ def detect_retax_amortization(
             'confidence':     'high',
             'auto_reverse':   False,
             'description': (
-                f'RE Tax prepaid deferral — ${deferred:,.2f} '
-                f'(${bill:,.2f} quarterly bill × 2/3; '
-                f'Berkadia auto-posts full bill; pipeline defers 2/3 to prepaid. '
-                f'DR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes / '
-                f'CR {_RETAX_EXPENSE_ACCT} Real Estate Taxes'
+                f'Accrual {_period_label} — Real Estate Taxes '
+                f'(prepaid deferral ${deferred:,.2f}, '
+                f'quarterly bill ${bill:,.2f} × 2/3; '
+                f'Berkadia auto-posts full bill, pipeline defers 2/3'
                 f'{source_note})'
             ),
         }
@@ -564,10 +567,9 @@ def detect_retax_amortization(
             'confidence':     'high',
             'auto_reverse':   False,
             'description': (
-                f'RE Tax prepaid release — ${release:,.2f} '
-                f'(${bill:,.2f} quarterly bill / 3; '
-                f'DR {_RETAX_EXPENSE_ACCT} Real Estate Taxes / '
-                f'CR {_RETAX_PREPAID_ACCT} Prepaid RE Taxes'
+                f'Accrual {_period_label} — Real Estate Taxes '
+                f'(prepaid release ${release:,.2f}, '
+                f'quarterly bill ${bill:,.2f} / 3'
                 f'{source_note})'
             ),
         }
@@ -857,6 +859,8 @@ def detect_invoice_proration_accruals(
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return candidates
 
+    _period_label = _fmt_period(period)
+
     # ── Resolve reporting month-end ────────────────────────────────────────────
     if month_end is None:
         month_end = _month_end_from_period(period)
@@ -941,10 +945,11 @@ def detect_invoice_proration_accruals(
                         continue
                     _vendor_label = _vname if _vname else acct.account_name
                     _vdesc = (
-                        f'Electricity proration — {_vendor_label}: '
-                        f'last invoice {_vstart.strftime("%m/%d/%y")}'
-                        f'-{latest_end.strftime("%m/%d/%y")} '
-                        f'(${_vamt:,.0f}/{_vdays}d = '
+                        f'Accrual {_period_label} — {_vendor_label} '
+                        f'(electricity proration: last invoice '
+                        f'{_vstart.strftime("%m/%d/%y")}'
+                        f'-{latest_end.strftime("%m/%d/%y")}, '
+                        f'${_vamt:,.0f}/{_vdays}d = '
                         f'${_vrate:,.2f}/day × {uncovered} days uncovered)'
                     )
                     candidates.append({
@@ -966,10 +971,10 @@ def detect_invoice_proration_accruals(
                 min_start    = min(g[0] for g in group)
                 period_days  = max(1, (latest_end - min_start).days)
                 accrual_desc = (
-                    f'Invoice accrual — {acct.account_name}: '
-                    f'last invoice {min_start.strftime("%m/%d/%y")}'
-                    f'-{latest_end.strftime("%m/%d/%y")} '
-                    f'(${total_amount:,.0f})'
+                    f'Accrual {_period_label} — {acct.account_name} '
+                    f'(last invoice {min_start.strftime("%m/%d/%y")}'
+                    f'-{latest_end.strftime("%m/%d/%y")}, '
+                    f'${total_amount:,.0f})'
                 )
                 if total_amount >= materiality:
                     candidates.append({
@@ -1138,10 +1143,10 @@ def detect_invoice_proration_accruals(
             'accrual_amount': _round(invoice_total),
             'source':         'invoice_proration',
             'description': (
-                f'Recurring monthly accrual — {acct.account_name}: '
-                f'{vendor_str} invoiced {period_month_start.strftime("%m/%d/%y")} '
-                f'(prior month billing in arrears, current month unbilled = '
-                f'${invoice_total:,.2f})'
+                f'Accrual {_period_label} — {vendor_str} ({acct.account_name}): '
+                f'invoiced {period_month_start.strftime("%m/%d/%y")} '
+                f'(prior month billing in arrears, '
+                f'current month unbilled = ${invoice_total:,.2f})'
             ),
             'daily_rate':     0.0,
             'uncovered_days': 0,
@@ -1573,6 +1578,8 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return candidates
 
+    _period_label = _fmt_period(period)
+
     # Determine current month number — prefer explicit period arg, fall back to GL metadata
     period_str = period or (
         getattr(gl_data.metadata, 'period', '') if hasattr(gl_data, 'metadata') else ''
@@ -1650,9 +1657,9 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                         'months_prior': 1,
                         'source': 'historical',
                         'description': (
-                            f'Historical recurring (Jan — Dec actual) — {acct.account_name}: '
-                            f'${dec_actual:,.0f} (December 2025 actual from T12 statement), '
-                            f'no activity this period'
+                            f'Accrual {_period_label} — {acct.account_name} '
+                            f'(historical — Dec actual ${dec_actual:,.0f} per T12, '
+                            f'no activity this period)'
                         ),
                     })
                     continue  # T12 gave a good signal — skip annual/12 fallback
@@ -1691,9 +1698,10 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 'months_prior': 0,
                 'source': 'historical',
                 'description': (
-                    f'Historical recurring (Jan est.) — {acct.account_name}: '
-                    f'${est_monthly:,.0f}/mo (annual budget ${bi_annual:,.0f} ÷ 12)'
-                    f'{_partial_note}, no T12 uploaded — upload for December actuals'
+                    f'Accrual {_period_label} — {acct.account_name} '
+                    f'(historical est. ${est_monthly:,.0f}/mo, '
+                    f'annual budget ${bi_annual:,.0f} ÷ 12'
+                    f'{_partial_note})'
                 ),
             })
             continue
@@ -1747,10 +1755,10 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 'months_prior': months_elapsed,
                 'source': 'historical',
                 'description': (
-                    f'Historical recurring — {acct.account_name}: '
-                    f'${est_monthly:,.0f}/mo avg '
-                    f'({source_note} ${ytd_prior:,.0f} ÷ {months_elapsed} mo)'
-                    f'{_partial_note}, no activity this period'
+                    f'Accrual {_period_label} — {acct.account_name} '
+                    f'(historical avg ${est_monthly:,.0f}/mo, '
+                    f'{source_note} ${ytd_prior:,.0f} ÷ {months_elapsed} mo'
+                    f'{_partial_note})'
                 ),
             })
 
@@ -2590,7 +2598,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # detect_insurance_amortization() on top would double-count the expense).
     _ledger_ins_covered = (ledger_release_accounts or set()) & _INSURANCE_EXPENSE_ACCTS
     if gl_data and budget_data and not _ledger_ins_covered:
-        for ins in detect_insurance_amortization(gl_data, budget_data):
+        for ins in detect_insurance_amortization(gl_data, budget_data, period=period):
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
     elif _ledger_ins_covered:
         # Still mark the accounts as covered so Layer 3 doesn't double-accrue them
@@ -2647,12 +2655,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         else:
             date_str = str(inv_date) if inv_date else ''
 
-        # Build description for JE
-        je_desc = f"Accrual — {vendor}"
+        # Build description for JE — "Accrual [Month YYYY] — Vendor #INV-NUM"
+        _nex_period_label = _fmt_period(period)
+        je_desc = f"Accrual {_nex_period_label} — {vendor}"
         if inv_num:
             je_desc += f" #{inv_num}"
         if description:
-            je_desc += f" — {description[:50]}"
+            je_desc += f" — {description[:40]}"
 
         # ── Prepaid split: accrue only current-month portion to expense;
         #    remaining future months go to Prepaid Other (135150).
@@ -3040,8 +3049,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     continue
                 _bon_id = f"BON-{je_num:04d}"
                 _bon_desc = (
-                    f'Monthly bonus accrual — {_ba_cfg["label"]}: '
-                    f'${_annual:,.2f}/yr ÷ 12 = ${_monthly:,.2f}/mo'
+                    f'Accrual {_fmt_period(period)} — {_ba_cfg["label"]} '
+                    f'(bonus ${_annual:,.2f}/yr ÷ 12 = ${_monthly:,.2f}/mo)'
                 )
                 je_lines.append({
                     'je_number': _bon_id, 'line': 1, 'date': '',
@@ -3074,11 +3083,15 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 if _bon['account_code'] in _covered:
                     continue
                 _bon_id = f"BON-{je_num:04d}"
+                _bon_desc_b = (
+                    f'Accrual {_fmt_period(period)} — {_bon["account_name"]} '
+                    f'(bonus: {_bon["description"]})'
+                )
                 je_lines.append({
                     'je_number': _bon_id, 'line': 1, 'date': '',
                     'account_code': _bon['account_code'],
                     'account_name': _bon['account_name'],
-                    'description': _bon['description'],
+                    'description': _bon_desc_b,
                     'reference': 'BONUS',
                     'debit': _bon['estimated_amount'], 'credit': 0,
                     'vendor': '[Bonus Accrual]', 'invoice_number': '',
@@ -3088,7 +3101,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 je_lines.append({
                     'je_number': _bon_id, 'line': 2, 'date': '',
                     'account_code': _cr_acct, 'account_name': _cr_name,
-                    'description': _bon['description'],
+                    'description': _bon_desc_b,
                     'reference': 'BONUS',
                     'debit': 0, 'credit': _bon['estimated_amount'],
                     'vendor': '[Bonus Accrual]', 'invoice_number': '',
@@ -3347,7 +3360,10 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
             cr_name    = PREPAID_ASSET_NAME
 
         je_id   = f"PPD-{je_num:04d}"
-        je_desc = f"Prepaid amortization — {vendor} #{inv_num} ({period_lbl}, mo {month_idx}/{total_mo})"
+        je_desc = (
+            f"Accrual {_fmt_period(period_lbl)} — {vendor} "
+            f"(prepaid amortization #{inv_num}, mo {month_idx}/{total_mo})"
+        )
 
         # DR: Expense account
         je_lines.append({
