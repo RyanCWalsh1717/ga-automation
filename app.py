@@ -1022,9 +1022,9 @@ with tab1:
                         _rd_parsed = None
 
                 # Step 3: Prepaid ledger — load → merge → release lines
-                # Must run BEFORE build_accrual_entries so insurance accounts
-                # covered by the ledger suppress detect_insurance_amortization()
-                # and avoid double-counting the expense.
+                # Ledger contains Prepaid Other (135150) items only.
+                # Insurance (135110) and RE Tax (135120) are excluded from the ledger
+                # and handled by dedicated amortization functions in build_accrual_entries().
                 status_text.text("Step 3/6: Processing prepaid ledger...")
                 progress_bar.progress(45)
 
