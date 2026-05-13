@@ -1159,37 +1159,65 @@ with tab1:
                             'cr_account_name': 'Accrued Expenses',
                         })
 
-                # Build a quick GL net_change lookup (all transaction types) so we can
-                # suppress one-off accruals when the real invoice has already posted.
-                _sup_gl_net: dict = {}
+                # Build a GL account lookup for compound accrual logic.
+                # Stores the GL account object per account_code so we can read
+                # J-type credits (prior-month auto-reversal) and non-J net change
+                # (real K/P/C invoice activity) for each one-off accrual account.
+                _sup_gl_accts: dict = {}
                 if gl_parsed and hasattr(gl_parsed, 'accounts'):
                     for _sga in gl_parsed.accounts:
-                        _sga_code = str(_sga.account_code).strip()
-                        _sup_gl_net[_sga_code] = float(getattr(_sga, 'net_change', 0) or 0)
+                        _sup_gl_accts[str(_sga.account_code).strip()] = _sga
+
+                def _sup_j_credits(acct_obj) -> float:
+                    """J-type credit total (auto-reversals of prior pipeline JEs)."""
+                    if acct_obj is None:
+                        return 0.0
+                    return sum(
+                        t.credit for t in getattr(acct_obj, 'transactions', [])
+                        if t.credit > 0
+                        and str(getattr(t, 'control', '') or '').upper().startswith('J')
+                    )
+
+                def _sup_j_debits(acct_obj) -> float:
+                    """J-type debit total (pipeline JEs already posted this period)."""
+                    if acct_obj is None:
+                        return 0.0
+                    return sum(
+                        t.debit for t in getattr(acct_obj, 'transactions', [])
+                        if t.debit > 0
+                        and str(getattr(t, 'control', '') or '').upper().startswith('J')
+                    )
 
                 _sup_counter = 0
                 for _sup in _periodic_supplement_rows:
                     _sup_acct_code = _sup['account_code']
-                    _sup_amt = round(float(_sup['amount']), 2)
+                    _sup_monthly   = round(float(_sup['amount']), 2)   # user-entered monthly rate
 
-                    # ── GL activity guard ────────────────────────────────────────
-                    # If the GL already has a net debit >= the one-off accrual amount
-                    # for this account (K/P/C/J all included), the real invoice has
-                    # posted — skip to avoid double-posting.
-                    # Typical case: semi-annual water/sewer bill arrives → net_change
-                    # >> monthly accrual amount → suppressed automatically.
-                    # Non-payment months: net_change ≈ 0 or negative (prior J accrual
-                    # auto-reversed) → below threshold → accrual fires as expected.
-                    _sup_gl_activity = _sup_gl_net.get(_sup_acct_code, 0.0)
-                    if _sup_gl_activity >= _sup_amt:
-                        continue   # real invoice covers it — no accrual needed
+                    # ── Compound accrual + real-invoice guard ────────────────────
+                    # The J-credit in the current GL = prior month's accrual that
+                    # auto-reversed.  Compound = j_credits + monthly_rate.
+                    # Guard: suppress when non-J (real K/P/C invoice) net >= monthly_rate.
+                    _sga_obj   = _sup_gl_accts.get(_sup_acct_code)
+                    _sga_net   = float(getattr(_sga_obj, 'net_change', 0) or 0) if _sga_obj else 0.0
+                    _sga_j_cr  = _sup_j_credits(_sga_obj)
+                    _sga_j_dr  = _sup_j_debits(_sga_obj)
+                    _sga_non_j = _sga_net - (_sga_j_dr - _sga_j_cr)   # K/P/C-type net
+
+                    if _sga_non_j >= _sup_monthly:
+                        continue   # real invoice posted — no accrual needed
+
+                    _sup_compound   = _sga_j_cr + _sup_monthly
+                    _sup_cmpd_note  = (f' — cumulative ${_sup_compound:,.0f} '
+                                       f'(${_sga_j_cr:,.0f} prior + ${_sup_monthly:,.0f}/mo)'
+                                       if _sga_j_cr > 0 else '')
 
                     _sje_id  = f'SUP-{_sup_base + _sup_counter + 1:04d}'
                     _sup_counter += 1
-                    _sup_desc   = _sup.get('description') or f"{_sup['account_name']} — one-off accrual"
+                    _sup_desc   = (_sup.get('description') or f"{_sup['account_name']} — one-off accrual") + _sup_cmpd_note
                     _sup_vendor = _sup.get('vendor') or _sup['account_name']
                     _sup_cr_acct = _sup.get('cr_account', '213100')
                     _sup_cr_name = _sup.get('cr_account_name', 'Accrued Expenses')
+                    _sup_amt     = round(_sup_compound, 2)
                     _supplement_je_lines.extend([
                         {
                             'je_number': _sje_id, 'line': 1, 'date': close_period,

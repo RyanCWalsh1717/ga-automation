@@ -1994,44 +1994,62 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         if amount <= 0:
             continue  # account registered for dedup; no JE generated
 
-        # ── GL activity guard ─────────────────────────────────────────────────
-        # If the GL already shows a net debit >= the manual accrual amount for
-        # this account (any transaction type: K=check, P=payable, C=charge, J=journal),
-        # the real invoice has posted this period — suppress the accrual to avoid
-        # double-posting.
+        # ── Compound accrual + real-invoice guard ────────────────────────────
         #
-        # Why "any type" (not just J): manual accruals target semi-annual or
-        # irregular bills (water/sewer, HVAC, etc.) that post as K-type checks
-        # or P-type payables — not journal entries.  The J-only gate used by
-        # Layers 3-4 would miss these and still generate an accrual on top of the
-        # real payment.
+        # Semi-annual / irregular bills (water/sewer, elevator, etc.) accrue a
+        # GROWING liability each month until the real invoice arrives:
         #
-        # Safe because:
-        #   - Normal non-payment months: net_change = 0 (no invoice yet) or
-        #     slightly negative (prior-month accrual auto-reversed) → no suppression.
-        #   - Payment months: net_change = real invoice − prior auto-reversal,
-        #     which is large and positive → suppressed correctly.
-        _man_gl_net = 0.0
+        #   Month 1: $20K  (1 × monthly_rate)
+        #   Month 2: $40K  (prior $20K reversed + new $20K)
+        #   Month 3: $60K  (prior $40K reversed + new $20K)
+        #   ...
+        #   Month 6: real $120K invoice posts → suppress
+        #
+        # Mechanics: Yardi auto-reverses the prior month's J-type accrual at
+        # the start of the new period.  The J-credit that appears in the current
+        # GL IS that reversal — its absolute value equals the prior month's
+        # accrual.  Compound accrual = j_credits + monthly_rate.
+        #
+        # Guard: suppress only when non-J-type (K=check, P=payable, C=charge)
+        # net activity >= monthly_rate — that signals the real invoice posted.
+        # Using non-J-net (not total net_change) avoids false suppression from
+        # the auto-reversal credit which is always present in payment months.
+        _man_gl_acct = None
+        _man_net_change = 0.0
         if gl_data and hasattr(gl_data, 'accounts'):
             for _mga in gl_data.accounts:
                 if str(_mga.account_code).strip() == acct_code:
-                    _man_gl_net = float(getattr(_mga, 'net_change', 0) or 0)
+                    _man_gl_acct = _mga
+                    _man_net_change = float(getattr(_mga, 'net_change', 0) or 0)
                     break
-        if _man_gl_net >= amount:
-            # Real invoice already covers this period — skip accrual.
-            # Account remains in _manual_accounts so Layers 1-4 don't double-accrue.
+
+        _man_j_cr  = _j_credits(_man_gl_acct)   # prior-month accrual auto-reversal
+        _man_j_dr  = _j_debits(_man_gl_acct)    # any J-debits already posted this period
+        _man_non_j = _man_net_change - (_man_j_dr - _man_j_cr)   # K/P/C-type net
+
+        if _man_non_j >= amount:
+            # Real invoice posted and covers at least one month — suppress.
+            # Account stays in _manual_accounts so Layers 1-4 don't pile on.
             continue
 
-        je_id = f'MAN-{je_num:04d}'
+        # Compound: add this month's slice on top of what reversed from last month
+        _compound_amount = _man_j_cr + amount
+        _compound_note   = (f' — cumulative ${_compound_amount:,.0f} '
+                            f'(${_man_j_cr:,.0f} prior + ${amount:,.0f}/mo)'
+                            if _man_j_cr > 0 else '')
+
+        je_id    = f'MAN-{je_num:04d}'
+        je_desc  = desc + _compound_note
+        je_debit = _round(_compound_amount)
         je_lines.append({
             'je_number':      je_id,
             'line':           1,
             'date':           '',
             'account_code':   acct_code,
             'account_name':   acct_name,
-            'description':    desc,
+            'description':    je_desc,
             'reference':      'MANUAL',
-            'debit':          _round(amount),
+            'debit':          je_debit,
             'credit':         0,
             'vendor':         '[Manual Override]',
             'invoice_number': '',
@@ -2044,10 +2062,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             'date':           '',
             'account_code':   AP_ACCRUAL_ACCOUNT,
             'account_name':   AP_ACCRUAL_NAME,
-            'description':    desc,
+            'description':    je_desc,
             'reference':      'MANUAL',
             'debit':          0,
-            'credit':         _round(amount),
+            'credit':         je_debit,
             'vendor':         '[Manual Override]',
             'invoice_number': '',
             'source':         'manual',
