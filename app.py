@@ -494,11 +494,17 @@ FILE_CONFIG = {
         "outstanding checks, reconciled balance, and $0 difference. Enables Operating bank "
         "rec tab in the BS workpaper (PNC x3993 vs GL 111100). Without it: no bank rec tab.",
     ),
+    "receivable_summary": (
+        "Yardi Receivable Summary (.xlsx)", "xlsx", False, "bank",
+        "PRIMARY management fee basis — explicit Prepayment row gives the cleanest prepayment exclusion. "
+        "Export from Yardi after bank rec is complete. Takes priority over Receivable Detail when both are uploaded. "
+        "Without it: falls back to Receivable Detail (if uploaded) or DACA additions.",
+    ),
     "receivable_detail": (
         "Yardi Receivable Detail (.xlsx)", "xlsx", False, "bank",
-        "PRIMARY management fee basis — JLL's exact method. Export from Yardi after bank rec is complete. "
+        "ALTERNATE management fee basis — JLL's exact method. Export from Yardi after bank rec is complete. "
         "Pair with the AR Detail Aging for accurate prepayment exclusion. "
-        "Without it: falls back to DACA additions.",
+        "Without it: falls back to DACA additions. (Receivable Summary is preferred when available.)",
     ),
     "ar_aging": (
         "Yardi AR Detail Aging (.xlsx)", "xlsx", False, "bank",
@@ -556,7 +562,7 @@ if "bulk_overrides_p1" not in st.session_state:
 # Options shown in the override dropdown for Pass 1
 _P1_SLOT_KEYS = [
     "gl", "trial_balance", "budget_comparison", "kardin_budget", "t12_statement",
-    "nexus_accrual", "bank_rec", "receivable_detail", "ar_aging",
+    "nexus_accrual", "bank_rec", "receivable_summary", "receivable_detail", "ar_aging",
     "bank_rec_dev", "capital_schedule", "capital_seed", "daca_bank", "loan",
     "prepaid_ledger", "unknown",
 ]
@@ -741,6 +747,8 @@ with tab1:
             _rd_loaded = bool(st.session_state.uploaded_files.get("receivable_detail"))
             if _rd_loaded:
                 st.caption("↳ No entries — pipeline will read electric amounts from Receivable Detail (per-tenant)")
+            elif bool(st.session_state.uploaded_files.get("receivable_summary")):
+                st.caption("↳ No entries — Receivable Summary uploaded; upload Receivable Detail too for per-tenant electric breakdown")
             else:
                 st.caption(
                     "↳ No entries — upload **Yardi Receivable Detail** in the sidebar for automatic "
@@ -991,8 +999,19 @@ with tab1:
                     except Exception as _e:
                         st.warning(f"Could not parse 12-Month Statement for Pass 1: {_e}")
 
-                # Parse Receivable Detail early — used by both accrual engine (Mode b
-                # tenant electric) and management fee calculation (Step 4).
+                # Parse Receivable Summary — highest-priority management fee source.
+                # Provides explicit Prepayment row for clean prepayment exclusion.
+                _rs_file = st.session_state.uploaded_files.get("receivable_summary")
+                _rs_parsed = None
+                if _rs_file and os.path.exists(_rs_file):
+                    try:
+                        from parsers.yardi_receivable_summary import parse as _parse_rs
+                        _rs_parsed = _parse_rs(_rs_file)
+                    except Exception:
+                        _rs_parsed = None
+
+                # Parse Receivable Detail — alternate management fee source, also used
+                # by the accrual engine (Mode b per-tenant electric breakdown).
                 _rd_file = st.session_state.uploaded_files.get("receivable_detail")
                 _rd_parsed = None
                 if _rd_file and os.path.exists(_rd_file):
@@ -1102,6 +1121,7 @@ with tab1:
                     gl_parsed=gl_parsed,
                     budget_rows=bc_parsed or [],
                     daca_parsed=_daca_parsed,
+                    receivable_summary=_rs_parsed,
                     receivable_detail=_rd_parsed,
                     ar_aging=_ar_aging_parsed,
                 )
@@ -1357,11 +1377,12 @@ with tab1:
         if fee_result and fee_result.cash_received > 0:
             st.markdown("### Management Fee JE")
             _src_labels = {
-                'receivable_detail+ar_aging': 'Receivable Detail (ex-Prepayments via AR Aging)',
-                'receivable_detail': 'Receivable Detail (ex-Prepayments)',
-                'daca_additions':    'DACA Additions',
-                'gl_cash_account':   'GL 111100 Debits',
-                'revenue_proxy':     'Revenue Proxy',
+                'receivable_summary':          'Receivable Summary (ex-Prepayments)',
+                'receivable_detail+ar_aging':  'Receivable Detail (ex-Prepayments via AR Aging)',
+                'receivable_detail':           'Receivable Detail (ex-Prepayments)',
+                'daca_additions':              'DACA Additions',
+                'gl_cash_account':             'GL 111100 Debits',
+                'revenue_proxy':               'Revenue Proxy',
                 'manual_override':   'Manual Override',
             }
             _src_label = _src_labels.get(fee_result.cash_source, fee_result.cash_source)
@@ -2793,6 +2814,15 @@ with tab2:
                 status_text.text("Step 4/6: Verifying management fee...")
                 progress_bar.progress(58)
                 try:
+                    _rs_file_p2 = st.session_state.uploaded_files.get("receivable_summary")
+                    _rs_parsed_p2 = None
+                    if _rs_file_p2 and os.path.exists(_rs_file_p2):
+                        try:
+                            from parsers.yardi_receivable_summary import parse as _parse_rs2
+                            _rs_parsed_p2 = _parse_rs2(_rs_file_p2)
+                        except Exception:
+                            _rs_parsed_p2 = None
+
                     _rd_file_p2 = st.session_state.uploaded_files.get("receivable_detail")
                     _rd_parsed_p2 = None
                     if _rd_file_p2 and os.path.exists(_rd_file_p2):
@@ -2806,6 +2836,7 @@ with tab2:
                         gl_parsed=gl_parsed,
                         budget_rows=bc_parsed or [],
                         daca_parsed=daca_bank_data,
+                        receivable_summary=_rs_parsed_p2,
                         receivable_detail=_rd_parsed_p2,
                         ar_aging=_ar_aging_parsed_p2,
                     )

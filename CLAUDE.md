@@ -216,12 +216,16 @@ Then: **Generate Reports** button
 
 - **JLL rate**: 1.25% | **GRP rate**: 1.75% | **Total**: 3.00%
 - **Base**: Cash received — priority order:
-  1. **Receivable Detail + AR Aging** (preferred — JLL's exact method; prepayments excluded via AR Aging pre-payments column)
-  2. **Receivable Detail only** (prepayments excluded by charge-code scan if AR Aging not uploaded)
-  3. **DACA KeyBank x5132 additions** (fallback when Receivable Detail not uploaded)
-  4. **GL 111100 debits** (further fallback)
-  5. **Revenue proxy from BC** (last resort)
+  1. **Receivable Summary** (preferred — explicit Prepayment row; cleanest exclusion; no charge-code scanning)
+     Parser: `parsers/yardi_receivable_summary.py` → `ReceivableSummaryResult`
+     Prepayment logic: negative Prepayment row receipt = new cash to exclude; positive = applied credit (no exclusion).
+  2. **Receivable Detail + AR Aging** (alternate — JLL's exact method; prepayments excluded via AR Aging pre-payments column)
+  3. **Receivable Detail only** (prepayments excluded by charge-code scan if AR Aging not uploaded)
+  4. **DACA KeyBank x5132 additions** (fallback when no Receivable report uploaded)
+  5. **GL 111100 debits** (further fallback)
+  6. **Revenue proxy from BC** (last resort)
 - **JE (Pass 1)**: DR 637130 Admin-Management Fees / CR 213100 Accrued Expenses (JE# MGT-001)
+  - Split into 4 lines: lines 1-2 JLL (1.25%, ref MGMT-FEE-JLL), lines 3-4 GRP (1.75%, ref MGMT-FEE-GRP)
 - **Catch-up**: If 637130 has net credit from prior-period auto-reversal with no matching
   invoice debit, a catch-up JE is generated (DR 637130 / CR 213100 Accrued Expenses, JE# MGT-002)
 - **Pass 2**: Re-computed for verification only — JE is already posted to GL

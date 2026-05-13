@@ -31,6 +31,7 @@ FILE_LABELS = {
     "t12_statement":         "12-Month Income Statement",
     "nexus_accrual":         "Nexus Invoice Detail",
     "bank_rec":              "Yardi / PNC Bank Rec",
+    "receivable_summary":    "Yardi Receivable Summary",
     "receivable_detail":     "Yardi Receivable Detail",
     "ar_aging":              "Yardi AR Detail Aging",
     "bank_rec_dev":          "BofA Development Statement",
@@ -186,18 +187,27 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
     if "ptd budget" in all_text and "ptd actual" in all_text:
         return "budget_comparison", 0.88
 
-    # ── Receivable Detail / AR Aging ──────────────────────────────────────
+    # ── Receivable Summary / Detail / AR Aging ────────────────────────────
     # Must come before the revlabpm→GL fallback: Yardi receivable reports
     # carry the property header ("revlabpm") just like the GL export.
     #
-    # AR Aging:         titled "AR Detail Aging"; has aging-bucket columns
-    #                   labelled "30 days", "60 days", "90 days".
-    # Receivable Detail: titled "Receivable Detail"; has "Control #", "Charge Code",
-    #                   "Charges", "Receipts" columns — no aging buckets.
+    # Receivable Summary: titled "Receivable Summary"; columns are
+    #                     Property | Charge Code | Balance Forward | Charge | Receipt | Ending Balance
+    #                     No "Control #" column, no aging buckets.
+    # Receivable Detail:  titled "Receivable Detail"; has "Control #", "Charge Code",
+    #                     "Charges", "Receipts" columns — no aging buckets.
+    # AR Aging:           titled "AR Detail Aging"; has aging-bucket columns
+    #                     labelled "30 days", "60 days", "90 days".
     #
     # IMPORTANT: do NOT use bare "30" / "60" / "90" substring checks — any dollar
     # amount or date containing those digits triggers a false positive.  Use the
     # full phrase "30 days" / "60 days" / "90 days" which only appears in AR Aging.
+
+    # Receivable Summary — must check FIRST; its title contains "receivable" which
+    # would otherwise match the weaker receivable_detail fallback below.
+    if "receivable summary" in all_text:
+        return "receivable_summary", 0.95
+
     if ("ar detail aging" in all_text or "ar aging" in all_text
             or "aging detail" in all_text):
         return "ar_aging", 0.92

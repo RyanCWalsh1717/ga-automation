@@ -8,20 +8,24 @@ the period and the agreed fee rates:
   GRP (replacement): 1.75% of cash received
   Total:             3.00% of cash received
 
-"Cash received" = gross tenant receipts per the Yardi Receivable Detail report,
-net of Prepayment receipts (advance deposits that are not earned income).
-JLL uses this same basis — the Receivable Detail is driven by Yardi's bank
-reconciliation, which must be completed first (by JLL or in-house) before
-the report can be exported.  For March 2026 this was $1,419,011.29.
+"Cash received" = gross tenant receipts per the Yardi Receivable Summary (or
+Detail) report, net of Prepayment receipts (advance deposits that are not
+earned income).  JLL uses this same basis — both reports are driven by Yardi's
+bank reconciliation, which must be completed first.
 
-The pipeline derives cash received from one of four sources, in priority order:
+The pipeline derives cash received from one of six priority tiers, in order:
 
-  1. Yardi Receivable Detail report — preferred (JLL's exact method; excludes
-     Prepayment receipts automatically)
-  2. DACA bank statement additions — fallback when no Receivable Detail uploaded
-     (matches JLL's basis when Yardi bank rec has not yet been run)
-  3. GL operating cash account (111100) — debit transactions for the period
-  4. Budget Comparison revenue accounts — PTD Actual of income lines as a proxy
+  1. Yardi Receivable Summary report — preferred (explicit Prepayment row makes
+     exclusion unambiguous; no charge-code scanning required)
+  2. Yardi Receivable Detail + AR Detail Aging — alternate; JLL's exact method;
+     AR Aging Pre-payments column provides the most reliable prepayment exclusion
+  3. Yardi Receivable Detail only — AR Aging not uploaded; falls back to
+     charge-code scan built into ReceivableDetailResult (less reliable for
+     cross-tenant netting scenarios)
+  4. DACA bank statement additions — fallback when neither Receivable report
+     is uploaded (matches JLL's basis when Yardi bank rec not yet run)
+  5. GL operating cash account (111100) — debit transactions for the period
+  6. Budget Comparison revenue accounts — PTD Actual of income lines as a proxy
 
 The result is consumed by:
   - qc_engine.py check_7_misc (to verify the accrued fee vs. expected)
@@ -121,8 +125,17 @@ class ManagementFeeResult:
 
     def summary_lines(self) -> list[str]:
         """Human-readable lines for display in dashboard / workbook."""
+        src_label = {
+            'receivable_summary':          'Receivable Summary',
+            'receivable_detail+ar_aging':  'Receivable Detail (ex-Prepayments via AR Aging)',
+            'receivable_detail':           'Receivable Detail (ex-Prepayments)',
+            'daca_additions':              'DACA Additions',
+            'gl_cash_account':             'GL 111100 Debits',
+            'revenue_proxy':               'Revenue Proxy',
+            'not_available':               'Not Available',
+        }.get(self.cash_source, self.cash_source)
         return [
-            f'Cash Received ({self.cash_source}):  ${self.cash_received:>14,.2f}',
+            f'Cash Received ({src_label}):  ${self.cash_received:>14,.2f}',
             f'JLL Fee  ({self.jll_rate:.2%}):             ${self.jll_fee:>14,.2f}',
             f'GRP Fee  ({self.grp_rate:.2%}):             ${self.grp_fee:>14,.2f}',
             f'Total Mgmt Fee ({self.total_rate:.2%}):        ${self.total_fee:>14,.2f}',
@@ -137,6 +150,43 @@ class ManagementFeeResult:
 
 
 # ── Cash-received extraction ───────────────────────────────────────────────────
+
+def _cash_from_receivable_summary(rs_parsed) -> tuple:
+    """
+    Read net cash received from the Yardi Receivable Summary report.
+
+    Returns (net_cash: Optional[float], prepayment_excluded: float).
+
+    Prepayment exclusion — uses the dedicated Prepayment row in the Summary:
+      Negative Prepayment receipt = new cash received as a prepayment → exclude.
+      Positive Prepayment receipt = prior credit applied to a charge → already
+        washed into Grand Total, nothing to exclude.
+
+    This is the simplest and most reliable prepayment detection method because
+    Yardi isolates prepayments in their own charge-code row, so no charge-code
+    scanning or cross-tenant netting concerns apply.
+
+    Returns (None, 0.0) if the report was not parsed or total receipts are zero.
+    """
+    if rs_parsed is None:
+        return None, 0.0
+
+    if hasattr(rs_parsed, 'total_receipts'):
+        total = float(rs_parsed.total_receipts or 0)
+        prepay = float(rs_parsed.prepayment_receipts or 0)
+        net = float(rs_parsed.net_receipts or 0)
+    elif isinstance(rs_parsed, dict):
+        total = float(rs_parsed.get('total_receipts', 0) or 0)
+        prepay = float(rs_parsed.get('prepayment_receipts', 0) or 0)
+        net = float(rs_parsed.get('net_receipts', 0) or 0)
+    else:
+        return None, 0.0
+
+    if total <= 0:
+        return None, 0.0
+
+    return (net if net > 0 else None), prepay
+
 
 def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
     """
@@ -286,6 +336,7 @@ def calculate(
     manual_override: float = None,
     daca_parsed: dict = None,
     receivable_detail=None,
+    receivable_summary=None,
     ar_aging=None,
     jll_rate: float = JLL_RATE,
     grp_rate: float = GRP_RATE,
@@ -294,33 +345,46 @@ def calculate(
     Compute the management fee accrual for the period.
 
     Priority:
-      1. Yardi Receivable Detail — preferred; net of Prepayment receipts (JLL's exact method)
-         Prepayment exclusion: AR Detail Aging Pre-payments column if uploaded,
-         else charge-code scan built into ReceivableDetailResult (less reliable)
-      2. DACA bank statement additions — fallback when Receivable Detail not uploaded
-      3. GL operating cash account debit total — fallback when no DACA file
-      4. Revenue account PTD actuals from budget comparison — last resort proxy
+      1. Yardi Receivable Summary — preferred; explicit Prepayment row, cleanest exclusion
+      2. Yardi Receivable Detail — alternate (JLL's exact method, excludes prepayments via
+         AR Aging Pre-payments column if uploaded, else charge-code scan)
+      3. DACA bank statement additions — fallback when no Receivable report uploaded
+      4. GL operating cash account debit total — fallback when no DACA file
+      5. Revenue account PTD actuals from budget comparison — last resort proxy
 
     Args:
-        gl_parsed:         GLParseResult from yardi_gl.parse_gl()
-        budget_rows:       List of BC row dicts from yardi_budget_comparison.parse()
-        manual_override:   Deprecated — no longer used (kept for signature compatibility)
-        daca_parsed:       Parsed KeyBank DACA statement dict
-        receivable_detail: ReceivableDetailResult from parsers.yardi_receivable_detail.parse()
-        ar_aging:          ARAgingResult from parsers.yardi_ar_aging.parse() — used to
-                           supplement the charge-code scan prepayment exclusion.
-                           Both AR Aging and charge-code scan are always evaluated;
-                           the larger exclusion wins (protects against cross-tenant
-                           netting in the AR Aging Grand Total Pre-payments column).
-        jll_rate:          JLL management fee rate (default 1.25%)
-        grp_rate:          GRP management fee rate (default 1.75%)
+        gl_parsed:          GLParseResult from yardi_gl.parse_gl()
+        budget_rows:        List of BC row dicts from yardi_budget_comparison.parse()
+        manual_override:    Deprecated — no longer used (kept for signature compatibility)
+        daca_parsed:        Parsed KeyBank DACA statement dict
+        receivable_detail:  ReceivableDetailResult from parsers.yardi_receivable_detail.parse()
+        receivable_summary: ReceivableSummaryResult from parsers.yardi_receivable_summary.parse()
+                            When uploaded, takes priority over the Receivable Detail.
+                            Prepayment exclusion is read directly from the Prepayment row:
+                            negative receipt = new cash to exclude; positive = applied credit.
+        ar_aging:           ARAgingResult from parsers.yardi_ar_aging.parse() — used only when
+                            falling back to Receivable Detail (Summary makes it unnecessary).
+                            Both AR Aging and charge-code scan are evaluated; larger wins.
+        jll_rate:           JLL management fee rate (default 1.25%)
+        grp_rate:           GRP management fee rate (default 1.75%)
 
     Returns:
         ManagementFeeResult
     """
     budget_rows = budget_rows or []
 
-    # 1. Receivable Detail — preferred (JLL's exact method, excludes prepayments)
+    # 1. Receivable Summary — preferred (explicit Prepayment row, no scanning required)
+    rs_cash, rs_prepay = _cash_from_receivable_summary(receivable_summary)
+    if rs_cash is not None:
+        return ManagementFeeResult(
+            cash_received=rs_cash,
+            cash_source='receivable_summary',
+            prepayment_excluded=rs_prepay,
+            jll_rate=jll_rate,
+            grp_rate=grp_rate,
+        )
+
+    # 2. Receivable Detail — alternate (JLL's exact method, excludes prepayments)
     rd_cash, prepay_excl = _cash_from_receivable_detail(receivable_detail, ar_aging)
     if rd_cash is not None:
         src = 'receivable_detail+ar_aging' if ar_aging is not None else 'receivable_detail'
@@ -332,7 +396,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 2. DACA additions — fallback (matches JLL's basis when bank rec not yet run)
+    # 3. DACA additions — fallback (matches JLL's basis when bank rec not yet run)
     daca_cash = _cash_from_daca(daca_parsed)
     if daca_cash is not None:
         return ManagementFeeResult(
@@ -342,7 +406,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 3. GL cash account — fallback when neither Receivable Detail nor DACA uploaded
+    # 4. GL cash account — fallback when neither Receivable report nor DACA uploaded
     gl_cash = _cash_from_gl(gl_parsed)
     if gl_cash is not None:
         return ManagementFeeResult(
@@ -352,7 +416,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 4. Revenue proxy
+    # 5. Revenue proxy
     rev_cash = _cash_from_revenue(budget_rows)
     if rev_cash is not None:
         return ManagementFeeResult(
@@ -362,7 +426,7 @@ def calculate(
             grp_rate=grp_rate,
         )
 
-    # 5. Nothing available — return $0 with a note
+    # 6. Nothing available — return $0 with a note
     return ManagementFeeResult(
         cash_received=0.0,
         cash_source='not_available',
