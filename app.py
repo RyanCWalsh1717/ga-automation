@@ -60,6 +60,22 @@ def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     p = _DATA_DIR / prop_code / filename
     return str(p) if p.exists() else None
 
+def _save_checklist_now() -> None:
+    """Persist current close_tracker + custom items to GitHub/local."""
+    try:
+        from checklist_persistence import save_checklist, session_to_state, period_to_key
+        _code = st.session_state.get('active_property_code', 'revlabspm')
+        _pkey = st.session_state.get('checklist_period_key', current_period_key())
+        _state = session_to_state(
+            st.session_state.close_tracker,
+            st.session_state.get('custom_checklist_items', []),
+            _code, _pkey,
+        )
+        save_checklist(_code, _pkey, _state, str(_DATA_DIR))
+    except Exception:
+        pass   # persistence is best-effort; never crash the app
+
+
 def _discover_properties() -> list[dict]:
     """
     Scan data/ for subfolders with a config.yaml.
@@ -302,6 +318,18 @@ if "confirm_reset_all" not in st.session_state:
 if "confirm_reset_p2" not in st.session_state:
     st.session_state.confirm_reset_p2 = False
 
+# Dashboard checklist persistence
+from checklist_persistence import (
+    current_period_key, period_key_to_label, period_to_key,
+    load_checklist, save_checklist, session_to_state, state_to_session,
+)
+if "checklist_period_key" not in st.session_state:
+    st.session_state.checklist_period_key = current_period_key()
+if "custom_checklist_items" not in st.session_state:
+    st.session_state.custom_checklist_items = []
+if "checklist_loaded" not in st.session_state:
+    st.session_state.checklist_loaded = False
+
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
     st.session_state.post_close_je_df = _pd_init.DataFrame({
@@ -450,6 +478,10 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pass2_engine_result   = None
     st.session_state.pass2_output_files    = {}
     st.session_state.uploaded_files        = {}
+    # Reset checklist so the new property's data is loaded
+    st.session_state.checklist_loaded = False
+    st.session_state.close_tracker = {}
+    st.session_state.custom_checklist_items = []
 
 # Load config for the selected property
 from property_config import load_property_config as _load_prop_cfg
@@ -523,6 +555,8 @@ else:
         if "manual_accruals_df" in st.session_state:
             st.session_state.manual_accruals_df["Amount ($)"] = 0.0
         st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
+        st.session_state.custom_checklist_items = []
+        st.session_state.checklist_loaded = False
         st.rerun()
     if _ra_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_all_btn"):
         st.session_state.confirm_reset_all = False
@@ -656,12 +690,240 @@ _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 # ═══════════════════════════════════════════════════════════════
 import pandas as pd
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab0, tab1, tab2, tab3, tab4 = st.tabs([
+    "🏠  Dashboard",
     "📋  Pass 1 — Generate JEs",
     "📊  Pass 2 — Generate Reports & JEs",
     "📖  How to Use",
     "⚙️  Properties",
 ])
+
+
+# ══════════════════════════════════════════════════════════════
+# TAB 0 — DASHBOARD / CLOSE CHECKLIST
+# ══════════════════════════════════════════════════════════════
+with tab0:
+
+    # ── Load checklist from GitHub once per session / property ────────────────
+    _ck_prop   = st.session_state.get('active_property_code', 'revlabspm')
+    _ck_pkey   = st.session_state.checklist_period_key
+    if not st.session_state.get('checklist_loaded', False):
+        try:
+            _ck_state = load_checklist(_ck_prop, _ck_pkey, str(_DATA_DIR))
+            _ct_loaded, _ci_loaded = state_to_session(_ck_state)
+            # Merge: don't overwrite steps already set by auto-detect in Pass 1/2
+            for _sk, _sv in _ct_loaded.items():
+                if _sk not in st.session_state.close_tracker:
+                    st.session_state.close_tracker[_sk] = _sv
+            if not st.session_state.custom_checklist_items:
+                st.session_state.custom_checklist_items = _ci_loaded
+        except Exception:
+            pass
+        st.session_state.checklist_loaded = True
+
+    from close_tracker_generator import CLOSE_TRACKER_STEPS as _CTS
+
+    # ── Top control bar ───────────────────────────────────────────────────────
+    _ck_col_name, _ck_col_period, _ck_col_prog = st.columns([2, 2, 4])
+
+    with _ck_col_name:
+        _team_names = ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
+        _cur_name   = st.session_state.get('prepared_by', 'Ryan Walsh')
+        _name_idx   = _team_names.index(_cur_name) if _cur_name in _team_names else 0
+        _chosen_name = st.selectbox(
+            "👤 I am",
+            _team_names,
+            index=_name_idx,
+            key='dashboard_user_name',
+        )
+        if _chosen_name != st.session_state.prepared_by:
+            st.session_state.prepared_by = _chosen_name
+
+    with _ck_col_period:
+        # Build a list of the last 3 months + next month for selector
+        from datetime import date
+        _today = date.today()
+        _period_options = []
+        for _mo_offset in range(-2, 2):
+            _mo = (_today.month - 1 + _mo_offset) % 12 + 1
+            _yr = _today.year + ((_today.month - 1 + _mo_offset) // 12)
+            _period_options.append(f'{_yr}_{_mo:02d}')
+        if _ck_pkey not in _period_options:
+            _period_options.append(_ck_pkey)
+        _period_labels_map = {k: period_key_to_label(k) for k in _period_options}
+        _period_sel_idx = _period_options.index(_ck_pkey) if _ck_pkey in _period_options else 0
+        _period_chosen = st.selectbox(
+            "📅 Close Period",
+            _period_options,
+            index=_period_sel_idx,
+            format_func=lambda k: _period_labels_map[k],
+            key='dashboard_period_sel',
+        )
+        if _period_chosen != st.session_state.checklist_period_key:
+            st.session_state.checklist_period_key = _period_chosen
+            st.session_state.checklist_loaded = False
+            st.rerun()
+
+    with _ck_col_prog:
+        _n_steps   = len(_CTS)
+        _n_done    = sum(1 for i in range(_n_steps) if i in st.session_state.close_tracker)
+        _n_custom  = len(st.session_state.custom_checklist_items)
+        _n_cdone   = sum(1 for c in st.session_state.custom_checklist_items if c.get('completed'))
+        _total_all = _n_steps + _n_custom
+        _done_all  = _n_done + _n_cdone
+        _pct = int(100 * _done_all / _total_all) if _total_all else 0
+        st.markdown(f"**{period_key_to_label(_ck_pkey)} Close**")
+        st.progress(_pct)
+        _pct_color = '#2E7D32' if _pct == 100 else '#1565C0'
+        st.markdown(
+            f"<span style='font-size:0.85rem;color:{_pct_color};font-weight:600;'>"
+            f"{_done_all} / {_total_all} tasks complete ({_pct}%)</span>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Step checklist ─────────────────────────────────────────────────────────
+    # Group into Pre-Close / Post-Close
+    _PHASE_PRE  = list(range(0, 5))   # steps 0–4
+    _PHASE_POST = list(range(5, 9))   # steps 5–8
+
+    def _render_phase(phase_label: str, step_indices: list) -> None:
+        st.markdown(
+            f"<div style='font-size:0.78rem;font-weight:700;text-transform:uppercase;"
+            f"letter-spacing:0.08em;color:#757575;margin:8px 0 4px 0;'>{phase_label}</div>",
+            unsafe_allow_html=True,
+        )
+        for _si, _sdesc, _stype in [s for s in _CTS if s[0] in step_indices]:
+            _ct_entry = st.session_state.close_tracker.get(_si)
+            _is_done  = bool(_ct_entry)
+            _icon     = '✅' if _is_done else ('🔄' if _stype == 'auto' else '⬜')
+            _by       = _ct_entry.get('completed_by', '') if _ct_entry else '—'
+            _ts       = _ct_entry.get('timestamp', '') if _ct_entry else '—'
+            _auto_tag = ' *(auto)*' if (_ct_entry and _ct_entry.get('auto')) else ''
+
+            _sc1, _sc2, _sc3, _sc4, _sc5 = st.columns([0.4, 3.5, 1.8, 1.8, 1.5])
+            with _sc1:
+                st.markdown(f"<div style='font-size:1.1rem;padding-top:4px'>{_icon}</div>",
+                            unsafe_allow_html=True)
+            with _sc2:
+                _color = '#212121' if _is_done else '#616161'
+                _weight = '500' if _is_done else '400'
+                st.markdown(
+                    f"<div style='color:{_color};font-weight:{_weight};"
+                    f"font-size:0.88rem;padding-top:6px;'>{_sdesc}{_auto_tag}</div>",
+                    unsafe_allow_html=True,
+                )
+            with _sc3:
+                st.markdown(
+                    f"<div style='font-size:0.82rem;color:#616161;padding-top:6px;'>{_by}</div>",
+                    unsafe_allow_html=True,
+                )
+            with _sc4:
+                st.markdown(
+                    f"<div style='font-size:0.82rem;color:#616161;padding-top:6px;'>{_ts}</div>",
+                    unsafe_allow_html=True,
+                )
+            with _sc5:
+                if _stype == 'manual' and not _is_done:
+                    if st.button('Mark Complete', key=f'ck_mark_{_si}',
+                                 use_container_width=True):
+                        st.session_state.close_tracker[_si] = {
+                            'completed_by': st.session_state.prepared_by,
+                            'timestamp':    datetime.now().strftime('%m/%d/%Y %H:%M'),
+                            'auto':         False,
+                        }
+                        _save_checklist_now()
+                        st.rerun()
+                elif _is_done and _stype == 'manual':
+                    if st.button('↩ Undo', key=f'ck_undo_{_si}',
+                                 use_container_width=True):
+                        st.session_state.close_tracker.pop(_si, None)
+                        _save_checklist_now()
+                        st.rerun()
+                else:
+                    st.markdown('')   # spacer
+
+    _render_phase('Pre-Close', _PHASE_PRE)
+    _render_phase('Post-Close', _PHASE_POST)
+
+    st.divider()
+
+    # ── Custom (one-off) tasks ─────────────────────────────────────────────────
+    st.markdown(
+        "<div style='font-size:0.78rem;font-weight:700;text-transform:uppercase;"
+        "letter-spacing:0.08em;color:#757575;margin:8px 0 4px 0;'>Custom Tasks "
+        "This Close</div>",
+        unsafe_allow_html=True,
+    )
+
+    for _ci_idx, _ci in enumerate(st.session_state.custom_checklist_items):
+        _ci_done = _ci.get('completed', False)
+        _ci_icon = '✅' if _ci_done else '⬜'
+        _ci_by   = _ci.get('completed_by', '—') if _ci_done else _ci.get('created_by', '—')
+        _ci_ts   = _ci.get('completed_at', '—') if _ci_done else f"added {_ci.get('created_at','')}"
+
+        _cc1, _cc2, _cc3, _cc4, _cc5 = st.columns([0.4, 3.5, 1.8, 1.8, 1.5])
+        with _cc1:
+            st.markdown(f"<div style='font-size:1.1rem;padding-top:4px'>{_ci_icon}</div>",
+                        unsafe_allow_html=True)
+        with _cc2:
+            _ci_color = '#212121' if _ci_done else '#616161'
+            st.markdown(
+                f"<div style='color:{_ci_color};font-size:0.88rem;padding-top:6px;'>"
+                f"{_ci['label']}</div>",
+                unsafe_allow_html=True,
+            )
+        with _cc3:
+            st.markdown(
+                f"<div style='font-size:0.82rem;color:#616161;padding-top:6px;'>{_ci_by}</div>",
+                unsafe_allow_html=True,
+            )
+        with _cc4:
+            st.markdown(
+                f"<div style='font-size:0.82rem;color:#616161;padding-top:6px;'>{_ci_ts}</div>",
+                unsafe_allow_html=True,
+            )
+        with _cc5:
+            if not _ci_done:
+                if st.button('Mark Complete', key=f'ci_mark_{_ci_idx}',
+                             use_container_width=True):
+                    st.session_state.custom_checklist_items[_ci_idx]['completed']    = True
+                    st.session_state.custom_checklist_items[_ci_idx]['completed_by'] = (
+                        st.session_state.prepared_by)
+                    st.session_state.custom_checklist_items[_ci_idx]['completed_at'] = (
+                        datetime.now().strftime('%m/%d/%Y %H:%M'))
+                    _save_checklist_now()
+                    st.rerun()
+            else:
+                if st.button('↩ Undo', key=f'ci_undo_{_ci_idx}',
+                             use_container_width=True):
+                    st.session_state.custom_checklist_items[_ci_idx]['completed']    = False
+                    st.session_state.custom_checklist_items[_ci_idx]['completed_by'] = None
+                    st.session_state.custom_checklist_items[_ci_idx]['completed_at'] = None
+                    _save_checklist_now()
+                    st.rerun()
+
+    # ── Add custom task ────────────────────────────────────────────────────────
+    with st.expander('➕  Add a custom task for this close', expanded=False):
+        _new_label = st.text_input('Task description', key='new_custom_task_label',
+                                   placeholder='e.g. Confirm Berkadia loan pay-off')
+        if st.button('Add Task', key='add_custom_task_btn', type='primary'):
+            if _new_label.strip():
+                _new_id = f'custom_{len(st.session_state.custom_checklist_items)}'
+                st.session_state.custom_checklist_items.append({
+                    'id':           _new_id,
+                    'label':        _new_label.strip(),
+                    'created_by':   st.session_state.prepared_by,
+                    'created_at':   datetime.now().strftime('%m/%d/%Y %H:%M'),
+                    'completed':    False,
+                    'completed_by': None,
+                    'completed_at': None,
+                })
+                _save_checklist_now()
+                st.rerun()
+            else:
+                st.warning('Please enter a task description.')
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1391,6 +1653,7 @@ with tab1:
                         "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
                         "auto":         True,
                     }
+                    _save_checklist_now()
 
                 # ── Pass 1 Run Log ────────────────────────────────────────────
                 try:
@@ -3130,10 +3393,15 @@ with tab2:
                 _ct = st.session_state.close_tracker
                 _p2_ts = datetime.now().strftime("%m/%d/%Y %H:%M")
                 _p2_by = st.session_state.get('prepared_by', 'Ryan Walsh')
+                _ck_changed = False
                 if 5 not in _ct:
                     _ct[5] = {"completed_by": _p2_by, "timestamp": _p2_ts, "auto": True}
+                    _ck_changed = True
                 if 6 not in _ct:
                     _ct[6] = {"completed_by": _p2_by, "timestamp": _p2_ts, "auto": True}
+                    _ck_changed = True
+                if _ck_changed:
+                    _save_checklist_now()
 
                 # ── Run Log ───────────────────────────────────────────────────
                 try:
@@ -3592,6 +3860,7 @@ with tab2:
                                 "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
                                 "auto":         True,
                             }
+                            _save_checklist_now()
                         st.rerun()
                 with _col_status:
                     st.markdown(
