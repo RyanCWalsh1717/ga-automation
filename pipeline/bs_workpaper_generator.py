@@ -409,7 +409,9 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
     # ── Build workpaper tabs ──────────────────────────────────
     # Trial Balance moved to LAST tab — generated below just before wb.save().
-    # Summary tab removed — not needed for review (account tabs + TB are sufficient).
+    # Summary Page is generated FIRST — it holds the period-end date in C4,
+    # which is referenced by DATEDIF formulas in the 135150 PPD Other tab.
+    _write_summary_page(wb, period)
 
     # Flat list of all GL transactions as dicts — consumed by custom tab builders
     # that need cross-account JE context (e.g. 133110 billback, 213100 accruals).
@@ -616,6 +618,76 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
 
     wb.save(output_path)
     return output_path
+
+
+# ── Summary Page ─────────────────────────────────────────────
+
+def _write_summary_page(wb, period: str) -> None:
+    """
+    Create a minimal 'Summary Page' tab with the period-end date in cell C4.
+
+    This cell is referenced by DATEDIF formulas in the '135150 PPD Other' tab:
+      =J{r}*DATEDIF(G{r},'Summary Page'!$C$4+1,"M")
+    which counts months amortized through the period-end date.
+
+    The tab is intentionally sparse — it exists only to provide the anchor date.
+    Additional summary content can be added here manually in future.
+    """
+    import re
+    from calendar import monthrange
+    from datetime import date as _date
+
+    ws = wb.create_sheet('Summary Page', 0)   # first tab
+    ws.sheet_properties.tabColor = '002060'
+    ws.column_dimensions['A'].width = 2
+    ws.column_dimensions['B'].width = 22
+    ws.column_dimensions['C'].width = 16
+
+    # Parse period-end date from "Jan-2026" → date(2026, 1, 31)
+    _MONTH_MAP = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
+                  'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
+    period_end = None
+    m = re.search(r'([A-Za-z]{3})[\s\-](\d{4})', period or '')
+    if m:
+        mon = _MONTH_MAP.get(m.group(1).lower(), 0)
+        yr  = int(m.group(2))
+        if mon:
+            last_day = monthrange(yr, mon)[1]
+            period_end = _date(yr, mon, last_day)
+
+    # Header
+    hdr = ws.cell(row=1, column=2, value='Summary Page')
+    hdr.font  = _font(bold=True, size=13, color='FFFFFF')
+    hdr.fill  = _fill(DARK_BLUE)
+    hdr.alignment = Alignment(horizontal='left', vertical='center')
+    ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=4)
+    ws.row_dimensions[1].height = 22
+
+    sub = ws.cell(row=2, column=2,
+                  value=f'Period: {period}  |  Generated: {datetime.now().strftime("%m/%d/%Y")}')
+    sub.font  = _font(italic=True, size=10, color='FFFFFF')
+    sub.fill  = _fill(DARK_BLUE)
+    sub.alignment = Alignment(horizontal='left')
+    ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=4)
+
+    # Row 4 — period-end date anchor (C4 — referenced by 135150 DATEDIF formulas)
+    lbl = ws.cell(row=4, column=2, value='Period End Date')
+    lbl.font  = _font(bold=True)
+    lbl.fill  = _fill(LIGHT_BLUE)
+    lbl.border = THIN
+    lbl.alignment = Alignment(horizontal='left')
+
+    val = ws.cell(row=4, column=3, value=period_end)
+    val.font          = _font(bold=True)
+    val.fill          = _fill(LIGHT_BLUE)
+    val.border        = THIN
+    val.number_format = 'MM/DD/YYYY'
+    val.alignment     = Alignment(horizontal='center')
+
+    note = ws.cell(row=5, column=3,
+                   value='← Used by 135150 PPD Other DATEDIF formulas')
+    note.font      = _font(italic=True, size=9, color='666666')
+    note.alignment = Alignment(horizontal='left')
 
 
 # ── Raw Yardi TB sheet copy ───────────────────────────────────

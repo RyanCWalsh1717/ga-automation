@@ -747,18 +747,25 @@ def build_213100_tab(wb, period: str, property_name: str,
 
     GL Account is resolved by matching the transaction's control number against
     the debit side of the same JE in je_lines (cross-account context).
+
+    Header (B1 = '213100' alone so the footer VLOOKUP resolves correctly):
+      B1 = '213100'  ← VLOOKUP anchor for tieout
+      B2 = 'Accrued Expenses'
+      B3 = property | period | prepared
+
+    Footer (live formulas):
+      Ending Balance per GL  = =SUM(F6:F{last_data_row})
+      Ending Balance per TB  = =VLOOKUP(B1,'Trial Balance'!$B:$G,6,0)
+      Variance               = =F{gl_row}-F{tb_row}
     """
-    gl_ending   = float(getattr(gl_acct, 'ending_balance',   0) or 0)
-    tb_ending   = float(getattr(tb_entry, 'ending_balance',   0) or 0) if tb_entry else gl_ending
-    txns        = list(getattr(gl_acct, 'transactions', []) or [])
+    HDR_GREEN = '375623'
+
+    txns = list(getattr(gl_acct, 'transactions', []) or [])
 
     # ── Build control → expense account / vendor lookup ───────────────────────
-    # Walk all JE lines; for each line with a debit > 0 on a non-liability
-    # account, record that control number's expense account and vendor so we can
-    # annotate each 213100 credit row with the offsetting debit account.
     _LIABILITY_ACCOUNTS = {'211100', '211200', '211300', '213100', '213200', '221100'}
-    _ctrl_to_expense: Dict[str, str] = {}   # control → account_code
-    _ctrl_to_vendor:  Dict[str, str] = {}   # control → vendor/remarks
+    _ctrl_to_expense: Dict[str, str] = {}
+    _ctrl_to_vendor:  Dict[str, str] = {}
 
     for line in (je_lines or []):
         ctrl = str(line.get('je_number') or '').strip()
@@ -772,13 +779,9 @@ def build_213100_tab(wb, period: str, property_name: str,
             _ctrl_to_vendor[ctrl] = vendor_val
 
     # ── Filter to credit-only entries (current-period accruals) ───────────────
-    # Credit to 213100 = new liability created this period.
-    # Debit to 213100  = auto-reversal of prior month's accrual → excluded.
-    from datetime import date as _date
-
     def _txn_sort_key(t):
         d = getattr(t, 'date', None)
-        return d if isinstance(d, _date) else _date(1900, 1, 1)
+        return d if isinstance(d, date) else date(1900, 1, 1)
 
     accrual_txns = sorted(
         [t for t in txns
@@ -788,34 +791,65 @@ def build_213100_tab(wb, period: str, property_name: str,
 
     ws = wb.create_sheet('213100 Accr Exp'[:31])
     ws.sheet_properties.tabColor = 'FF0000'
+    ws.column_dimensions['A'].width = 2
 
-    next_row = _write_tab_header(ws, '213100', 'Accrued Expenses',
-                                 period, property_name, ncols=5)
-    next_row += 1
-    next_row = _write_col_headers(
-        ws, next_row,
-        ['Date', 'GL Account', 'Description', 'Vendor', 'Amount'],
-        [14, 14, 52, 24, 18],
-    )
+    FIRST_COL  = 2   # B
+    AMOUNT_COL = 6   # F (5 data cols: B–F)
 
-    AMOUNT_COL = 6   # column F (B=2 base, 5 data cols → last col = 2+5-1 = 6)
+    col_labels = ['Date', 'GL Account', 'Description', 'Vendor', 'Amount']
+    col_widths = [14, 14, 52, 24, 18]
 
-    # ── Transaction rows ──────────────────────────────────────────────────────
-    data_start_row = next_row
+    for ci, w in enumerate(col_widths):
+        ws.column_dimensions[get_column_letter(FIRST_COL + ci)].width = w
+
+    # ── Rows 1-3: header block ────────────────────────────────────────────
+    c1 = ws.cell(row=1, column=FIRST_COL, value='213100')
+    _apply(c1, font=_font(bold=True, size=13, color='FFFFFF'),
+           fill=_fill(HDR_GREEN),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=1, start_column=FIRST_COL, end_row=1, end_column=FIRST_COL + 2)
+    ws.row_dimensions[1].height = 20
+
+    c2 = ws.cell(row=2, column=FIRST_COL, value='Accrued Expenses')
+    _apply(c2, font=_font(size=11, color='FFFFFF'),
+           fill=_fill(HDR_GREEN),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=AMOUNT_COL)
+
+    prop_line = (f'{property_name or "revlabpm"}  |  Period: {period}  |  '
+                 f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c3 = ws.cell(row=3, column=FIRST_COL, value=prop_line)
+    _apply(c3, font=_font(italic=True, size=10, color='FFFFFF'),
+           fill=_fill(HDR_GREEN),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=3, start_column=FIRST_COL, end_row=3, end_column=AMOUNT_COL)
+
+    # Row 4 = blank spacer
+
+    # ── Row 5: column headers ─────────────────────────────────────────────
+    for ci, lbl in enumerate(col_labels):
+        c = ws.cell(row=5, column=FIRST_COL + ci, value=lbl)
+        _apply(c, font=_font(bold=True, size=10, color='FFFFFF'),
+               fill=_fill('000000'), border=THIN,
+               align=Alignment(horizontal='center', vertical='center'))
+    ws.row_dimensions[5].height = 18
+
+    # ── Data rows from row 6 ──────────────────────────────────────────────
+    next_row = 6
 
     for i, txn in enumerate(accrual_txns):
         alt = i % 2 == 1
         bg  = _fill(LIGHT_GRAY) if alt else None
 
         d = getattr(txn, 'date', None)
-        date_str  = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
+        date_str  = d.strftime('%m/%d/%Y') if isinstance(d, date) else str(d or '')
         ctrl      = str(getattr(txn, 'control', '') or '').strip()
         gl_acct_c = _ctrl_to_expense.get(ctrl, '')
         desc      = _213100_clean_desc(txn)
         vendor    = _ctrl_to_vendor.get(ctrl, '')
         credit    = float(getattr(txn, 'credit', 0) or 0)
         debit     = float(getattr(txn, 'debit',  0) or 0)
-        amt       = credit - debit   # positive = net credit = new accrual
+        amt       = credit - debit
 
         for col, val, fmt, wrap in [
             (2, date_str,  None,        False),
@@ -825,41 +859,58 @@ def build_213100_tab(wb, period: str, property_name: str,
             (6, amt,       '$#,##0.00', False),
         ]:
             c = ws.cell(row=next_row, column=col, value=val)
-            _apply(c, font=_font(), fill=bg, border=THIN,
+            _apply(c, font=_font(size=10), fill=bg, border=THIN,
                    fmt=fmt,
                    align=Alignment(wrap_text=wrap,
                                    horizontal='right' if fmt else 'left'))
         next_row += 1
 
-    data_end_row = next_row - 1
+    last_data_row = max(next_row - 1, 5)
 
     if not accrual_txns:
-        c = ws.cell(row=next_row, column=2, value='No accrual entries this period')
-        _apply(c, font=_font(italic=True, color='666666'), border=THIN)
-        ws.merge_cells(start_row=next_row, start_column=2,
+        c = ws.cell(row=next_row, column=FIRST_COL, value='No accrual entries this period')
+        _apply(c, font=_font(italic=True, size=10, color='666666'), border=THIN)
+        ws.merge_cells(start_row=next_row, start_column=FIRST_COL,
                        end_row=next_row, end_column=AMOUNT_COL)
         next_row += 1
-        data_start_row = data_end_row = next_row - 1
 
-    # ── Total accruals subtotal ───────────────────────────────────────────────
+    # ── Footer: live formulas ─────────────────────────────────────────────
+    next_row += 1   # blank spacer
+
+    for col in range(FIRST_COL, AMOUNT_COL + 1):
+        ws.cell(row=next_row, column=col).border = THICK_BOTTOM
     next_row += 1
-    amt_col_ltr = get_column_letter(AMOUNT_COL)
-    c_tot_lbl = ws.cell(row=next_row, column=2, value='Total Accruals This Period')
-    _apply(c_tot_lbl, font=_font(bold=True, color='FFFFFF'),
-           fill=_fill(DARK_BLUE), border=THIN,
-           align=Alignment(horizontal='left'))
-    ws.merge_cells(start_row=next_row, start_column=2,
-                   end_row=next_row, end_column=AMOUNT_COL - 1)
-    c_tot_val = ws.cell(
-        row=next_row, column=AMOUNT_COL,
-        value=f'=SUM({amt_col_ltr}{data_start_row}:{amt_col_ltr}{data_end_row})',
-    )
-    _apply(c_tot_val, font=_font(bold=True, color='FFFFFF'),
-           fill=_fill(DARK_BLUE), fmt='$#,##0.00', border=THIN,
-           align=Alignment(horizontal='right'))
-    next_row += 2
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
+    F = get_column_letter(AMOUNT_COL)
+    gl_row  = next_row
+    tb_row  = next_row + 1
+    var_row = next_row + 2
+
+    tieout_rows = [
+        (gl_row,  'Ending Balance per GL',
+         f'=SUM({F}6:{F}{last_data_row})',                          DARK_BLUE, 'FFFFFF'),
+        (tb_row,  'Ending Balance per TB',
+         f"=VLOOKUP(B1,'Trial Balance'!$B:$G,6,0)",                MED_BLUE,  'FFFFFF'),
+        (var_row, 'Variance',
+         f'={F}{gl_row}-{F}{tb_row}',                              None,      None),
+    ]
+
+    for row, label, formula, fill_hex, font_color in tieout_rows:
+        c_lbl = ws.cell(row=row, column=FIRST_COL, value=label)
+        _apply(c_lbl,
+               font=_font(bold=True, size=10, color=font_color or '000000'),
+               fill=_fill(fill_hex) if fill_hex else None, border=THIN,
+               align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=row, start_column=FIRST_COL,
+                       end_row=row, end_column=AMOUNT_COL - 1)
+
+        c_val = ws.cell(row=row, column=AMOUNT_COL, value=formula)
+        _apply(c_val,
+               font=_font(bold=True, size=10, color=font_color or '000000'),
+               fill=_fill(fill_hex) if fill_hex else None, border=THIN,
+               fmt='$#,##0.00',
+               align=Alignment(horizontal='right'))
+
     return ws
 
 
@@ -869,80 +920,197 @@ def build_135150_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
                      prepaid_ledger: List[Dict] = None, **_):
     """
-    Prepaid Other schedule matching the Pass 1 prepaid ledger output exactly.
+    Prepaid Other schedule with live Excel formulas — matching the monthly workpaper template.
 
-    Columns:
+    Header (B1 = '135150' alone so the footer VLOOKUP resolves correctly):
+      B1 = '135150'           ← VLOOKUP anchor for tieout
+      B2 = 'Prepaid - Other'
+      B3 = property | period | prepared
+      Row 4 = empty spacer
+      Row 5 = column headers
+
+    Columns (B–L):
       Vendor | Description | Invoice Number | Invoice Date | G/L Account |
       Start Date | End Date | Total | Monthly Amt | Amt Amort. | Remaining
 
-    Amt Amort. = months_amortized × monthly_amount  (dollar, not count)
-    Remaining  = remaining_months  × monthly_amount  (dollar)
+    Formula columns (live, reference-able):
+      J (Monthly Amt)  = =I{r}/DATEDIF(G{r},H{r}+1,"M")
+      K (Amt Amort.)   = =J{r}*DATEDIF(G{r},'Summary Page'!$C$4+1,"M")
+      L (Remaining)    = =I{r}-K{r}
+
+    Footer (live formulas):
+      Ending Balance per GL  = =SUM(L6:L{last_data_row})
+      Ending Balance per TB  = =VLOOKUP(B1,'Trial Balance'!$B:$G,6,0)
+      Variance               = =L{gl_row}-L{tb_row}
+
+    Requires 'Summary Page'!C4 = period-end date (added by bs_workpaper_generator).
     """
-    gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
-    tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
+    HDR_GREEN = '375623'
 
     ws = wb.create_sheet('135150 PPD Other'[:31])
     ws.sheet_properties.tabColor = '70AD47'
+    ws.column_dimensions['A'].width = 2
 
-    next_row = _write_tab_header(ws, '135150', 'Prepaid - Other',
-                                 period, property_name, ncols=11)
-    next_row += 1
-    next_row = _write_col_headers(
-        ws, next_row,
-        ['Vendor', 'Description', 'Invoice Number', 'Invoice Date',
-         'G/L Account', 'Start Date', 'End Date',
-         'Total', 'Monthly Amt', 'Amt Amort.', 'Remaining'],
-        [24, 32, 16, 14, 14, 12, 12, 16, 14, 14, 16],
-    )
+    FIRST_COL = 2   # B
+    LAST_COL  = 12  # L
 
-    ledger = prepaid_ledger or []
+    col_labels = ['Vendor', 'Description', 'Invoice Number', 'Invoice Date',
+                  'G/L Account', 'Start Date', 'End Date', 'Total',
+                  'Monthly Amt', 'Amt Amort.', 'Remaining']
+    col_widths = [24, 32, 16, 14, 14, 12, 12, 16, 14, 14, 16]
+
+    for ci, w in enumerate(col_widths):
+        ws.column_dimensions[get_column_letter(FIRST_COL + ci)].width = w
+
+    # ── Rows 1-3: header block ────────────────────────────────────────────
+    # B1 must contain ONLY the account code so the footer VLOOKUP works.
+    c1 = ws.cell(row=1, column=FIRST_COL, value='135150')
+    _apply(c1, font=_font(bold=True, size=13, color='FFFFFF'),
+           fill=_fill(HDR_GREEN),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=1, start_column=FIRST_COL, end_row=1, end_column=FIRST_COL + 2)
+    ws.row_dimensions[1].height = 20
+
+    c2 = ws.cell(row=2, column=FIRST_COL, value='Prepaid - Other')
+    _apply(c2, font=_font(size=11, color='FFFFFF'),
+           fill=_fill(HDR_GREEN),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
+
+    prop_line = (f'{property_name or "revlabpm"}  |  Period: {period}  |  '
+                 f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c3 = ws.cell(row=3, column=FIRST_COL, value=prop_line)
+    _apply(c3, font=_font(italic=True, size=10, color='FFFFFF'),
+           fill=_fill(HDR_GREEN),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=3, start_column=FIRST_COL, end_row=3, end_column=LAST_COL)
+
+    # Row 4 = blank spacer
+
+    # ── Row 5: column headers ─────────────────────────────────────────────
+    for ci, lbl in enumerate(col_labels):
+        c = ws.cell(row=5, column=FIRST_COL + ci, value=lbl)
+        _apply(c, font=_font(bold=True, size=10, color='FFFFFF'),
+               fill=_fill('000000'), border=THIN,
+               align=Alignment(horizontal='center', vertical='center'))
+    ws.row_dimensions[5].height = 18
+
+    # ── Data rows from row 6 ──────────────────────────────────────────────
+    def _to_date(val):
+        """Coerce various date representations to a Python date (needed for DATEDIF)."""
+        if isinstance(val, date):
+            return val
+        if isinstance(val, datetime):
+            return val.date()
+        if isinstance(val, str) and val:
+            for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d'):
+                try:
+                    return datetime.strptime(val.strip(), fmt).date()
+                except ValueError:
+                    pass
+        return None
+
+    ledger   = prepaid_ledger or []
+    next_row = 6
+
     for i, item in enumerate(ledger):
         alt = i % 2 == 1
-        bg = _fill(LIGHT_GRAY) if alt else None
+        bg  = _fill(LIGHT_GRAY) if alt else None
 
         def _v(key, _item=item):
             return _item.get(key, '') if isinstance(_item, dict) else getattr(_item, key, '')
 
-        vendor      = str(_v('vendor') or _v('description') or '')
-        desc        = str(_v('description') or '')
-        inv_num     = str(_v('invoice_number') or '')
-        inv_date    = _v('invoice_date') or ''
-        gl_account  = str(_v('gl_account_number') or '')
-        start       = _v('service_start') or _v('start_date') or _v('first_added_period') or ''
-        end         = _v('service_end') or _v('end_date') or ''
-        total       = float(_v('total_amount') or 0)
-        monthly     = float(_v('monthly_amount') or _v('monthly_amt') or 0)
-        months_am   = int(_v('months_amortized') or 0)
-        remaining_m = int(_v('remaining_months') or 0)
-        amt_amort   = round(months_am * monthly, 2)
-        remaining   = round(remaining_m * monthly, 2)
+        vendor     = str(_v('vendor') or _v('description') or '')
+        desc       = str(_v('description') or '')
+        inv_num    = str(_v('invoice_number') or '')
+        inv_date   = _v('invoice_date') or ''
+        gl_account = str(_v('gl_account_number') or '')
+        total      = float(_v('total_amount') or 0)
+        start_d    = _to_date(_v('service_start') or _v('start_date') or _v('first_added_period'))
+        end_d      = _to_date(_v('service_end') or _v('end_date'))
 
+        r = next_row
+
+        # Static input columns B–I (values; J/K/L are formula columns)
         for col, val, fmt, wrap in [
-            (2,  vendor,                          None,        True),
-            (3,  desc,                            None,        True),
-            (4,  inv_num,                         None,        False),
-            (5,  str(inv_date) if inv_date else '', None,      False),
-            (6,  gl_account,                      None,        False),
-            (7,  str(start),                      None,        False),
-            (8,  str(end),                        None,        False),
-            (9,  total,                           '$#,##0.00', False),
-            (10, monthly,                         '$#,##0.00', False),
-            (11, amt_amort,                       '$#,##0.00', False),
-            (12, remaining,                       '$#,##0.00', False),
+            (FIRST_COL + 0, vendor,    None,         True),
+            (FIRST_COL + 1, desc,      None,         True),
+            (FIRST_COL + 2, inv_num,   None,         False),
+            (FIRST_COL + 3, inv_date,  'MM/DD/YYYY', False),
+            (FIRST_COL + 4, gl_account, None,        False),
+            (FIRST_COL + 5, start_d,   'MM/DD/YYYY', False),
+            (FIRST_COL + 6, end_d,     'MM/DD/YYYY', False),
+            (FIRST_COL + 7, total,     '$#,##0.00',  False),
         ]:
-            c = ws.cell(row=next_row, column=col, value=val)
-            _apply(c, font=_font(), fill=bg, border=THIN,
+            c = ws.cell(row=r, column=col, value=val)
+            _apply(c, font=_font(size=10), fill=bg, border=THIN,
                    fmt=fmt,
                    align=Alignment(wrap_text=wrap,
                                    horizontal='right' if fmt else 'left'))
+
+        # Formula columns J, K, L
+        G = get_column_letter(FIRST_COL + 5)   # Start Date
+        H = get_column_letter(FIRST_COL + 6)   # End Date
+        I = get_column_letter(FIRST_COL + 7)   # Total
+        J = get_column_letter(FIRST_COL + 8)   # Monthly Amt
+        K = get_column_letter(FIRST_COL + 9)   # Amt Amort.
+
+        for col, formula in [
+            (FIRST_COL + 8, f'={I}{r}/DATEDIF({G}{r},{H}{r}+1,"M")'),
+            (FIRST_COL + 9, f'={J}{r}*DATEDIF({G}{r},\'Summary Page\'!$C$4+1,"M")'),
+            (FIRST_COL + 10, f'={I}{r}-{K}{r}'),
+        ]:
+            c = ws.cell(row=r, column=col, value=formula)
+            _apply(c, font=_font(size=10), fill=bg, border=THIN,
+                   fmt='$#,##0.00',
+                   align=Alignment(horizontal='right'))
+
         next_row += 1
+
+    last_data_row = max(next_row - 1, 5)   # guard: SUM(L6:L5) = 0 when empty
 
     if not ledger:
-        c = ws.cell(row=next_row, column=2, value='No active prepaid items')
-        _apply(c, font=_font(italic=True, color='666666'))
+        c = ws.cell(row=next_row, column=FIRST_COL, value='No active prepaid items')
+        _apply(c, font=_font(italic=True, size=10, color='666666'))
         next_row += 1
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=12)
+    # ── Footer: live formulas ─────────────────────────────────────────────
+    next_row += 1   # blank spacer
+
+    for col in range(FIRST_COL, LAST_COL + 1):
+        ws.cell(row=next_row, column=col).border = THICK_BOTTOM
+    next_row += 1
+
+    L = get_column_letter(LAST_COL)
+    gl_row  = next_row
+    tb_row  = next_row + 1
+    var_row = next_row + 2
+
+    tieout_rows = [
+        (gl_row,  'Ending Balance per GL',
+         f'=SUM({L}6:{L}{last_data_row})',                          DARK_BLUE, 'FFFFFF'),
+        (tb_row,  'Ending Balance per TB',
+         f"=VLOOKUP(B1,'Trial Balance'!$B:$G,6,0)",                MED_BLUE,  'FFFFFF'),
+        (var_row, 'Variance',
+         f'={L}{gl_row}-{L}{tb_row}',                              None,      None),
+    ]
+
+    for row, label, formula, fill_hex, font_color in tieout_rows:
+        c_lbl = ws.cell(row=row, column=FIRST_COL, value=label)
+        _apply(c_lbl,
+               font=_font(bold=True, size=10, color=font_color or '000000'),
+               fill=_fill(fill_hex) if fill_hex else None, border=THIN,
+               align=Alignment(horizontal='left'))
+        ws.merge_cells(start_row=row, start_column=FIRST_COL,
+                       end_row=row, end_column=LAST_COL - 1)
+
+        c_val = ws.cell(row=row, column=LAST_COL, value=formula)
+        _apply(c_val,
+               font=_font(bold=True, size=10, color=font_color or '000000'),
+               fill=_fill(fill_hex) if fill_hex else None, border=THIN,
+               fmt='$#,##0.00',
+               align=Alignment(horizontal='right'))
+
     return ws
 
 

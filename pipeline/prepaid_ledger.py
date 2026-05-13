@@ -629,49 +629,55 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -
     HDR_GREEN     = '375623'
     COL_HDR_BLACK = '000000'
     FIRST_COL     = 2    # col B
-    NCOLS         = 11
-    LAST_COL      = FIRST_COL + NCOLS - 1   # col L = 12
+    LAST_COL      = 12   # col L (11 data columns: B–L)
 
-    col_labels  = ['Vendor', 'Description', 'Invoice Number', 'Invoice Date',
-                   'G/L Account', 'Start Date', 'End Date',
-                   'Total', 'Monthly Amt', 'Amt Amort.', 'Remaining']
-    col_widths  = [24, 32, 16, 14, 14, 12, 12, 16, 14, 14, 16]
+    col_labels = ['Vendor', 'Description', 'Invoice Number', 'Invoice Date',
+                  'G/L Account', 'Start Date', 'End Date',
+                  'Total', 'Monthly Amt', 'Amt Amort.', 'Remaining']
+    col_widths = [24, 32, 16, 14, 14, 12, 12, 16, 14, 14, 16]
 
     for ci, w in enumerate(col_widths):
         ws.column_dimensions[get_column_letter(FIRST_COL + ci)].width = w
 
-    # ── Row 1: Account title ──────────────────────────────────────────────
-    c = ws.cell(row=1, column=FIRST_COL, value='135150  Prepaid - Other')
+    # ── Rows 1-3: header block (same structure as Pass 2 workpaper) ───────
+    # B1 = account code only — mirrors account_tab_builders.build_135150_tab()
+    c = ws.cell(row=1, column=FIRST_COL, value='135150')
     c.font      = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
     c.fill      = PatternFill(start_color=HDR_GREEN, end_color=HDR_GREEN, fill_type='solid')
     c.alignment = Alignment(horizontal='left', vertical='center')
-    ws.merge_cells(start_row=1, start_column=FIRST_COL, end_row=1, end_column=LAST_COL)
+    ws.merge_cells(start_row=1, start_column=FIRST_COL, end_row=1, end_column=FIRST_COL + 2)
     ws.row_dimensions[1].height = 20
 
-    # ── Row 2: Property | Period | Prepared ──────────────────────────────
-    prop_line = (f'revlabpm  |  Period: {period}  |  '
-                 f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
-    c = ws.cell(row=2, column=FIRST_COL, value=prop_line)
-    c.font      = Font(name='Calibri', size=10, italic=True, color='FFFFFF')
+    c = ws.cell(row=2, column=FIRST_COL, value='Prepaid - Other')
+    c.font      = Font(name='Calibri', size=11, color='FFFFFF')
     c.fill      = PatternFill(start_color=HDR_GREEN, end_color=HDR_GREEN, fill_type='solid')
     c.alignment = Alignment(horizontal='left', vertical='center')
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
 
-    # ── Row 3: blank spacer ───────────────────────────────────────────────
-    # (nothing to write)
+    prop_line = (f'revlabpm  |  Period: {period}  |  '
+                 f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c = ws.cell(row=3, column=FIRST_COL, value=prop_line)
+    c.font      = Font(name='Calibri', size=10, italic=True, color='FFFFFF')
+    c.fill      = PatternFill(start_color=HDR_GREEN, end_color=HDR_GREEN, fill_type='solid')
+    c.alignment = Alignment(horizontal='left', vertical='center')
+    ws.merge_cells(start_row=3, start_column=FIRST_COL, end_row=3, end_column=LAST_COL)
 
-    # ── Row 4: Column headers ─────────────────────────────────────────────
+    # Row 4: blank spacer (matches workpaper layout — data starts at row 6)
+
+    # ── Row 5: Column headers ─────────────────────────────────────────────
     for ci, lbl in enumerate(col_labels):
         col = FIRST_COL + ci
-        c = ws.cell(row=4, column=col, value=lbl)
+        c = ws.cell(row=5, column=col, value=lbl)
         c.font      = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
         c.fill      = PatternFill(start_color=COL_HDR_BLACK, end_color=COL_HDR_BLACK, fill_type='solid')
         c.border    = THIN
         c.alignment = Alignment(horizontal='center', vertical='center')
-    ws.row_dimensions[4].height = 18
+    ws.row_dimensions[5].height = 18
 
-    # ── Data rows ─────────────────────────────────────────────────────────
-    next_row = 5
+    # ── Data rows from row 6 ──────────────────────────────────────────────
+    # Values only (no DATEDIF formulas — this file is standalone, no Summary Page).
+    # Amt Amort. and Remaining are Python-computed dollar amounts.
+    next_row = 6
     for i, rec in enumerate(active):
         alt = i % 2 == 1
         alt_fill = PatternFill(start_color=LIGHT_GRAY, end_color=LIGHT_GRAY,
@@ -718,24 +724,21 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -
             )
         next_row += 1
 
+    last_data_row = max(next_row - 1, 5)
+
     if not active:
         c = ws.cell(row=next_row, column=FIRST_COL, value='No active prepaid items')
         c.font = Font(name='Calibri', size=10, italic=True, color='666666')
         next_row += 1
 
-    # ── Footer: Ending Balance per GL ─────────────────────────────────────
+    # ── Footer: Ending Balance per GL (live SUM formula) ──────────────────
     next_row += 1   # blank separator
 
-    # Thick separator line
     for col in range(FIRST_COL, LAST_COL + 1):
-        ws.cell(row=next_row, column=col).border = Border(
-            bottom=Side(style='medium'))
+        ws.cell(row=next_row, column=col).border = Border(bottom=Side(style='medium'))
     next_row += 1
 
-    gl_balance = sum(
-        round(int(r.get('remaining_months') or 0) * float(r.get('monthly_amount') or 0), 2)
-        for r in active
-    )
+    L = get_column_letter(LAST_COL)
 
     c_lbl = ws.cell(row=next_row, column=FIRST_COL, value='Ending Balance per GL')
     c_lbl.font      = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
@@ -745,7 +748,8 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -
     ws.merge_cells(start_row=next_row, start_column=FIRST_COL,
                    end_row=next_row, end_column=LAST_COL - 1)
 
-    c_val = ws.cell(row=next_row, column=LAST_COL, value=gl_balance)
+    c_val = ws.cell(row=next_row, column=LAST_COL,
+                    value=f'=SUM({L}6:{L}{last_data_row})')
     c_val.font         = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
     c_val.fill         = PatternFill(start_color=DARK_BLUE, end_color=DARK_BLUE, fill_type='solid')
     c_val.border       = THIN
