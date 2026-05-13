@@ -65,14 +65,19 @@ MULTI_FILE_KEYS = {"loan", "loan_pass2"}
 
 
 def classify_file(filename: str, file_bytes: bytes,
-                  pass2: bool = False) -> Tuple[str, float, str]:
+                  pass2: bool = False,
+                  property_config=None) -> Tuple[str, float, str]:
     """
     Classify a single file by content inspection.
 
     Args:
-        filename:   Original filename (used for extension detection only)
-        file_bytes: Raw bytes of the file
-        pass2:      If True, remap base keys to their pass-2 variants where applicable
+        filename:        Original filename (used for extension detection only)
+        file_bytes:      Raw bytes of the file
+        pass2:           If True, remap base keys to their pass-2 variants
+        property_config: PropertyConfig for the active property. When provided,
+                         bank account numbers and property code are read from
+                         config instead of hardcoded RevLabs values — enabling
+                         correct auto-classification for any property.
 
     Returns:
         (key, confidence, label)
@@ -82,10 +87,13 @@ def classify_file(filename: str, file_bytes: bytes,
     """
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
 
+    # Build property-specific signals from config (falls back to RevLabs hardcodes)
+    signals = _build_signals(property_config)
+
     if ext in ("xlsx", "xls"):
-        key, conf = _classify_excel(filename, file_bytes, ext)
+        key, conf = _classify_excel(filename, file_bytes, ext, signals)
     elif ext == "pdf":
-        key, conf = _classify_pdf(filename, file_bytes)
+        key, conf = _classify_pdf(filename, file_bytes, signals)
     else:
         key, conf = "unknown", 0.0
 
@@ -95,13 +103,104 @@ def classify_file(filename: str, file_bytes: bytes,
     return key, conf, FILE_LABELS.get(key, "Unknown — select type")
 
 
+def _build_signals(property_config) -> dict:
+    """
+    Extract property-specific matching signals from PropertyConfig.
+
+    Returns a dict with sets of strings to search for in file content,
+    keyed by the file type they indicate.  Falls back to hardcoded
+    RevLabs values when property_config is None.
+
+    Signal keys:
+        'operating_accounts'   → str set — full account numbers for operating bank rec (xlsx)
+        'dev_accounts'         → str set — account numbers for development bank rec (xlsx)
+        'daca_accounts'        → str set — account numbers for DACA (xlsx + PDF)
+        'property_codes'       → str set — Yardi property codes for GL detection
+        'operating_banks'      → str set — bank names for operating PDF (e.g. 'pnc')
+        'dev_banks'            → str set — bank names for dev PDF (e.g. 'bank of america')
+        'daca_banks'           → str set — bank names for DACA PDF (e.g. 'keybank')
+    """
+    if not property_config:
+        # RevLabs hardcoded fallback
+        return {
+            'operating_accounts': {'1092223993'},
+            'dev_accounts':       {'466007913132', '3132'},
+            'daca_accounts':      {'329681415132', 'x5132', '5132'},
+            'property_codes':     {'revlabspm'},
+            'operating_banks':    {'pnc'},
+            'dev_banks':          {'bank of america', 'bofa'},
+            'daca_banks':         {'keybank', 'daca'},
+        }
+
+    operating_accounts: set = set()
+    dev_accounts:       set = set()
+    daca_accounts:      set = set()
+    operating_banks:    set = set()
+    dev_banks:          set = set()
+    daca_banks:         set = set()
+
+    for slug, ba in (property_config.bank_accounts or {}).items():
+        slug_l  = slug.lower()
+        label_l = (ba.label or '').lower()
+        full    = ba.full_account or ''
+        last4   = (ba.last4 or '').lstrip('x')
+
+        # Determine account type from slug/label keywords
+        is_daca = 'daca' in slug_l or 'daca' in label_l
+        is_dev  = (not is_daca) and ('dev' in slug_l or 'development' in label_l)
+        is_op   = (not is_daca and not is_dev) and ('operat' in slug_l or 'operat' in label_l)
+
+        if is_daca:
+            if full:   daca_accounts.add(full)
+            if last4:  daca_accounts.add(last4); daca_accounts.add(f'x{last4}')
+            bank_name = (ba.label or '').split()[0].lower()
+            if bank_name: daca_banks.add(bank_name)
+            daca_banks.add('daca')
+        elif is_dev:
+            if full:   dev_accounts.add(full)
+            if last4:  dev_accounts.add(last4)
+            bank_name_words = (ba.label or '').lower().split()
+            # e.g. 'BofA Development' → add 'bofa', 'bank of america', 'development'
+            for w in bank_name_words:
+                if w not in ('development', 'dev', 'account', 'bank'):
+                    dev_banks.add(w)
+            dev_banks.update({'bank of america', 'bofa'} if 'bofa' in label_l or 'america' in label_l else set())
+        elif is_op:
+            if full:   operating_accounts.add(full)
+            bank_name_words = (ba.label or '').lower().split()
+            for w in bank_name_words:
+                if w not in ('operating', 'account', 'bank'):
+                    operating_banks.add(w)
+        else:
+            # Unrecognised slug — add account number to operating as fallback
+            if full: operating_accounts.add(full)
+
+    # Ensure bank name sets are never empty (generic fallbacks)
+    if not operating_banks: operating_banks = {'pnc'}
+    if not dev_banks:       dev_banks = {'bank of america', 'bofa'}
+    if not daca_banks:      daca_banks = {'keybank', 'daca'}
+
+    prop_code = (property_config.property_code or '').lower()
+
+    return {
+        'operating_accounts': operating_accounts,
+        'dev_accounts':       dev_accounts,
+        'daca_accounts':      daca_accounts,
+        'property_codes':     {prop_code} if prop_code else {'revlabspm'},
+        'operating_banks':    operating_banks,
+        'dev_banks':          dev_banks,
+        'daca_banks':         daca_banks,
+    }
+
+
 # ── Excel classifier ─────────────────────────────────────────────────────────
 
-def _classify_excel(filename: str, file_bytes: bytes, ext: str) -> Tuple[str, float]:
+def _classify_excel(filename: str, file_bytes: bytes, ext: str,
+                    signals: dict = None) -> Tuple[str, float]:
     try:
         if ext == "xls":
             return _classify_xls(file_bytes)
-        return _classify_xlsx(file_bytes)
+        return _classify_xlsx(file_bytes, signals or {})
     except Exception:
         return "unknown", 0.0
 
@@ -127,7 +226,7 @@ def _classify_xls(file_bytes: bytes) -> Tuple[str, float]:
     return "nexus_accrual", 0.60  # Only .xls file type used is Nexus
 
 
-def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
+def _classify_xlsx(file_bytes: bytes, signals: dict = None) -> Tuple[str, float]:
     """Classify .xlsx files by reading first rows of the active sheet."""
     import openpyxl
 
@@ -233,31 +332,34 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
             return "ar_aging", 0.80
         return "receivable_detail", 0.80
 
-    # ── Yardi Bank Rec — Development account 111210 (BofA x3132) ────────────
-    # Must check BEFORE the generic bank_rec check: development rec contains
-    # "bank reconciliation report" AND a BofA account number or "development".
-    if "bank reconciliation report" in all_text and (
-        "466007913132" in all_text or "3132" in all_text
-        or "development" in all_text or "bank of america" in all_text
-    ):
-        return "bank_rec_dev_xlsx", 0.95
+    # ── Yardi Bank Rec — account-specific matching (config-driven) ───────────
+    # Check DACA first (KeyBank), then development (BofA), then operating (PNC).
+    # Uses account numbers and keywords from property config (or RevLabs defaults).
+    _s = signals or {}
+    _dev_accts  = _s.get('dev_accounts', {'466007913132', '3132'})
+    _op_accts   = _s.get('operating_accounts', {'1092223993'})
+    _daca_accts = _s.get('daca_accounts', {'329681415132', 'x5132', '5132'})
 
-    # ── Yardi Bank Rec — PNC Operating 111100 (xlsx export) ──────────────
-    if "bank reconciliation report" in all_text and "1092223993" in all_text:
-        return "bank_rec", 0.95
+    if "bank reconciliation report" in all_text:
+        # DACA check first — most specific
+        if "daca" in all_text or any(a in all_text for a in _daca_accts):
+            return "daca_bank", 0.95
+        # Development check — BofA / dev account
+        if ("development" in all_text or "bank of america" in all_text
+                or any(a in all_text for a in _dev_accts)):
+            return "bank_rec_dev_xlsx", 0.95
+        # Operating (PNC or whatever the operating account is)
+        if any(a in all_text for a in _op_accts):
+            return "bank_rec", 0.95
+        # Generic fallback — some bank rec but no account match
+        return "bank_rec", 0.80
 
-    # ── Yardi DACA Bank Rec — 115100 (xlsx export) ───────────────────────
-    if "bank reconciliation report" in all_text and (
-        "329681415132" in all_text or "daca" in all_text
-    ):
-        return "daca_bank", 0.95
-
-    # ── GL: "General Ledger" OR property code + transaction structure ─────
+    # ── GL: "General Ledger" OR property code ────────────────────────────────
     if "general ledger" in all_text:
         return "gl", 0.95
-    # Yardi GL header: "Revolution Labs Owner, LLC (revlabspm)" in row 1
-    if "revlabspm" in all_text:
-        # Distinguish GL from TB/BC/T12 (those are already caught above)
+    # Yardi GL header contains the property code in parentheses, e.g. "(revlabspm)"
+    _prop_codes = _s.get('property_codes', {'revlabspm'})
+    if any(code in all_text for code in _prop_codes):
         return "gl", 0.85
 
     # ── Prepaid Ledger (content check before Nexus — seed file has Vendor/Invoice cols) ──
@@ -286,7 +388,14 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
 
 # ── PDF classifier ───────────────────────────────────────────────────────────
 
-def _classify_pdf(filename: str, file_bytes: bytes) -> Tuple[str, float]:
+def _classify_pdf(filename: str, file_bytes: bytes,
+                  signals: dict = None) -> Tuple[str, float]:
+    _s          = signals or {}
+    _dev_banks  = _s.get('dev_banks',  {'bank of america', 'bofa'})
+    _daca_banks = _s.get('daca_banks', {'keybank', 'daca'})
+    _op_banks   = _s.get('operating_banks', {'pnc'})
+    _daca_accts = _s.get('daca_accounts', {'329681415132', 'x5132', '5132'})
+
     try:
         import pdfplumber
         text = ""
@@ -294,11 +403,11 @@ def _classify_pdf(filename: str, file_bytes: bytes) -> Tuple[str, float]:
             for page in pdf.pages[:3]:
                 text += page.extract_text() or ""
     except Exception:
-        # Fall back to filename heuristics if pdfplumber fails
+        # Filename heuristics when pdfplumber fails
         fn = filename.lower()
-        if "bofa" in fn or "bankofamerica" in fn or "bank_of_america" in fn:
+        if any(b in fn for b in _dev_banks) or "bankofamerica" in fn or "bank_of_america" in fn:
             return "bank_rec_dev", 0.60
-        if "daca" in fn or "keybank" in fn:
+        if any(b in fn for b in _daca_banks):
             return "daca_bank", 0.60
         if "berkadia" in fn:
             return "loan", 0.60
@@ -306,39 +415,36 @@ def _classify_pdf(filename: str, file_bytes: bytes) -> Tuple[str, float]:
 
     tl = text.lower()
 
-    # ── Bank of America (development account) — check FIRST ─────────────
-    # BofA bank rec PDFs contain "bank reconciliation report" AND generic terms
-    # like "deposit account" that would otherwise trigger the DACA check below.
-    if "bank of america" in tl or "bofa" in tl:
+    # ── Development bank (BofA or config equivalent) — check FIRST ───────
+    # Dev bank PDFs can contain "bank reconciliation report" too, so check
+    # bank name before the generic Yardi rec check below.
+    if any(b in tl for b in _dev_banks):
         return "bank_rec_dev", 0.95
 
-    # ── Yardi DACA Bank Rec (Bank Rec Report for the DACA/KeyBank account) ─
-    # Must check BEFORE the generic "bank reconciliation report" check below,
-    # because the DACA rec PDF also contains that phrase on page 1.
-    # "deposit account" removed — too broad, matches BofA statements.
-    # Only use KeyBank/DACA-specific identifiers.
+    # ── DACA bank rec (KeyBank or config equivalent) ──────────────────────
+    # Must come before the generic "bank reconciliation report" check.
     if "bank reconciliation report" in tl and (
-        "daca" in tl
-        or "keybank" in tl
-        or "329681415132" in text
-        or "x5132" in tl
+        any(b in tl for b in _daca_banks)
+        or any(a in text for a in _daca_accts)
     ):
         return "daca_bank", 0.97
 
-    # ── Yardi Bank Rec — PNC Operating (contains "Bank Reconciliation Report") ─
+    # ── Generic Yardi Bank Rec (operating account PDF) ────────────────────
     if "bank reconciliation report" in tl:
         return "bank_rec", 0.97
 
-    # ── KeyBank DACA statement (standalone, no Yardi header) ─────────────
-    if "keybank" in tl and ("5132" in text or "daca" in tl):
+    # ── DACA standalone statement (no Yardi header) ───────────────────────
+    if any(b in tl for b in _daca_banks) and (
+        any(a in text for a in _daca_accts) or "daca" in tl
+    ):
         return "daca_bank", 0.95
 
     # ── Berkadia loan statements ──────────────────────────────────────────
     if "berkadia" in tl:
         return "loan", 0.95
 
-    # ── PNC statement as standalone (fallback bank rec) ───────────────────
-    if "pnc" in tl and (
+    # ── Operating bank standalone statement (PNC or config equivalent) ────
+    if any(b in tl for b in _op_banks) and (
         "account summary" in tl or "corporate business" in tl or "ending balance" in tl
     ):
         return "bank_rec", 0.82

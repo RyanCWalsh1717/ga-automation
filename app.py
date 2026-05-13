@@ -701,7 +701,7 @@ with tab1:
 
         for _uf in _bulk_p1:
             _raw = bytes(_uf.getbuffer())
-            _det_key, _conf, _det_label = _classify_file(_uf.name, _raw, pass2=False)
+            _det_key, _conf, _det_label = _classify_file(_uf.name, _raw, pass2=False, property_config=_active_cfg)
             _eff_key = st.session_state.bulk_overrides_p1.get(_uf.name, _det_key)
 
             _ic, _fn_col, _tp_col = st.columns([0.5, 5, 5])
@@ -2341,7 +2341,7 @@ with tab2:
 
         for _uf2 in _bulk_p2:
             _raw2 = bytes(_uf2.getbuffer())
-            _det_key2, _conf2, _det_label2 = _classify_file(_uf2.name, _raw2, pass2=True)
+            _det_key2, _conf2, _det_label2 = _classify_file(_uf2.name, _raw2, pass2=True, property_config=_active_cfg)
 
             # If classifier returned a base key that isn't in the P2 slot list,
             # keep it as-is (e.g. prior_workpaper has no remap)
