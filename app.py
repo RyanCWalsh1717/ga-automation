@@ -29,7 +29,7 @@ from property_config import is_revenue_account, is_income_statement_account
 from report_generator import generate_exception_report
 import traceback
 from accrual_entry_generator import (
-    build_accrual_entries, generate_yardi_je_csv,
+    build_accrual_entries, generate_yardi_je_csv, generate_etl_csv,
     build_prepaid_amortization, build_prepaid_release_je,
     check_prior_accrual_vs_actual,
 )
@@ -1282,9 +1282,9 @@ with tab1:
 
                 if all_je_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
-                    generate_yardi_je_csv(all_je_lines, _accrual_csv_path,
-                                          period=close_period, property_code=_prop_code,
-                                          book='')
+                    generate_etl_csv(all_je_lines, _accrual_csv_path,
+                                     period=close_period, property_code=_prop_code,
+                                     auto_reverse=True)
 
                 # Persist Pass 1 outputs
                 p1 = st.session_state.pass1_output_files
@@ -1618,10 +1618,11 @@ with tab1:
                     if _p1_er else None
                 ) or 'revlabpm'
                 try:
-                    from accrual_entry_generator import generate_yardi_je_csv as _gen_csv_ed
+                    from accrual_entry_generator import generate_etl_csv as _gen_etl_ed
                     _ed_csv = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
-                    _gen_csv_ed(_updated_lines, _ed_csv,
-                                period=result.period, property_code=_p1_prop, book='')
+                    _gen_etl_ed(_updated_lines, _ed_csv,
+                                period=result.period, property_code=_p1_prop,
+                                auto_reverse=True)
                     p1["accrual_je_csv"] = _ed_csv
                 except Exception:
                     pass
@@ -1723,13 +1724,14 @@ with tab1:
                             if _p1_er_add else None
                         ) or 'revlabpm'
                         try:
-                            from accrual_entry_generator import generate_yardi_je_csv as _gen_csv_add
+                            from accrual_entry_generator import generate_etl_csv as _gen_etl_add
                             _add_csv_path = os.path.join(
                                 st.session_state.temp_dir, "GA_Accruals_JE.csv"
                             )
-                            _gen_csv_add(
+                            _gen_etl_add(
                                 _updated_all, _add_csv_path,
-                                period=result.period, property_code=_p1_prop_add, book=''
+                                period=result.period, property_code=_p1_prop_add,
+                                auto_reverse=True
                             )
                             p1["accrual_je_csv"] = _add_csv_path
                             st.success(
@@ -3685,12 +3687,13 @@ with tab2:
             _pcje_period   = (_p2er.period        if _p2er else '') or ''
             _pcje_propname = (_p2er.property_name if _p2er else '') or 'revlabpm'
             try:
-                from accrual_entry_generator import generate_yardi_je_csv
-                generate_yardi_je_csv(
+                from accrual_entry_generator import generate_etl_csv as _gen_etl_pc
+                _gen_etl_pc(
                     _pcje_lines,
                     _pcje_csv_path,
                     period=_pcje_period,
                     property_code=_pcje_propname,
+                    auto_reverse=False,  # post-close JEs are permanent — no reversal
                 )
                 st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
             except Exception as _pcje_err:

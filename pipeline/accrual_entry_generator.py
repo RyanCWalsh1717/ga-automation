@@ -3703,6 +3703,133 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
     return output_path
 
 
+# ── Generate ETL FinJournals CSV (Yardi ETL import format) ───────────────────
+
+# Full 65-column header list from ETL_Financial_FinJournals.xls → Sample_CSV tab
+_ETL_HEADERS = [
+    'TRANNUM', 'DATE', 'PROPERTY', 'ACCOUNT', 'POSTMONTH', 'BOOKNUM', 'AMOUNT',
+    'REMARK', 'REF', 'USERDEFINEDFIELD1', 'USERDEFINEDFIELD2', 'USERDEFINEDFIELD3',
+    'USERDEFINEDFIELD4', 'USERDEFINEDFIELD5', 'USERDEFINEDFIELD6', 'USERDEFINEDFIELD7',
+    'USERDEFINEDFIELD8', 'TAXPOINTDATE', 'DESC', 'DOCUMENTSEQUENCENUMBER', 'TRANAMOUNT',
+    'DETAILTRANAMOUNT', 'LEGALENTITYID', 'BASECURRENCYID', 'TRANCURRENCYID', 'EXCHANGERATE',
+    'EXCHANGERATEDATE', 'EXCHANGERATE2', 'EXCHANGERATEDATE2', 'AMOUNT2', 'FROMDATE',
+    'TODATE', 'SEGMENT1', 'SEGMENT2', 'SEGMENT3', 'SEGMENT4', 'SEGMENT5', 'SEGMENT6',
+    'SEGMENT7', 'SEGMENT8', 'SEGMENT9', 'SEGMENT10', 'SEGMENT11', 'SEGMENT12', 'TAXAMOUNT1',
+    'TAXAMOUNT2', 'DETAILVATTRANTYPEID', 'DETAILVATRATEID', 'VATTRANTYPEID', 'VATRateId',
+    'DISPLAYTYPE', 'JOB', 'CATEGORY', 'CONTRACT', 'COSTCODE', 'NOTES2', 'DETAILFIELD1',
+    'DETAILFIELD2', 'DETAILFIELD3', 'DETAILFIELD4', 'DETAILFIELD5', 'DETAILFIELD6',
+    'DETAILFIELD7', 'DETAILFIELD8', 'ReverseNextMonth',
+]
+# Column index map (0-based)
+_ETL_IDX = {h: i for i, h in enumerate(_ETL_HEADERS)}
+
+
+def generate_etl_csv(je_lines: List[Dict], output_path: str,
+                     period: str = '', property_code: str = 'revlabpm',
+                     book: str = '', auto_reverse: bool = False) -> str:
+    """
+    Generate a Yardi ETL FinJournals import CSV.
+
+    Format (from ETL_Financial_FinJournals.xls → Sample_CSV):
+      Row 1 : 'FinJournals' in col A, rest blank   (required record-type identifier)
+      Row 2 : 65 column headers
+      Row 3+ : one row per JE line
+
+    Populated columns:
+      TRANNUM        (A)  — batch number (integer, same per JE)
+      DATE           (B)  — period end date MM/DD/YYYY
+      PROPERTY       (C)  — Yardi property code
+      ACCOUNT        (D)  — GL account code
+      POSTMONTH      (E)  — period end date MM/DD/YYYY
+      BOOKNUM        (F)  — 1 (Accrual book)
+      AMOUNT         (G)  — signed amount (positive = DR, negative = CR)
+      REMARK         (H)  — JE description (optional; also in DESC)
+      REF            (I)  — reference number / JE code
+      DESC           (S)  — line description
+      DISPLAYTYPE    (AY) — 'Standard Journal Display Type'
+      ReverseNextMonth(BM)— -1 (auto-reverse next period) or 0 (no reversal)
+
+    Args:
+        je_lines:      List of JE line dicts from build_accrual_entries()
+        output_path:   Where to write the .csv file
+        period:        Accounting period label e.g. 'Jan-2026' — used to derive date
+        property_code: Yardi property code (default 'revlabpm')
+        book:          Unused — kept for signature compatibility
+        auto_reverse:  If True, BM = -1 (auto-reverse); if False, BM = 0.
+                       Accruals pass True; prepaid / post-close pass False.
+                       Per-line override: set 'reverse_next_month' key on the dict.
+
+    Returns:
+        output_path
+    """
+    import csv
+    from datetime import datetime, date
+    from calendar import monthrange
+
+    # Derive period end date from period string (e.g. 'Jan-2026' → 01/31/2026)
+    period_date = ''
+    try:
+        dt = datetime.strptime(period, '%b-%Y')
+        last_day = monthrange(dt.year, dt.month)[1]
+        period_date = date(dt.year, dt.month, last_day).strftime('%m/%d/%Y')
+    except Exception:
+        period_date = datetime.now().strftime('%m/%d/%Y')
+
+    # Assign sequential batch numbers per unique JE number
+    batch_map: dict = {}
+    batch_counter = 1
+    for line in je_lines:
+        je_num = line.get('je_number', '')
+        if je_num not in batch_map:
+            batch_map[je_num] = batch_counter
+            batch_counter += 1
+
+    bm_default = -1 if auto_reverse else 0
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+
+        # Row 1: record-type identifier
+        row1 = [''] * 65
+        row1[0] = 'FinJournals'
+        writer.writerow(row1)
+
+        # Row 2: column headers
+        writer.writerow(_ETL_HEADERS)
+
+        # Data rows (one per JE line)
+        for line in je_lines:
+            je_num  = line.get('je_number', '')
+            batch   = batch_map.get(je_num, 1)
+            desc    = str(line.get('description', '') or '')[:60]
+            gl_acct = str(line.get('account_code', '') or '')
+            ref     = str(line.get('reference', '') or je_num)
+            debit   = line.get('debit', 0) or 0
+            credit  = line.get('credit', 0) or 0
+            amount  = round(debit - credit, 2)  # positive = DR, negative = CR
+
+            # Allow per-line override of BM (e.g. for mixed batches)
+            bm = line.get('reverse_next_month', bm_default)
+
+            row = [''] * 65
+            row[_ETL_IDX['TRANNUM']]          = batch
+            row[_ETL_IDX['DATE']]             = period_date
+            row[_ETL_IDX['PROPERTY']]         = property_code
+            row[_ETL_IDX['ACCOUNT']]          = gl_acct
+            row[_ETL_IDX['POSTMONTH']]        = period_date
+            row[_ETL_IDX['BOOKNUM']]          = 1
+            row[_ETL_IDX['AMOUNT']]           = amount
+            row[_ETL_IDX['REMARK']]           = desc
+            row[_ETL_IDX['REF']]              = ref
+            row[_ETL_IDX['DESC']]             = desc
+            row[_ETL_IDX['DISPLAYTYPE']]      = 'Standard Journal Display Type'
+            row[_ETL_IDX['ReverseNextMonth']] = bm
+
+            writer.writerow(row)
+
+    return output_path
+
+
 # ── Add review tab to workpapers ─────────────────────────────
 
 def write_accrual_entries_workpaper_tab(wb: Workbook, je_lines: List[Dict],
