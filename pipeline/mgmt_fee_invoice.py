@@ -150,6 +150,10 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None
     """
     Reportlab fallback — closely matches the template layout.
     Used when neither win32com nor LibreOffice is available.
+
+    Table columns: DATE | DESCRIPTION | COLLECTIONS | RATE | AMOUNT
+    (ACTIVITY column removed — description is self-explanatory and the
+    combined text no longer overflows into adjacent columns.)
     """
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.lib.pagesizes import letter
@@ -181,47 +185,53 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None
     def _y(top): return H - top
 
     L, R = 57.0, 555.0
-    DATE_X, ACT_X, DESC_X = 57.0, 135.0, 255.0
-    R_COLL, R_RATE, R_AMT = 420.0, 468.0, 555.0
+    # Two left columns: DATE (narrow) | DESCRIPTION (wide)
+    DATE_X = 57.0
+    DESC_X = 135.0          # starts where ACTIVITY used to — description has room to ~380
+    R_COLL = 420.0          # right-aligned: Collections
+    R_RATE = 468.0          # right-aligned: Rate
+    R_AMT  = 555.0          # right-aligned: Amount
 
-    # Company header
+    # ── Company header ────────────────────────────────────────────────────────
     c.setFillColor(BLACK)
-    c.setFont('Times-Bold',   10); c.drawString(L, _y(42), GRP_NAME)
-    c.setFont('Times-Roman',  10)
+    c.setFont('Times-Bold',  10); c.drawString(L, _y(42), GRP_NAME)
+    c.setFont('Times-Roman', 10)
     c.drawString(L, _y(56), GRP_A1)
     c.drawString(L, _y(70), GRP_A2)
     c.drawString(L, _y(84), GRP_WEB)
 
-    # INVOICE title
+    # ── INVOICE title ─────────────────────────────────────────────────────────
     c.setFillColor(GREEN_DARK)
     c.setFont('Times-Bold', 20)
     c.drawString(L, _y(108), 'INVOICE')
     c.setFillColor(BLACK)
 
-    # Meta block
-    META = [('INVOICE #', inv_num, 112), ('DATE', inv_date_s, 126),
-            ('DUE DATE', inv_date_s, 140), ('TERMS', 'Due on receipt', 154)]
+    # ── Meta block (right side) ───────────────────────────────────────────────
+    META = [
+        ('INVOICE #', inv_num,          112),
+        ('DATE',      inv_date_s,        126),
+        ('DUE DATE',  inv_date_s,        140),
+        ('TERMS',     'Due on receipt',  154),
+    ]
     for lbl, val, top in META:
         c.setFont('Times-Bold',  10); c.drawString(355, _y(top), lbl)
         c.setFont('Times-Roman', 10); c.drawString(460, _y(top), val)
 
-    # Bill To
+    # ── Bill To (left side, same rows as Meta) ────────────────────────────────
     c.setFont('Times-Bold',  10); c.drawString(L, _y(112), 'BILL TO:')
     c.setFont('Times-Roman', 10); c.drawString(L, _y(126), 'Revolution Labs Owner, LLC')
 
-    # Table
+    # ── Divider above table ───────────────────────────────────────────────────
     c.setStrokeColor(BLACK); c.setLineWidth(0.75)
     c.line(L, _y(174), R, _y(174))
 
-    # Header fill
+    # ── Table header row (green fill) ─────────────────────────────────────────
     c.setFillColor(GREEN_LIGHT); c.setStrokeColor(GREEN_LIGHT)
     c.rect(L, _y(196), R - L, 22, fill=1, stroke=0)
     c.setStrokeColor(BLACK); c.line(L, _y(196), R, _y(196))
 
-    # Column headers
     c.setFont('Times-Bold', 9); c.setFillColor(BLACK)
     c.drawString(DATE_X, _y(188), 'DATE')
-    c.drawString(ACT_X,  _y(188), 'ACTIVITY')
     c.drawString(DESC_X, _y(188), 'DESCRIPTION')
     c.setFillColor(GREEN_DARK)
     c.drawRightString(R_COLL, _y(188), 'COLLECTIONS')
@@ -232,48 +242,65 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None
     def _money(v, neg=False):
         return f'{"-" if neg else ""}${abs(v):,.2f}'
 
-    # Row 1
-    c.setFont('Times-Roman', 10); c.drawString(DATE_X, _y(214), inv_date_s)
-    c.setFont('Times-Bold',  10); c.drawString(ACT_X,  _y(214), 'Rev Labs Property Management Fee')
+    # ── Row 1 — Management fee ────────────────────────────────────────────────
     c.setFont('Times-Roman', 10)
+    c.drawString(DATE_X, _y(214), inv_date_s)
     c.drawString(DESC_X, _y(214), f'{month_lbl} {year} Property Management Fee')
     c.drawRightString(R_COLL, _y(214), _money(cash_received))
     c.drawRightString(R_RATE, _y(214), '3.00%')
     c.drawRightString(R_AMT,  _y(214), _money(total_fee))
     c.setLineWidth(0.5); c.line(L, _y(222), R, _y(222))
 
-    # Row 2
+    # ── Row 2 — JLL deduction ─────────────────────────────────────────────────
     c.setFont('Times-Roman', 10)
-    c.drawString(DESC_X, _y(238), 'Less JLL Portion')
+    c.drawString(DATE_X, _y(238), inv_date_s)
+    c.drawString(DESC_X, _y(238), 'Less: JLL Portion')
     c.drawRightString(R_COLL, _y(238), _money(cash_received))
     c.drawRightString(R_RATE, _y(238), '1.25%')
     c.drawRightString(R_AMT,  _y(238), _money(jll_fee, neg=True))
-    c.line(L, _y(246), R, _y(246))
+    c.setLineWidth(0.5); c.line(L, _y(246), R, _y(246))
 
-    # Balance Due
+    # ── Balance Due ───────────────────────────────────────────────────────────
     c.setLineWidth(0.75); c.line(L, _y(272), R, _y(272))
     c.setFont('Times-Bold', 10)
-    c.drawString(L,     _y(284), 'BALANCE DUE')
+    c.drawString(L,         _y(284), 'BALANCE DUE')
     c.drawRightString(R_AMT, _y(284), _money(balance))
 
-    # Payment instructions
-    c.setFont('Times-Bold', 9); c.drawString(L, _y(464), 'PAYMENT INSTRUCTIONS:')
-    c.drawString(L,     _y(480), 'Electronic Payment:')
-    c.drawString(310.0, _y(480), 'Check Payment:')
-    ach = [('Account Name:', GRP_NAME), ('Bank Name:', 'Bank of America'),
-           ('Bank Account #:', '466007913255'), ('Bank Routing (ABA) #:', '026009593'),
-           ('Bank Address:', '1 Federal St, Boston, MA 02110')]
+    # ── Payment instructions ──────────────────────────────────────────────────
+    c.setFont('Times-Bold', 9)
+    c.drawString(L, _y(464), 'PAYMENT INSTRUCTIONS:')
+
+    # Electronic payment (left column)
+    c.drawString(L, _y(480), 'Electronic Payment:')
+    ach = [
+        ('Account Name:',         GRP_NAME),
+        ('Bank Name:',            'Bank of America'),
+        ('Bank Account #:',       '466007913255'),
+        ('Bank Routing (ABA) #:', '026009593'),
+        ('Bank Address:',         '1 Federal St, Boston, MA 02110'),
+    ]
     for i, (lbl, val) in enumerate(ach):
-        ry = 496 + i * 13
+        ry = 496 + i * 14
         c.setFont('Times-Bold',  9); c.drawString(L,     _y(ry), lbl)
         c.setFont('Times-Roman', 9); c.drawString(170.0, _y(ry), val)
-    chk = [('Payable to:', GRP_NAME), ('Mailing Address:', ''), ('', GRP_A1[:-16].strip()),
-           ('', GRP_A1), ('', GRP_A2), ('Attention:', 'Lauren Sullivan')]
+
+    # Check payment (right column)
+    c.setFont('Times-Bold', 9)
+    c.drawString(310.0, _y(480), 'Check Payment:')
+    chk = [
+        ('Payable to:',       GRP_NAME),
+        ('Mailing Address:',  GRP_A1),
+        ('',                  GRP_A2),
+        ('Attention:',        'Lauren Sullivan'),
+    ]
     ry = 496
     for lbl, val in chk:
-        if lbl: c.setFont('Times-Bold', 9);  c.drawString(310.0, _y(ry), lbl)
-        if val: c.setFont('Times-Roman', 9); c.drawString(400.0 if lbl else 310.0, _y(ry), val)
-        ry += 13
+        if lbl:
+            c.setFont('Times-Bold',  9); c.drawString(310.0, _y(ry), lbl)
+            c.setFont('Times-Roman', 9); c.drawString(400.0, _y(ry), val)
+        else:
+            c.setFont('Times-Roman', 9); c.drawString(400.0, _y(ry), val)
+        ry += 14
 
     c.showPage(); c.save()
     with open(pdf_path, 'wb') as fh:
