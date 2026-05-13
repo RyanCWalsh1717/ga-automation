@@ -579,9 +579,17 @@ def advance_period(active: List[Dict], completed: List[Dict],
 
 # ── Save to Excel ─────────────────────────────────────────────
 
-def save(active: List[Dict], completed: List[Dict], path: str) -> str:
-    """Write the ledger to Excel with 'Active' and 'Completed' tabs."""
+def save(active: List[Dict], completed: List[Dict], path: str, period: str = '') -> str:
+    """
+    Write the ledger to Excel with three tabs:
+      1. '135150 PPD Other' — workpaper-format schedule (matches Pass 2 workpaper layout)
+      2. 'Active'           — pipeline tracking sheet (all active amortization items)
+      3. 'Completed'        — audit trail of fully amortized items
+    """
     wb = Workbook()
+
+    # Workpaper-format tab first — identical layout to build_135150_tab() in Pass 2
+    _write_135150_workpaper_tab(wb, active, period)
 
     _write_sheet(wb, 'Active', active, ACTIVE_COLS,
                  title='Prepaid Expense Ledger — Active Items',
@@ -597,6 +605,152 @@ def save(active: List[Dict], completed: List[Dict], path: str) -> str:
 
     wb.save(path)
     return path
+
+
+def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -> None:
+    """
+    Create a workpaper-format '135150 PPD Other' tab as the first sheet.
+
+    Layout mirrors build_135150_tab() in account_tab_builders.py exactly:
+      Row 1:  Account title (dark green header)
+      Row 2:  Property | Period | Prepared
+      Row 3:  (blank spacer)
+      Row 4:  Column headers (black bg, white text)
+      Row 5+: Data rows (alternating white/light-gray)
+      Footer: Ending Balance per GL = sum(remaining_months × monthly_amount)
+
+    Columns: Vendor | Description | Invoice Number | Invoice Date | G/L Account |
+             Start Date | End Date | Total | Monthly Amt | Amt Amort. | Remaining
+    """
+    ws = wb.create_sheet('135150 PPD Other', 0)   # insert first
+    ws.sheet_properties.tabColor = '70AD47'
+    ws.column_dimensions['A'].width = 2
+
+    HDR_GREEN     = '375623'
+    COL_HDR_BLACK = '000000'
+    FIRST_COL     = 2    # col B
+    NCOLS         = 11
+    LAST_COL      = FIRST_COL + NCOLS - 1   # col L = 12
+
+    col_labels  = ['Vendor', 'Description', 'Invoice Number', 'Invoice Date',
+                   'G/L Account', 'Start Date', 'End Date',
+                   'Total', 'Monthly Amt', 'Amt Amort.', 'Remaining']
+    col_widths  = [24, 32, 16, 14, 14, 12, 12, 16, 14, 14, 16]
+
+    for ci, w in enumerate(col_widths):
+        ws.column_dimensions[get_column_letter(FIRST_COL + ci)].width = w
+
+    # ── Row 1: Account title ──────────────────────────────────────────────
+    c = ws.cell(row=1, column=FIRST_COL, value='135150  Prepaid - Other')
+    c.font      = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
+    c.fill      = PatternFill(start_color=HDR_GREEN, end_color=HDR_GREEN, fill_type='solid')
+    c.alignment = Alignment(horizontal='left', vertical='center')
+    ws.merge_cells(start_row=1, start_column=FIRST_COL, end_row=1, end_column=LAST_COL)
+    ws.row_dimensions[1].height = 20
+
+    # ── Row 2: Property | Period | Prepared ──────────────────────────────
+    prop_line = (f'revlabpm  |  Period: {period}  |  '
+                 f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
+    c = ws.cell(row=2, column=FIRST_COL, value=prop_line)
+    c.font      = Font(name='Calibri', size=10, italic=True, color='FFFFFF')
+    c.fill      = PatternFill(start_color=HDR_GREEN, end_color=HDR_GREEN, fill_type='solid')
+    c.alignment = Alignment(horizontal='left', vertical='center')
+    ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
+
+    # ── Row 3: blank spacer ───────────────────────────────────────────────
+    # (nothing to write)
+
+    # ── Row 4: Column headers ─────────────────────────────────────────────
+    for ci, lbl in enumerate(col_labels):
+        col = FIRST_COL + ci
+        c = ws.cell(row=4, column=col, value=lbl)
+        c.font      = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+        c.fill      = PatternFill(start_color=COL_HDR_BLACK, end_color=COL_HDR_BLACK, fill_type='solid')
+        c.border    = THIN
+        c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[4].height = 18
+
+    # ── Data rows ─────────────────────────────────────────────────────────
+    next_row = 5
+    for i, rec in enumerate(active):
+        alt = i % 2 == 1
+        alt_fill = PatternFill(start_color=LIGHT_GRAY, end_color=LIGHT_GRAY,
+                               fill_type='solid') if alt else None
+
+        vendor     = str(rec.get('vendor') or rec.get('description') or '')
+        desc       = str(rec.get('description') or '')
+        inv_num    = str(rec.get('invoice_number') or '')
+        inv_date   = rec.get('invoice_date') or ''
+        gl_account = str(rec.get('gl_account_number') or '')
+        start      = rec.get('service_start') or rec.get('first_added_period') or ''
+        end        = rec.get('service_end') or ''
+        total      = float(rec.get('total_amount') or 0)
+        monthly    = float(rec.get('monthly_amount') or 0)
+        months_am  = int(rec.get('months_amortized') or 0)
+        rem_months = int(rec.get('remaining_months') or 0)
+        amt_amort  = round(months_am * monthly, 2)
+        remaining  = round(rem_months * monthly, 2)
+
+        row_vals = [
+            (vendor,                             None,        True),
+            (desc,                               None,        True),
+            (inv_num,                            None,        False),
+            (str(inv_date) if inv_date else '',  None,        False),
+            (gl_account,                         None,        False),
+            (str(start),                         None,        False),
+            (str(end),                           None,        False),
+            (total,                              '$#,##0.00', False),
+            (monthly,                            '$#,##0.00', False),
+            (amt_amort,                          '$#,##0.00', False),
+            (remaining,                          '$#,##0.00', False),
+        ]
+        for ci, (val, fmt, wrap) in enumerate(row_vals):
+            col = FIRST_COL + ci
+            c = ws.cell(row=next_row, column=col, value=val)
+            c.font   = Font(name='Calibri', size=10)
+            c.border = THIN
+            if alt_fill:
+                c.fill = alt_fill
+            c.number_format = fmt or 'General'
+            c.alignment = Alignment(
+                wrap_text=wrap,
+                horizontal='right' if fmt else 'left',
+            )
+        next_row += 1
+
+    if not active:
+        c = ws.cell(row=next_row, column=FIRST_COL, value='No active prepaid items')
+        c.font = Font(name='Calibri', size=10, italic=True, color='666666')
+        next_row += 1
+
+    # ── Footer: Ending Balance per GL ─────────────────────────────────────
+    next_row += 1   # blank separator
+
+    # Thick separator line
+    for col in range(FIRST_COL, LAST_COL + 1):
+        ws.cell(row=next_row, column=col).border = Border(
+            bottom=Side(style='medium'))
+    next_row += 1
+
+    gl_balance = sum(
+        round(int(r.get('remaining_months') or 0) * float(r.get('monthly_amount') or 0), 2)
+        for r in active
+    )
+
+    c_lbl = ws.cell(row=next_row, column=FIRST_COL, value='Ending Balance per GL')
+    c_lbl.font      = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+    c_lbl.fill      = PatternFill(start_color=DARK_BLUE, end_color=DARK_BLUE, fill_type='solid')
+    c_lbl.border    = THIN
+    c_lbl.alignment = Alignment(horizontal='left')
+    ws.merge_cells(start_row=next_row, start_column=FIRST_COL,
+                   end_row=next_row, end_column=LAST_COL - 1)
+
+    c_val = ws.cell(row=next_row, column=LAST_COL, value=gl_balance)
+    c_val.font         = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+    c_val.fill         = PatternFill(start_color=DARK_BLUE, end_color=DARK_BLUE, fill_type='solid')
+    c_val.border       = THIN
+    c_val.number_format = '$#,##0.00'
+    c_val.alignment    = Alignment(horizontal='right')
 
 
 def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],

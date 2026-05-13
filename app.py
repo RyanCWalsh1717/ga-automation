@@ -1084,7 +1084,8 @@ with tab1:
                 updated_ledger_path = os.path.join(
                     st.session_state.temp_dir, "GA_Prepaid_Ledger_Updated.xlsx"
                 )
-                prepaid_ledger.save(ledger_active, ledger_completed, updated_ledger_path)
+                prepaid_ledger.save(ledger_active, ledger_completed, updated_ledger_path,
+                                    period=close_period)
 
                 # Step 4: Management fee (JE included in accruals CSV)
                 status_text.text("Step 4/6: Calculating management fee...")

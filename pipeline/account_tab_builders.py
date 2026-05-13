@@ -736,19 +736,40 @@ def _213100_clean_desc(txn) -> str:
 
 
 def build_213100_tab(wb, period: str, property_name: str,
-                     gl_acct=None, tb_entry=None, **_):
+                     gl_acct=None, tb_entry=None, je_lines=None, **_):
     """
     One row per current-period accrual posted to account 213100.
 
     Only credit entries are shown (CR 213100 = new accrual created this period).
     Debit entries are prior-month auto-reversals and are intentionally excluded.
 
-    Columns:  Date | Description | Amount
+    Columns:  Date | GL Account | Description | Vendor | Amount
+
+    GL Account is resolved by matching the transaction's control number against
+    the debit side of the same JE in je_lines (cross-account context).
     """
     gl_ending   = float(getattr(gl_acct, 'ending_balance',   0) or 0)
-    gl_beg      = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
     tb_ending   = float(getattr(tb_entry, 'ending_balance',   0) or 0) if tb_entry else gl_ending
     txns        = list(getattr(gl_acct, 'transactions', []) or [])
+
+    # ── Build control → expense account / vendor lookup ───────────────────────
+    # Walk all JE lines; for each line with a debit > 0 on a non-liability
+    # account, record that control number's expense account and vendor so we can
+    # annotate each 213100 credit row with the offsetting debit account.
+    _LIABILITY_ACCOUNTS = {'211100', '211200', '211300', '213100', '213200', '221100'}
+    _ctrl_to_expense: Dict[str, str] = {}   # control → account_code
+    _ctrl_to_vendor:  Dict[str, str] = {}   # control → vendor/remarks
+
+    for line in (je_lines or []):
+        ctrl = str(line.get('je_number') or '').strip()
+        if not ctrl:
+            continue
+        acct = str(line.get('account_code') or '').strip()
+        dbt  = float(line.get('debit', 0) or 0)
+        if dbt > 0 and acct not in _LIABILITY_ACCOUNTS and ctrl not in _ctrl_to_expense:
+            _ctrl_to_expense[ctrl] = acct
+            vendor_val = str(line.get('vendor') or line.get('description') or '').strip()
+            _ctrl_to_vendor[ctrl] = vendor_val
 
     # ── Filter to credit-only entries (current-period accruals) ───────────────
     # Credit to 213100 = new liability created this period.
@@ -769,15 +790,15 @@ def build_213100_tab(wb, period: str, property_name: str,
     ws.sheet_properties.tabColor = 'FF0000'
 
     next_row = _write_tab_header(ws, '213100', 'Accrued Expenses',
-                                 period, property_name, ncols=4)
+                                 period, property_name, ncols=5)
     next_row += 1
     next_row = _write_col_headers(
         ws, next_row,
-        ['Date', 'Description', f'Entity ({_ENTITY})', 'Amount'],
-        [14, 58, 16, 18],
+        ['Date', 'GL Account', 'Description', 'Vendor', 'Amount'],
+        [14, 14, 52, 24, 18],
     )
 
-    AMOUNT_COL = 5   # column E (B=2 base, 4 data cols → last col = 2+4-1 = 5)
+    AMOUNT_COL = 6   # column F (B=2 base, 5 data cols → last col = 2+5-1 = 6)
 
     # ── Transaction rows ──────────────────────────────────────────────────────
     data_start_row = next_row
@@ -787,21 +808,27 @@ def build_213100_tab(wb, period: str, property_name: str,
         bg  = _fill(LIGHT_GRAY) if alt else None
 
         d = getattr(txn, 'date', None)
-        date_str = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
-        desc   = _213100_clean_desc(txn)
-        credit = float(getattr(txn, 'credit', 0) or 0)
-        debit  = float(getattr(txn, 'debit',  0) or 0)
-        amt    = credit - debit   # positive = net credit = new accrual
+        date_str  = d.strftime('%m/%d/%Y') if isinstance(d, _date) else str(d or '')
+        ctrl      = str(getattr(txn, 'control', '') or '').strip()
+        gl_acct_c = _ctrl_to_expense.get(ctrl, '')
+        desc      = _213100_clean_desc(txn)
+        vendor    = _ctrl_to_vendor.get(ctrl, '')
+        credit    = float(getattr(txn, 'credit', 0) or 0)
+        debit     = float(getattr(txn, 'debit',  0) or 0)
+        amt       = credit - debit   # positive = net credit = new accrual
 
-        c1 = ws.cell(row=next_row, column=2, value=date_str)
-        _apply(c1, font=_font(), fill=bg, border=THIN)
-        c2 = ws.cell(row=next_row, column=3, value=desc)
-        _apply(c2, font=_font(), fill=bg, border=THIN, align=Alignment(wrap_text=True))
-        c_ent = ws.cell(row=next_row, column=4, value=_ENTITY)
-        _apply(c_ent, font=_font(), fill=bg, border=THIN)
-        c3 = ws.cell(row=next_row, column=AMOUNT_COL, value=amt)
-        _apply(c3, font=_font(), fill=bg, fmt='$#,##0.00', border=THIN,
-               align=Alignment(horizontal='right'))
+        for col, val, fmt, wrap in [
+            (2, date_str,  None,        False),
+            (3, gl_acct_c, None,        False),
+            (4, desc,      None,        True),
+            (5, vendor,    None,        False),
+            (6, amt,       '$#,##0.00', False),
+        ]:
+            c = ws.cell(row=next_row, column=col, value=val)
+            _apply(c, font=_font(), fill=bg, border=THIN,
+                   fmt=fmt,
+                   align=Alignment(wrap_text=wrap,
+                                   horizontal='right' if fmt else 'left'))
         next_row += 1
 
     data_end_row = next_row - 1
@@ -832,7 +859,7 @@ def build_213100_tab(wb, period: str, property_name: str,
            align=Alignment(horizontal='right'))
     next_row += 2
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=5)
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=6)
     return ws
 
 
@@ -841,6 +868,16 @@ def build_213100_tab(wb, period: str, property_name: str,
 def build_135150_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
                      prepaid_ledger: List[Dict] = None, **_):
+    """
+    Prepaid Other schedule matching the Pass 1 prepaid ledger output exactly.
+
+    Columns:
+      Vendor | Description | Invoice Number | Invoice Date | G/L Account |
+      Start Date | End Date | Total | Monthly Amt | Amt Amort. | Remaining
+
+    Amt Amort. = months_amortized × monthly_amount  (dollar, not count)
+    Remaining  = remaining_months  × monthly_amount  (dollar)
+    """
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
@@ -848,13 +885,14 @@ def build_135150_tab(wb, period: str, property_name: str,
     ws.sheet_properties.tabColor = '70AD47'
 
     next_row = _write_tab_header(ws, '135150', 'Prepaid - Other',
-                                 period, property_name, ncols=8)
+                                 period, property_name, ncols=11)
     next_row += 1
     next_row = _write_col_headers(
         ws, next_row,
-        ['Vendor', 'Description', 'Start Date', 'End Date',
-         'Monthly Amt', 'Months Amort.', 'Remaining', 'Balance'],
-        [24, 32, 14, 14, 16, 16, 16, 16],
+        ['Vendor', 'Description', 'Invoice Number', 'Invoice Date',
+         'G/L Account', 'Start Date', 'End Date',
+         'Total', 'Monthly Amt', 'Amt Amort.', 'Remaining'],
+        [24, 32, 16, 14, 14, 12, 12, 16, 14, 14, 16],
     )
 
     ledger = prepaid_ledger or []
@@ -862,31 +900,41 @@ def build_135150_tab(wb, period: str, property_name: str,
         alt = i % 2 == 1
         bg = _fill(LIGHT_GRAY) if alt else None
 
-        def _v(key): return item.get(key, '') if isinstance(item, dict) else getattr(item, key, '')
+        def _v(key, _item=item):
+            return _item.get(key, '') if isinstance(_item, dict) else getattr(_item, key, '')
 
         vendor      = str(_v('vendor') or _v('description') or '')
         desc        = str(_v('description') or '')
-        start       = _v('start_date') or _v('first_added_period') or ''
-        end         = _v('end_date') or ''
+        inv_num     = str(_v('invoice_number') or '')
+        inv_date    = _v('invoice_date') or ''
+        gl_account  = str(_v('gl_account_number') or '')
+        start       = _v('service_start') or _v('start_date') or _v('first_added_period') or ''
+        end         = _v('service_end') or _v('end_date') or ''
+        total       = float(_v('total_amount') or 0)
         monthly     = float(_v('monthly_amount') or _v('monthly_amt') or 0)
         months_am   = int(_v('months_amortized') or 0)
-        total_cost  = float(_v('total_cost') or _v('original_amount') or 0)
-        remaining   = max(0, total_cost - monthly * months_am)
-        balance     = float(_v('current_balance') or remaining)
+        remaining_m = int(_v('remaining_months') or 0)
+        amt_amort   = round(months_am * monthly, 2)
+        remaining   = round(remaining_m * monthly, 2)
 
-        for ci, (col, val, fmt) in enumerate([
-            (2, vendor,    None),
-            (3, desc,      None),
-            (4, str(start), None),
-            (5, str(end),   None),
-            (6, monthly,   '$#,##0.00'),
-            (7, months_am, '0'),
-            (8, remaining, '$#,##0.00'),
-            (9, balance,   '$#,##0.00'),
-        ]):
+        for col, val, fmt, wrap in [
+            (2,  vendor,                          None,        True),
+            (3,  desc,                            None,        True),
+            (4,  inv_num,                         None,        False),
+            (5,  str(inv_date) if inv_date else '', None,      False),
+            (6,  gl_account,                      None,        False),
+            (7,  str(start),                      None,        False),
+            (8,  str(end),                        None,        False),
+            (9,  total,                           '$#,##0.00', False),
+            (10, monthly,                         '$#,##0.00', False),
+            (11, amt_amort,                       '$#,##0.00', False),
+            (12, remaining,                       '$#,##0.00', False),
+        ]:
             c = ws.cell(row=next_row, column=col, value=val)
             _apply(c, font=_font(), fill=bg, border=THIN,
-                   fmt=fmt, align=Alignment(wrap_text=(ci < 2)))
+                   fmt=fmt,
+                   align=Alignment(wrap_text=wrap,
+                                   horizontal='right' if fmt else 'left'))
         next_row += 1
 
     if not ledger:
@@ -894,7 +942,7 @@ def build_135150_tab(wb, period: str, property_name: str,
         _apply(c, font=_font(italic=True, color='666666'))
         next_row += 1
 
-    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=9)
+    _write_tb_tieout(ws, next_row, gl_ending, tb_ending, amount_col=12)
     return ws
 
 
