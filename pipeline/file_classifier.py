@@ -140,10 +140,11 @@ def _build_signals(property_config) -> dict:
     daca_banks:         set = set()
 
     for slug, ba in (property_config.bank_accounts or {}).items():
-        slug_l  = slug.lower()
-        label_l = (ba.label or '').lower()
-        full    = ba.full_account or ''
-        last4   = (ba.last4 or '').lstrip('x')
+        slug_l    = slug.lower()
+        label_l   = (ba.label or '').lower()
+        full      = ba.full_account or ''
+        last4     = (ba.last4 or '').lstrip('x')
+        bank_name = (ba.bank_name or '').lower()  # explicit bank name from config
 
         # Determine account type from slug/label keywords
         is_daca = 'daca' in slug_l or 'daca' in label_l
@@ -151,31 +152,23 @@ def _build_signals(property_config) -> dict:
         is_op   = (not is_daca and not is_dev) and ('operat' in slug_l or 'operat' in label_l)
 
         if is_daca:
-            if full:   daca_accounts.add(full)
-            if last4:  daca_accounts.add(last4); daca_accounts.add(f'x{last4}')
-            bank_name = (ba.label or '').split()[0].lower()
+            if full:      daca_accounts.add(full)
+            if last4:     daca_accounts.add(last4); daca_accounts.add(f'x{last4}')
             if bank_name: daca_banks.add(bank_name)
-            daca_banks.add('daca')
+            daca_banks.add('daca')  # always match the word "daca" for DACA accounts
         elif is_dev:
-            if full:   dev_accounts.add(full)
-            if last4:  dev_accounts.add(last4)
-            bank_name_words = (ba.label or '').lower().split()
-            # e.g. 'BofA Development' → add 'bofa', 'bank of america', 'development'
-            for w in bank_name_words:
-                if w not in ('development', 'dev', 'account', 'bank'):
-                    dev_banks.add(w)
-            dev_banks.update({'bank of america', 'bofa'} if 'bofa' in label_l or 'america' in label_l else set())
+            if full:      dev_accounts.add(full)
+            if last4:     dev_accounts.add(last4)
+            if bank_name: dev_banks.add(bank_name)
         elif is_op:
-            if full:   operating_accounts.add(full)
-            bank_name_words = (ba.label or '').lower().split()
-            for w in bank_name_words:
-                if w not in ('operating', 'account', 'bank'):
-                    operating_banks.add(w)
+            if full:      operating_accounts.add(full)
+            if bank_name: operating_banks.add(bank_name)
         else:
-            # Unrecognised slug — add account number to operating as fallback
-            if full: operating_accounts.add(full)
+            # Unrecognised slug — treat as operating fallback
+            if full:      operating_accounts.add(full)
+            if bank_name: operating_banks.add(bank_name)
 
-    # Ensure bank name sets are never empty (generic fallbacks)
+    # Ensure bank name sets are never empty (RevLabs fallback values)
     if not operating_banks: operating_banks = {'pnc'}
     if not dev_banks:       dev_banks = {'bank of america', 'bofa'}
     if not daca_banks:      daca_banks = {'keybank', 'daca'}

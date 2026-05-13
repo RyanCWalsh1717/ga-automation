@@ -48,8 +48,10 @@ class ManagementFeeLineConfig:
 class BankAccountConfig:
     """One bank account linked to this property."""
     label:        str = ''           # human-readable label (e.g. 'PNC Operating')
+    bank_name:    str = ''           # bank name as it appears in statements (e.g. 'PNC')
+                                     # used by file_classifier to identify PDF statements
     last4:        str = ''           # display suffix (e.g. 'x3993')
-    full_account: str = ''           # full account number (for PDF classifier)
+    full_account: str = ''           # full account number (for xlsx bank rec classifier)
     gl_account:   str = ''          # corresponding GL account code
 
 
@@ -154,6 +156,7 @@ class PropertyConfig:
         for slug, ba in (d.get('bank_accounts') or {}).items():
             banks[slug] = BankAccountConfig(
                 label        = str(ba.get('label', '')),
+                bank_name    = str(ba.get('bank_name', '')),
                 last4        = str(ba.get('last4', '')),
                 full_account = str(ba.get('full_account', '')),
                 gl_account   = str(ba.get('gl_account', '')),

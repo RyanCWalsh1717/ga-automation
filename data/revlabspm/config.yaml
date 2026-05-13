@@ -58,16 +58,19 @@ gl_accounts:
 bank_accounts:
   pnc_operating:
     label:        PNC Operating
+    bank_name:    PNC                 # must match text in bank statement PDFs
     last4:        x3993
     full_account: "1092223993"
     gl_account:   "111100"
   bofa_development:
     label:        BofA Development
+    bank_name:    Bank of America     # must match text in bank statement PDFs
     last4:        x3132
     full_account: "466007913132"
     gl_account:   "111210"
   keybank_daca:
     label:        KeyBank DACA
+    bank_name:    KeyBank             # must match text in bank statement PDFs
     last4:        x5132
     full_account: "329681415132"
     gl_account:   "115100"
