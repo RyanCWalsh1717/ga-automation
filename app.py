@@ -656,10 +656,11 @@ _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 # ═══════════════════════════════════════════════════════════════
 import pandas as pd
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📋  Pass 1 — Generate JEs",
     "📊  Pass 2 — Generate Reports & JEs",
     "📖  How to Use",
+    "⚙️  Properties",
 ])
 
 
@@ -4022,3 +4023,317 @@ summary table if it should not be posted.
 
     st.markdown("---")
     st.caption("Pipeline built by GRP · Version: May 2026")
+
+
+# ──────────────────────────────────────────────────────────────
+# TAB 4 — PROPERTIES SETUP
+# ──────────────────────────────────────────────────────────────
+with tab4:
+    from property_writer import (
+        build_config_dict, config_to_yaml,
+        save_local, save_to_github, github_configured,
+    )
+    from property_config import discover_properties as _disc_props
+
+    st.markdown("## ⚙️ Property Setup")
+    st.markdown(
+        "Add or edit properties here. Each property is stored as a YAML config file — "
+        "no GitHub access or code changes required."
+    )
+
+    if github_configured():
+        st.success("✅ GitHub connected — saved configs deploy automatically in ~2 min.", icon="🔗")
+    else:
+        st.warning(
+            "⚠️ GitHub not connected. Configs will be saved locally (dev only) and available "
+            "to download. To enable auto-deploy: add `[github]` token + repo to Streamlit secrets.",
+            icon="⚠️"
+        )
+
+    # ── Existing properties ───────────────────────────────────────────────────
+    _existing = _disc_props(str(_DATA_DIR))
+    if _existing:
+        with st.expander(f"📋 Existing properties ({len(_existing)})", expanded=False):
+            for _ep in _existing:
+                _ec = _ep['cfg']
+                st.markdown(
+                    f"**{_ec.display()}** &nbsp; `{_ec.property_code}` &nbsp;|&nbsp; "
+                    f"{_ec.property_address} &nbsp;|&nbsp; "
+                    f"{'  ·  '.join(f'{fl.name} {fl.rate:.2%}' for fl in _ec.management_fees)}"
+                )
+    st.markdown("---")
+
+    # ── Add / Edit property form ──────────────────────────────────────────────
+    _edit_code = st.selectbox(
+        "Edit existing or create new",
+        options=["➕ Create new property"] + [p['code'] for p in _existing],
+        key="prop_setup_edit_select",
+    )
+    _is_new = _edit_code == "➕ Create new property"
+    _edit_cfg = None if _is_new else next(
+        (p['cfg'] for p in _existing if p['code'] == _edit_code), None
+    )
+
+    def _ef(field, default=''):
+        """Return existing config value or default."""
+        if _edit_cfg is None:
+            return default
+        return getattr(_edit_cfg, field, default) or default
+
+    with st.form("property_setup_form", clear_on_submit=False):
+        st.markdown("### 1 · Basic Information")
+        _c1, _c2 = st.columns(2)
+        _prop_code    = _c1.text_input("Yardi Property Code *",
+                                        value='' if _is_new else _edit_cfg.property_code,
+                                        placeholder="e.g. lexlabspm",
+                                        help="Short code Yardi uses in GL exports. Lowercase, no spaces.")
+        _display_name = _c2.text_input("Display Name *",
+                                        value=_ef('property_display_name'),
+                                        placeholder="e.g. Lex Labs")
+        _prop_name    = st.text_input("Full Legal Entity Name",
+                                       value=_ef('property_name'),
+                                       placeholder="e.g. Lex Labs Owner, LLC")
+        _address      = st.text_input("Property Address",
+                                       value=_ef('property_address'),
+                                       placeholder="e.g. 100 Main Street, Boston, MA 02101")
+        _c3, _c4 = st.columns(2)
+        _prop_type = _c3.text_input("Property Type",
+                                     value=_ef('property_type'),
+                                     placeholder="e.g. Life Science, Office, Industrial")
+        _size_sf   = _c4.number_input("Size (SF)", min_value=0,
+                                       value=int(_ef('property_size_sf') or 0), step=1000)
+
+        st.markdown("### 2 · Ownership")
+        _c5, _c6 = st.columns(2)
+        _investor   = _c5.text_input("Investor / Capital Partner",
+                                      value=_ef('investor_name'),
+                                      placeholder="e.g. Singerman Real Estate")
+        _mgmt_co    = _c6.text_input("Management Company",
+                                      value=_ef('management_company'),
+                                      placeholder="e.g. Greatland Realty Partners")
+        _c7, _c8 = st.columns(2)
+        _mgmt_code  = _c7.text_input("Management Code (short)",
+                                      value=_ef('management_code'),
+                                      placeholder="e.g. GRP")
+        _inv_prefix = _c8.text_input("Invoice Number Prefix",
+                                      value=_ef('invoice_prefix'),
+                                      placeholder="e.g. LexLabsPM  →  LexLabsPM012026")
+
+        st.markdown("### 3 · Management Fee Lines")
+        st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
+        _default_fees = [
+            {'Name': fl.name, 'Rate (decimal)': fl.rate, 'Minimum ($)': fl.minimum,
+             'DR Account': fl.dr_account, 'CR Account': fl.cr_account, 'Ref Prefix': fl.ref_prefix}
+            for fl in (_edit_cfg.management_fees if _edit_cfg else [])
+        ] or [
+            {'Name': 'PM', 'Rate (decimal)': 0.03, 'Minimum ($)': 0.0,
+             'DR Account': '637130', 'CR Account': '213100', 'Ref Prefix': 'MGMT-FEE-PM'},
+        ]
+        _fees_df = pd.DataFrame(_default_fees)
+        _fees_edited = st.data_editor(
+            _fees_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                'Name':           st.column_config.TextColumn("PM Name", width="small"),
+                'Rate (decimal)': st.column_config.NumberColumn("Rate", format="%.4f", min_value=0.0, max_value=1.0),
+                'Minimum ($)':    st.column_config.NumberColumn("Min ($)", format="$%.0f", min_value=0.0),
+                'DR Account':     st.column_config.TextColumn("DR Acct", width="small"),
+                'CR Account':     st.column_config.TextColumn("CR Acct", width="small"),
+                'Ref Prefix':     st.column_config.TextColumn("Ref Prefix"),
+            },
+            key="prop_fees_editor",
+        )
+
+        st.markdown("### 4 · Bank Accounts")
+        st.caption(
+            "One row per bank account. **Slug** = unique key (lowercase, underscores). "
+            "**Bank Name** = text that appears in PDF statements. "
+            "Account type detected from slug: contains `operat` → operating, `dev` → development, `daca` → DACA."
+        )
+        _default_banks = [
+            {'Slug': slug,
+             'Label': ba.label, 'Bank Name': ba.bank_name,
+             'Last 4': ba.last4, 'Full Account': ba.full_account, 'GL Account': ba.gl_account}
+            for slug, ba in (_edit_cfg.bank_accounts.items() if _edit_cfg else {}.items())
+        ] or [
+            {'Slug': 'pnc_operating',    'Label': 'PNC Operating',    'Bank Name': 'PNC',           'Last 4': '', 'Full Account': '', 'GL Account': '111100'},
+            {'Slug': 'bofa_development', 'Label': 'BofA Development', 'Bank Name': 'Bank of America','Last 4': '', 'Full Account': '', 'GL Account': '111210'},
+            {'Slug': 'keybank_daca',     'Label': 'KeyBank DACA',     'Bank Name': 'KeyBank',        'Last 4': '', 'Full Account': '', 'GL Account': '115100'},
+        ]
+        _banks_edited = st.data_editor(
+            pd.DataFrame(_default_banks),
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                'Slug':         st.column_config.TextColumn("Slug *", width="medium"),
+                'Label':        st.column_config.TextColumn("Label"),
+                'Bank Name':    st.column_config.TextColumn("Bank Name (PDF match)"),
+                'Last 4':       st.column_config.TextColumn("Last 4", width="small"),
+                'Full Account': st.column_config.TextColumn("Full Account #"),
+                'GL Account':   st.column_config.TextColumn("GL Acct", width="small"),
+            },
+            key="prop_banks_editor",
+        )
+
+        st.markdown("### 5 · Payment Instructions (Invoice PDF)")
+        _ca, _cb = st.columns(2)
+        with _ca:
+            st.markdown("**ACH / Wire**")
+            _ach = _ef('payment_ach') or {}
+            _ach_acct_name  = st.text_input("Account Name",  value=_ach.get('account_name', ''), key="ach_acct_name")
+            _ach_bank       = st.text_input("Bank Name",      value=_ach.get('bank_name', ''),    key="ach_bank")
+            _ach_acct_num   = st.text_input("Account Number", value=_ach.get('account_number', ''), key="ach_acct_num")
+            _ach_routing    = st.text_input("Routing (ABA)",  value=_ach.get('routing_number', ''), key="ach_routing")
+            _ach_addr       = st.text_input("Bank Address",   value=_ach.get('bank_address', ''), key="ach_addr")
+        with _cb:
+            st.markdown("**Check**")
+            _chk = _ef('payment_check') or {}
+            _chk_payable    = st.text_input("Payable To",      value=_chk.get('payable_to', ''),    key="chk_payable")
+            _chk_addr1      = st.text_input("Address Line 1",  value=_chk.get('address_line1', ''), key="chk_addr1")
+            _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''), key="chk_addr2")
+            _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''),     key="chk_attn")
+
+        st.markdown("### 6 · RE Tax & Other")
+        _c9, _c10 = st.columns(2)
+        _retax_months_str = _c9.text_input(
+            "RE Tax Payment Months (comma-separated)",
+            value=', '.join(str(m) for m in (_edit_cfg.re_tax_payment_months if _edit_cfg else [1, 4, 7, 10])),
+            help="Months (1-12) when the quarterly RE tax bill is paid. Typically Jan/Apr/Jul/Oct."
+        )
+        _parcel_str = _c10.text_input(
+            "Parcel IDs (comma-separated, optional)",
+            value=', '.join(_edit_cfg.parcel_ids if _edit_cfg else []),
+        )
+        _c11, _c12 = st.columns(2)
+        _kardin_file = _c11.text_input("Kardin Budget Filename",
+                                        value=_ef('kardin_budget_file', 'GA_Kardin_Budget_FY2026.xlsx'))
+        _file_pfx_del = _c12.text_input("Deliverable File Prefix",
+                                          value=_ef('file_prefix_deliverable'),
+                                          placeholder="e.g. LexLabs  → LexLabs_Jan2026_Workpapers.xlsx",
+                                          help="Leave blank to auto-derive from display name.")
+
+        st.markdown("---")
+        _submitted = st.form_submit_button("💾 Save Property Config", type="primary",
+                                            use_container_width=True)
+
+    # ── Handle form submission ────────────────────────────────────────────────
+    if _submitted:
+        _prop_code = (_prop_code or '').strip().lower().replace(' ', '')
+        if not _prop_code:
+            st.error("Property Code is required.")
+        elif not _display_name:
+            st.error("Display Name is required.")
+        else:
+            # Parse fee rows
+            _fee_list = []
+            for _, _frow in _fees_edited.iterrows():
+                _fname = str(_frow.get('Name', '') or '').strip()
+                if not _fname:
+                    continue
+                _fee_list.append({
+                    'name':       _fname,
+                    'rate':       float(_frow.get('Rate (decimal)', 0) or 0),
+                    'minimum':    float(_frow.get('Minimum ($)', 0) or 0),
+                    'dr_account': str(_frow.get('DR Account', '637130') or '637130'),
+                    'cr_account': str(_frow.get('CR Account', '213100') or '213100'),
+                    'ref_prefix': str(_frow.get('Ref Prefix', '') or ''),
+                })
+
+            # Parse bank account rows
+            _bank_list = []
+            for _, _brow in _banks_edited.iterrows():
+                _bslug = str(_brow.get('Slug', '') or '').strip().lower().replace(' ', '_')
+                if not _bslug:
+                    continue
+                _bank_list.append({
+                    'slug':         _bslug,
+                    'label':        str(_brow.get('Label', '') or ''),
+                    'bank_name':    str(_brow.get('Bank Name', '') or ''),
+                    'last4':        str(_brow.get('Last 4', '') or ''),
+                    'full_account': str(_brow.get('Full Account', '') or ''),
+                    'gl_account':   str(_brow.get('GL Account', '') or ''),
+                })
+
+            # Parse RE tax months
+            try:
+                _retax_months = [int(m.strip()) for m in _retax_months_str.split(',') if m.strip()]
+            except Exception:
+                _retax_months = [1, 4, 7, 10]
+
+            # Parse parcel IDs
+            _parcels = [p.strip() for p in _parcel_str.split(',') if p.strip()]
+
+            # Build payment dicts
+            _payment_ach   = {k: v for k, v in {
+                'account_name':   _ach_acct_name,
+                'bank_name':      _ach_bank,
+                'account_number': _ach_acct_num,
+                'routing_number': _ach_routing,
+                'bank_address':   _ach_addr,
+            }.items() if v}
+            _payment_check = {k: v for k, v in {
+                'payable_to':    _chk_payable,
+                'address_line1': _chk_addr1,
+                'address_line2': _chk_addr2,
+                'attention':     _chk_attn,
+            }.items() if v}
+
+            # Build config dict and render YAML
+            _cfg_dict = build_config_dict(
+                property_code          = _prop_code,
+                property_name          = _prop_name,
+                property_display_name  = _display_name,
+                property_address       = _address,
+                property_type          = _prop_type,
+                property_size_sf       = int(_size_sf) if _size_sf else None,
+                investor_name          = _investor,
+                management_company     = _mgmt_co,
+                management_code        = _mgmt_code,
+                invoice_prefix         = _inv_prefix,
+                management_fees        = _fee_list,
+                gl_accounts            = {},
+                bank_accounts          = _bank_list,
+                payment_ach            = _payment_ach,
+                payment_check          = _payment_check,
+                re_tax_payment_months  = _retax_months,
+                parcel_ids             = _parcels,
+                kardin_budget_file     = _kardin_file,
+                fiscal_year_start_month = 1,
+                file_prefix_internal   = 'GA',
+                file_prefix_deliverable = _file_pfx_del,
+            )
+            _yaml_str = config_to_yaml(_cfg_dict)
+
+            # Save local
+            _loc_ok, _loc_msg = save_local(_prop_code, _yaml_str, str(_DATA_DIR))
+
+            # Save to GitHub
+            _gh_ok, _gh_msg = False, 'GitHub not configured'
+            if github_configured():
+                _action = 'Update' if not _is_new else 'Add'
+                _gh_ok, _gh_msg = save_to_github(
+                    _prop_code, _yaml_str,
+                    commit_message=f'{_action} property config: {_prop_code} ({_display_name})'
+                )
+
+            # Results
+            if _loc_ok:
+                st.success(f"✅ Saved locally: `{_loc_msg}`")
+            if _gh_ok:
+                st.success(f"✅ {_gh_msg}")
+            elif github_configured():
+                st.error(f"GitHub save failed: {_gh_msg}")
+
+            # Always offer download
+            st.download_button(
+                label="⬇️ Download config.yaml",
+                data=_yaml_str.encode('utf-8'),
+                file_name=f"{_prop_code}_config.yaml",
+                mime="text/yaml",
+                help="Upload this file to data/{property_code}/ in GitHub if auto-save failed.",
+            )
+
+            # Preview
+            with st.expander("📄 Preview generated config.yaml"):
+                st.code(_yaml_str, language="yaml")
