@@ -1361,8 +1361,6 @@ with tab1:
         # Show a compact warning listing accounts where the pipeline detected
         # an existing JE in the GL and suppressed automated accruals.
         _gl_log = st.session_state.get('pass1_gl_activity_log') or []
-        # Separate TUB Mode (b) diagnostic from regular GL suppression log
-        _tub_diag = [r for r in _gl_log if r.get('account_code') == 'TUB-MODE-B']
         _gl_log_real = [r for r in _gl_log if r.get('account_code') != 'TUB-MODE-B']
         if _gl_log_real:
             _gl_log_sorted = sorted(_gl_log_real, key=lambda x: x['account_code'])
@@ -1377,10 +1375,6 @@ with tab1:
                 f"Confirm each posting is intentional before uploading JE CSVs to Yardi. "
                 f"If a posting is incorrect, delete it from Yardi and re-run Pass 1."
             )
-        if _tub_diag:
-            with st.expander("🔍 TUB Mode (b) diagnostic", expanded=False):
-                st.caption(_tub_diag[0].get('reason', ''))
-
         # ── Management Fee ─────────────────────────────────────────────────
         if fee_result and fee_result.cash_received > 0:
             st.markdown("### Management Fee JE")

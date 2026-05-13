@@ -2210,35 +2210,6 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         #
         # GL activity guard: skip each account if already posted to Yardi.
 
-        # ── Diagnostic: log Mode (b) data source availability ─────────────────
-        _rd_has_elec_by_tenant = bool(
-            receivable_detail and hasattr(receivable_detail, 'elec_by_tenant')
-            and receivable_detail.elec_by_tenant
-        )
-        _rd_has_charges = bool(
-            receivable_detail and hasattr(receivable_detail, 'charges_by_code')
-            and receivable_detail.charges_by_code
-        )
-        _440500_diag = _tub_gl.get('440500')
-        _diag_credits = (
-            getattr(_440500_diag, 'total_credits', None) if _440500_diag else None
-        )
-        if gl_activity_log is not None:
-            _440500_diag_j = _j_credits(_440500_diag)
-            gl_activity_log.append({
-                'account_code': 'TUB-MODE-B',
-                'account_name': 'Tenant Utility — Mode (b) diagnostic',
-                'reason': (
-                    f"RD available: {receivable_detail is not None} | "
-                    f"elec_by_tenant populated: {_rd_has_elec_by_tenant} | "
-                    f"charges_by_code populated: {_rd_has_charges} | "
-                    f"440500 in GL: {_440500_diag is not None} | "
-                    f"440500 total_credits (all types): {_diag_credits} | "
-                    f"440500 J-only credits: {_440500_diag_j:.2f}"
-                ),
-                'suppressed': False,
-            })
-
         # ── Determine electric amount (per-tenant from Receivable Detail) ────────
         _elec_by_tenant: Dict[str, float] = {}
         _rec_elec_amt = 0.0
