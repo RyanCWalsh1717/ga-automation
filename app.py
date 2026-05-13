@@ -52,10 +52,7 @@ from mgmt_fee_invoice import generate_invoice as generate_mgmt_fee_invoice
 from audit_trail_generator import generate_audit_trail
 
 
-# ── Committed reference files (auto-loaded, no upload required) ──────────────
-# These live in data/{property_code}/ in the repo and are loaded automatically.
-# Users only need to replace them when a new fiscal year budget is approved.
-# Upload a file in the sidebar to override the committed version for one session.
+# ── Data directory + property discovery ──────────────────────────────────────
 _DATA_DIR = Path(__file__).parent / "data"
 
 def _committed_path(prop_code: str, filename: str) -> Optional[str]:
@@ -63,14 +60,26 @@ def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     p = _DATA_DIR / prop_code / filename
     return str(p) if p.exists() else None
 
-_PROP_CODE = "revlabspm"   # active property — will become dynamic with multi-property selector
-
-_COMMITTED_BUDGET = _committed_path(_PROP_CODE, "GA_Kardin_Budget_FY2026.xlsx")
+def _discover_properties() -> list[dict]:
+    """
+    Scan data/ for subfolders with a config.yaml.
+    Returns list of {'code', 'display_name', 'address', 'cfg'} dicts.
+    Falls back to hardcoded RevLabs entry if none found.
+    """
+    from property_config import discover_properties as _disc
+    props = _disc(str(_DATA_DIR))
+    if not props:
+        # Fallback so the app always has at least one property
+        from property_config import load_property_config
+        cfg = load_property_config('revlabspm', str(_DATA_DIR))
+        props = [{'code': 'revlabspm', 'display_name': cfg.display(),
+                  'address': cfg.property_address, 'cfg': cfg}]
+    return props
 
 
 # ── Page configuration ───────────────────────────────────────
 st.set_page_config(
-    page_title="Rev Labs Close | GRP",
+    page_title="GA Close | GRP",
     page_icon="🏢",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -250,6 +259,12 @@ if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = {}
 if "temp_dir" not in st.session_state:
     st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
+if "active_property_code" not in st.session_state:
+    # Default to first discovered property
+    _init_props = _discover_properties()
+    st.session_state.active_property_code = _init_props[0]['code'] if _init_props else 'revlabspm'
+if "_prev_active_property_code" not in st.session_state:
+    st.session_state._prev_active_property_code = st.session_state.active_property_code
 
 # Pass 1 — JE Generation
 if "pass1_complete" not in st.session_state:
@@ -369,17 +384,33 @@ _logo_html = (
     '<div class="grp-logo-text">Greatland<br>Realty<br>Partners</div>'
 )
 
+# Load the active property config for the hero banner
+# (_active_cfg is set in the sidebar section below, but on first render we
+# need it here too — load it again; it's cheap and cached by the YAML file.)
+from property_config import load_property_config as _lpc_hero
+_hero_cfg = _lpc_hero(st.session_state.get('active_property_code', 'revlabspm'), str(_DATA_DIR))
+
+_hero_title = f"{_hero_cfg.display()} Monthly Close"
+_hero_sub   = ' &nbsp;|&nbsp; '.join(filter(None, [
+    _hero_cfg.property_address,
+    f"Managed by {_hero_cfg.management_company} for {_hero_cfg.investor_name}"
+    if _hero_cfg.management_company and _hero_cfg.investor_name else
+    (_hero_cfg.management_company or _hero_cfg.investor_name),
+]))
+_hero_badges = [f"🏢 {_hero_cfg.property_code}"]
+if _hero_cfg.property_size_sf:
+    _hero_badges.append(f"📐 ~{_hero_cfg.property_size_sf:,} SF")
+if _hero_cfg.property_type:
+    _hero_badges.append(f"🔬 {_hero_cfg.property_type}")
+_hero_badge_html = " ".join(f'<span class="grp-badge">{b}</span>' for b in _hero_badges)
+
 st.markdown(f"""
 <div class="grp-hero">
     {_photo_html}
     <div class="grp-hero-body">
-        <div class="grp-hero-title">Revolution Labs Monthly Close</div>
-        <div class="grp-hero-sub">1050 Waltham Street · Lexington, MA &nbsp;|&nbsp; Managed by GRP for Singerman Real Estate</div>
-        <div class="grp-hero-badges">
-            <span class="grp-badge">🏢 revlabspm</span>
-            <span class="grp-badge">📐 ~180,000 SF</span>
-            <span class="grp-badge">🔬 Life Science</span>
-        </div>
+        <div class="grp-hero-title">{_hero_title}</div>
+        <div class="grp-hero-sub">{_hero_sub}</div>
+        <div class="grp-hero-badges">{_hero_badge_html}</div>
     </div>
     <div class="grp-hero-logo">{_logo_html}</div>
 </div>
@@ -389,17 +420,61 @@ st.markdown(f"""
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
 
+# ── Property selector ────────────────────────────────────────────────────────
+_all_props   = _discover_properties()
+_prop_codes  = [p['code'] for p in _all_props]
+_prop_labels = {p['code']: f"{p['display_name']}  ({p['code']})" for p in _all_props}
+
+if len(_all_props) > 1:
+    _selected_code = st.sidebar.selectbox(
+        "🏢 Property",
+        options=_prop_codes,
+        index=_prop_codes.index(st.session_state.active_property_code)
+              if st.session_state.active_property_code in _prop_codes else 0,
+        format_func=lambda c: _prop_labels.get(c, c),
+        key="active_property_code",
+        help="Select the property to run the close for. Switching resets all pipeline state.",
+    )
+else:
+    _selected_code = _prop_codes[0] if _prop_codes else 'revlabspm'
+    st.session_state.active_property_code = _selected_code
+
+# Detect property change — reset pipeline state so stale results don't carry over
+if st.session_state.get('_prev_active_property_code') != _selected_code:
+    st.session_state._prev_active_property_code = _selected_code
+    st.session_state.pass1_complete        = False
+    st.session_state.pass1_engine_result   = None
+    st.session_state.pass1_output_files    = {}
+    st.session_state['pass1_gl_activity_log'] = []
+    st.session_state.pass2_complete        = False
+    st.session_state.pass2_engine_result   = None
+    st.session_state.pass2_output_files    = {}
+    st.session_state.uploaded_files        = {}
+
+# Load config for the selected property
+from property_config import load_property_config as _load_prop_cfg
+_active_cfg = _load_prop_cfg(_selected_code, str(_DATA_DIR))
+
+# Committed Kardin budget for the active property
+_COMMITTED_BUDGET = _committed_path(
+    _active_cfg.property_code,
+    _active_cfg.kardin_budget_file or 'GA_Kardin_Budget_FY2026.xlsx',
+)
+
 # Sidebar property card
 _sb_logo = (
     f'<img src="{_LOGO_SRC}" style="max-width:120px;max-height:44px;margin-bottom:8px;display:block;" alt="GRP"/>'
     if _LOGO_SRC else ''
 )
+_sb_addr_line = _active_cfg.property_address or ''
+_sb_mgmt_line = ' · '.join(filter(None, [
+    _active_cfg.management_company, _active_cfg.investor_name
+]))
 st.sidebar.markdown(f"""
 <div class="grp-sidebar-card">
     {_sb_logo}
-    <div class="grp-sidebar-prop">Revolution Labs — revlabspm</div>
-    <div class="grp-sidebar-addr">1050 Waltham St · Lexington, MA<br>
-    Greatland Realty Partners · Singerman RE</div>
+    <div class="grp-sidebar-prop">{_active_cfg.display()} — {_active_cfg.property_code}</div>
+    <div class="grp-sidebar-addr">{_sb_addr_line}<br>{_sb_mgmt_line}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1136,8 +1211,9 @@ with tab1:
                 fee_je = build_management_fee_je(
                     fee_result,
                     period=close_period,
-                    property_code=engine_result.property_name or 'revlabspm',
+                    property_code=engine_result.property_name or _active_cfg.property_code,
                     je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
+                    property_config=_active_cfg,
                 )
 
                 _catchup_amount = detect_prior_period_catchup(gl_parsed)
@@ -2859,6 +2935,7 @@ with tab2:
                                 period=close_period,
                                 cash_received=fee_result.cash_received,
                                 output_path=_inv_path,
+                                property_config=_active_cfg,
                             )
                             st.session_state.pass2_output_files["fee_invoice"] = _inv_path
                         except Exception as _inv_e:

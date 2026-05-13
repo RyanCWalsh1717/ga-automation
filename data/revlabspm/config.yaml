@@ -1,0 +1,107 @@
+# ── Revolution Labs — Property Configuration ──────────────────────────────────
+# data/revlabspm/config.yaml
+#
+# To onboard a new property:
+#   1. Create data/{property_code}/ folder
+#   2. Copy this file, rename to config.yaml, update every field
+#   3. The property selector in the sidebar will auto-discover it
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Yardi identifiers
+property_code:         revlabspm
+property_name:         Revolution Labs Owner, LLC
+property_display_name: Revolution Labs
+property_address:      1050 Waltham Street, Lexington, MA
+property_type:         Life Science
+property_size_sf:      180000
+
+# Capital / investment
+investor_name:         Singerman Real Estate
+
+# Management
+management_company:    Greatland Realty Partners
+management_code:       GRP
+invoice_prefix:        RevLabsPM      # invoice numbers become RevLabsPM{MM}{YYYY}
+
+# ── Management fee structure ──────────────────────────────────────────────────
+# Each entry produces one DR/CR pair in the JE and one line on the invoice.
+# For a single-PM property, list only one entry (set minimum: 0).
+management_fees:
+  - name:       JLL
+    rate:       0.0125          # 1.25%
+    minimum:    5000.00         # greater of 1.25% or $5,000
+    dr_account: "637130"        # Admin-Management Fees
+    cr_account: "213100"        # Accrued Expenses
+    ref_prefix: MGMT-FEE-JLL
+  - name:       GRP
+    rate:       0.0175          # 1.75%
+    minimum:    0.00
+    dr_account: "637130"
+    cr_account: "213100"
+    ref_prefix: MGMT-FEE-GRP
+
+# ── Key GL accounts ───────────────────────────────────────────────────────────
+gl_accounts:
+  cash_operating:    "111100"   # PNC Operating
+  daca:              "115100"   # KeyBank DACA
+  re_tax_escrow:     "115200"
+  insurance_escrow:  "115300"
+  ar_billback:       "133110"   # Tenant Utility Billback
+  prepaids:          "135150"
+  accrued_expenses:  "213100"
+  accrued_interest:  "213200"
+  mgmt_fee_expense:  "637130"
+
+# ── Bank accounts ─────────────────────────────────────────────────────────────
+# Used by file_classifier.py to identify uploaded bank statements, and
+# by workpaper generators for tab labels and account reconciliation.
+bank_accounts:
+  pnc_operating:
+    label:        PNC Operating
+    last4:        x3993
+    full_account: "1092223993"
+    gl_account:   "111100"
+  bofa_development:
+    label:        BofA Development
+    last4:        x3132
+    full_account: "466007913132"
+    gl_account:   "111210"
+  keybank_daca:
+    label:        KeyBank DACA
+    last4:        x5132
+    full_account: "329681415132"
+    gl_account:   "115100"
+
+# ── Invoice payment instructions ──────────────────────────────────────────────
+payment_ach:
+  account_name:   Greatland Realty Partners LLC
+  bank_name:      Bank of America
+  account_number: "466007913255"
+  routing_number: "026009593"
+  bank_address:   1 Federal St, Boston, MA 02110
+
+payment_check:
+  payable_to:    Greatland Realty Partners LLC
+  address_line1: One Federal Street, 28th Floor
+  address_line2: Boston, MA 02110
+  attention:     Lauren Sullivan
+
+# ── Real estate tax ───────────────────────────────────────────────────────────
+# Months in which the full quarterly RE tax bill is paid (Berkadia auto-posts).
+# Lexington, MA: payments due Feb/May/Aug/Nov → pipeline defers in Jan/Apr/Jul/Oct.
+re_tax_payment_months: [1, 4, 7, 10]
+
+# ── Property identifiers ──────────────────────────────────────────────────────
+parcel_ids:
+  - "00011619"
+  - "R0140050002"
+
+# ── Output file naming ────────────────────────────────────────────────────────
+file_prefix_internal:     GA         # e.g. GA_Accruals_JE.csv
+file_prefix_deliverable:  RevLabs    # e.g. RevLabs_Jan2026_Workpapers.xlsx
+
+# ── Reference files (in this folder) ─────────────────────────────────────────
+kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
+
+# ── Fiscal year ───────────────────────────────────────────────────────────────
+fiscal_year_start_month: 1     # January

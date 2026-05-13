@@ -71,7 +71,8 @@ def _month_end(year: int, month: int) -> date:
 
 # ── Excel population ──────────────────────────────────────────────────────────
 
-def _populate_excel(period: str, cash_received: float, out_xlsx: str) -> None:
+def _populate_excel(period: str, cash_received: float, out_xlsx: str,
+                    invoice_prefix: str = 'RevLabsPM') -> None:
     """
     Copy the invoice template and fill in the 4 dynamic cells.
     Writes the populated workbook to out_xlsx.
@@ -89,7 +90,7 @@ def _populate_excel(period: str, cash_received: float, out_xlsx: str) -> None:
         raise ValueError(f"Cannot parse period '{period}'")
 
     inv_date   = _month_end(year, month)
-    inv_num    = f'RevLabsPM{month:02d}{year}'
+    inv_num    = f'{invoice_prefix}{month:02d}{year}'
     month_lbl  = _MONTH_MAP.get(month, str(month))
     period_lbl = f'{month_lbl} {year} Property Management Fee'
 
@@ -146,7 +147,10 @@ def _pdf_via_libreoffice(xlsx_path: str, pdf_dir: str) -> bool:
         return False
 
 
-def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None:
+def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
+                       invoice_prefix: str = 'RevLabsPM',
+                       payment_ach: dict = None,
+                       payment_check: dict = None) -> None:
     """
     Reportlab fallback — closely matches the template layout.
     Used when neither win32com nor LibreOffice is available.
@@ -163,15 +167,23 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None
     GREEN_LIGHT = colors.HexColor('#D4E0D2')
     BLACK       = colors.black
 
-    GRP_NAME = 'Greatland Realty Partners LLC'
-    GRP_A1   = 'One Federal Street, 28th Floor'
-    GRP_A2   = 'Boston, MA 02110'
+    # Use payment_ach/payment_check from config if provided, else RevLabs defaults
+    _ach   = payment_ach   or {}
+    _check = payment_check or {}
+    GRP_NAME = _check.get('payable_to', _ach.get('account_name', 'Greatland Realty Partners LLC'))
+    GRP_A1   = _check.get('address_line1', 'One Federal Street, 28th Floor')
+    GRP_A2   = _check.get('address_line2', 'Boston, MA 02110')
     GRP_WEB  = 'www.greatlandpartners.com'
+    GRP_ATTN = _check.get('attention', 'Lauren Sullivan')
+    ACH_BANK    = _ach.get('bank_name', 'Bank of America')
+    ACH_ACCT    = _ach.get('account_number', '466007913255')
+    ACH_ROUTING = _ach.get('routing_number', '026009593')
+    ACH_ADDR    = _ach.get('bank_address', '1 Federal St, Boston, MA 02110')
 
     year, month = _parse_period(period)
     inv_date   = _month_end(year, month)
     inv_date_s = f'{inv_date.month}/{inv_date.day}/{inv_date.year}'
-    inv_num    = f'RevLabsPM{month:02d}{year}'
+    inv_num    = f'{invoice_prefix}{month:02d}{year}'
     month_lbl  = _MONTH_MAP.get(month, str(month))
 
     total_fee  = round(cash_received * _TOTAL_RATE, 2)
@@ -274,10 +286,10 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None
     c.drawString(L, _y(480), 'Electronic Payment:')
     ach = [
         ('Account Name:',         GRP_NAME),
-        ('Bank Name:',            'Bank of America'),
-        ('Bank Account #:',       '466007913255'),
-        ('Bank Routing (ABA) #:', '026009593'),
-        ('Bank Address:',         '1 Federal St, Boston, MA 02110'),
+        ('Bank Name:',            ACH_BANK),
+        ('Bank Account #:',       ACH_ACCT),
+        ('Bank Routing (ABA) #:', ACH_ROUTING),
+        ('Bank Address:',         ACH_ADDR),
     ]
     for i, (lbl, val) in enumerate(ach):
         ry = 496 + i * 14
@@ -291,7 +303,7 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str) -> None
         ('Payable to:',       GRP_NAME),
         ('Mailing Address:',  GRP_A1),
         ('',                  GRP_A2),
-        ('Attention:',        'Lauren Sullivan'),
+        ('Attention:',        GRP_ATTN),
     ]
     ry = 496
     for lbl, val in chk:
@@ -313,6 +325,7 @@ def generate_invoice(
     period: str,
     cash_received: float,
     output_path: Optional[str] = None,
+    property_config=None,
 ) -> bytes:
     """
     Generate the management fee invoice PDF by populating the Excel template.
@@ -330,11 +343,19 @@ def generate_invoice(
     Returns:
         PDF bytes.
     """
+    # Resolve invoice prefix and payment instructions from property_config
+    cfg_prefix = (
+        getattr(property_config, 'invoice_prefix', None) or 'RevLabsPM'
+        if property_config else 'RevLabsPM'
+    )
+    cfg_ach   = (getattr(property_config, 'payment_ach', None)   or {}) if property_config else {}
+    cfg_check = (getattr(property_config, 'payment_check', None) or {}) if property_config else {}
+
     if output_path is None:
         year, month = _parse_period(period)
         output_path = os.path.join(
             tempfile.gettempdir(),
-            f'RevLabsPM_Invoice_{period.replace("-", "")}.pdf',
+            f'{cfg_prefix}_Invoice_{period.replace("-", "")}.pdf',
         )
 
     pdf_path  = output_path
@@ -342,36 +363,35 @@ def generate_invoice(
 
     # Step 1 — populate the Excel template
     try:
-        _populate_excel(period, cash_received, xlsx_path)
-    except Exception as e:
+        _populate_excel(period, cash_received, xlsx_path, invoice_prefix=cfg_prefix)
+    except Exception:
         # Template missing or openpyxl issue — skip straight to reportlab
-        _pdf_via_reportlab(period, cash_received, pdf_path)
+        _pdf_via_reportlab(period, cash_received, pdf_path,
+                           invoice_prefix=cfg_prefix,
+                           payment_ach=cfg_ach, payment_check=cfg_check)
         with open(pdf_path, 'rb') as fh:
             return fh.read()
 
     # Step 2 — convert populated Excel → PDF
     pdf_ok = False
 
-    # Try win32com (Windows + Excel)
     if not pdf_ok:
         pdf_ok = _pdf_via_win32com(xlsx_path, pdf_path)
 
-    # Try LibreOffice
     if not pdf_ok:
         pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
         if _pdf_via_libreoffice(xlsx_path, pdf_dir):
-            # LibreOffice names the output after the input file
             lo_name = os.path.splitext(os.path.basename(xlsx_path))[0] + '.pdf'
             lo_path = os.path.join(pdf_dir, lo_name)
             if os.path.exists(lo_path) and lo_path != pdf_path:
                 shutil.move(lo_path, pdf_path)
             pdf_ok = os.path.exists(pdf_path)
 
-    # Reportlab fallback
     if not pdf_ok:
-        _pdf_via_reportlab(period, cash_received, pdf_path)
+        _pdf_via_reportlab(period, cash_received, pdf_path,
+                           invoice_prefix=cfg_prefix,
+                           payment_ach=cfg_ach, payment_check=cfg_check)
 
-    # Clean up temp xlsx
     try:
         os.remove(xlsx_path)
     except OSError:

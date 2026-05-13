@@ -82,14 +82,16 @@ def _fmt_period(period: str) -> str:
     return period
 
 
-# ── Account codes ──────────────────────────────────────────────────────────────
-_CASH_OPERATING = '111100'   # Cash - Operating (PNC)
-_MGMT_FEE_CODE  = '637130'   # Admin-Management Fees (expense line in BC)
+# ── Account codes (defaults — overridden by PropertyConfig when provided) ──────
+_CASH_OPERATING = '111100'   # Cash - Operating
+_MGMT_FEE_CODE  = '637130'   # Admin-Management Fees
 
 # Revenue accounts whose PTD actuals count as gross receipts
 _REVENUE_PREFIXES = ('4',)   # 4xxxxx = revenue accounts
 
-# Rate schedule
+# Legacy rate constants — kept for backward compatibility only.
+# New callers should pass a PropertyConfig; compute_management_fee() reads
+# rates from cfg.management_fees when cfg is provided.
 JLL_RATE = 0.0125   # 1.25%
 GRP_RATE = 0.0175   # 1.75%
 
@@ -338,8 +340,9 @@ def calculate(
     receivable_detail=None,
     receivable_summary=None,
     ar_aging=None,
-    jll_rate: float = JLL_RATE,
-    grp_rate: float = GRP_RATE,
+    jll_rate: float = None,
+    grp_rate: float = None,
+    property_config=None,
 ) -> ManagementFeeResult:
     """
     Compute the management fee accrual for the period.
@@ -372,6 +375,22 @@ def calculate(
         ManagementFeeResult
     """
     budget_rows = budget_rows or []
+
+    # Resolve rates: explicit args > property_config > module-level defaults
+    if jll_rate is None:
+        jll_rate = property_config.management_fee_jll_rate if property_config else JLL_RATE
+    if grp_rate is None:
+        grp_rate = property_config.management_fee_grp_rate if property_config else GRP_RATE
+
+    # Resolve key GL accounts from config when available
+    _cash_acct = (
+        property_config.gl_account('cash_operating', _CASH_OPERATING)
+        if property_config else _CASH_OPERATING
+    )
+    _fee_acct = (
+        property_config.gl_account('mgmt_fee_expense', _MGMT_FEE_CODE)
+        if property_config else _MGMT_FEE_CODE
+    )
 
     # 1. Receivable Summary — preferred (explicit Prepayment row, no scanning required)
     rs_cash, rs_prepay = _cash_from_receivable_summary(receivable_summary)
@@ -439,33 +458,76 @@ def build_management_fee_je(
     fee_result: ManagementFeeResult,
     period: str = '',
     property_code: str = 'revlabspm',
-    ap_account: str = '213100',        # Accrued Management Fees payable
+    ap_account: str = '213100',
     ap_account_name: str = 'Accrued Management Fees',
     je_number: str = 'MGT-001',
+    property_config=None,
 ) -> list[dict]:
     """
-    Build the four-line journal entry for the management fee accrual,
-    broken out by JLL (1.25%) and GRP (1.75%) as separate balanced pairs.
+    Build the journal entry lines for the management fee accrual.
 
-    Lines 1 & 2 — JLL portion:
-      Debit  637130  Admin-Management Fees   (JLL fee)
-      Credit 213100  Accrued Management Fees (JLL fee)
+    When property_config is provided, iterates over cfg.management_fees to
+    produce one balanced DR/CR pair per fee line — supporting any number of
+    PM arrangements (single PM, JLL+GRP, or future structures).
 
-    Lines 3 & 4 — GRP portion:
-      Debit  637130  Admin-Management Fees   (GRP fee)
-      Credit 213100  Accrued Management Fees (GRP fee)
+    Fallback (no config): two pairs — JLL (fee_result.jll_rate) and GRP
+    (fee_result.grp_rate) — preserving existing behavior.
 
-    Both pairs share the same je_number so they import as a single Yardi batch.
-    Returns a list of dicts matching the format expected by
-    generate_yardi_je_import() in accrual_entry_generator.py.
+    Both/all pairs share je_number so they import as a single Yardi batch.
     """
     if fee_result.cash_received <= 0:
         return []
 
     cash = fee_result.cash_received
+    _period_label = _fmt_period(period)
+    lines = []
+    line_num = 1
+
+    # ── Config-driven path: iterate fee lines ─────────────────────────────────
+    fee_lines_cfg = getattr(property_config, 'management_fees', None) if property_config else None
+
+    if fee_lines_cfg:
+        for fl in fee_lines_cfg:
+            if fl.rate <= 0:
+                continue
+            # Apply minimum: fee = max(rate × cash, minimum)
+            computed = fee_result.cash_received * fl.rate
+            amt = _round(max(computed, fl.minimum) if fl.minimum > 0 else computed)
+            if amt <= 0:
+                continue
+            desc = (
+                f'Accrual {_period_label} — {fl.name} Management Fee '
+                f'({fl.rate:.2%} on ${cash:,.2f} cash received)'
+            )
+            ref = fl.ref_prefix or f'MGMT-FEE-{fl.name.upper()}'
+            dr_acct = fl.dr_account or _MGMT_FEE_CODE
+            cr_acct = fl.cr_account or ap_account
+            lines += [
+                {
+                    'je_number': je_number, 'line': line_num,
+                    'date': period, 'account_code': dr_acct,
+                    'account_name': 'Admin-Management Fees',
+                    'description': desc, 'reference': ref,
+                    'debit': amt, 'credit': 0.0,
+                    'vendor': f'{fl.name} Management Fee',
+                    'invoice_number': '', 'source': 'management_fee',
+                },
+                {
+                    'je_number': je_number, 'line': line_num + 1,
+                    'date': period, 'account_code': cr_acct,
+                    'account_name': ap_account_name,
+                    'description': desc, 'reference': ref,
+                    'debit': 0.0, 'credit': amt,
+                    'vendor': f'{fl.name} Management Fee',
+                    'invoice_number': '', 'source': 'management_fee',
+                },
+            ]
+            line_num += 2
+        return lines
+
+    # ── Legacy fallback: JLL + GRP from fee_result rates ─────────────────────
     jll_amt = _round(fee_result.jll_fee)
     grp_amt = _round(fee_result.grp_fee)
-    _period_label = _fmt_period(period)
 
     jll_desc = (
         f'Accrual {_period_label} — JLL Management Fee '
@@ -477,64 +539,26 @@ def build_management_fee_je(
     )
 
     return [
-        # ── JLL portion ────────────────────────────────────────────────────
-        {
-            'je_number': je_number,
-            'line': 1,
-            'date': period,
-            'account_code': _MGMT_FEE_CODE,
-            'account_name': 'Admin-Management Fees',
-            'description': jll_desc,
-            'reference': 'MGMT-FEE-JLL',
-            'debit': jll_amt,
-            'credit': 0.0,
-            'vendor': 'JLL Management Fee',
-            'invoice_number': '',
-            'source': 'management_fee',
-        },
-        {
-            'je_number': je_number,
-            'line': 2,
-            'date': period,
-            'account_code': ap_account,
-            'account_name': ap_account_name,
-            'description': jll_desc,
-            'reference': 'MGMT-FEE-JLL',
-            'debit': 0.0,
-            'credit': jll_amt,
-            'vendor': 'JLL Management Fee',
-            'invoice_number': '',
-            'source': 'management_fee',
-        },
-        # ── GRP portion ────────────────────────────────────────────────────
-        {
-            'je_number': je_number,
-            'line': 3,
-            'date': period,
-            'account_code': _MGMT_FEE_CODE,
-            'account_name': 'Admin-Management Fees',
-            'description': grp_desc,
-            'reference': 'MGMT-FEE-GRP',
-            'debit': grp_amt,
-            'credit': 0.0,
-            'vendor': 'GRP Management Fee',
-            'invoice_number': '',
-            'source': 'management_fee',
-        },
-        {
-            'je_number': je_number,
-            'line': 4,
-            'date': period,
-            'account_code': ap_account,
-            'account_name': ap_account_name,
-            'description': grp_desc,
-            'reference': 'MGMT-FEE-GRP',
-            'debit': 0.0,
-            'credit': grp_amt,
-            'vendor': 'GRP Management Fee',
-            'invoice_number': '',
-            'source': 'management_fee',
-        },
+        {'je_number': je_number, 'line': 1, 'date': period,
+         'account_code': _MGMT_FEE_CODE, 'account_name': 'Admin-Management Fees',
+         'description': jll_desc, 'reference': 'MGMT-FEE-JLL',
+         'debit': jll_amt, 'credit': 0.0,
+         'vendor': 'JLL Management Fee', 'invoice_number': '', 'source': 'management_fee'},
+        {'je_number': je_number, 'line': 2, 'date': period,
+         'account_code': ap_account, 'account_name': ap_account_name,
+         'description': jll_desc, 'reference': 'MGMT-FEE-JLL',
+         'debit': 0.0, 'credit': jll_amt,
+         'vendor': 'JLL Management Fee', 'invoice_number': '', 'source': 'management_fee'},
+        {'je_number': je_number, 'line': 3, 'date': period,
+         'account_code': _MGMT_FEE_CODE, 'account_name': 'Admin-Management Fees',
+         'description': grp_desc, 'reference': 'MGMT-FEE-GRP',
+         'debit': grp_amt, 'credit': 0.0,
+         'vendor': 'GRP Management Fee', 'invoice_number': '', 'source': 'management_fee'},
+        {'je_number': je_number, 'line': 4, 'date': period,
+         'account_code': ap_account, 'account_name': ap_account_name,
+         'description': grp_desc, 'reference': 'MGMT-FEE-GRP',
+         'debit': 0.0, 'credit': grp_amt,
+         'vendor': 'GRP Management Fee', 'invoice_number': '', 'source': 'management_fee'},
     ]
 
 
