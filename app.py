@@ -518,6 +518,13 @@ FILE_CONFIG = {
         "Upload the BofA Full Analysis Business Checking statement (account x3132). "
         "Without it: development bank rec tab is omitted from the workpaper.",
     ),
+    "bank_rec_dev_xlsx": (
+        "Yardi Development Bank Rec — 111210 (.xlsx)", "xlsx", False, "bank",
+        "Yardi Bank Reconciliation Report for the BofA development account (x3132). "
+        "Copies the raw Yardi export directly into the '111210 Cash - Development' tab "
+        "in the workpaper — matching the exact format of the 111100 PNC and 115100 DACA tabs. "
+        "Without it: tab is generated from the BofA PDF (ending balance only, no detail).",
+    ),
     "capital_schedule": (
         "Capital Accounts Schedule (.xlsx)", "xlsx", False, "reference",
         "Capital improvement schedules (154500 Building Improvements, 181200 LC, "
@@ -2241,7 +2248,8 @@ with tab2:
 
     _P2_SLOT_KEYS = [
         "gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
-        "t12_statement_pass2", "loan_pass2", "prior_workpaper", "unknown",
+        "t12_statement_pass2", "loan_pass2", "prior_workpaper",
+        "bank_rec_dev_xlsx", "unknown",
     ]
     _P2_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P2_SLOT_KEYS]
 
@@ -2799,6 +2807,7 @@ with tab2:
                             ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
                             bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
                             daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
+                            dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
                             prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path

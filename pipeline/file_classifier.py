@@ -34,7 +34,8 @@ FILE_LABELS = {
     "receivable_summary":    "Yardi Receivable Summary",
     "receivable_detail":     "Yardi Receivable Detail",
     "ar_aging":              "Yardi AR Detail Aging",
-    "bank_rec_dev":          "BofA Development Statement",
+    "bank_rec_dev":          "BofA Development Statement (PDF)",
+    "bank_rec_dev_xlsx":     "Yardi Development Bank Rec (111210)",
     "daca_bank":             "KeyBank DACA Statement",
     "loan":                  "Berkadia Loan Statement(s) — due 7th of following month",
     "prepaid_ledger":        "Prior Month Prepaid Ledger",
@@ -231,6 +232,25 @@ def _classify_xlsx(file_bytes: bytes) -> Tuple[str, float]:
         if "aging" in all_text or "30 days" in all_text:
             return "ar_aging", 0.80
         return "receivable_detail", 0.80
+
+    # ── Yardi Bank Rec — Development account 111210 (BofA x3132) ────────────
+    # Must check BEFORE the generic bank_rec check: development rec contains
+    # "bank reconciliation report" AND a BofA account number or "development".
+    if "bank reconciliation report" in all_text and (
+        "466007913132" in all_text or "3132" in all_text
+        or "development" in all_text or "bank of america" in all_text
+    ):
+        return "bank_rec_dev_xlsx", 0.95
+
+    # ── Yardi Bank Rec — PNC Operating 111100 (xlsx export) ──────────────
+    if "bank reconciliation report" in all_text and "1092223993" in all_text:
+        return "bank_rec", 0.95
+
+    # ── Yardi DACA Bank Rec — 115100 (xlsx export) ───────────────────────
+    if "bank reconciliation report" in all_text and (
+        "329681415132" in all_text or "daca" in all_text
+    ):
+        return "daca_bank", 0.95
 
     # ── GL: "General Ledger" OR property code + transaction structure ─────
     if "general ledger" in all_text:

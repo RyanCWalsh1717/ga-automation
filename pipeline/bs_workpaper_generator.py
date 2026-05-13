@@ -215,6 +215,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            ap_aging_filepath: str = None,
                            bank_rec_xlsx_filepath: str = None,
                            daca_bank_rec_xlsx_filepath: str = None,
+                           dev_bank_rec_xlsx_filepath: str = None,
                            prepared_by: str = '') -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
@@ -406,6 +407,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _raw_report_map['111100'] = bank_rec_xlsx_filepath   # PNC Operating
     if daca_bank_rec_xlsx_filepath and os.path.exists(daca_bank_rec_xlsx_filepath):
         _raw_report_map['115100'] = daca_bank_rec_xlsx_filepath  # KeyBank DACA
+    if dev_bank_rec_xlsx_filepath and os.path.exists(dev_bank_rec_xlsx_filepath):
+        _raw_report_map['111210'] = dev_bank_rec_xlsx_filepath   # BofA Development
 
     # ── Build workpaper tabs ──────────────────────────────────
     # Trial Balance moved to LAST tab — generated below just before wb.save().
@@ -3157,6 +3160,7 @@ def generate(gl_result, tb_result, output_path: str,
              ap_aging_filepath: str = None,
              bank_rec_xlsx_filepath: str = None,
              daca_bank_rec_xlsx_filepath: str = None,
+             dev_bank_rec_xlsx_filepath: str = None,
              prepared_by: str = '') -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
@@ -3175,4 +3179,5 @@ def generate(gl_result, tb_result, output_path: str,
                                   ap_aging_filepath=ap_aging_filepath,
                                   bank_rec_xlsx_filepath=bank_rec_xlsx_filepath,
                                   daca_bank_rec_xlsx_filepath=daca_bank_rec_xlsx_filepath,
+                                  dev_bank_rec_xlsx_filepath=dev_bank_rec_xlsx_filepath,
                                   prepared_by=prepared_by)
