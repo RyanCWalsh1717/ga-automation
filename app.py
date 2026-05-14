@@ -474,24 +474,16 @@ st.markdown(f"""
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
 
-# ── Property selector ────────────────────────────────────────────────────────
+# ── Property discovery (used by main-page selector + sidebar card) ───────────
 _all_props   = _discover_properties()
 _prop_codes  = [p['code'] for p in _all_props]
 _prop_labels = {p['code']: f"{p['display_name']}  ({p['code']})" for p in _all_props}
 
-if len(_all_props) > 1:
-    _selected_code = st.sidebar.selectbox(
-        "🏢 Property",
-        options=_prop_codes,
-        index=_prop_codes.index(st.session_state.active_property_code)
-              if st.session_state.active_property_code in _prop_codes else 0,
-        format_func=lambda c: _prop_labels.get(c, c),
-        key="active_property_code",
-        help="Select the property to run the close for. Switching resets all pipeline state.",
-    )
-else:
-    _selected_code = _prop_codes[0] if _prop_codes else 'revlabspm'
-    st.session_state.active_property_code = _selected_code
+# _selected_code is set by the main-page selector below (after the hero banner).
+# Here we just ensure session_state has a valid value for the hero render.
+if st.session_state.active_property_code not in _prop_codes and _prop_codes:
+    st.session_state.active_property_code = _prop_codes[0]
+_selected_code = st.session_state.active_property_code or (_prop_codes[0] if _prop_codes else 'revlabspm')
 
 # Detect property change — reset pipeline state so stale results don't carry over
 if st.session_state.get('_prev_active_property_code') != _selected_code:
@@ -524,19 +516,6 @@ _sb_logo = (
     f'<img src="{_LOGO_SRC}" style="max-width:120px;max-height:44px;margin-bottom:8px;display:block;" alt="GRP"/>'
     if _LOGO_SRC else ''
 )
-_sb_addr_line = _active_cfg.property_address or ''
-_sb_mgmt_line = ' · '.join(filter(None, [
-    _active_cfg.management_company, _active_cfg.investor_name
-]))
-st.sidebar.markdown(f"""
-<div class="grp-sidebar-card">
-    {_sb_logo}
-    <div class="grp-sidebar-prop">{_active_cfg.display()} — {_active_cfg.property_code}</div>
-    <div class="grp-sidebar-addr">{_sb_addr_line}<br>{_sb_mgmt_line}</div>
-</div>
-""", unsafe_allow_html=True)
-
-st.sidebar.markdown("---")
 st.session_state.prepared_by = st.sidebar.text_input(
     "Prepared by",
     value=st.session_state.prepared_by,
@@ -712,9 +691,43 @@ _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 
 
 # ═══════════════════════════════════════════════════════════════
-# ── Main content: Two-pass tabs ──────────────────────────────
+# ── Property selector (main page, above tabs) ─────────────────
 # ═══════════════════════════════════════════════════════════════
 import pandas as pd
+
+if len(_all_props) > 1:
+    _sel_col, _sel_spacer = st.columns([2, 5])
+    with _sel_col:
+        _selected_code = st.selectbox(
+            "🏢 Active Property",
+            options=_prop_codes,
+            index=_prop_codes.index(st.session_state.active_property_code)
+                  if st.session_state.active_property_code in _prop_codes else 0,
+            format_func=lambda c: _prop_labels.get(c, c),
+            key="active_property_selectbox",
+            help="Switching properties resets all pipeline state.",
+            label_visibility="visible",
+        )
+        # Keep session_state in sync (selectbox key ≠ state key here to avoid conflict)
+        if _selected_code != st.session_state.active_property_code:
+            st.session_state.active_property_code = _selected_code
+            st.rerun()
+    with _sel_spacer:
+        st.markdown(
+            f"<div style='padding-top:28px;font-size:0.82rem;color:#616161;'>"
+            f"{_prop_labels.get(_selected_code, _selected_code)}&nbsp;&nbsp;|&nbsp;&nbsp;"
+            f"{next((p['address'] for p in _all_props if p['code'] == _selected_code), '')}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+else:
+    # Single property — no selector needed, but update state to match
+    _selected_code = _prop_codes[0] if _prop_codes else 'revlabspm'
+    st.session_state.active_property_code = _selected_code
+
+# ═══════════════════════════════════════════════════════════════
+# ── Main content: Two-pass tabs ──────────────────────────────
+# ═══════════════════════════════════════════════════════════════
 
 tab0, tab1, tab2, tab3, tab4 = st.tabs([
     "🏠  Dashboard",
