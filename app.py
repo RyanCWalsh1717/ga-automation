@@ -362,6 +362,7 @@ if "manual_accruals_df" not in st.session_state:
         "Vendor":       [""] * _n,
         "Amount ($)":   [0.0] * _n,
         "Description":  [""] * _n,
+        "Split Schedule": [""] * _n,
     })
 
 # If session has stale columns from an older version, reset the whole table so
@@ -379,6 +380,7 @@ if any(_col in st.session_state.manual_accruals_df.columns for _col in ("CR Acco
         "Vendor":       [""] * _n,
         "Amount ($)":   [0.0] * _n,
         "Description":  [""] * _n,
+        "Split Schedule": [""] * _n,
     })
 
 
@@ -1210,20 +1212,34 @@ with tab1:
             "**Leave Amount at $0** to suppress automated detection for that account without generating a JE — "
             "use this when a JE has already been posted to Yardi to prevent double-counting."
         )
+        # Add Split Schedule column if not present (session upgrade)
+        if "Split Schedule" not in st.session_state.manual_accruals_df.columns:
+            st.session_state.manual_accruals_df["Split Schedule"] = ""
+
+        _split_sch_help = (
+            "Leave blank to use the property default split schedule. "
+            "Enter a schedule name (e.g. '2-Bldg') to override for this line. "
+            "Enter 'No Split' to post the full amount to the parent property code."
+        ) if _active_cfg.is_multi_building else (
+            "Only applies to multi-building properties. "
+            "Configure building splits in the ⚙️ Properties tab."
+        )
         accruals_edited_df = st.data_editor(
             st.session_state.manual_accruals_df,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "Account Code":  st.column_config.TextColumn("DR Account", width="small",
-                                     help="6-digit Yardi GL account code (e.g. 613310)"),
-                "Account Name":  st.column_config.TextColumn("Account Name", width="medium"),
-                "Vendor":        st.column_config.TextColumn("Vendor", width="medium"),
-                "Amount ($)":    st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
-                                     width="small", min_value=0.0,
-                                     help="Positive amount — debit to expense account"),
-                "Description":   st.column_config.TextColumn("Description", width="large",
-                                     help="Description for the Yardi JE line"),
+                "Account Code":    st.column_config.TextColumn("DR Account", width="small",
+                                       help="6-digit Yardi GL account code (e.g. 613310)"),
+                "Account Name":    st.column_config.TextColumn("Account Name", width="medium"),
+                "Vendor":          st.column_config.TextColumn("Vendor", width="medium"),
+                "Amount ($)":      st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
+                                       width="small", min_value=0.0,
+                                       help="Positive amount — debit to expense account"),
+                "Description":     st.column_config.TextColumn("Description", width="large",
+                                       help="Description for the Yardi JE line"),
+                "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
+                                       help=_split_sch_help),
             },
             key="manual_accruals_editor",
         )
@@ -1553,6 +1569,7 @@ with tab1:
                     for _, _row in _active_accruals.iterrows():
                         _vendor = str(_row.get("Vendor", "") or "").strip()
                         _desc   = str(_row.get("Description", "") or "").strip()
+                        _split_sch_override = str(_row.get("Split Schedule", "") or "").strip()
                         _periodic_supplement_rows.append({
                             'account_code':    str(_row["Account Code"]).strip(),
                             'account_name':    str(_row.get("Account Name", "") or "").strip()
@@ -1563,6 +1580,7 @@ with tab1:
                             'auto_reverse':    True,   # all one-off accruals auto-reverse
                             'cr_account':      '213100',
                             'cr_account_name': 'Accrued Expenses',
+                            '_split_schedule': _split_sch_override,  # '' = use property default
                         })
 
                 # Build a GL account lookup for compound accrual logic.
@@ -1624,6 +1642,7 @@ with tab1:
                     _sup_cr_acct = _sup.get('cr_account', '213100')
                     _sup_cr_name = _sup.get('cr_account_name', 'Accrued Expenses')
                     _sup_amt     = round(_sup_compound, 2)
+                    _sup_split_sch = _sup.get('_split_schedule', '')
                     _supplement_je_lines.extend([
                         {
                             'je_number': _sje_id, 'line': 1, 'date': close_period,
@@ -1631,6 +1650,7 @@ with tab1:
                             'description': _sup_desc, 'reference': 'ONE-OFF-ACCRUAL',
                             'debit': _sup_amt, 'credit': 0, 'vendor': _sup_vendor,
                             'invoice_number': '', 'source': 'contract_supplement', 'confidence': 'high',
+                            '_split_schedule': _sup_split_sch,
                         },
                         {
                             'je_number': _sje_id, 'line': 2, 'date': close_period,
@@ -1638,10 +1658,11 @@ with tab1:
                             'description': _sup_desc, 'reference': 'ONE-OFF-ACCRUAL',
                             'debit': 0, 'credit': _sup_amt, 'vendor': _sup_vendor,
                             'invoice_number': '', 'source': 'contract_supplement', 'confidence': 'high',
+                            '_split_schedule': _sup_split_sch,
                         },
                     ])
 
-                # Step 6: Assemble all JEs and export 3 CSVs
+                # Step 6: Assemble all JEs, apply building splits, export 3 CSVs
                 status_text.text("Step 6/6: Exporting JE CSVs...")
                 progress_bar.progress(88)
 
@@ -1652,6 +1673,11 @@ with tab1:
                     + _catchup_je
                     + _supplement_je_lines
                 )
+
+                # Apply pro-rata building splits for multi-building properties
+                if _active_cfg.is_multi_building:
+                    from building_splits_engine import apply_building_splits as _apply_splits
+                    all_je_lines = _apply_splits(all_je_lines, _active_cfg)
 
                 _accrual_csv_path = None
 
@@ -4559,6 +4585,34 @@ with tab4:
                             icon="⚠️",
                         )
 
+        # Default split schedule selector (only shown when splits are defined)
+        _avail_schedules = list(dict.fromkeys(
+            str(r.get('Schedule Name', '') or '').strip()
+            for _, r in _splits_edited.iterrows()
+            if str(r.get('Building Name', '') or '').strip()
+               and str(r.get('Schedule Name', '') or '').strip()
+        ))
+        _cur_default_sch = _ef('default_split_schedule', '')
+        if _avail_schedules:
+            _default_sch_options = ['(none — no automatic splitting)'] + _avail_schedules
+            _default_sch_idx = (
+                _avail_schedules.index(_cur_default_sch) + 1
+                if _cur_default_sch in _avail_schedules else 0
+            )
+            _default_sch_sel = st.selectbox(
+                "Default Split Schedule",
+                _default_sch_options,
+                index=_default_sch_idx,
+                help="Applied automatically to all auto-detected accruals (Nexus, historical, mgmt fee, etc.). "
+                     "Per-line overrides in the one-off accruals table take precedence.",
+                key="prop_default_split_sch",
+            )
+            _default_split_schedule = (
+                '' if _default_sch_sel.startswith('(none') else _default_sch_sel
+            )
+        else:
+            _default_split_schedule = ''
+
         st.markdown("### 5 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
         _default_fees = [
@@ -4752,6 +4806,7 @@ with tab4:
                 invoice_prefix         = _inv_prefix,
                 team_members           = _team_members_parsed,
                 building_splits        = _splits_list,
+                default_split_schedule = _default_split_schedule if '_default_split_schedule' in dir() else '',
                 management_fees        = _fee_list,
                 gl_accounts            = {},
                 bank_accounts          = _bank_list,

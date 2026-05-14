@@ -107,6 +107,11 @@ class PropertyConfig:
     # When populated, each entry holds the pro-rata % for one building.
     building_splits: List['BuildingSplitConfig'] = field(default_factory=list)
 
+    # Name of the schedule applied automatically to all auto-detected accruals
+    # (Nexus, historical, management fee, etc.).  Per-line overrides in the
+    # one-off accruals table take precedence.  Blank = no automatic splitting.
+    default_split_schedule: str = ''
+
     # ── Management fee lines ──────────────────────────────────────────────────
     # Flexible: single-PM properties have one entry; RevLabs has JLL + GRP.
     # Replaces the old management_fee_jll_rate / management_fee_grp_rate fields
@@ -236,6 +241,7 @@ class PropertyConfig:
             fiscal_year_start_month = int(d.get('fiscal_year_start_month', 1)),
             team_members            = list(d.get('team_members') or
                                           ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']),
+            default_split_schedule  = str(d.get('default_split_schedule', '')),
         )
 
     # ── Computed properties (backward compatibility + convenience) ────────────

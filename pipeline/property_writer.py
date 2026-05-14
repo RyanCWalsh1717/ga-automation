@@ -47,7 +47,8 @@ def build_config_dict(
     management_code:        str,
     invoice_prefix:         str,
     team_members:           list[str],
-    building_splits:        list[dict],   # [{'name','yardi_code','share_pct','notes'}]
+    building_splits:        list[dict],   # [{'schedule','name','yardi_code','share_pct','notes'}]
+    default_split_schedule: str,
     management_fees:        list[dict],   # [{'name','rate','minimum','dr_account','cr_account','ref_prefix'}]
     gl_accounts:            dict,
     bank_accounts:          list[dict],   # [{'slug','label','bank_name','last4','full_account','gl_account'}]
@@ -123,6 +124,8 @@ def build_config_dict(
         _splits.append(_entry)
     if _splits:
         cfg['building_splits'] = _splits
+    if (default_split_schedule or '').strip():
+        cfg['default_split_schedule'] = default_split_schedule.strip()
 
     if fees:    cfg['management_fees'] = fees
     if gl_accounts: cfg['gl_accounts'] = {k: str(v) for k, v in gl_accounts.items() if v}
