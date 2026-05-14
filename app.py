@@ -66,7 +66,7 @@ def _build_accruals_seed_df(cfg=None):
     Falls back to RevLabs pre-seeded rows when the config has no default_accruals.
     """
     import pandas as _pd_seed
-    if cfg is not None and cfg.default_accruals:
+    if cfg is not None and getattr(cfg, 'default_accruals', None):
         rows = cfg.default_accruals
         _n = len(rows) + 1   # one blank trailing row
         return _pd_seed.DataFrame({
@@ -377,7 +377,7 @@ if "post_close_je_df" not in st.session_state:
 # Each entry is (key_slug, display_name).  Falls back to RevLabs defaults
 # only if the config has no tenants defined (backward compatibility).
 def _build_tub_tenants(cfg) -> list:
-    if cfg.tenants:
+    if getattr(cfg, 'tenants', None):
         return [(t['key'], t['name']) for t in cfg.tenants]
     # Legacy fallback — RevLabs only
     return [
@@ -4518,9 +4518,9 @@ with tab4:
             "**Key** is a short slug used internally (lowercase, no spaces)."
         )
         _tenant_rows = (
-            [{'Key': t['key'], 'Tenant Name': t['name']} for t in _edit_cfg.tenants]
-            if (_edit_cfg and _edit_cfg.tenants)
-            else []
+            [{'Key': t['key'], 'Tenant Name': t['name']}
+             for t in getattr(_edit_cfg, 'tenants', [])]
+            if _edit_cfg else []
         )
         # Always show at least 3 blank rows for input
         while len(_tenant_rows) < 3:
@@ -4549,9 +4549,8 @@ with tab4:
         _accrual_rows = (
             [{'Account Code': a['account_code'], 'Account Name': a['account_name'],
               'Default Vendor': a.get('vendor', '')}
-             for a in _edit_cfg.default_accruals]
-            if (_edit_cfg and _edit_cfg.default_accruals)
-            else []
+             for a in getattr(_edit_cfg, 'default_accruals', [])]
+            if _edit_cfg else []
         )
         while len(_accrual_rows) < 3:
             _accrual_rows.append({'Account Code': '', 'Account Name': '', 'Default Vendor': ''})
