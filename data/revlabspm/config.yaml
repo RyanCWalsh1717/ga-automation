@@ -23,6 +23,13 @@ management_company:    Greatland Realty Partners
 management_code:       GRP
 invoice_prefix:        RevLabsPM      # invoice numbers become RevLabsPM{MM}{YYYY}
 
+# ── Team members ──────────────────────────────────────────────────────────────
+# Names shown in the Dashboard name selector, close tracker, and sign-off sheet.
+team_members:
+  - Ryan Walsh
+  - Natasha Parker
+  - Lauren Sullivan
+
 # ── Management fee structure ──────────────────────────────────────────────────
 # Each entry produces one DR/CR pair in the JE and one line on the invoice.
 # For a single-PM property, list only one entry (set minimum: 0).

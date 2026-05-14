@@ -75,6 +75,11 @@ class PropertyConfig:
     management_code:    str = ''     # Short code for display (e.g. 'GRP')
     invoice_prefix:     str = ''     # Invoice number prefix (e.g. 'RevLabsPM')
 
+    # ── Team members ──────────────────────────────────────────────────────────
+    # Names that appear in the dashboard name selector, close tracker reviewer
+    # dropdowns, and sign-off sheet. Add anyone who touches this property's close.
+    team_members: List[str] = field(default_factory=lambda: ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+
     # ── Management fee lines ──────────────────────────────────────────────────
     # Flexible: single-PM properties have one entry; RevLabs has JLL + GRP.
     # Replaces the old management_fee_jll_rate / management_fee_grp_rate fields
@@ -190,6 +195,8 @@ class PropertyConfig:
             file_prefix_deliverable = str(d.get('file_prefix_deliverable', '')),
             kardin_budget_file      = str(d.get('kardin_budget_file', 'GA_Kardin_Budget_FY2026.xlsx')),
             fiscal_year_start_month = int(d.get('fiscal_year_start_month', 1)),
+            team_members            = list(d.get('team_members') or
+                                          ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']),
         )
 
     # ── Computed properties (backward compatibility + convenience) ────────────

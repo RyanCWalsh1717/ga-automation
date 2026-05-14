@@ -46,6 +46,7 @@ def build_config_dict(
     management_company:     str,
     management_code:        str,
     invoice_prefix:         str,
+    team_members:           list[str],
     management_fees:        list[dict],   # [{'name','rate','minimum','dr_account','cr_account','ref_prefix'}]
     gl_accounts:            dict,
     bank_accounts:          list[dict],   # [{'slug','label','bank_name','last4','full_account','gl_account'}]
@@ -99,6 +100,10 @@ def build_config_dict(
     cfg['management_company'] = management_company
     cfg['management_code']    = management_code
     cfg['invoice_prefix']     = invoice_prefix
+
+    _clean_members = [m.strip() for m in (team_members or []) if (m or '').strip()]
+    if _clean_members:
+        cfg['team_members'] = _clean_members
 
     if fees:    cfg['management_fees'] = fees
     if gl_accounts: cfg['gl_accounts'] = {k: str(v) for k, v in gl_accounts.items() if v}
@@ -212,3 +217,71 @@ def github_configured() -> bool:
     """Return True if GitHub credentials are available."""
     token, repo = _github_credentials()
     return bool(token and repo)
+
+
+def save_image_to_github(
+    property_code: str,
+    image_bytes: bytes,
+    filename: str = 'hero.jpg',
+) -> tuple[bool, str]:
+    """
+    Upload a building photo to data/{property_code}/{filename} in the GitHub repo.
+    Returns (success, message).
+    """
+    import base64
+    try:
+        import requests
+    except ImportError:
+        return False, 'requests library not available'
+
+    token, repo = _github_credentials()
+    if not token or not repo:
+        return False, 'GitHub token/repo not configured in secrets'
+
+    path    = f'data/{property_code}/{filename}'
+    url     = f'https://api.github.com/repos/{repo}/contents/{path}'
+    headers = {
+        'Authorization': f'token {token}',
+        'Accept': 'application/vnd.github.v3+json',
+    }
+
+    sha = None
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            sha = r.json().get('sha')
+    except Exception:
+        pass
+
+    payload: dict = {
+        'message': f'Upload building photo: {property_code}/{filename}',
+        'content': base64.b64encode(image_bytes).decode('ascii'),
+    }
+    if sha:
+        payload['sha'] = sha
+
+    try:
+        r = requests.put(url, json=payload, headers=headers, timeout=30)
+        if r.status_code in (200, 201):
+            return True, f'Photo saved to GitHub. Hero banner updates after ~2 min redeploy.'
+        return False, f'GitHub API returned {r.status_code}: {r.text[:200]}'
+    except Exception as e:
+        return False, str(e)
+
+
+def save_image_local(
+    property_code: str,
+    image_bytes: bytes,
+    filename: str,
+    data_dir: str,
+) -> tuple[bool, str]:
+    """Save image bytes to data/{property_code}/{filename} on local disk."""
+    try:
+        folder = os.path.join(data_dir, property_code)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, filename)
+        with open(path, 'wb') as f:
+            f.write(image_bytes)
+        return True, path
+    except Exception as e:
+        return False, str(e)

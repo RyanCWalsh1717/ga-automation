@@ -397,13 +397,39 @@ def _img_b64(fname: str) -> str | None:
         return f'data:{_mime};base64,{_raw}'
     return None
 
-_HERO_SRC   = _img_b64('revlabs_hero.jpg') or _img_b64('revlabs_hero.png')
 _LOGO_SRC   = _img_b64('grp_logo.png') or _img_b64('grp_logo.svg')
 
+def _prop_hero_src(property_code: str) -> Optional[str]:
+    """
+    Return a base64 data-URI for the property's hero photo.
+    Checks data/{property_code}/hero.jpg|png|webp first,
+    then falls back to assets/{property_code}_hero.jpg,
+    then to the generic revlabs_hero fallback.
+    """
+    import base64 as _b64mod
+    _exts = ['.jpg', '.jpeg', '.png', '.webp']
+    # 1. Property-specific file in data dir
+    for _ext in _exts:
+        _p = _DATA_DIR / property_code / f'hero{_ext}'
+        if _p.exists():
+            _raw = _b64mod.b64encode(_p.read_bytes()).decode()
+            _mime = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                     'png': 'image/png', 'webp': 'image/webp'}.get(_ext.lstrip('.'), 'image/jpeg')
+            return f'data:{_mime};base64,{_raw}'
+    # 2. Assets folder named after the property
+    for _ext in _exts:
+        _src = _img_b64(f'{property_code}_hero{_ext}')
+        if _src:
+            return _src
+    # 3. Legacy RevLabs fallback
+    return _img_b64('revlabs_hero.jpg') or _img_b64('revlabs_hero.png')
+
+_HERO_SRC = _prop_hero_src(st.session_state.get('active_property_code', 'revlabspm'))
 
 # ── Hero banner ───────────────────────────────────────────────
+_hero_alt = st.session_state.get('active_property_code', 'Property')
 _photo_html = (
-    f'<img src="{_HERO_SRC}" class="grp-hero-photo" alt="Revolution Labs"/>'
+    f'<img src="{_HERO_SRC}" class="grp-hero-photo" alt="{_hero_alt}"/>'
     if _HERO_SRC else ''
 )
 _logo_html = (
@@ -727,8 +753,10 @@ with tab0:
     _ck_col_name, _ck_col_period, _ck_col_prog = st.columns([2, 2, 4])
 
     with _ck_col_name:
-        _team_names = ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
-        _cur_name   = st.session_state.get('prepared_by', 'Ryan Walsh')
+        _team_names = (_active_cfg.team_members
+                       if _active_cfg.team_members
+                       else ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+        _cur_name   = st.session_state.get('prepared_by', _team_names[0])
         _name_idx   = _team_names.index(_cur_name) if _cur_name in _team_names else 0
         _chosen_name = st.selectbox(
             "👤 I am",
@@ -2454,7 +2482,9 @@ with tab2:
     st.progress(_ct_complete_count / _ct_total,
                 text=f"{_ct_complete_count} of {_ct_total} steps complete")
 
-    _ct_reviewers = ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"]
+    _ct_reviewers = (_active_cfg.team_members
+                     if _active_cfg.team_members
+                     else ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"])
 
     for _ct_idx, _ct_desc, _ct_type in _CT_STEPS:
         _ct_entry = _ct.get(_ct_idx)
@@ -3820,7 +3850,9 @@ with tab2:
             "Equity Tabs (311100 / 331100 / 381100)",
             "Exception Report",
         ]
-        _SIGNOFF_REVIEWERS = ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"]
+        _SIGNOFF_REVIEWERS = (_active_cfg.team_members
+                              if _active_cfg.team_members
+                              else ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"])
 
         for _so_idx, _so_item in enumerate(_SIGNOFF_ITEMS):
             _so_existing = st.session_state.signoff_state.get(_so_idx)
@@ -4349,6 +4381,50 @@ with tab4:
             return default
         return getattr(_edit_cfg, field, default) or default
 
+    # ── Building photo upload (outside form — file_uploader can't live in st.form) ──
+    st.markdown("### 🏙️ Building Photo")
+    st.caption(
+        "Upload a photo of the building — displayed in the hero banner for this property. "
+        "JPG or PNG, landscape orientation works best (approx 4:1 ratio)."
+    )
+    _photo_target_code = ('' if _is_new else _edit_code)
+    _photo_col1, _photo_col2 = st.columns([2, 1])
+    with _photo_col1:
+        _hero_upload = st.file_uploader(
+            "Building photo (JPG / PNG)",
+            type=['jpg', 'jpeg', 'png', 'webp'],
+            key='prop_hero_photo_upload',
+            help="Saved to GitHub as data/{property_code}/hero.jpg — updates hero banner after ~2 min redeploy.",
+        )
+        if _hero_upload is not None:
+            if not _photo_target_code:
+                st.warning("Enter the Property Code above and save the config first, then re-upload the photo.")
+            else:
+                from property_writer import save_image_to_github as _save_img_gh, save_image_local as _save_img_loc
+                _img_bytes = _hero_upload.read()
+                _img_ext   = _hero_upload.name.rsplit('.', 1)[-1].lower()
+                _img_fname = f'hero.{_img_ext}'
+                _loc_ok, _loc_msg = _save_img_loc(
+                    _photo_target_code, _img_bytes, _img_fname, str(_DATA_DIR))
+                if github_configured():
+                    _gh_ok, _gh_msg = _save_img_gh(_photo_target_code, _img_bytes, _img_fname)
+                    if _gh_ok:
+                        st.success(f"✅ Photo saved to GitHub — hero banner updates after redeploy (~2 min).")
+                    else:
+                        st.warning(f"GitHub save failed: {_gh_msg}. Saved locally.")
+                else:
+                    st.info("Photo saved locally. Set up GitHub secrets to persist to Streamlit Cloud.")
+    with _photo_col2:
+        # Preview current photo for this property
+        if not _is_new and _photo_target_code:
+            _prev_src = _prop_hero_src(_photo_target_code)
+            if _prev_src:
+                st.image(_prev_src, caption="Current photo", use_container_width=True)
+            else:
+                st.caption("No photo yet")
+
+    st.markdown("---")
+
     with st.form("property_setup_form", clear_on_submit=False):
         st.markdown("### 1 · Basic Information")
         _c1, _c2 = st.columns(2)
@@ -4388,7 +4464,25 @@ with tab4:
                                       value=_ef('invoice_prefix'),
                                       placeholder="e.g. LexLabsPM  →  LexLabsPM012026")
 
-        st.markdown("### 3 · Management Fee Lines")
+        st.markdown("### 3 · Team Members")
+        st.caption(
+            "Everyone who works on this property's monthly close. "
+            "These names appear in the Dashboard selector, close tracker, and sign-off sheet. "
+            "One name per line."
+        )
+        _default_members = '\n'.join(
+            _edit_cfg.team_members if (_edit_cfg and _edit_cfg.team_members)
+            else ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
+        )
+        _team_text = st.text_area(
+            "Team members (one per line)",
+            value=_default_members,
+            height=120,
+            placeholder="Ryan Walsh\nNatasha Parker\nLauren Sullivan\nNew Hire Name",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("### 4 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
         _default_fees = [
             {'Name': fl.name, 'Rate (decimal)': fl.rate, 'Minimum ($)': fl.minimum,
@@ -4414,7 +4508,7 @@ with tab4:
             key="prop_fees_editor",
         )
 
-        st.markdown("### 4 · Bank Accounts")
+        st.markdown("### 5 · Bank Accounts")
         st.caption(
             "One row per bank account. **Slug** = unique key (lowercase, underscores). "
             "**Bank Name** = text that appears in PDF statements. "
@@ -4445,7 +4539,7 @@ with tab4:
             key="prop_banks_editor",
         )
 
-        st.markdown("### 5 · Payment Instructions (Invoice PDF)")
+        st.markdown("### 6 · Payment Instructions (Invoice PDF)")
         _ca, _cb = st.columns(2)
         with _ca:
             st.markdown("**ACH / Wire**")
@@ -4463,7 +4557,7 @@ with tab4:
             _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''), key="chk_addr2")
             _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''),     key="chk_attn")
 
-        st.markdown("### 6 · RE Tax & Other")
+        st.markdown("### 7 · RE Tax & Other")
         _c9, _c10 = st.columns(2)
         _retax_months_str = _c9.text_input(
             "RE Tax Payment Months (comma-separated)",
@@ -4549,6 +4643,11 @@ with tab4:
             }.items() if v}
 
             # Build config dict and render YAML
+            # Parse team members from text area (one per line)
+            _team_members_parsed = [
+                m.strip() for m in _team_text.splitlines() if m.strip()
+            ] or ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
+
             _cfg_dict = build_config_dict(
                 property_code          = _prop_code,
                 property_name          = _prop_name,
@@ -4560,6 +4659,7 @@ with tab4:
                 management_company     = _mgmt_co,
                 management_code        = _mgmt_code,
                 invoice_prefix         = _inv_prefix,
+                team_members           = _team_members_parsed,
                 management_fees        = _fee_list,
                 gl_accounts            = {},
                 bank_accounts          = _bank_list,
