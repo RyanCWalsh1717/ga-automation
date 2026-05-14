@@ -55,6 +55,24 @@ class BankAccountConfig:
     gl_account:   str = ''          # corresponding GL account code
 
 
+@dataclass
+class BuildingSplitConfig:
+    """
+    Pro-rata share for one building within a multi-building property.
+    Used when a single property has multiple structures that share costs
+    at a fixed percentage (e.g. Building A 60% / Building B 40%).
+
+    yardi_code: optional — leave blank if this building uses the parent
+                property code in Yardi. Set when each building has its
+                own separate Yardi property code.
+    share_pct:  decimal fraction (0.60 = 60%). All splits should sum to 1.0.
+    """
+    name:        str   = ''    # e.g. 'Building A' or '100 Main St'
+    yardi_code:  str   = ''    # Yardi property code override (blank = use parent)
+    share_pct:   float = 0.0   # e.g. 0.60 for 60%
+    notes:       str   = ''    # optional notes (e.g. 'Office wing')
+
+
 # ── Main PropertyConfig dataclass ─────────────────────────────────────────────
 
 @dataclass
@@ -79,6 +97,11 @@ class PropertyConfig:
     # Names that appear in the dashboard name selector, close tracker reviewer
     # dropdowns, and sign-off sheet. Add anyone who touches this property's close.
     team_members: List[str] = field(default_factory=lambda: ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+
+    # ── Building splits (multi-building properties) ───────────────────────────
+    # Empty list = single building (no splits needed).
+    # When populated, each entry holds the pro-rata % for one building.
+    building_splits: List['BuildingSplitConfig'] = field(default_factory=list)
 
     # ── Management fee lines ──────────────────────────────────────────────────
     # Flexible: single-PM properties have one entry; RevLabs has JLL + GRP.
@@ -144,6 +167,16 @@ class PropertyConfig:
     @classmethod
     def _from_dict(cls, d: Dict[str, Any]) -> 'PropertyConfig':
         """Build a PropertyConfig from a raw YAML dict."""
+        # Building splits
+        splits = []
+        for bs in (d.get('building_splits') or []):
+            splits.append(BuildingSplitConfig(
+                name       = str(bs.get('name', '')),
+                yardi_code = str(bs.get('yardi_code', '')),
+                share_pct  = float(bs.get('share_pct', 0.0)),
+                notes      = str(bs.get('notes', '')),
+            ))
+
         # Management fee lines
         fees = []
         for fl in (d.get('management_fees') or []):
@@ -183,6 +216,7 @@ class PropertyConfig:
             management_company    = str(d.get('management_company', '')),
             management_code       = str(d.get('management_code', '')),
             invoice_prefix        = str(d.get('invoice_prefix', '')),
+            building_splits       = splits,
             management_fees       = fees,
             gl_accounts           = gl,
             bank_accounts         = banks,
@@ -213,6 +247,16 @@ class PropertyConfig:
             if f.name.upper() == 'JLL':
                 return f.rate
         return 0.0
+
+    @property
+    def is_multi_building(self) -> bool:
+        """True when this property has defined building splits."""
+        return len(self.building_splits) > 0
+
+    @property
+    def split_total(self) -> float:
+        """Sum of all building split percentages (should equal 1.0)."""
+        return sum(s.share_pct for s in self.building_splits)
 
     @property
     def management_fee_grp_rate(self) -> float:

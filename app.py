@@ -4493,7 +4493,57 @@ with tab4:
             label_visibility="collapsed",
         )
 
-        st.markdown("### 4 · Management Fee Lines")
+        st.markdown("### 4 · Building Splits (Multi-Building Properties)")
+        st.caption(
+            "Leave this table empty for single-building properties. "
+            "For multi-building properties, add one row per building — "
+            "shares must add up to 100%. "
+            "Set Yardi Code only if each building has its own separate property code in Yardi."
+        )
+        _default_splits = [
+            {
+                'Building Name':  bs.name,
+                'Yardi Code':     bs.yardi_code,
+                'Share %':        round(bs.share_pct * 100, 4),
+                'Notes':          bs.notes,
+            }
+            for bs in (_edit_cfg.building_splits if _edit_cfg else [])
+        ] or []
+        _splits_df = pd.DataFrame(
+            _default_splits or [{'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}]
+        )
+        _splits_edited = st.data_editor(
+            _splits_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                'Building Name': st.column_config.TextColumn("Building Name", width="medium"),
+                'Yardi Code':    st.column_config.TextColumn("Yardi Code", width="small",
+                                     help="Only if this building has its own Yardi property code. Leave blank to use the parent code."),
+                'Share %':       st.column_config.NumberColumn("Share %", format="%.2f%%",
+                                     min_value=0.0, max_value=100.0,
+                                     help="Enter as a percentage, e.g. 60 for 60%. All rows should sum to 100."),
+                'Notes':         st.column_config.TextColumn("Notes", width="medium"),
+            },
+            key="prop_splits_editor",
+        )
+        # Live validation — warn if splits don't add up
+        _split_rows_filled = [
+            r for _, r in _splits_edited.iterrows()
+            if str(r.get('Building Name', '') or '').strip()
+        ]
+        if _split_rows_filled:
+            _split_total = sum(float(r.get('Share %', 0) or 0) for r in _split_rows_filled)
+            if abs(_split_total - 100.0) > 0.01:
+                st.warning(
+                    f"⚠️ Building splits total **{_split_total:.2f}%** — should be 100%. "
+                    f"Please adjust before saving.",
+                    icon="⚠️",
+                )
+            else:
+                st.success(f"✅ Splits total 100% across {len(_split_rows_filled)} buildings.", icon="✅")
+
+        st.markdown("### 5 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
         _default_fees = [
             {'Name': fl.name, 'Rate (decimal)': fl.rate, 'Minimum ($)': fl.minimum,
@@ -4519,7 +4569,7 @@ with tab4:
             key="prop_fees_editor",
         )
 
-        st.markdown("### 5 · Bank Accounts")
+        st.markdown("### 6 · Bank Accounts")
         st.caption(
             "One row per bank account. **Slug** = unique key (lowercase, underscores). "
             "**Bank Name** = text that appears in PDF statements. "
@@ -4550,7 +4600,7 @@ with tab4:
             key="prop_banks_editor",
         )
 
-        st.markdown("### 6 · Payment Instructions (Invoice PDF)")
+        st.markdown("### 7 · Payment Instructions (Invoice PDF)")
         _ca, _cb = st.columns(2)
         with _ca:
             st.markdown("**ACH / Wire**")
@@ -4568,7 +4618,7 @@ with tab4:
             _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''), key="chk_addr2")
             _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''),     key="chk_attn")
 
-        st.markdown("### 7 · RE Tax & Other")
+        st.markdown("### 8 · RE Tax & Other")
         _c9, _c10 = st.columns(2)
         _retax_months_str = _c9.text_input(
             "RE Tax Payment Months (comma-separated)",
@@ -4659,6 +4709,19 @@ with tab4:
                 m.strip() for m in _team_text.splitlines() if m.strip()
             ] or ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
 
+            # Parse building splits
+            _splits_list = []
+            for _, _srow in _splits_edited.iterrows():
+                _sname = str(_srow.get('Building Name', '') or '').strip()
+                if not _sname:
+                    continue
+                _splits_list.append({
+                    'name':       _sname,
+                    'yardi_code': str(_srow.get('Yardi Code', '') or '').strip(),
+                    'share_pct':  float(_srow.get('Share %', 0) or 0) / 100.0,
+                    'notes':      str(_srow.get('Notes', '') or '').strip(),
+                })
+
             _cfg_dict = build_config_dict(
                 property_code          = _prop_code,
                 property_name          = _prop_name,
@@ -4671,6 +4734,7 @@ with tab4:
                 management_code        = _mgmt_code,
                 invoice_prefix         = _inv_prefix,
                 team_members           = _team_members_parsed,
+                building_splits        = _splits_list,
                 management_fees        = _fee_list,
                 gl_accounts            = {},
                 bank_accounts          = _bank_list,

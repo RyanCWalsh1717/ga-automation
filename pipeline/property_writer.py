@@ -47,6 +47,7 @@ def build_config_dict(
     management_code:        str,
     invoice_prefix:         str,
     team_members:           list[str],
+    building_splits:        list[dict],   # [{'name','yardi_code','share_pct','notes'}]
     management_fees:        list[dict],   # [{'name','rate','minimum','dr_account','cr_account','ref_prefix'}]
     gl_accounts:            dict,
     bank_accounts:          list[dict],   # [{'slug','label','bank_name','last4','full_account','gl_account'}]
@@ -104,6 +105,20 @@ def build_config_dict(
     _clean_members = [m.strip() for m in (team_members or []) if (m or '').strip()]
     if _clean_members:
         cfg['team_members'] = _clean_members
+
+    _splits = []
+    for bs in (building_splits or []):
+        _bname = (bs.get('name') or '').strip()
+        if not _bname:
+            continue
+        _entry = {'name': _bname, 'share_pct': round(float(bs.get('share_pct', 0)), 6)}
+        if bs.get('yardi_code', '').strip():
+            _entry['yardi_code'] = bs['yardi_code'].strip()
+        if bs.get('notes', '').strip():
+            _entry['notes'] = bs['notes'].strip()
+        _splits.append(_entry)
+    if _splits:
+        cfg['building_splits'] = _splits
 
     if fees:    cfg['management_fees'] = fees
     if gl_accounts: cfg['gl_accounts'] = {k: str(v) for k, v in gl_accounts.items() if v}
