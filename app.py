@@ -4493,55 +4493,71 @@ with tab4:
             label_visibility="collapsed",
         )
 
-        st.markdown("### 4 · Building Splits (Multi-Building Properties)")
+        st.markdown("### 4 · Building / Allocation Splits (Multi-Building Properties)")
         st.caption(
-            "Leave this table empty for single-building properties. "
-            "For multi-building properties, add one row per building — "
-            "shares must add up to 100%. "
-            "Set Yardi Code only if each building has its own separate property code in Yardi."
+            "Leave empty for single-building properties. "
+            "For multi-building properties, add one row per building per schedule. "
+            "**Schedule Name** groups rows into separate allocation pools — "
+            "each schedule must total 100% independently. "
+            "Examples: *'2-Bldg'* for a two-way split, *'4-Bldg'* for a four-way split. "
+            "Set Yardi Code only if each building has its own separate Yardi property code."
         )
         _default_splits = [
             {
+                'Schedule Name':  bs.schedule,
                 'Building Name':  bs.name,
                 'Yardi Code':     bs.yardi_code,
                 'Share %':        round(bs.share_pct * 100, 4),
                 'Notes':          bs.notes,
             }
             for bs in (_edit_cfg.building_splits if _edit_cfg else [])
-        ] or []
+        ]
         _splits_df = pd.DataFrame(
-            _default_splits or [{'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}]
+            _default_splits or [{'Schedule Name': '', 'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}]
         )
         _splits_edited = st.data_editor(
             _splits_df,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
+                'Schedule Name': st.column_config.TextColumn("Schedule Name", width="small",
+                                     help="Groups rows into allocation pools, e.g. '2-Bldg' or '4-Bldg'. Each schedule must sum to 100%."),
                 'Building Name': st.column_config.TextColumn("Building Name", width="medium"),
                 'Yardi Code':    st.column_config.TextColumn("Yardi Code", width="small",
                                      help="Only if this building has its own Yardi property code. Leave blank to use the parent code."),
-                'Share %':       st.column_config.NumberColumn("Share %", format="%.2f%%",
+                'Share %':       st.column_config.NumberColumn("Share %", format="%.2f",
                                      min_value=0.0, max_value=100.0,
-                                     help="Enter as a percentage, e.g. 60 for 60%. All rows should sum to 100."),
+                                     help="Percentage, e.g. 50 for 50%. Each schedule group must total 100."),
                 'Notes':         st.column_config.TextColumn("Notes", width="medium"),
             },
             key="prop_splits_editor",
         )
-        # Live validation — warn if splits don't add up
+        # Live validation — check each schedule group sums to 100%
         _split_rows_filled = [
             r for _, r in _splits_edited.iterrows()
             if str(r.get('Building Name', '') or '').strip()
         ]
         if _split_rows_filled:
-            _split_total = sum(float(r.get('Share %', 0) or 0) for r in _split_rows_filled)
-            if abs(_split_total - 100.0) > 0.01:
-                st.warning(
-                    f"⚠️ Building splits total **{_split_total:.2f}%** — should be 100%. "
-                    f"Please adjust before saving.",
-                    icon="⚠️",
+            # Group by schedule name
+            _sched_totals: dict = {}
+            _sched_counts: dict = {}
+            for _sr in _split_rows_filled:
+                _sn = str(_sr.get('Schedule Name', '') or '').strip() or 'default'
+                _sched_totals[_sn] = _sched_totals.get(_sn, 0.0) + float(_sr.get('Share %', 0) or 0)
+                _sched_counts[_sn] = _sched_counts.get(_sn, 0) + 1
+            _all_ok = all(abs(v - 100.0) <= 0.01 for v in _sched_totals.values())
+            if _all_ok:
+                _scheds_summary = ', '.join(
+                    f"**{k}** ({_sched_counts[k]} bldgs)" for k in _sched_totals
                 )
+                st.success(f"✅ All schedules total 100% — {_scheds_summary}.", icon="✅")
             else:
-                st.success(f"✅ Splits total 100% across {len(_split_rows_filled)} buildings.", icon="✅")
+                for _sn, _total in _sched_totals.items():
+                    if abs(_total - 100.0) > 0.01:
+                        st.warning(
+                            f"⚠️ Schedule **'{_sn}'** totals **{_total:.2f}%** — must be 100%.",
+                            icon="⚠️",
+                        )
 
         st.markdown("### 5 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
@@ -4716,6 +4732,7 @@ with tab4:
                 if not _sname:
                     continue
                 _splits_list.append({
+                    'schedule':   str(_srow.get('Schedule Name', '') or '').strip() or 'default',
                     'name':       _sname,
                     'yardi_code': str(_srow.get('Yardi Code', '') or '').strip(),
                     'share_pct':  float(_srow.get('Share %', 0) or 0) / 100.0,

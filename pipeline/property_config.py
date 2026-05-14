@@ -58,19 +58,23 @@ class BankAccountConfig:
 @dataclass
 class BuildingSplitConfig:
     """
-    Pro-rata share for one building within a multi-building property.
-    Used when a single property has multiple structures that share costs
-    at a fixed percentage (e.g. Building A 60% / Building B 40%).
+    One row in a building allocation schedule.
 
-    yardi_code: optional — leave blank if this building uses the parent
-                property code in Yardi. Set when each building has its
-                own separate Yardi property code.
-    share_pct:  decimal fraction (0.60 = 60%). All splits should sum to 1.0.
+    schedule:   Named group this row belongs to (e.g. '2-Building', '4-Building').
+                A property can have multiple schedules; different expense types
+                reference different schedules. All rows with the same schedule
+                name should sum to 1.0.
+    name:       Building label (e.g. 'Building A', '100 Main St').
+    yardi_code: Optional Yardi property code for this building. Leave blank
+                if all buildings share the parent property code.
+    share_pct:  Decimal fraction (0.50 = 50%).
+    notes:      Free-text notes (e.g. 'Office wing', 'CAM only').
     """
-    name:        str   = ''    # e.g. 'Building A' or '100 Main St'
-    yardi_code:  str   = ''    # Yardi property code override (blank = use parent)
-    share_pct:   float = 0.0   # e.g. 0.60 for 60%
-    notes:       str   = ''    # optional notes (e.g. 'Office wing')
+    schedule:    str   = 'default'   # allocation schedule name
+    name:        str   = ''          # building label
+    yardi_code:  str   = ''          # Yardi code override (blank = use parent)
+    share_pct:   float = 0.0         # e.g. 0.50 for 50%
+    notes:       str   = ''          # optional notes
 
 
 # ── Main PropertyConfig dataclass ─────────────────────────────────────────────
@@ -167,10 +171,11 @@ class PropertyConfig:
     @classmethod
     def _from_dict(cls, d: Dict[str, Any]) -> 'PropertyConfig':
         """Build a PropertyConfig from a raw YAML dict."""
-        # Building splits
+        # Building splits — stored flat; each row has a schedule name
         splits = []
         for bs in (d.get('building_splits') or []):
             splits.append(BuildingSplitConfig(
+                schedule   = str(bs.get('schedule', 'default')),
                 name       = str(bs.get('name', '')),
                 yardi_code = str(bs.get('yardi_code', '')),
                 share_pct  = float(bs.get('share_pct', 0.0)),
@@ -254,9 +259,24 @@ class PropertyConfig:
         return len(self.building_splits) > 0
 
     @property
-    def split_total(self) -> float:
-        """Sum of all building split percentages (should equal 1.0)."""
-        return sum(s.share_pct for s in self.building_splits)
+    def allocation_schedules(self) -> Dict[str, List['BuildingSplitConfig']]:
+        """
+        Return building_splits grouped by schedule name.
+        e.g. {'2-Building': [entry1, entry2], '4-Building': [entry1, ..., entry4]}
+        """
+        from collections import defaultdict
+        groups: Dict[str, list] = defaultdict(list)
+        for s in self.building_splits:
+            groups[s.schedule].append(s)
+        return dict(groups)
+
+    def get_schedule(self, name: str) -> List['BuildingSplitConfig']:
+        """Return splits for a named schedule, or [] if not found."""
+        return self.allocation_schedules.get(name, [])
+
+    def schedule_total(self, name: str) -> float:
+        """Sum of share_pct for a named schedule (should equal 1.0)."""
+        return sum(s.share_pct for s in self.get_schedule(name))
 
     @property
     def management_fee_grp_rate(self) -> float:

@@ -111,7 +111,11 @@ def build_config_dict(
         _bname = (bs.get('name') or '').strip()
         if not _bname:
             continue
-        _entry = {'name': _bname, 'share_pct': round(float(bs.get('share_pct', 0)), 6)}
+        _entry: dict = {
+            'schedule':  (bs.get('schedule') or 'default').strip(),
+            'name':      _bname,
+            'share_pct': round(float(bs.get('share_pct', 0)), 6),
+        }
         if bs.get('yardi_code', '').strip():
             _entry['yardi_code'] = bs['yardi_code'].strip()
         if bs.get('notes', '').strip():
