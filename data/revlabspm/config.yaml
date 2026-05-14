@@ -30,6 +30,50 @@ team_members:
   - Natasha Parker
   - Lauren Sullivan
 
+# ── Tenants (Utility Billing) ─────────────────────────────────────────────────
+# Tenants billed back for electric/gas each month.
+# key: short slug for widget IDs (no spaces, lowercase)
+# name: display name shown in the TUB table
+tenants:
+  - key: accent
+    name: Accent Therapeutics
+  - key: keros_n
+    name: Keros Therapeutics (N)
+  - key: keros_s
+    name: Keros Therapeutics (S)
+  - key: orum
+    name: Orum Therapeutics
+  - key: santi
+    name: Santi Therapeutics
+
+# ── Default one-off accruals (Pass 1 seed table) ─────────────────────────────
+# Pre-seeded rows in the One-Off Accruals table — recurring monthly items.
+# Amounts are left at $0 and filled in each month. vendor is optional.
+default_accruals:
+  - account_code: "613310"
+    account_name: Utilities-Water/Sewer
+  - account_code: "637150"
+    account_name: Admin-Tenant Relations
+  - account_code: "637150"
+    account_name: Admin-Tenant Relations
+  - account_code: "617110"
+    account_name: HVAC Maint-Contract Svc
+  - account_code: "619120"
+    account_name: Water Contract Svc
+  - account_code: "627230"
+    account_name: Fire Life Safety
+  - account_code: "635110"
+    account_name: Snow & Ice Removal
+  - account_code: "610140"
+    account_name: Cleaning Mat/Supplies
+    vendor: Durkin
+  - account_code: "610160"
+    account_name: Cleaning-Trash Removal (extra)
+    vendor: Casella
+  - account_code: "637230"
+    account_name: Admin-Materials/Supplies
+    vendor: BlueTriton
+
 # ── Management fee structure ──────────────────────────────────────────────────
 # Each entry produces one DR/CR pair in the JE and one line on the invoice.
 # For a single-PM property, list only one entry (set minimum: 0).

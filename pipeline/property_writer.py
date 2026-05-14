@@ -47,6 +47,8 @@ def build_config_dict(
     management_code:        str,
     invoice_prefix:         str,
     team_members:           list[str],
+    tenants:                list[dict],   # [{'key','name'}]
+    default_accruals:       list[dict],   # [{'account_code','account_name','vendor'}]
     building_splits:        list[dict],   # [{'schedule','name','yardi_code','share_pct','notes'}]
     default_split_schedule: str,
     management_fees:        list[dict],   # [{'name','rate','minimum','dr_account','cr_account','ref_prefix'}]
@@ -106,6 +108,26 @@ def build_config_dict(
     _clean_members = [m.strip() for m in (team_members or []) if (m or '').strip()]
     if _clean_members:
         cfg['team_members'] = _clean_members
+
+    _clean_tenants = [
+        {'key': t.get('key', '').strip(), 'name': t.get('name', '').strip()}
+        for t in (tenants or [])
+        if (t.get('key') or '').strip() and (t.get('name') or '').strip()
+    ]
+    if _clean_tenants:
+        cfg['tenants'] = _clean_tenants
+
+    _clean_accruals = [
+        {k: v for k, v in {
+            'account_code': str(a.get('account_code', '')).strip(),
+            'account_name': str(a.get('account_name', '')).strip(),
+            'vendor':       str(a.get('vendor', '')).strip(),
+        }.items() if v}
+        for a in (default_accruals or [])
+        if (a.get('account_code') or '').strip()
+    ]
+    if _clean_accruals:
+        cfg['default_accruals'] = _clean_accruals
 
     _splits = []
     for bs in (building_splits or []):

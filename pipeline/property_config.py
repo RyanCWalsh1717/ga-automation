@@ -102,6 +102,22 @@ class PropertyConfig:
     # dropdowns, and sign-off sheet. Add anyone who touches this property's close.
     team_members: List[str] = field(default_factory=lambda: ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
 
+    # ── Tenant Utility Billing tenants ────────────────────────────────────────
+    # List of dicts: {'key': str, 'name': str}
+    #   key  — short slug used for widget keys (no spaces, lowercase)
+    #   name — display name shown in the TUB table and on JE descriptions
+    # Leave empty for properties with no billback tenants.
+    tenants: List[Dict[str, str]] = field(default_factory=list)
+
+    # ── Default one-off accruals (Pass 1 seed table) ──────────────────────────
+    # Pre-seeded rows in the One-Off Accruals table.  Each dict has:
+    #   account_code — 6-digit GL account (DR expense side)
+    #   account_name — display label
+    #   vendor       — optional vendor name (pre-filled in Vendor column)
+    # Rows with amount=0 are shown but not submitted unless the user fills them.
+    # Leave empty to start with a blank table.
+    default_accruals: List[Dict[str, str]] = field(default_factory=list)
+
     # ── Building splits (multi-building properties) ───────────────────────────
     # Empty list = single building (no splits needed).
     # When populated, each entry holds the pro-rata % for one building.
@@ -242,6 +258,20 @@ class PropertyConfig:
             team_members            = list(d.get('team_members') or
                                           ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']),
             default_split_schedule  = str(d.get('default_split_schedule', '')),
+            tenants                 = [
+                {'key': str(t.get('key', '')), 'name': str(t.get('name', ''))}
+                for t in (d.get('tenants') or [])
+                if t.get('key') and t.get('name')
+            ],
+            default_accruals        = [
+                {
+                    'account_code': str(a.get('account_code', '')),
+                    'account_name': str(a.get('account_name', '')),
+                    'vendor':       str(a.get('vendor', '')),
+                }
+                for a in (d.get('default_accruals') or [])
+                if a.get('account_code')
+            ],
         )
 
     # ── Computed properties (backward compatibility + convenience) ────────────

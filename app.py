@@ -60,6 +60,40 @@ def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     p = _DATA_DIR / prop_code / filename
     return str(p) if p.exists() else None
 
+def _build_accruals_seed_df(cfg=None):
+    """
+    Build the one-off accruals seed DataFrame from property config defaults.
+    Falls back to RevLabs pre-seeded rows when the config has no default_accruals.
+    """
+    import pandas as _pd_seed
+    if cfg is not None and cfg.default_accruals:
+        rows = cfg.default_accruals
+        _n = len(rows) + 1   # one blank trailing row
+        return _pd_seed.DataFrame({
+            "Account Code":   [r.get('account_code', '') for r in rows] + [''],
+            "Account Name":   [r.get('account_name', '') for r in rows] + [''],
+            "Vendor":         [r.get('vendor', '') for r in rows] + [''],
+            "Amount ($)":     [0.0] * _n,
+            "Description":    [''] * _n,
+            "Split Schedule": [''] * _n,
+        })
+    # Legacy RevLabs defaults — used when config has no default_accruals defined
+    _n = 11
+    return _pd_seed.DataFrame({
+        "Account Code": ["613310", "637150", "637150", "617110", "619120",
+                         "627230", "635110", "610140", "610160", "637230", ""],
+        "Account Name": ["Utilities-Water/Sewer", "Admin-Tenant Relations",
+                         "Admin-Tenant Relations", "HVAC Maint-Contract Svc",
+                         "Water Contract Svc", "Fire Life Safety",
+                         "Snow & Ice Removal", "Cleaning Mat/Supplies",
+                         "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
+        "Vendor":       [""] * _n,
+        "Amount ($)":   [0.0] * _n,
+        "Description":  [""] * _n,
+        "Split Schedule": [""] * _n,
+    })
+
+
 def _save_checklist_now() -> None:
     """Persist current close_tracker + custom items to GitHub/local."""
     try:
@@ -339,49 +373,32 @@ if "post_close_je_df" not in st.session_state:
         "Line Description": ["", ""],
     })
 
-# Tenant list for TUB sidebar inputs (key suffix, display name)
-_TUB_TENANTS = [
-    ("accent",  "Accent Therapeutics"),
-    ("keros_n", "Keros Therapeutics (N)"),
-    ("keros_s", "Keros Therapeutics (S)"),
-    ("orum",    "Orum Therapeutics"),
-    ("santi",   "Santi Therapeutics"),
-]
+# Tenant list for TUB sidebar inputs — loaded from active property config.
+# Each entry is (key_slug, display_name).  Falls back to RevLabs defaults
+# only if the config has no tenants defined (backward compatibility).
+def _build_tub_tenants(cfg) -> list:
+    if cfg.tenants:
+        return [(t['key'], t['name']) for t in cfg.tenants]
+    # Legacy fallback — RevLabs only
+    return [
+        ("accent",  "Accent Therapeutics"),
+        ("keros_n", "Keros Therapeutics (N)"),
+        ("keros_s", "Keros Therapeutics (S)"),
+        ("orum",    "Orum Therapeutics"),
+        ("santi",   "Santi Therapeutics"),
+    ]
 
 import pandas as pd  # needed for manual_accruals_df init and stale-session reset
 if "manual_accruals_df" not in st.session_state:
-    _n = 11  # number of pre-seeded rows
-    st.session_state.manual_accruals_df = pd.DataFrame({
-        "Account Code": ["613310", "637150", "637150", "617110", "619120",
-                         "627230", "635110", "610140", "610160", "637230", ""],
-        "Account Name": ["Utilities-Water/Sewer", "Admin-Tenant Relations",
-                         "Admin-Tenant Relations", "HVAC Maint-Contract Svc",
-                         "Water Contract Svc", "Fire Life Safety",
-                         "Snow & Ice Removal", "Cleaning Mat/Supplies",
-                         "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
-        "Vendor":       [""] * _n,
-        "Amount ($)":   [0.0] * _n,
-        "Description":  [""] * _n,
-        "Split Schedule": [""] * _n,
-    })
+    # cfg not available yet at this point — use RevLabs fallback; property-aware
+    # reset happens after _active_cfg is loaded (see "Rebuild accruals seed" block).
+    st.session_state.manual_accruals_df = _build_accruals_seed_df()
+    st.session_state._accruals_df_for_property = None
 
-# If session has stale columns from an older version, reset the whole table so
-# pre-seeded Vendor/Description text is also cleared.
+# If session has stale columns from an older version, reset the whole table
 if any(_col in st.session_state.manual_accruals_df.columns for _col in ("CR Account", "Auto-Reverse")):
-    _n = 11
-    st.session_state.manual_accruals_df = pd.DataFrame({
-        "Account Code": ["613310", "637150", "637150", "617110", "619120",
-                         "627230", "635110", "610140", "610160", "637230", ""],
-        "Account Name": ["Utilities-Water/Sewer", "Admin-Tenant Relations",
-                         "Admin-Tenant Relations", "HVAC Maint-Contract Svc",
-                         "Water Contract Svc", "Fire Life Safety",
-                         "Snow & Ice Removal", "Cleaning Mat/Supplies",
-                         "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
-        "Vendor":       [""] * _n,
-        "Amount ($)":   [0.0] * _n,
-        "Description":  [""] * _n,
-        "Split Schedule": [""] * _n,
-    })
+    st.session_state.manual_accruals_df = _build_accruals_seed_df()
+    st.session_state._accruals_df_for_property = None
 
 
 # ── Image asset loader ────────────────────────────────────────
@@ -506,6 +523,23 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
 # Load config for the selected property
 from property_config import load_property_config as _load_prop_cfg
 _active_cfg = _load_prop_cfg(_selected_code, str(_DATA_DIR))
+
+# ── Output file prefix helpers (used throughout Pass 1 & Pass 2 for filenames) ─
+# _pfx_del  → deliverable prefix for external/ZIP filenames  e.g. 'RevLabs'
+# _pfx_int  → internal prefix for individual file downloads  e.g. 'GA'
+# _inv_pfx  → invoice prefix                                 e.g. 'RevLabsPM'
+# _prop_display → best display name for pipeline fallbacks   e.g. 'Revolution Labs'
+_pfx_del      = _active_cfg.deliverable_prefix()            # auto-derived if not set
+_pfx_int      = _active_cfg.file_prefix_internal or 'GA'
+_inv_pfx      = _active_cfg.invoice_prefix or _pfx_del
+_prop_display = _active_cfg.display()
+_prop_entity  = _active_cfg.property_name or _prop_display  # full legal entity name
+
+# ── Rebuild accruals seed when active property changes ────────────────────────
+# Now that _active_cfg is loaded, rebuild the one-off accruals table if needed.
+if st.session_state.get('_accruals_df_for_property') != _selected_code:
+    st.session_state.manual_accruals_df = _build_accruals_seed_df(_active_cfg)
+    st.session_state._accruals_df_for_property = _selected_code
 
 # Committed Kardin budget for the active property
 _COMMITTED_BUDGET = _committed_path(
@@ -1111,8 +1145,9 @@ with tab1:
             "Posts as: DR 133110 / CR 440500 (electric) and CR 440700 (gas). "
             "Leave at $0 to skip — pipeline auto-accrues budget amounts."
         )
-        _tub_cols = st.columns(len(_TUB_TENANTS))
-        for (_tkey, _tname), _tcol in zip(_TUB_TENANTS, _tub_cols):
+        _tub_tenants = _build_tub_tenants(_active_cfg)
+        _tub_cols = st.columns(max(len(_tub_tenants), 1))
+        for (_tkey, _tname), _tcol in zip(_tub_tenants, _tub_cols):
             with _tcol:
                 st.caption(f"**{_tname}**")
                 _telec = st.number_input(
@@ -1732,7 +1767,7 @@ with tab1:
                         prior_log_path      = _p1_rl_prior,
                         timestamp           = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         prepared_by         = st.session_state.get('prepared_by', 'Ryan Walsh'),
-                        property_name       = engine_result.property_name or 'Revolution Labs',
+                        property_name       = engine_result.property_name or _prop_display,
                         period              = close_period,
                         je_count            = _p1_je_count,
                         je_total_dollars    = _p1_je_total,
@@ -2424,8 +2459,8 @@ with tab1:
         _run_key = st.session_state.get('pass1_run_count', 0)
         period_label = (result.period or 'Period').replace('-', '_')
         p1_zip_files = {
-            f"RevLabs_{period_label}_Accruals_JE.csv":      p1.get("accrual_je_csv"),
-            f"RevLabs_{period_label}_Prepaid_Ledger.xlsx":  p1.get("prepaid_ledger_updated"),
+            f"{_pfx_del}_{period_label}_Accruals_JE.csv":      p1.get("accrual_je_csv"),
+            f"{_pfx_del}_{period_label}_Prepaid_Ledger.xlsx":  p1.get("prepaid_ledger_updated"),
         }
         p1_zip_files = {k: v for k, v in p1_zip_files.items() if v and os.path.exists(v)}
         if p1_zip_files:
@@ -2437,16 +2472,17 @@ with tab1:
             st.download_button(
                 label=f"📦 Download All JE Files ({len(p1_zip_files)} files)",
                 data=zip_buf,
-                file_name=f"RevLabs_{period_label}_JE_Package_{datetime.now().strftime('%Y%m%d')}.zip",
+                file_name=f"{_pfx_del}_{period_label}_JE_Package_{datetime.now().strftime('%Y%m%d')}.zip",
                 mime="application/zip",
                 key=f"dl_zip_{_run_key}",
                 use_container_width=True,
             )
 
         col_d1, col_d2 = st.columns(2)
+        _ts_p1 = datetime.now().strftime('%Y%m%d')
         for col, key, label, fname in [
-            (col_d1, "accrual_je_csv",        "📄 Accruals JE",    f"GA_Accruals_JE_{datetime.now().strftime('%Y%m%d')}.csv"),
-            (col_d2, "prepaid_ledger_updated", "📊 Prepaid Ledger", f"GA_Prepaid_Ledger_{datetime.now().strftime('%Y%m%d')}.xlsx"),
+            (col_d1, "accrual_je_csv",        "📄 Accruals JE",    f"{_pfx_int}_Accruals_JE_{_ts_p1}.csv"),
+            (col_d2, "prepaid_ledger_updated", "📊 Prepaid Ledger", f"{_pfx_int}_Prepaid_Ledger_{_ts_p1}.xlsx"),
         ]:
             fpath = p1.get(key)
             if fpath and os.path.exists(fpath):
@@ -2564,7 +2600,7 @@ with tab2:
                 _p2r = st.session_state.pass2_engine_result
                 _ct_period2 = (_p2r.period if _p2r
                                else st.session_state.get('close_period_input', 'Period'))
-                _ct_prop2   = (_p2r.property_name if _p2r else 'Revolution Labs')
+                _ct_prop2   = (_p2r.property_name if _p2r else _prop_display)
                 _gen_ct2(
                     output_path   = _ct_xlsx_path2,
                     close_tracker = st.session_state.close_tracker,
@@ -3147,7 +3183,7 @@ with tab2:
                             tb_result=tb_result,
                             output_path=bs_wp_path,
                             period=close_period,
-                            property_name=engine_result.property_name or 'Revolution Labs',
+                            property_name=engine_result.property_name or _prop_display,
                             prepaid_ledger_active=_prepaid_active,
                             bank_rec_data=bank_rec_data,
                             gl_cash_balance=gl_cash_balance,
@@ -3256,7 +3292,7 @@ with tab2:
                         kardin_records=kardin_records,
                         accrual_entries=[],   # JEs already posted — don't re-evaluate
                         period=close_period,
-                        property_name=engine_result.property_name or 'Revolution Labs Owner, LLC',
+                        property_name=engine_result.property_name or _prop_entity,
                         period_month=_period_month,
                         cash_received=fee_result.cash_received if fee_result and fee_result.cash_received > 0 else None,
                         loan_data=engine_result.parsed.get('loan'),
@@ -3296,7 +3332,7 @@ with tab2:
                             gl_parsed=gl_parsed,
                             kardin_records=kardin_records,
                             period=close_period,
-                            property_name=engine_result.property_name or 'Revolution Labs Owner, LLC',
+                            property_name=engine_result.property_name or _prop_entity,
                             api_key=api_key,
                             # No je_adjustments — GL is the final source of truth
                         )
@@ -3398,7 +3434,7 @@ with tab2:
                     generate_audit_trail(
                         output_path         = _at_path,
                         period              = close_period,
-                        property_name       = engine_result.property_name or 'Revolution Labs',
+                        property_name       = engine_result.property_name or _prop_display,
                         all_je_lines        = _at_je_lines,
                         fee_result          = _at_fee,
                         qc_report           = _at_qc,
@@ -3442,7 +3478,7 @@ with tab2:
                         prior_log_path         = _rl_prior,
                         timestamp              = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         prepared_by            = st.session_state.get('prepared_by', 'Ryan Walsh'),
-                        property_name          = engine_result.property_name or 'Revolution Labs',
+                        property_name          = engine_result.property_name or _prop_display,
                         period                 = close_period,
                         files_generated        = _rl_files,
                         qc_checks_passed       = _rl_pass,
@@ -3763,15 +3799,15 @@ with tab2:
         period_label = (result.period or 'Period').replace('-', '_')
 
         p2_zip_files = {
-            f"RevLabs_{period_label}_Workpapers.xlsx":      p2.get("bs_workpaper"),
-            f"RevLabs_{period_label}_QC_Workbook.xlsx":     p2.get("qc_workbook"),
-            f"RevLabs_{period_label}_Exceptions.xlsx":      p2.get("exception_report"),
-            f"RevLabs_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
-            f"RevLabs_{period_label}_Audit_Trail.xlsx":     p2.get("audit_trail"),
-            f"RevLabsPM_Invoice_{period_label}.pdf":        p2.get("fee_invoice"),
-            f"RevLabs_{period_label}_Run_Log.csv":          p2.get("run_log"),
-            f"RevLabs_{period_label}_Signoff_Record.xlsx":  p2.get("signoff_record"),
-            f"RevLabs_{period_label}_Close_Tracker.xlsx":   p2.get("close_tracker"),
+            f"{_pfx_del}_{period_label}_Workpapers.xlsx":      p2.get("bs_workpaper"),
+            f"{_pfx_del}_{period_label}_QC_Workbook.xlsx":     p2.get("qc_workbook"),
+            f"{_pfx_del}_{period_label}_Exceptions.xlsx":      p2.get("exception_report"),
+            f"{_pfx_del}_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
+            f"{_pfx_del}_{period_label}_Audit_Trail.xlsx":     p2.get("audit_trail"),
+            f"{_inv_pfx}_Invoice_{period_label}.pdf":          p2.get("fee_invoice"),
+            f"{_pfx_del}_{period_label}_Run_Log.csv":          p2.get("run_log"),
+            f"{_pfx_del}_{period_label}_Signoff_Record.xlsx":  p2.get("signoff_record"),
+            f"{_pfx_del}_{period_label}_Close_Tracker.xlsx":   p2.get("close_tracker"),
         }
         p2_zip_files = {k: v for k, v in p2_zip_files.items() if v and os.path.exists(v)}
 
@@ -3784,7 +3820,7 @@ with tab2:
             st.download_button(
                 label=f"📦 Download Full Report Package ({len(p2_zip_files)} files)",
                 data=zip_buf,
-                file_name=f"RevLabs_{period_label}_Reports_{datetime.now().strftime('%Y%m%d')}.zip",
+                file_name=f"{_pfx_del}_{period_label}_Reports_{datetime.now().strftime('%Y%m%d')}.zip",
                 mime="application/zip",
                 use_container_width=True,
                 help="Workpapers, QC Workbook, Exception Report, Annotated BC",
@@ -3795,19 +3831,20 @@ with tab2:
         _dc1, _dc2, _dc3 = st.columns(3)
         _dl_cols = [_dc1, _dc2, _dc3]
 
+        _ts_p2 = datetime.now().strftime('%Y%m%d')
         _dl_items = [
             ("bs_workpaper",    "📋 Workpapers",
-             f"GA_Workpapers_{datetime.now().strftime('%Y%m%d')}.xlsx",      None),
+             f"{_pfx_int}_Workpapers_{_ts_p2}.xlsx",      None),
             ("qc_workbook",     "✅ QC Workbook",
-             f"GA_QC_Workbook_{datetime.now().strftime('%Y%m%d')}.xlsx",     None),
+             f"{_pfx_int}_QC_Workbook_{_ts_p2}.xlsx",     None),
             ("exception_report","⚠️ Exception Report",
-             f"GA_Exceptions_{datetime.now().strftime('%Y%m%d')}.xlsx",      None),
+             f"{_pfx_int}_Exceptions_{_ts_p2}.xlsx",      None),
             ("annotated_bc",    "💬 Budget Comparison",
-             f"GA_BC_Internal_{datetime.now().strftime('%Y%m%d')}.xlsx",     None),
+             f"{_pfx_int}_BC_Internal_{_ts_p2}.xlsx",     None),
             ("audit_trail",     "🔍 Audit Trail",
-             f"GA_Audit_Trail_{datetime.now().strftime('%Y%m%d')}.xlsx",     None),
+             f"{_pfx_int}_Audit_Trail_{_ts_p2}.xlsx",     None),
             ("fee_invoice",     "🧾 Management Fee Invoice",
-             f"RevLabsPM_Invoice_{(result.period or '').replace('-','')}.pdf",
+             f"{_inv_pfx}_Invoice_{(result.period or '').replace('-','')}.pdf",
              "application/pdf"),
         ]
 
@@ -3906,7 +3943,7 @@ with tab2:
                         signoff_state = st.session_state.signoff_state,
                         items         = _SIGNOFF_ITEMS,
                         period        = result.period or close_period,
-                        property_name = result.property_name or 'Revolution Labs',
+                        property_name = result.property_name or _prop_display,
                     )
                     st.session_state.pass2_output_files["signoff_record"] = _so_path
                     st.success("Sign-off sheet exported — included in the ZIP.", icon="✅")
@@ -3920,7 +3957,7 @@ with tab2:
                 st.download_button(
                     label="⬇️ Download Sign-off Record",
                     data=_so_f.read(),
-                    file_name=f"RevLabs_{period_label}_Signoff_Record.xlsx",
+                    file_name=f"{_pfx_del}_{period_label}_Signoff_Record.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
@@ -4473,7 +4510,66 @@ with tab4:
             label_visibility="collapsed",
         )
 
-        st.markdown("### 4 · Building / Allocation Splits (Multi-Building Properties)")
+        st.markdown("### 4 · Tenants (Utility Billing)")
+        st.caption(
+            "Tenants billed back for electric and gas each month. "
+            "These names populate the Tenant Utility Billing table in Pass 1. "
+            "Leave empty if this property has no tenant billbacks. "
+            "**Key** is a short slug used internally (lowercase, no spaces)."
+        )
+        _tenant_rows = (
+            [{'Key': t['key'], 'Tenant Name': t['name']} for t in _edit_cfg.tenants]
+            if (_edit_cfg and _edit_cfg.tenants)
+            else []
+        )
+        # Always show at least 3 blank rows for input
+        while len(_tenant_rows) < 3:
+            _tenant_rows.append({'Key': '', 'Tenant Name': ''})
+        import pandas as _pd_props
+        _tenant_df = st.data_editor(
+            _pd_props.DataFrame(_tenant_rows),
+            column_config={
+                "Key":         st.column_config.TextColumn("Key (slug)", width="small",
+                                   help="e.g. 'keros_n' — used for widget IDs"),
+                "Tenant Name": st.column_config.TextColumn("Tenant Name", width="large",
+                                   help="e.g. 'Keros Therapeutics (North)'"),
+            },
+            num_rows="dynamic",
+            use_container_width=True,
+            key="prop_tenants_editor",
+        )
+
+        st.markdown("### 5 · Default One-Off Accruals")
+        st.caption(
+            "Pre-seeded rows in the Pass 1 one-off accruals table — "
+            "recurring monthly items the team always reviews. "
+            "Amounts are left at $0 and filled in each month. "
+            "Leave empty to start with a blank table."
+        )
+        _accrual_rows = (
+            [{'Account Code': a['account_code'], 'Account Name': a['account_name'],
+              'Default Vendor': a.get('vendor', '')}
+             for a in _edit_cfg.default_accruals]
+            if (_edit_cfg and _edit_cfg.default_accruals)
+            else []
+        )
+        while len(_accrual_rows) < 3:
+            _accrual_rows.append({'Account Code': '', 'Account Name': '', 'Default Vendor': ''})
+        _daccrual_df = st.data_editor(
+            _pd_props.DataFrame(_accrual_rows),
+            column_config={
+                "Account Code":   st.column_config.TextColumn("Account Code", width="small",
+                                      help="6-digit GL account (DR expense side)"),
+                "Account Name":   st.column_config.TextColumn("Account Name", width="medium"),
+                "Default Vendor": st.column_config.TextColumn("Default Vendor", width="medium",
+                                      help="Optional — pre-fills the Vendor column"),
+            },
+            num_rows="dynamic",
+            use_container_width=True,
+            key="prop_default_accruals_editor",
+        )
+
+        st.markdown("### 6 · Building / Allocation Splits (Multi-Building Properties)")
         st.caption(
             "Leave empty for single-building properties. "
             "For multi-building properties, add one row per building per schedule. "
@@ -4567,7 +4663,7 @@ with tab4:
         else:
             _default_split_schedule = ''
 
-        st.markdown("### 5 · Management Fee Lines")
+        st.markdown("### 7 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
         _default_fees = [
             {'Name': fl.name, 'Rate (decimal)': fl.rate, 'Minimum ($)': fl.minimum,
@@ -4593,7 +4689,7 @@ with tab4:
             key="prop_fees_editor",
         )
 
-        st.markdown("### 6 · Bank Accounts")
+        st.markdown("### 8 · Bank Accounts")
         st.caption(
             "One row per bank account. **Slug** = unique key (lowercase, underscores). "
             "**Bank Name** = text that appears in PDF statements. "
@@ -4624,7 +4720,7 @@ with tab4:
             key="prop_banks_editor",
         )
 
-        st.markdown("### 7 · Payment Instructions (Invoice PDF)")
+        st.markdown("### 9 · Payment Instructions (Invoice PDF)")
         _ca, _cb = st.columns(2)
         with _ca:
             st.markdown("**ACH / Wire**")
@@ -4642,7 +4738,7 @@ with tab4:
             _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''), key="chk_addr2")
             _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''),     key="chk_attn")
 
-        st.markdown("### 8 · RE Tax & Other")
+        st.markdown("### 10 · RE Tax & Other")
         _c9, _c10 = st.columns(2)
         _retax_months_str = _c9.text_input(
             "RE Tax Payment Months (comma-separated)",
@@ -4733,6 +4829,26 @@ with tab4:
                 m.strip() for m in _team_text.splitlines() if m.strip()
             ] or ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
 
+            # Parse tenants
+            _tenants_list = []
+            for _, _trow in _tenant_df.iterrows():
+                _tkey  = str(_trow.get('Key', '') or '').strip()
+                _tname = str(_trow.get('Tenant Name', '') or '').strip()
+                if _tkey and _tname:
+                    _tenants_list.append({'key': _tkey, 'name': _tname})
+
+            # Parse default accruals
+            _daccruals_list = []
+            for _, _arow in _daccrual_df.iterrows():
+                _acode = str(_arow.get('Account Code', '') or '').strip()
+                if not _acode:
+                    continue
+                _daccruals_list.append({
+                    'account_code': _acode,
+                    'account_name': str(_arow.get('Account Name', '') or '').strip(),
+                    'vendor':       str(_arow.get('Default Vendor', '') or '').strip(),
+                })
+
             # Parse building splits
             _splits_list = []
             for _, _srow in _splits_edited.iterrows():
@@ -4759,6 +4875,8 @@ with tab4:
                 management_code        = _mgmt_code,
                 invoice_prefix         = _inv_prefix,
                 team_members           = _team_members_parsed,
+                tenants                = _tenants_list,
+                default_accruals       = _daccruals_list,
                 building_splits        = _splits_list,
                 default_split_schedule = _default_split_schedule if '_default_split_schedule' in dir() else '',
                 management_fees        = _fee_list,
@@ -4770,7 +4888,7 @@ with tab4:
                 parcel_ids             = _parcels,
                 kardin_budget_file     = _kardin_file,
                 fiscal_year_start_month = 1,
-                file_prefix_internal   = 'GA',
+                file_prefix_internal   = _pfx_int,
                 file_prefix_deliverable = _file_pfx_del,
             )
             _yaml_str = config_to_yaml(_cfg_dict)
