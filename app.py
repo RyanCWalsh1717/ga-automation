@@ -2501,105 +2501,58 @@ with tab2:
             icon="ℹ️",
         )
 
-    # ── Close Process Tracker (always visible) ────────────────────────────────
-    st.markdown("### 📋 Close Process Tracker")
-    st.caption(
-        "Tracks every step of the monthly close lifecycle from JLL handoff through "
-        "Lauren's package release. Auto-detected steps are set by the pipeline automatically. "
-        "Manual steps require your confirmation."
-    )
-
+    # ── Close Status Banner ───────────────────────────────────────────────────
+    # Full checklist lives on the Dashboard tab. Pass 2 shows a compact status
+    # strip so the team can see where they stand without leaving the work surface.
     from close_tracker_generator import CLOSE_TRACKER_STEPS as _CT_STEPS
 
     _ct = st.session_state.close_tracker
     _ct_complete_count = sum(1 for i in range(len(_CT_STEPS)) if i in _ct)
     _ct_total = len(_CT_STEPS)
+    _ct_pct   = int(100 * _ct_complete_count / _ct_total) if _ct_total else 0
 
-    # Progress bar
-    st.progress(_ct_complete_count / _ct_total,
-                text=f"{_ct_complete_count} of {_ct_total} steps complete")
+    # Find the last completed step for the banner label
+    _ct_last_done = max((i for i in range(_ct_total) if i in _ct), default=None)
+    _ct_last_label = (
+        _CT_STEPS[_ct_last_done][1] if _ct_last_done is not None else None
+    )
 
-    _ct_reviewers = (_active_cfg.team_members
-                     if _active_cfg.team_members
-                     else ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"])
+    # Choose banner colour based on completion
+    if _ct_pct == 100:
+        _cts_bg, _cts_border, _cts_color = '#E8F5E9', '#2E7D32', '#1B5E20'
+        _cts_icon = '✅'
+    elif _ct_pct >= 50:
+        _cts_bg, _cts_border, _cts_color = '#E3F2FD', '#1565C0', '#0D47A1'
+        _cts_icon = '🔄'
+    else:
+        _cts_bg, _cts_border, _cts_color = '#FFF8E1', '#E65100', '#BF360C'
+        _cts_icon = '⏳'
 
-    for _ct_idx, _ct_desc, _ct_type in _CT_STEPS:
-        _ct_entry = _ct.get(_ct_idx)
-        _ct_done  = bool(_ct_entry)
+    _cts_last_html = (
+        f"&nbsp;&nbsp;·&nbsp;&nbsp;Last: <em>{_ct_last_label}</em>"
+        if _ct_last_label else ""
+    )
+    _cts_period_label = period_key_to_label(
+        st.session_state.get('checklist_period_key', current_period_key())
+    )
 
-        _ct_col_step, _ct_col_desc, _ct_col_by, _ct_col_btn, _ct_col_status = st.columns(
-            [0.5, 4, 2, 1.2, 3]
-        )
-        with _ct_col_step:
-            st.markdown(f"**{_ct_idx + 1}**")
-        with _ct_col_desc:
-            _ct_badge = " _(auto)_" if _ct_type == 'auto' else ""
-            st.markdown(f"{_ct_desc}{_ct_badge}")
+    st.markdown(
+        f"<div style='background:{_cts_bg};border-left:4px solid {_cts_border};"
+        f"border-radius:5px;padding:10px 16px;margin-bottom:10px;"
+        f"font-size:0.85rem;color:{_cts_color};display:flex;"
+        f"align-items:center;gap:12px;'>"
+        f"{_cts_icon}&nbsp;&nbsp;"
+        f"<strong>{_cts_period_label} Close</strong>&nbsp;&nbsp;·&nbsp;&nbsp;"
+        f"{_ct_complete_count} / {_ct_total} steps complete ({_ct_pct}%)"
+        f"{_cts_last_html}"
+        f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+        f"<span style='opacity:0.75;'>Full checklist → Dashboard tab</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
-        if _ct_done:
-            with _ct_col_status:
-                _ct_auto_label = " _(auto-detected)_" if _ct_entry.get('auto') else ""
-                st.markdown(
-                    f"<span style='color:#2E7D32;font-weight:600;'>"
-                    f"✅ {_ct_entry['completed_by']} &nbsp;·&nbsp; {_ct_entry['timestamp']}"
-                    f"{_ct_auto_label}</span>",
-                    unsafe_allow_html=True,
-                )
-        else:
-            if _ct_type == 'manual':
-                with _ct_col_by:
-                    _ct_reviewer = st.selectbox(
-                        "Completed by", _ct_reviewers,
-                        key=f"ct_rev_{_ct_idx}",
-                        label_visibility="collapsed",
-                    )
-                with _ct_col_btn:
-                    if st.button("✔ Mark Complete", key=f"ct_btn_{_ct_idx}",
-                                 use_container_width=True):
-                        _ct[_ct_idx] = {
-                            "completed_by": _ct_reviewer,
-                            "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
-                            "auto":         False,
-                        }
-                        # Step 7 auto-detect: QC review complete when Ryan/Natasha Parker mark it
-                        if _ct_idx == 7:
-                            pass  # step 7 is manual here — already handled
-                        # Step 8: generate close tracker xlsx when final package is released
-                        if _ct_idx == 8:
-                            try:
-                                from close_tracker_generator import generate_close_tracker_xlsx as _gen_ct
-                                _ct_xlsx_path = os.path.join(
-                                    st.session_state.temp_dir, "GA_Close_Tracker.xlsx"
-                                )
-                                _p2_result = st.session_state.pass2_engine_result
-                                _ct_period  = (_p2_result.period if _p2_result
-                                               else st.session_state.get('close_period_input', 'Period'))
-                                _ct_prop    = (_p2_result.property_name if _p2_result
-                                               else 'Revolution Labs')
-                                _gen_ct(
-                                    output_path   = _ct_xlsx_path,
-                                    close_tracker = _ct,
-                                    period        = _ct_period,
-                                    property_name = _ct_prop,
-                                )
-                                st.session_state.pass2_output_files["close_tracker"] = _ct_xlsx_path
-                                st.success(
-                                    "Close Tracker exported — included in the ZIP package.",
-                                    icon="✅"
-                                )
-                            except Exception as _ct_e:
-                                st.warning(f"Close Tracker export failed: {_ct_e}")
-                        st.rerun()
-            else:
-                with _ct_col_status:
-                    st.markdown(
-                        "<span style='color:#9E9E9E;'>Pending (pipeline will auto-detect)</span>",
-                        unsafe_allow_html=True,
-                    )
-
-    # Export Close Tracker button (available any time)
-    st.markdown("")
-    _ct_exp_col, _ = st.columns([2, 5])
+    # Export / download Close Tracker XLSX (functional action — stays here)
+    _ct_exp_col, _ct_dl_col, _ = st.columns([2, 2, 3])
     with _ct_exp_col:
         if st.button("📄 Export Close Tracker", use_container_width=True,
                      help="Generates GA_Close_Tracker.xlsx and adds it to the ZIP"):
@@ -2624,16 +2577,17 @@ with tab2:
             except Exception as _ct_e2:
                 st.error(f"Close Tracker export failed: {_ct_e2}")
 
-    _ct_dl_path = st.session_state.pass2_output_files.get("close_tracker")
-    if _ct_dl_path and os.path.exists(_ct_dl_path):
-        with open(_ct_dl_path, "rb") as _ct_f:
-            st.download_button(
-                label="⬇️ Download Close Tracker",
-                data=_ct_f.read(),
-                file_name="GA_Close_Tracker.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+    with _ct_dl_col:
+        _ct_dl_path = st.session_state.pass2_output_files.get("close_tracker")
+        if _ct_dl_path and os.path.exists(_ct_dl_path):
+            with open(_ct_dl_path, "rb") as _ct_f:
+                st.download_button(
+                    label="⬇️ Download Close Tracker",
+                    data=_ct_f.read(),
+                    file_name="GA_Close_Tracker.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
     st.divider()
 
