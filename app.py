@@ -784,13 +784,11 @@ with tab0:
         # Build a list of the last 3 months + next month for selector
         from datetime import date
         _today = date.today()
-        _period_options = []
-        for _mo_offset in range(-2, 2):
-            _mo = (_today.month - 1 + _mo_offset) % 12 + 1
-            _yr = _today.year + ((_today.month - 1 + _mo_offset) // 12)
-            _period_options.append(f'{_yr}_{_mo:02d}')
+        # All 12 months of 2026, plus any prior/future month if current key falls outside
+        _period_options = [f'2026_{m:02d}' for m in range(1, 13)]
         if _ck_pkey not in _period_options:
             _period_options.append(_ck_pkey)
+            _period_options.sort()
         _period_labels_map = {k: period_key_to_label(k) for k in _period_options}
         _period_sel_idx = _period_options.index(_ck_pkey) if _ck_pkey in _period_options else 0
         _period_chosen = st.selectbox(
