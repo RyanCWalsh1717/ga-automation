@@ -4694,6 +4694,29 @@ with tab4:
             elif github_configured():
                 st.error(f"GitHub save failed: {_gh_msg}")
 
+            # Tell the user how to switch to the new property
+            if _is_new:
+                if _gh_ok:
+                    st.info(
+                        f"**{_display_name}** will appear in the **sidebar property selector** "
+                        f"after Streamlit finishes redeploying (~2 min). "
+                        f"Refresh the page and it will be ready to use.",
+                        icon="🏢",
+                    )
+                elif _loc_ok:
+                    st.info(
+                        f"**{_display_name}** is now available — select it from the "
+                        f"**sidebar property selector** at the top of the sidebar. "
+                        f"If you don't see it yet, click the refresh button in your browser.",
+                        icon="🏢",
+                    )
+            else:
+                st.info(
+                    f"**{_display_name}** config updated. "
+                    f"{'Reload in ~2 min after Streamlit redeploys.' if _gh_ok else 'Changes are live locally.'}",
+                    icon="✅",
+                )
+
             # Always offer download
             st.download_button(
                 label="⬇️ Download config.yaml",
