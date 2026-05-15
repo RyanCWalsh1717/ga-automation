@@ -2137,9 +2137,11 @@ def _build_capital_tab(wb, account_code, account_name, tab_color,
 # ── 152100 — Land ────────────────────────────────────────────────────────────
 
 def build_152100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     acct = (capital_schedule_data or {}).get('152100')
-    prior_rows = (prior_tab_detail or {}).get('152100') or _CAPITAL_152100_SEED
+    prior_rows = (prior_tab_detail or {}).get('152100') or (_CAPITAL_152100_SEED if _is_revlabs else [])
     return _build_capital_tab(wb, '152100', 'Land', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
@@ -2149,9 +2151,11 @@ def build_152100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 154100 — Building ─────────────────────────────────────────────────────────
 
 def build_154100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     acct = (capital_schedule_data or {}).get('154100')
-    prior_rows = (prior_tab_detail or {}).get('154100') or _CAPITAL_154100_SEED
+    prior_rows = (prior_tab_detail or {}).get('154100') or (_CAPITAL_154100_SEED if _is_revlabs else [])
     return _build_capital_tab(wb, '154100', 'Building', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
@@ -2161,9 +2165,11 @@ def build_154100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 154500 — Building Improvements ───────────────────────────────────────────
 
 def build_154500_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     acct = (capital_schedule_data or {}).get('154500')
-    prior_rows = (prior_tab_detail or {}).get('154500') or _CAPITAL_154500_SEED
+    prior_rows = (prior_tab_detail or {}).get('154500') or (_CAPITAL_154500_SEED if _is_revlabs else [])
     return _build_capital_tab(wb, '154500', 'Building Improvements', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=False, has_commencement=False,
@@ -2186,9 +2192,11 @@ def build_171100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 181200 — Leasing Commissions ─────────────────────────────────────────────
 
 def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     acct = (capital_schedule_data or {}).get('181200')
-    prior_rows = (prior_tab_detail or {}).get('181200') or _CAPITAL_181200_SEED
+    prior_rows = (prior_tab_detail or {}).get('181200') or (_CAPITAL_181200_SEED if _is_revlabs else [])
     return _build_capital_tab(wb, '181200', 'Leasing Commissions', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
@@ -2198,9 +2206,11 @@ def build_181200_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 181300 — Legal Leasing Costs ─────────────────────────────────────────────
 
 def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     acct = (capital_schedule_data or {}).get('181300')
-    prior_rows = (prior_tab_detail or {}).get('181300') or _CAPITAL_181300_SEED
+    prior_rows = (prior_tab_detail or {}).get('181300') or (_CAPITAL_181300_SEED if _is_revlabs else [])
     return _build_capital_tab(wb, '181300', 'Legal Leasing Costs', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
@@ -2210,9 +2220,11 @@ def build_181300_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 181400 — Tenant Improvement ───────────────────────────────────────────────
 
 def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     acct = (capital_schedule_data or {}).get('181400')
-    prior_rows = (prior_tab_detail or {}).get('181400') or _CAPITAL_181400_SEED
+    prior_rows = (prior_tab_detail or {}).get('181400') or (_CAPITAL_181400_SEED if _is_revlabs else [])
     return _build_capital_tab(wb, '181400', 'Tenant Improvement', '375623',
                               period, property_name, gl_acct, tb_entry,
                               acct, has_entity=True, has_commencement=True,
@@ -2222,12 +2234,14 @@ def build_181400_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 187100 — Finance Costs ────────────────────────────────────────────────────
 
 def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     capital_schedule_data=None, prior_tab_detail: dict = None, **_):
+                     capital_schedule_data=None, prior_tab_detail: dict = None,
+                     property_config=None, **_):
     """
     Finance Costs roll-forward.
     Layout: Date | Description | Revlabs | Revlabpm | Total  (cols B–F)
     Uses _CAPITAL_187100_SEED as bootstrap when no uploaded schedule or prior workpaper.
     """
+    _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
@@ -2246,7 +2260,7 @@ def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     next_row = _write_col_headers(ws, next_row, headers, col_widths)
 
     # Data source: uploaded schedule → prior workpaper carry-forward → seed
-    raw_rows = (prior_tab_detail or {}).get('187100') or _CAPITAL_187100_SEED
+    raw_rows = (prior_tab_detail or {}).get('187100') or (_CAPITAL_187100_SEED if _is_revlabs else [])
 
     rl_total  = 0.0
     rpm_total = 0.0
@@ -2401,7 +2415,7 @@ _EQUITY_381100_SEED = {
 # ── 311100 — Contributions - Partner A ───────────────────────────────────────
 
 def build_311100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     prior_tab_detail: dict = None, **_):
+                     prior_tab_detail: dict = None, property_config=None, **_):
     """
     Contributions - Partner A roll-forward.
 
@@ -2429,16 +2443,20 @@ def build_311100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                                   [14, 54, 18])
 
     # ── Determine historical rows ─────────────────────────────────────────────
+    _prop_code = getattr(property_config, 'property_code', '') or ''
     prior_rows = (prior_tab_detail or {}).get('311100')
     if prior_rows is not None:
         hist_rows = prior_rows   # [{date_str, desc, amt}]
-    else:
-        # First run — bootstrap from seed (entries strictly before close period)
+    elif _prop_code.lower() == 'revlabspm':
+        # First run for RevLabs — bootstrap from hardcoded seed (pre-close-period entries only)
         hist_rows = [
             {'date_str': ds, 'desc': desc, 'amt': amt}
             for ds, desc, amt in _EQUITY_311100_SEED
             if _parse_date(ds) and (_parse_date(ds).year, _parse_date(ds).month) < (yr, mo)
         ]
+    else:
+        # New property: start with empty history — seed is RevLabs-specific
+        hist_rows = []
 
     # ── Current-period GL activity (credits to equity = new contributions) ───
     current_rows = []
@@ -2483,7 +2501,7 @@ def build_311100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 331100 — Distributions - Partner A ───────────────────────────────────────
 
 def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     prior_tab_detail: dict = None, **_):
+                     prior_tab_detail: dict = None, property_config=None, **_):
     """
     Distributions - Partner A roll-forward with entity split.
 
@@ -2514,11 +2532,12 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                                   [14, 46, 18, 18, 18])
 
     # ── Determine historical rows ─────────────────────────────────────────────
+    _prop_code_331 = getattr(property_config, 'property_code', '') or ''
     prior_rows = (prior_tab_detail or {}).get('331100')
     if prior_rows is not None:
         hist_rows = prior_rows   # [{date_str, desc, revlabs, revlabspm, total}]
-    else:
-        # First run — bootstrap from seed (entries strictly before close period)
+    elif _prop_code_331.lower() == 'revlabspm':
+        # First run for RevLabs — bootstrap from hardcoded seed (entries before close period)
         hist_rows = []
         for ds, desc, revlabs, revlabspm in _EQUITY_331100_SEED:
             d = _parse_date(ds)
@@ -2528,6 +2547,9 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                     'revlabs':  revlabs, 'revlabspm': revlabspm,
                     'total':    round(revlabs + revlabspm, 2),
                 })
+    else:
+        # New property: start with empty history — seed is RevLabs-specific
+        hist_rows = []
 
     # ── Current-period GL activity (debits = new distributions, Revlabpm) ────
     current_rows = []
@@ -2598,7 +2620,7 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
 # ── 381100 — Retained Earnings - Control ────────────────────────────────────
 
 def build_381100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
-                     prior_tab_detail: dict = None, **_):
+                     prior_tab_detail: dict = None, property_config=None, **_):
     """
     Retained Earnings - Control snapshot.
 
@@ -2626,14 +2648,20 @@ def build_381100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                                   ['Description', 'Revlabpm', 'Revlabs', 'Total'],
                                   [40, 18, 18, 18])
 
-    # ── Entity split: prior workpaper → seed fallback ────────────────────────
+    # ── Entity split: prior workpaper → seed fallback (RevLabs only) ─────────
+    _prop_code_381 = getattr(property_config, 'property_code', '') or ''
     prior_split = (prior_tab_detail or {}).get('381100')  # {revlabspm, revlabs}
     if prior_split:
         rpm_bal = prior_split.get('revlabspm', _EQUITY_381100_SEED['revlabspm'])
         rl_bal  = prior_split.get('revlabs',  _EQUITY_381100_SEED['revlabs'])
-    else:
+    elif _prop_code_381.lower() == 'revlabspm':
+        # First run for RevLabs — use hardcoded Jan 2026 beginning balances
         rpm_bal = _EQUITY_381100_SEED['revlabspm']
         rl_bal  = _EQUITY_381100_SEED['revlabs']
+    else:
+        # New property: use the GL ending balance as the beginning balance (no split)
+        rpm_bal = gl_ending
+        rl_bal  = 0.0
     total_bal = round(rpm_bal + rl_bal, 2)
 
     # Beginning Balance row

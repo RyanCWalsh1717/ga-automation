@@ -56,6 +56,16 @@ def _is_balance_sheet(code: str, cfg=None) -> bool:
     return is_balance_sheet_account(code, cfg=cfg or getattr(_qc_thread_local, 'cfg', None))
 
 
+def _active_pl_accounts():
+    """Return the P&L account list for the current thread's property (or RevLabs default)."""
+    return getattr(_qc_thread_local, 'pl_accounts', None) or _PL_ACCOUNTS
+
+
+def _active_bs_accounts():
+    """Return the BS account list for the current thread's property (or RevLabs default)."""
+    return getattr(_qc_thread_local, 'bs_accounts', None) or _BS_ACCOUNTS
+
+
 def _safe_float(v) -> float:
     if v is None:
         return 0.0
@@ -445,6 +455,32 @@ def check_5_gl_vs_workpapers(gl_parsed, tb_result) -> QCResult:
                       f'variance of ${abs(diff):,.2f} likely requires accrual JE.'),
             ))
 
+    # M-13: Flag accounts listed in _BS_ACCOUNTS that have a non-zero TB balance
+    # but are absent from the GL entirely — these are likely accounts the GL export
+    # omitted (e.g. zero-net-change accounts excluded by Yardi's GL filter).
+    _gl_codes = {str(a.account_code or '').strip() for a in gl_parsed.accounts}
+    for _sec, code, desc, _wp in _active_bs_accounts():
+        if not code:
+            continue
+        if code in _gl_codes:
+            continue  # already covered by GL iteration above
+        tb_acct = tb_map.get(code)
+        if tb_acct is None:
+            continue  # also absent from TB — nothing to flag
+        tb_bal = float(getattr(tb_acct, 'ending_balance', 0) or 0)
+        if abs(tb_bal) > 0.05:
+            findings.append(QCFinding(
+                account_code=code,
+                account_name=desc,
+                value_a=0.0,
+                value_b=tb_bal,
+                difference=-tb_bal,
+                flag='INFO',
+                note=(f'Account {code} ({desc}) has TB balance ${tb_bal:,.2f} '
+                      f'but is absent from GL — confirm zero-activity expected '
+                      f'or check GL export filter settings.'),
+            ))
+
     accrual_gaps = [f for f in findings if f.flag == 'FLAG']
     info_gaps    = [f for f in findings if f.flag == 'INFO']
 
@@ -828,6 +864,17 @@ def run_qc(
     # Thread-local isolates concurrent user sessions in Streamlit Cloud.
     _qc_thread_local.cfg = property_config
 
+    # Load per-property QC account lists from config if defined; fall back to
+    # the RevLabs module-level defaults (_PL_ACCOUNTS / _BS_ACCOUNTS).
+    # A property can override these by defining qc_pl_accounts / qc_bs_accounts
+    # in its config.yaml — stored as the same nested list / tuple structure.
+    _qc_thread_local.pl_accounts = (
+        getattr(property_config, 'qc_pl_accounts', None) or None
+    ) if property_config else None
+    _qc_thread_local.bs_accounts = (
+        getattr(property_config, 'qc_bs_accounts', None) or None
+    ) if property_config else None
+
     checks = [
         check_1_tb_to_budget(tb_result, budget_rows),
         check_2_budget_variances(budget_rows),
@@ -1155,7 +1202,7 @@ def _write_tab1(wb, report: QCReport, tb_result, budget_rows):
     bcm = _bc_map(budget_rows)
 
     row = 9
-    for section_name, accounts in _PL_ACCOUNTS:
+    for section_name, accounts in _active_pl_accounts():
         _qsection(ws, row, section_name, 7, _C_LIGHT1)
         row += 1
         for code, name in accounts:
@@ -1212,7 +1259,7 @@ def _write_tab2(wb, report: QCReport, budget_rows):
     bcm = _bc_map(budget_rows)
 
     row = 9
-    for section_name, accounts in _PL_ACCOUNTS:
+    for section_name, accounts in _active_pl_accounts():
         _qsection(ws, row, section_name, 8, _C_LIGHT1)
         row += 1
         for code, name in accounts:
@@ -1269,7 +1316,7 @@ def _write_tab3(wb, report: QCReport, tb_result, gl_parsed):
 
     _qsection(ws, 9, 'BALANCE SHEET ACCOUNTS', 7, _C_LIGHT2)
     row = 10
-    for _sec, code, desc, wp_src in _BS_ACCOUNTS:
+    for _sec, code, desc, wp_src in _active_bs_accounts():
         tb_acct = tbm.get(code)
         gl_end  = float(getattr(glm.get(code), 'ending_balance', 0) or 0) if code in glm else None
         tb_end  = float(tb_acct.ending_balance) if tb_acct else None
@@ -1348,7 +1395,7 @@ def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1, t12_re
         ws.row_dimensions[row].height = 22
         row += 1
 
-    for section_name, accounts in _PL_ACCOUNTS:
+    for section_name, accounts in _active_pl_accounts():
         _qsection(ws, row, section_name, 6, _C_LIGHT1)
         row += 1
         for code, name in accounts:

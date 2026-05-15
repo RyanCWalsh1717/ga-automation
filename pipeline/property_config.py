@@ -189,6 +189,15 @@ class PropertyConfig:
     # Override in config.yaml as:  payroll_accounts: ['615110', '637110', '615120']
     payroll_accounts: List[str] = field(default_factory=lambda: ['615110', '637110'])
 
+    # ── QC account lists ──────────────────────────────────────────────────────
+    # Per-property overrides for the P&L and BS account lists used in QC checks
+    # (Check 1 TB→BC tie-out, Check 2 variances, Check 5 GL vs workpapers).
+    # None = use the RevLabs module-level defaults in qc_engine.py.
+    # Define in config.yaml as nested lists to match the _PL_ACCOUNTS / _BS_ACCOUNTS
+    # format in qc_engine.py.  Most properties leave these as None.
+    qc_pl_accounts: Optional[list] = None
+    qc_bs_accounts: Optional[list] = None
+
     # ─────────────────────────────────────────────────────────────────────────
 
     @classmethod

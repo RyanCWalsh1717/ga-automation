@@ -153,11 +153,17 @@ def classify_tier(actual: float, budget: float) -> Tuple[str, float, float]:
         return 'tier_3', abs_var, pct_var
 
     # ── Step 2: Tier 1 — large dollar OR significant pct ──
+    # Zero-budget accounts: pct_var is forced to 0 (undefined), so the pct
+    # condition never fires. Treat any material zero-budget variance as Tier 1
+    # because ANY spend against a $0 budget is 100% unexpected.
     if abs_var_dollar >= TIER1_ABS or abs_pct >= (TIER1_PCT * 100):
+        return 'tier_1', abs_var, pct_var
+    if (budget == 0 or budget is None) and abs_var_dollar >= TIER2_MIN:
+        # Zero-budget, sub-Tier-1 dollar amount → still Tier 1 (100% overage)
         return 'tier_1', abs_var, pct_var
 
     # ── Step 3: Tier 2 — mid-range dollar AND sub-threshold pct ──
-    # Reached only when: $2,500 ≤ abs < $5,000 AND pct < 5%
+    # Reached only when: $2,500 ≤ abs < $5,000 AND pct < 5% AND budget ≠ 0
     return 'tier_2', abs_var, pct_var
 
 
