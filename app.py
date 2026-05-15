@@ -98,7 +98,7 @@ def _save_checklist_now() -> None:
     """Persist current close_tracker + custom items to GitHub/local."""
     try:
         from checklist_persistence import save_checklist, session_to_state, period_to_key
-        _code = st.session_state.get('active_property_code', 'revlabspm')
+        _code = st.session_state.get('active_property_code') or ''
         _pkey = st.session_state.get('checklist_period_key', current_period_key())
         _state = session_to_state(
             st.session_state.close_tracker,
@@ -443,7 +443,7 @@ def _prop_hero_src(property_code: str) -> Optional[str]:
     # 3. Legacy RevLabs fallback
     return _img_b64('revlabs_hero.jpg') or _img_b64('revlabs_hero.png')
 
-_HERO_SRC = _prop_hero_src(st.session_state.get('active_property_code', 'revlabspm'))
+_HERO_SRC = _prop_hero_src(st.session_state.get('active_property_code', ''))
 
 # ── Hero banner ───────────────────────────────────────────────
 _hero_alt = st.session_state.get('active_property_code', 'Property')
@@ -461,7 +461,7 @@ _logo_html = (
 # (_active_cfg is set in the sidebar section below, but on first render we
 # need it here too — load it again; it's cheap and cached by the YAML file.)
 from property_config import load_property_config as _lpc_hero
-_hero_cfg = _lpc_hero(st.session_state.get('active_property_code', 'revlabspm'), str(_DATA_DIR))
+_hero_cfg = _lpc_hero(st.session_state.get('active_property_code', ''), str(_DATA_DIR))
 
 _hero_title = f"{_hero_cfg.display()} Monthly Close"
 _hero_sub   = ' &nbsp;|&nbsp; '.join(filter(None, [
@@ -502,7 +502,7 @@ _prop_labels = {p['code']: f"{p['display_name']}  ({p['code']})" for p in _all_p
 # Here we just ensure session_state has a valid value for the hero render.
 if st.session_state.active_property_code not in _prop_codes and _prop_codes:
     st.session_state.active_property_code = _prop_codes[0]
-_selected_code = st.session_state.active_property_code or (_prop_codes[0] if _prop_codes else 'revlabspm')
+_selected_code = st.session_state.active_property_code or (_prop_codes[0] if _prop_codes else '')
 
 # Detect property change — reset pipeline state so stale results don't carry over
 if st.session_state.get('_prev_active_property_code') != _selected_code:
@@ -758,7 +758,7 @@ if len(_all_props) > 1:
         )
 else:
     # Single property — no selector needed, but update state to match
-    _selected_code = _prop_codes[0] if _prop_codes else 'revlabspm'
+    _selected_code = _prop_codes[0] if _prop_codes else ''
     st.session_state.active_property_code = _selected_code
 
 # ═══════════════════════════════════════════════════════════════
@@ -780,7 +780,7 @@ tab0, tab1, tab2, tab3, tab4 = st.tabs([
 with tab0:
 
     # ── Load checklist from GitHub once per session / property ────────────────
-    _ck_prop   = st.session_state.get('active_property_code', 'revlabspm')
+    _ck_prop   = st.session_state.get('active_property_code', '')
     _ck_pkey   = st.session_state.checklist_period_key
     if not st.session_state.get('checklist_loaded', False):
         try:
@@ -1517,7 +1517,7 @@ with tab1:
                 )
 
                 updated_ledger_path = os.path.join(
-                    st.session_state.temp_dir, "GA_Prepaid_Ledger_Updated.xlsx"
+                    st.session_state.temp_dir, f"{_pfx_int}_Prepaid_Ledger_Updated.xlsx"
                 )
                 prepaid_ledger.save(ledger_active, ledger_completed, updated_ledger_path,
                                     period=close_period)
@@ -1575,7 +1575,7 @@ with tab1:
                     _catchup_je = build_catchup_je(
                         _catchup_amount,
                         period=close_period,
-                        property_code=engine_result.property_name or 'revlabspm',
+                        property_code=engine_result.property_name or _active_cfg.property_code,
                         je_number=f'MGT-{len(je_lines)//2 + 2:03d}',
                     )
 
@@ -1717,10 +1717,10 @@ with tab1:
                 _accrual_csv_path = None
 
                 _prop_code = (engine_result.parsed.get('gl') and
-                              engine_result.parsed['gl'].metadata.property_code) or 'revlabspm'
+                              engine_result.parsed['gl'].metadata.property_code) or _active_cfg.property_code
 
                 if all_je_lines:
-                    _accrual_csv_path = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
+                    _accrual_csv_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv")
                     generate_etl_csv(all_je_lines, _accrual_csv_path,
                                      period=close_period, property_code=_prop_code,
                                      auto_reverse=True)
@@ -2056,10 +2056,10 @@ with tab1:
                 _p1_prop = (
                     (_p1_er.parsed.get('gl') and _p1_er.parsed['gl'].metadata.property_code)
                     if _p1_er else None
-                ) or 'revlabspm'
+                ) or _active_cfg.property_code
                 try:
                     from accrual_entry_generator import generate_etl_csv as _gen_etl_ed
-                    _ed_csv = os.path.join(st.session_state.temp_dir, "GA_Accruals_JE.csv")
+                    _ed_csv = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv")
                     _gen_etl_ed(_updated_lines, _ed_csv,
                                 period=result.period, property_code=_p1_prop,
                                 auto_reverse=True)
@@ -2162,11 +2162,11 @@ with tab1:
                             (_p1_er_add.parsed.get('gl') and
                              _p1_er_add.parsed['gl'].metadata.property_code)
                             if _p1_er_add else None
-                        ) or 'revlabspm'
+                        ) or _active_cfg.property_code
                         try:
                             from accrual_entry_generator import generate_etl_csv as _gen_etl_add
                             _add_csv_path = os.path.join(
-                                st.session_state.temp_dir, "GA_Accruals_JE.csv"
+                                st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv"
                             )
                             _gen_etl_add(
                                 _updated_all, _add_csv_path,
@@ -2591,11 +2591,11 @@ with tab2:
     _ct_exp_col, _ct_dl_col, _ = st.columns([2, 2, 3])
     with _ct_exp_col:
         if st.button("📄 Export Close Tracker", use_container_width=True,
-                     help="Generates GA_Close_Tracker.xlsx and adds it to the ZIP"):
+                     help=f"Generates {_pfx_int}_Close_Tracker.xlsx and adds it to the ZIP"):
             try:
                 from close_tracker_generator import generate_close_tracker_xlsx as _gen_ct2
                 _ct_xlsx_path2 = os.path.join(
-                    st.session_state.temp_dir, "GA_Close_Tracker.xlsx"
+                    st.session_state.temp_dir, f"{_pfx_int}_Close_Tracker.xlsx"
                 )
                 _p2r = st.session_state.pass2_engine_result
                 _ct_period2 = (_p2r.period if _p2r
@@ -2620,7 +2620,7 @@ with tab2:
                 st.download_button(
                     label="⬇️ Download Close Tracker",
                     data=_ct_f.read(),
-                    file_name="GA_Close_Tracker.xlsx",
+                    file_name=f"{_pfx_int}_Close_Tracker.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
@@ -3133,7 +3133,7 @@ with tab2:
                             icon="ℹ️",
                         )
                     try:
-                        bs_wp_path = os.path.join(st.session_state.temp_dir, "GA_Workpapers.xlsx")
+                        bs_wp_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Workpapers.xlsx")
                         # GL is final — no je_adjustments needed. The GL already reflects
                         # all posted JEs from Pass 1, so the workpaper ties clean.
                         _prior_wp_path = st.session_state.uploaded_files.get("prior_workpaper")
@@ -3298,7 +3298,7 @@ with tab2:
                         loan_data=engine_result.parsed.get('loan'),
                     )
                     st.session_state.pass2_output_files["qc_report"] = qc_report
-                    qc_path = os.path.join(st.session_state.temp_dir, "GA_QC_Workbook.xlsx")
+                    qc_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_QC_Workbook.xlsx")
                     generate_qc_workbook(
                         qc_report, qc_path,
                         tb_result=tb_result,
@@ -3400,7 +3400,7 @@ with tab2:
                         details={'api_fallback_reason': _api_fallback_reason},
                     ))
 
-                exception_path = os.path.join(st.session_state.temp_dir, "GA_Exceptions_Report.xlsx")
+                exception_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Exceptions_Report.xlsx")
                 try:
                     generate_exception_report(engine_result, exception_path)
                     st.session_state.pass2_output_files["exception_report"] = exception_path
@@ -3419,7 +3419,7 @@ with tab2:
                 try:
                     _at_path = os.path.join(
                         st.session_state.temp_dir,
-                        f"GA_Audit_Trail_{close_period.replace('-', '')}.xlsx",
+                        f"{_pfx_int}_Audit_Trail_{close_period.replace('-', '')}.xlsx",
                     )
                     # Pull Pass 1 JE lines from session state if available
                     _p1_out = st.session_state.get('pass1_output_files', {})
@@ -4092,7 +4092,7 @@ with tab2:
             )
             _p2er = st.session_state.pass2_engine_result
             _pcje_period   = (_p2er.period        if _p2er else '') or ''
-            _pcje_propname = (_p2er.property_name if _p2er else '') or 'revlabspm'
+            _pcje_propname = (_p2er.property_name if _p2er else '') or _active_cfg.property_code
             try:
                 from accrual_entry_generator import generate_etl_csv as _gen_etl_pc
                 _gen_etl_pc(
@@ -4177,10 +4177,10 @@ with tab3:
 | **Berkadia Loan Statement(s)** | Berkadia portal → monthly loan statements → PDF (all 3 loans) | ⚠️ Upload the statement **due the 7th of the following month** — e.g. for the January close, upload the Feb 7 statement. Interest is paid in arrears: the Feb 7 payment covers January's interest. |
 """)
         st.markdown("#### Reference Files")
-        st.markdown("""
+        st.markdown(f"""
 | File | Where to get it | Notes |
 |------|-----------------|-------|
-| **Prior Month Prepaid Ledger** | Downloaded from last month's Pass 1 run | First month (January): use the seed file `GA_Prepaid_Ledger_Seed_Dec2025.xlsx` |
+| **Prior Month Prepaid Ledger** | Downloaded from last month's Pass 1 run | First month (January): use the seed file `{_pfx_int}_Prepaid_Ledger_Seed_Dec2025.xlsx` |
 """)
         st.markdown(
             "> **Tip:** You don't need every file every month. The pipeline runs on whatever is "
@@ -4212,13 +4212,13 @@ Each row creates a **DR expense / CR 213100 Accrued Expenses** journal entry tha
 
     # ── Pass 1 Outputs ────────────────────────────────────────────────────────
     with st.expander("📄  Step 2 — What Pass 1 Produces"):
-        st.markdown("""
+        st.markdown(f"""
 After clicking **Generate JEs**, two files are available to download:
 
 | File | Contents | What to do with it |
 |------|----------|--------------------|
-| **GA_Accruals_JE.csv** | All accrual entries: Nexus invoices, utility proration, service accruals, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings | **Import into Yardi** as a journal batch |
-| **GA_Prepaid_Ledger.xlsx** | Updated prepaid amortization schedule with this month's releases applied | **Save** — upload as the prior-month ledger next month |
+| **{_pfx_int}_Accruals_JE.csv** | All accrual entries: Nexus invoices, utility proration, service accruals, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings | **Import into Yardi** as a journal batch |
+| **{_pfx_int}_Prepaid_Ledger.xlsx** | Updated prepaid amortization schedule with this month's releases applied | **Save** — upload as the prior-month ledger next month |
 
 > The pipeline also shows a **summary table** of every entry generated, grouped by layer
 > (Layer 1 Nexus, Layer 2 Proration, Layer 3 Historical, Layer 4 Bonus, etc.) so you can review before posting.
@@ -4226,11 +4226,11 @@ After clicking **Generate JEs**, two files are available to download:
 
     # ── Yardi Upload Step ─────────────────────────────────────────────────────
     with st.expander("⬆️  Step 3 — Post to Yardi & Run the Close"):
-        st.markdown("""
+        st.markdown(f"""
 **In Yardi, before running the final close:**
 
 1. Go to **Journals → Import Journal Entries**
-2. Import `GA_Accruals_JE.csv` → review the batch → post
+2. Import `{_pfx_int}_Accruals_JE.csv` → review the batch → post
 3. Verify the journal batch posted cleanly (no errors)
 4. Run the **month-end close** in Yardi (locks the period)
 
@@ -4267,15 +4267,15 @@ This is standard accrual accounting — no manual reversal needed.
 
     # ── Pass 2 Outputs ────────────────────────────────────────────────────────
     with st.expander("📊  Step 5 — What Pass 2 Produces"):
-        st.markdown("""
+        st.markdown(f"""
 After clicking **Generate Reports**, four files are available to download:
 
 | File | Contents | Audience |
 |------|----------|----------|
-| **GA_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Accountant / Accounting Manager |
-| **GA_QC_Workbook.xlsx** | 7-point QC checklist: TB↔BC tie, budget variances, workpaper tie, MoM swings, BS tie-out, accrual coverage, misc checks | Property Accountant |
-| **GA_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Accountant |
-| **GA_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Property Accountant / Accounting Manager |
+| **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Accountant / Accounting Manager |
+| **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist: TB↔BC tie, budget variances, workpaper tie, MoM swings, BS tie-out, accrual coverage, misc checks | Property Accountant |
+| **{_pfx_int}_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Accountant |
+| **{_pfx_int}_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Property Accountant / Accounting Manager |
 
 > **Before sending to Accounting Manager:** The Property Accountant should review all four files and clear any
 > open Errors in the Exception Report. Warnings should be reviewed but may be acceptable.
@@ -4298,12 +4298,12 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
     # ── Final Deliverables ────────────────────────────────────────────────────
     st.markdown("---")
     with st.expander("📬  Final Deliverables — What Goes Where"):
-        st.markdown("""
+        st.markdown(f"""
 #### To Accounting Manager
 | Item | Source |
 |------|--------|
-| Workpapers (GL ↔ TB tie-out) | `GA_Workpapers.xlsx` from Pass 2 |
-| Annotated Budget Comparison | `GA_BC_Internal.xlsx` from Pass 2 |
+| Workpapers (GL ↔ TB tie-out) | `{_pfx_int}_Workpapers.xlsx` from Pass 2 |
+| Annotated Budget Comparison | `{_pfx_int}_BC_Internal.xlsx` from Pass 2 |
 | Singerman 8-Tab Monthly Report | Downloaded directly from Yardi |
 
 #### To Singerman (Capital Partner)
@@ -4314,15 +4314,15 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
 #### Retained Internally (GRP)
 | Item | Purpose |
 |------|---------|
-| `GA_QC_Workbook.xlsx` | GRP internal QC sign-off |
-| `GA_Exceptions_Report.xlsx` | Audit trail of all flagged items |
-| `GA_Prepaid_Ledger.xlsx` | Carry forward — upload next month as the prior-month ledger |
+| `{_pfx_int}_QC_Workbook.xlsx` | GRP internal QC sign-off |
+| `{_pfx_int}_Exceptions_Report.xlsx` | Audit trail of all flagged items |
+| `{_pfx_int}_Prepaid_Ledger.xlsx` | Carry forward — upload next month as the prior-month ledger |
 """)
 
     # ── Troubleshooting ───────────────────────────────────────────────────────
     st.markdown("---")
     with st.expander("🛠️  Common Issues & Tips"):
-        st.markdown("""
+        st.markdown(f"""
 **File uploaded but not recognized**
 → Use the dropdown next to the filename in the Pass 1 upload zone to manually select the file type.
 
@@ -4331,7 +4331,7 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
 was uploaded. If both are missing, the fee will be $0 and will need a manual One-Off entry.
 
 **Workpaper doesn't include prior months**
-→ Upload the prior month's `GA_Workpapers.xlsx` in the Pass 2 upload zone. The pipeline appends
+→ Upload the prior month's `{_pfx_int}_Workpapers.xlsx` in the Pass 2 upload zone. The pipeline appends
 the new period's sheets to the existing file. Leave blank for January (first run of the year).
 
 **RE Tax — what to enter each month**
@@ -4755,6 +4755,11 @@ with tab4:
                                           value=_ef('file_prefix_deliverable'),
                                           placeholder="e.g. LexLabs  → LexLabs_Jan2026_Workpapers.xlsx",
                                           help="Leave blank to auto-derive from display name.")
+        _c13, _c14 = st.columns(2)
+        _file_pfx_int = _c13.text_input("Internal File Prefix",
+                                          value=_ef('file_prefix_internal', 'GA'),
+                                          placeholder="e.g. GA",
+                                          help="Prefix for internal working files (e.g. GA_Accruals_JE.csv).")
 
         st.markdown("---")
         _submitted = st.form_submit_button("💾 Save Property Config", type="primary",
@@ -4887,7 +4892,7 @@ with tab4:
                 parcel_ids             = _parcels,
                 kardin_budget_file     = _kardin_file,
                 fiscal_year_start_month = 1,
-                file_prefix_internal   = _pfx_int,
+                file_prefix_internal   = _file_pfx_int or _pfx_int,
                 file_prefix_deliverable = _file_pfx_del,
             )
             _yaml_str = config_to_yaml(_cfg_dict)
