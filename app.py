@@ -484,17 +484,106 @@ if _hero_cfg.property_type:
     _hero_badges.append(f"🔬 {_hero_cfg.property_type}")
 _hero_badge_html = " ".join(f'<span class="grp-badge">{b}</span>' for b in _hero_badges)
 
-st.html(f"""
+# Use st.components.v1.html() for the hero banner — it creates a true sandboxed
+# iframe that always renders HTML correctly, unlike st.markdown(unsafe_allow_html)
+# or st.html() which have both been broken in recent Streamlit versions.
+# All hero CSS is inlined here so the component is self-contained.
+import streamlit.components.v1 as _stc
+_stc.html(f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {{
+    margin: 0; padding: 0; overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: transparent;
+  }}
+  .grp-hero {{
+    background: linear-gradient(135deg, #1A5C22 0%, #2E7D32 100%);
+    border-radius: 10px;
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+    display: flex;
+    align-items: stretch;
+    min-height: 110px;
+    margin: 0;
+  }}
+  .grp-hero-photo {{
+    width: 240px; min-width: 240px;
+    object-fit: cover;
+    border-radius: 10px 0 0 10px;
+    display: block;
+  }}
+  .grp-hero-body {{
+    padding: 18px 24px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }}
+  .grp-hero-title {{
+    color: #ffffff;
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px 0;
+    line-height: 1.2;
+  }}
+  .grp-hero-sub {{
+    color: #C8E6C9;
+    font-size: 0.85rem;
+    margin: 0 0 8px 0;
+    font-weight: 400;
+  }}
+  .grp-hero-badges {{
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+    margin-top: 3px;
+  }}
+  .grp-badge {{
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 20px;
+    padding: 2px 11px;
+    color: #ffffff;
+    font-size: 0.73rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }}
+  .grp-hero-logo {{
+    padding: 18px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 150px;
+  }}
+  .grp-logo-text {{
+    color: rgba(255,255,255,0.85);
+    font-size: 0.68rem;
+    text-align: right;
+    line-height: 1.4;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }}
+</style>
+</head>
+<body>
 <div class="grp-hero">
-    {_photo_html}
-    <div class="grp-hero-body">
-        <div class="grp-hero-title">{_hero_title}</div>
-        <div class="grp-hero-sub">{_hero_sub}</div>
-        <div class="grp-hero-badges">{_hero_badge_html}</div>
-    </div>
-    <div class="grp-hero-logo">{_logo_html}</div>
+  {_photo_html}
+  <div class="grp-hero-body">
+    <div class="grp-hero-title">{_hero_title}</div>
+    <div class="grp-hero-sub">{_hero_sub}</div>
+    <div class="grp-hero-badges">{_hero_badge_html}</div>
+  </div>
+  <div class="grp-hero-logo">{_logo_html}</div>
 </div>
-""")
+</body>
+</html>
+""", height=130, scrolling=False)
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
