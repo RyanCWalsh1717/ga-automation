@@ -325,14 +325,19 @@ def _subhdr_fill():
 _PREPAID_INSURANCE_ACCT = '135110'   # Restricted Insurance / Prepaid Insurance
 _INSURANCE_EXPENSE_ACCTS = {'639110', '639120'}
 
-def detect_insurance_amortization(gl_data, budget_data, period: str = '') -> List[Dict[str, Any]]:
+def detect_insurance_amortization(
+    gl_data,
+    budget_data,
+    period: str = '',
+    insurance_policies: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """
     Generate monthly insurance expense entries from Prepaid Insurance (135110).
 
     JLL method: Annual premiums are paid upfront and held in 135110 Prepaid
     Insurance. Each month JLL posts:
-        DR 639110  Insurance-Property         (budget PTD amount)
-        DR 639120  Insurance-General Liability (budget PTD amount)
+        DR 639110  Insurance-Property         (monthly amount)
+        DR 639120  Insurance-General Liability (monthly amount)
         CR 135110  Prepaid Insurance           (combined monthly total)
 
     We generate these only when:
@@ -340,13 +345,19 @@ def detect_insurance_amortization(gl_data, budget_data, period: str = '') -> Lis
       2. The insurance expense account has no current-period GL activity
          (i.e., JLL hasn't posted the entry yet — normal for pre-close GL)
 
-    Monthly amounts come from the budget PTD column, which is set from the
-    actual policy premium ÷ policy months (matches JLL's calculation within
-    a few cents due to rounding).
+    Two modes:
+      Config-driven (insurance_policies provided):
+        Generates ONE JE line per policy entry in the list.  Each policy has
+        a name, expense_account, and fixed monthly_amount.  Supports multiple
+        policies on the same expense account (e.g. general property + umbrella,
+        both on 639110).  Config amounts take precedence over the budget.
 
-    Returns a list of dicts: one per expense account line, with
-    'credit_account' / 'credit_name' keys so build_accrual_entries() can
-    generate the correct CR 135110 offset instead of the default 213100.
+      Budget-driven (insurance_policies is empty / None):
+        Falls back to the budget PTD column — one combined line per expense
+        account code.  Matches JLL's calculation within a few cents.
+
+    Returns a list of dicts: one per line, with 'credit_account' / 'credit_name'
+    keys so build_accrual_entries() generates CR 135110 instead of 213100.
     """
     results: List[Dict[str, Any]] = []
 
@@ -374,7 +385,34 @@ def detect_insurance_amortization(gl_data, budget_data, period: str = '') -> Lis
         if code in _INSURANCE_EXPENSE_ACCTS and acct.net_change > 0.01:
             already_posted.add(code)
 
-    # 3. Pull monthly amounts from the budget PTD column
+    # ── Mode A: Config-driven — one line per named policy ─────────────────────
+    if insurance_policies:
+        for pol in insurance_policies:
+            code    = str(pol.get('expense_account', '639110')).strip()
+            name    = str(pol.get('name', '') or code)
+            monthly = float(pol.get('monthly_amount', 0.0) or 0.0)
+            if monthly < 1.0:
+                continue
+            if code in already_posted:
+                continue  # JLL already posted it this period
+
+            results.append({
+                'account_code':   code,
+                'account_name':   'Insurance',
+                'amount':         _round(monthly),
+                'credit_account': _PREPAID_INSURANCE_ACCT,
+                'credit_name':    'Prepaid Insurance',
+                'source':         'prepaid_amortization',
+                'confidence':     'high',
+                'description': (
+                    f'Accrual {_period_label} — {name} '
+                    f'(insurance prepaid amortization ${monthly:,.2f}/mo, '
+                    f'prepaid balance ${prepaid_balance:,.2f})'
+                ),
+            })
+        return results
+
+    # ── Mode B: Budget-driven — one combined line per expense account code ─────
     budget_rows = budget_data if isinstance(budget_data, list) else []
     for row in budget_rows:
         code = str(row.get('account_code', '') or '').strip()
@@ -1455,6 +1493,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           receivable_detail=None,
                           ledger_release_accounts: Optional[set] = None,
                           payroll_accounts: Optional[List[str]] = None,
+                          insurance_policies: Optional[List[Dict]] = None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from four sources (in priority order):
@@ -2182,7 +2221,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # detect_insurance_amortization() on top would double-count the expense).
     _ledger_ins_covered = (ledger_release_accounts or set()) & _INSURANCE_EXPENSE_ACCTS
     if gl_data and budget_data and not _ledger_ins_covered:
-        for ins in detect_insurance_amortization(gl_data, budget_data, period=period):
+        for ins in detect_insurance_amortization(
+            gl_data, budget_data, period=period,
+            insurance_policies=insurance_policies or None,
+        ):
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
     elif _ledger_ins_covered:
         # Still mark the accounts as covered so Layer 3 doesn't double-accrue them

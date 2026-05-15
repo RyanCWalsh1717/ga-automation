@@ -159,3 +159,17 @@ kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
 
 # ── Fiscal year ───────────────────────────────────────────────────────────────
 fiscal_year_start_month: 1     # January
+
+# ── Insurance policies (prepaid amortization breakdown) ───────────────────────
+# Each policy gets its own JE line: DR expense_account / CR 135110.
+# Both general property insurance and the umbrella policy post to 639110.
+# Set the correct monthly_amount for each policy (annual premium ÷ 12).
+# Leave this section absent or set monthly_amount: 0 to revert to the single
+# combined budget-PTD line (old behavior).
+insurance_policies:
+  - name:            "Property Insurance"
+    expense_account: "639110"
+    monthly_amount:  0.00     # ← replace with actual monthly amount (annual ÷ 12)
+  - name:            "Umbrella Policy"
+    expense_account: "639110"
+    monthly_amount:  0.00     # ← replace with actual monthly amount (annual ÷ 12)

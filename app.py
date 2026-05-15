@@ -1905,6 +1905,7 @@ with tab1:
                         receivable_detail=_rd_parsed,
                         ledger_release_accounts=_ledger_release_accounts,
                         payroll_accounts=getattr(_active_cfg, 'payroll_accounts', None) or None,
+                        insurance_policies=getattr(_active_cfg, 'insurance_policies', None) or None,
                     )
                 # Surface any pipeline UserWarnings (e.g. missing Berkadia RE tax entry) in the UI
                 for _w in _captured_warnings:

@@ -198,6 +198,21 @@ class PropertyConfig:
     qc_pl_accounts: Optional[list] = None
     qc_bs_accounts: Optional[list] = None
 
+    # ── Insurance policies (prepaid amortization) ─────────────────────────────
+    # When populated, detect_insurance_amortization() generates ONE JE line per
+    # policy instead of a single combined line from the budget PTD figure.
+    # This supports properties with multiple policies on the same expense account
+    # (e.g. general property insurance + umbrella, both on 639110).
+    #
+    # Each entry:
+    #   name            — description used in JE line (e.g. 'Property Insurance')
+    #   expense_account — GL debit account (typically '639110' or '639120')
+    #   monthly_amount  — fixed monthly amortization amount in dollars
+    #
+    # Leave empty ([]) to use the existing budget-driven detection (single line
+    # per account code from the Budget Comparison PTD column).
+    insurance_policies: List[Dict[str, Any]] = field(default_factory=list)
+
     # ─────────────────────────────────────────────────────────────────────────
 
     @classmethod
@@ -305,6 +320,17 @@ class PropertyConfig:
                 for a in (d.get('default_accruals') or [])
                 if a.get('account_code')
             ],
+            insurance_policies      = [
+                {
+                    'name':            str(p.get('name', '')),
+                    'expense_account': str(p.get('expense_account', '639110')),
+                    'monthly_amount':  float(p.get('monthly_amount', 0.0)),
+                }
+                for p in (d.get('insurance_policies') or [])
+                if p.get('name') and float(p.get('monthly_amount', 0.0)) > 0
+            ],
+            qc_pl_accounts          = d.get('qc_pl_accounts') or None,
+            qc_bs_accounts          = d.get('qc_bs_accounts') or None,
         )
 
     # ── Computed properties (backward compatibility + convenience) ────────────
