@@ -523,7 +523,7 @@ _stc.html(f"""<!DOCTYPE html>
     box-shadow: 0 4px 12px rgba(0,0,0,0.18);
     display: flex;
     align-items: stretch;
-    min-height: 110px;
+    min-height: 130px;
     margin: 0;
   }}
   .grp-hero-photo {{
@@ -599,7 +599,7 @@ _stc.html(f"""<!DOCTYPE html>
 </div>
 </body>
 </html>
-""", height=130, scrolling=False)
+""", height=160, scrolling=False)
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
