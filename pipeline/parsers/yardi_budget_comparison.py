@@ -120,6 +120,8 @@ def parse(filepath: str) -> List[Dict]:
         raise ValueError("Cannot extract headers from Budget Comparison file")
 
     # Process data rows starting after the detected header row
+    _last_code: Optional[str] = None  # carry-forward for sub-line items
+
     for row_num in range(data_start_row, ws.max_row + 1):
         row = ws[row_num]
         row_values = [cell.value for cell in row]
@@ -132,14 +134,43 @@ def parse(filepath: str) -> List[Dict]:
         account_code = row_values[0]
         account_name = row_values[1] if len(row_values) > 1 else None
 
-        # Skip rows without an account code
         if account_code is None:
-            continue
+            # Potential sub-line item under the most-recently seen account code.
+            # Yardi BC exports indent sub-items (e.g. individual insurance policies
+            # under 639110) without repeating the account code in column A.
+            # We inherit the parent code when the row has a non-empty description
+            # AND at least one non-zero numeric value in the data columns — this
+            # excludes blank spacers, section headers, and subtotal labels.
+            if _last_code is None:
+                continue
+
+            # Require a non-empty, non-total description
+            name_str = str(account_name or '').strip()
+            if not name_str:
+                continue
+            name_lower = name_str.lower()
+            if any(w in name_lower for w in ('total', 'subtotal', 'grand total', 'net ')):
+                continue
+
+            # Require at least one non-zero number in data columns (not col 0 or 1)
+            has_value = any(
+                isinstance(row_values[i], (int, float)) and row_values[i] != 0
+                for i in range(2, min(len(row_values), 12))
+            )
+            if not has_value:
+                continue
+
+            # Inherit parent account code; keep the sub-item's own description
+            account_code = _last_code
+        else:
+            # Normal account row — update carry-forward
+            _last_code = str(_normalize_value(account_code) or '').strip()
 
         # Build record — force code/name to str (Excel may return floats)
         record = {
             'account_code': str(_normalize_value(account_code) or '').strip(),
             'account_name': str(_normalize_value(account_name) or '').strip(),
+            'is_sub_item':  row_values[0] is None,  # flag for callers
         }
 
         # Extract values using dynamically detected column positions.
