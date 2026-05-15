@@ -435,9 +435,12 @@ def load_property_config(property_code: str, data_dir: str = 'data') -> Property
 
 def _legacy_registry_fallback(property_code: str) -> PropertyConfig:
     """
-    Return a PropertyConfig for known properties even without a config.yaml.
-    This preserves backward compatibility during the transition period.
+    Emergency fallback when config.yaml cannot be loaded.
+    For revlabspm the full config is retained for backward compatibility.
+    For any other property a minimal skeleton is returned — the operator must
+    create a proper config.yaml for the pipeline to function correctly.
     """
+    import warnings
     if str(property_code).lower() == 'revlabspm':
         return PropertyConfig(
             property_code         = 'revlabspm',
@@ -453,6 +456,12 @@ def _legacy_registry_fallback(property_code: str) -> PropertyConfig:
                 ManagementFeeLineConfig('GRP', 0.0175, 0.0,    '637130', '213100', 'MGMT-FEE-GRP'),
             ],
         )
+    warnings.warn(
+        f"PropertyConfig for '{property_code}' could not be loaded from config.yaml. "
+        f"A minimal skeleton is being used — create data/{property_code}/config.yaml "
+        f"to enable full pipeline functionality.",
+        stacklevel=3,
+    )
     return PropertyConfig(property_code=property_code or 'unknown')
 
 
@@ -479,7 +488,7 @@ def list_properties(data_dir: Optional[str] = None) -> List[str]:
     """Return list of property codes discovered from data_dir."""
     d = data_dir or _DEFAULT_DATA_DIR
     props = discover_properties(d)
-    return [p['code'] for p in props] if props else ['revlabspm']
+    return [p['code'] for p in props] if props else []
 
 
 _DEFAULT_CONFIG = PropertyConfig(property_code='unknown')

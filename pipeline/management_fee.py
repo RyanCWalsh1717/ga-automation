@@ -644,7 +644,7 @@ def detect_prior_period_catchup(gl_data) -> Optional[float]:
 def build_catchup_je(
     catchup_amount: float,
     period: str = '',
-    property_code: str = 'revlabspm',
+    property_code: str = '',
     ap_account: str = '213100',
     ap_account_name: str = 'Accrued Expenses',
     je_number: str = 'MGT-002',

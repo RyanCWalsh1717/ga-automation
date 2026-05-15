@@ -422,6 +422,7 @@ def detect_retax_amortization(
     gl_data,
     period: str = '',
     re_tax_bill_amount: float = 0.0,
+    re_tax_payment_months=None,
 ) -> Optional[Dict[str, Any]]:
     """
     RE Tax prepaid deferral / release JE.  Fires every month automatically —
@@ -473,6 +474,9 @@ def detect_retax_amortization(
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return None
 
+    # Use property-specific payment months or fall back to module default
+    _payment_months = frozenset(re_tax_payment_months) if re_tax_payment_months else _RETAX_PAYMENT_MONTHS
+
     # Parse period month ("Jan-2026" → 1)
     _MMAP = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
@@ -505,7 +509,7 @@ def detect_retax_amortization(
     bill        = re_tax_bill_amount
     auto_source = ''
     if bill <= 0:
-        if period_month in _RETAX_PAYMENT_MONTHS:
+        if period_month in _payment_months:
             # Berkadia's auto-post makes net_641110 ≈ quarterly bill this month
             if net_641110 > 10_000:
                 bill        = net_641110
@@ -526,7 +530,7 @@ def detect_retax_amortization(
     if bill <= 0:
         return None
 
-    if period_month in _RETAX_PAYMENT_MONTHS:
+    if period_month in _payment_months:
         # ── Payment month: defer 2/3 → DR 135120 / CR 641110 ────────────────
         if net_135120 > 100.0:
             return None   # deferral already posted in Yardi — suppress
@@ -1884,6 +1888,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           bonus_overrides: Optional[Dict[str, float]] = None,
                           loan_data=None,
                           re_tax_bill_amount: float = 0.0,
+                          re_tax_payment_months=None,
                           t12_result=None,
                           gl_activity_log: Optional[List[Dict]] = None,
                           receivable_detail=None,
@@ -2630,7 +2635,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     #       Pipeline releases 1/3:  DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes
     if gl_data:
         retax = detect_retax_amortization(gl_data, period=period,
-                                           re_tax_bill_amount=re_tax_bill_amount)
+                                           re_tax_bill_amount=re_tax_bill_amount,
+                                           re_tax_payment_months=re_tax_payment_months)
         if retax:
             _post_amort(retax, 'TAX', 'TAX-AMORT', '[RE Tax Amortization]')
     # Note: detect_retax_escrow_je() (full-bill DR 641110 / CR 115200) is retained
@@ -3608,7 +3614,7 @@ def generate_yardi_je_import(je_lines: List[Dict], output_path: str,
 # ── Generate Yardi CSV import (exact Yardi format) ────────────
 
 def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
-                           period: str = '', property_code: str = 'revlabspm',
+                           period: str = '', property_code: str = '',
                            book: str = '') -> str:
     """
     Generate a Yardi-compatible journal entry import CSV.
@@ -3725,7 +3731,7 @@ _ETL_IDX = {h: i for i, h in enumerate(_ETL_HEADERS)}
 
 
 def generate_etl_csv(je_lines: List[Dict], output_path: str,
-                     period: str = '', property_code: str = 'revlabspm',
+                     period: str = '', property_code: str = '',
                      book: str = '', auto_reverse: bool = False) -> str:
     """
     Generate a Yardi ETL FinJournals import CSV.

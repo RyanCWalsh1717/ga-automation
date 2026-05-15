@@ -1430,7 +1430,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         try:
             # Pass property_code so the GL-section parser can identify transaction lines
             _prop_code = (result.parsed.get('gl') and
-                          result.parsed['gl'].metadata.property_code) or 'revlabspm'
+                          result.parsed['gl'].metadata.property_code) or ''
             yardi_rec = parse_yardi_bank_rec(files["bank_rec"], property_code=_prop_code)
             result.parsed["bank_rec"] = yardi_rec
             bank_data = yardi_rec   # preferred source

@@ -55,6 +55,12 @@ from audit_trail_generator import generate_audit_trail
 # ── Data directory + property discovery ──────────────────────────────────────
 _DATA_DIR = Path(__file__).parent / "data"
 
+def _month_abbr(month_num: int) -> str:
+    """Return 3-letter month abbreviation from a month number (1=Jan … 12=Dec)."""
+    return ['Jan','Feb','Mar','Apr','May','Jun',
+            'Jul','Aug','Sep','Oct','Nov','Dec'][(month_num - 1) % 12]
+
+
 def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     """Return path to a committed reference file if it exists, else None."""
     p = _DATA_DIR / prop_code / filename
@@ -77,20 +83,14 @@ def _build_accruals_seed_df(cfg=None):
             "Description":    [''] * _n,
             "Split Schedule": [''] * _n,
         })
-    # Legacy RevLabs defaults — used when config has no default_accruals defined
-    _n = 11
+    # No default_accruals in config — return a single blank row so the editor renders
     return _pd_seed.DataFrame({
-        "Account Code": ["613310", "637150", "637150", "617110", "619120",
-                         "627230", "635110", "610140", "610160", "637230", ""],
-        "Account Name": ["Utilities-Water/Sewer", "Admin-Tenant Relations",
-                         "Admin-Tenant Relations", "HVAC Maint-Contract Svc",
-                         "Water Contract Svc", "Fire Life Safety",
-                         "Snow & Ice Removal", "Cleaning Mat/Supplies",
-                         "Cleaning-Trash Removal (extra)", "Admin-Materials/Supplies", ""],
-        "Vendor":       [""] * _n,
-        "Amount ($)":   [0.0] * _n,
-        "Description":  [""] * _n,
-        "Split Schedule": [""] * _n,
+        "Account Code":   [''],
+        "Account Name":   [''],
+        "Vendor":         [''],
+        "Amount ($)":     [0.0],
+        "Description":    [''],
+        "Split Schedule": [''],
     })
 
 
@@ -117,22 +117,15 @@ def _discover_properties() -> list[dict]:
     """
     Scan data/ for subfolders with a config.yaml.
     Returns list of {'code', 'display_name', 'address', 'cfg'} dicts.
-    Falls back to hardcoded RevLabs entry if none found.
+    Returns empty list if none found — UI handles the no-property state.
     """
     from property_config import discover_properties as _disc
-    props = _disc(str(_DATA_DIR))
-    if not props:
-        # Fallback so the app always has at least one property
-        from property_config import load_property_config
-        cfg = load_property_config('revlabspm', str(_DATA_DIR))
-        props = [{'code': 'revlabspm', 'display_name': cfg.display(),
-                  'address': cfg.property_address, 'cfg': cfg}]
-    return props
+    return _disc(str(_DATA_DIR))
 
 
 # ── Page configuration ───────────────────────────────────────
 st.set_page_config(
-    page_title="GA Close | GRP",
+    page_title="Close Pipeline",
     page_icon="🏢",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -315,7 +308,7 @@ if "temp_dir" not in st.session_state:
 if "active_property_code" not in st.session_state:
     # Default to first discovered property
     _init_props = _discover_properties()
-    st.session_state.active_property_code = _init_props[0]['code'] if _init_props else 'revlabspm'
+    st.session_state.active_property_code = _init_props[0]['code'] if _init_props else None
 if "_prev_active_property_code" not in st.session_state:
     st.session_state._prev_active_property_code = st.session_state.active_property_code
 
@@ -345,7 +338,7 @@ if "upload_key_p2" not in st.session_state:
 
 # Audit trail & sign-off
 if "prepared_by" not in st.session_state:
-    st.session_state.prepared_by = "Ryan Walsh"
+    st.session_state.prepared_by = ""   # resolved after _active_cfg loads
 if "signoff_state" not in st.session_state:
     st.session_state.signoff_state = {}
 if "close_tracker" not in st.session_state:
@@ -374,6 +367,12 @@ if "checklist_locked_at" not in st.session_state:
     st.session_state.checklist_locked_at = None
 if "last_completed_step" not in st.session_state:
     st.session_state.last_completed_step = None
+if "bulk_overrides_wp" not in st.session_state:
+    st.session_state.bulk_overrides_wp = {}
+if "pass1_gl_activity_log" not in st.session_state:
+    st.session_state['pass1_gl_activity_log'] = []
+if "je_desc_overrides" not in st.session_state:
+    st.session_state.je_desc_overrides = {}
 
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
@@ -390,14 +389,8 @@ if "post_close_je_df" not in st.session_state:
 def _build_tub_tenants(cfg) -> list:
     if getattr(cfg, 'tenants', None):
         return [(t['key'], t['name']) for t in cfg.tenants]
-    # Legacy fallback — RevLabs only
-    return [
-        ("accent",  "Accent Therapeutics"),
-        ("keros_n", "Keros Therapeutics (N)"),
-        ("keros_s", "Keros Therapeutics (S)"),
-        ("orum",    "Orum Therapeutics"),
-        ("santi",   "Santi Therapeutics"),
-    ]
+    # No tenants in config — return empty (operator must populate config.yaml tenants)
+    return []
 
 import pandas as pd  # needed for manual_accruals_df init and stale-session reset
 if "manual_accruals_df" not in st.session_state:
@@ -451,8 +444,8 @@ def _prop_hero_src(property_code: str) -> Optional[str]:
         _src = _img_b64(f'{property_code}_hero{_ext}')
         if _src:
             return _src
-    # 3. Legacy RevLabs fallback
-    return _img_b64('revlabs_hero.jpg') or _img_b64('revlabs_hero.png')
+    # No hero image found — return None (hero banner renders text-only)
+    return None
 
 _HERO_SRC = _prop_hero_src(st.session_state.get('active_property_code', ''))
 
@@ -509,6 +502,20 @@ _all_props   = _discover_properties()
 _prop_codes  = [p['code'] for p in _all_props]
 _prop_labels = {p['code']: f"{p['display_name']}  ({p['code']})" for p in _all_props}
 
+# Guard: no properties configured yet — show a one-time setup prompt and stop
+if not _prop_codes:
+    st.warning(
+        "⚠️ **No properties configured.** "
+        "Go to the **Properties** tab to add your first property.",
+        icon="🏗️",
+    )
+    st.info(
+        "Create a `data/{property_code}/config.yaml` file or use the Properties form "
+        "to get started. See the How To Use tab for a full walkthrough.",
+        icon="ℹ️",
+    )
+    st.stop()
+
 # _selected_code is set by the main-page selector below (after the hero banner).
 # Here we just ensure session_state has a valid value for the hero render.
 if st.session_state.active_property_code not in _prop_codes and _prop_codes:
@@ -549,6 +556,11 @@ _pfx_int      = _active_cfg.file_prefix_internal or 'GA'
 _inv_pfx      = _active_cfg.invoice_prefix or _pfx_del
 _prop_display = _active_cfg.display()
 _prop_entity  = _active_cfg.property_name or _prop_display  # full legal entity name
+
+# Resolve prepared_by default on first load or when it's still the empty placeholder
+if not st.session_state.get('prepared_by'):
+    _team = getattr(_active_cfg, 'team_members', None) or []
+    st.session_state.prepared_by = _team[0] if _team else ''
 
 # ── Rebuild accruals seed when active property changes ────────────────────────
 # Now that _active_cfg is loaded, rebuild the one-off accruals table if needed.
@@ -618,6 +630,9 @@ else:
         st.session_state.checklist_locked_at = None
         st.session_state.last_completed_step = None
         st.session_state.pass1_run_count     = 0
+        st.session_state.bulk_overrides_wp   = {}
+        st.session_state['pass1_gl_activity_log'] = []
+        st.session_state.je_desc_overrides   = {}
         st.rerun()
     if _ra_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_all_btn"):
         st.session_state.confirm_reset_all = False
@@ -839,11 +854,17 @@ with tab0:
             st.session_state.prepared_by = _chosen_name
 
     with _ck_col_period:
-        # Build a list of the last 3 months + next month for selector
+        # Build a dynamic list of periods: all months for the past year and next year
         from datetime import date
         _today = date.today()
-        # All 12 months of 2026, plus any prior/future month if current key falls outside
-        _period_options = [f'2026_{m:02d}' for m in range(1, 13)]
+        _fiscal_start = getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1
+        _cur_year = _today.year
+        # Show all months for the current year plus one year back and one year forward
+        _period_options = sorted(set(
+            [f'{_cur_year - 1}_{m:02d}' for m in range(1, 13)] +
+            [f'{_cur_year}_{m:02d}'     for m in range(1, 13)] +
+            [f'{_cur_year + 1}_{m:02d}' for m in range(1, 13)]
+        ))
         if _ck_pkey not in _period_options:
             _period_options.append(_ck_pkey)
             _period_options.sort()
@@ -940,7 +961,7 @@ with tab0:
             0: {
                 'emoji': '📋', 'color': '#1565C0', 'bg': '#E3F2FD',
                 'headline': 'Next: Start Pass 1',
-                'body': ('JLL has confirmed bank rec and payments are complete for {period}. '
+                'body': ('Bank rec and payments have been confirmed complete for {period}. '
                          'Upload Pass 1 source files and generate the JE CSVs.'),
             },
             1: {
@@ -1428,7 +1449,10 @@ with tab1:
     with st.expander("🏛️ RE Tax Bill — Enter every month", expanded=False):
         st.caption(
             "Enter the quarterly RE Tax bill amount **every month** (same amount for all 3 months in each cycle). "
-            "**Payment months (Jan / Apr / Jul / Oct):** Berkadia auto-posts the full bill to Yardi. "
+            + (lambda _m: (
+                f"**Payment months ({', '.join(_month_abbr(_x) for _x in sorted(_m))}):** "
+                f"Lender/escrow agent auto-posts the full bill to Yardi. "
+            ))(getattr(_active_cfg, 're_tax_payment_months', None) or [1, 4, 7, 10]) +
             "Pipeline defers 2/3 → DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes. "
             "**Release months (all other):** Pipeline releases 1/3 → DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes. "
             "Net result: expense is spread evenly — 1/3 of the quarterly bill per month."
@@ -1724,6 +1748,7 @@ with tab1:
                     tenant_utility_rows=_tenant_utility_rows or None,
                     loan_data=engine_result.parsed.get('loan'),
                     re_tax_bill_amount=_re_tax_bill_amount,
+                    re_tax_payment_months=getattr(_active_cfg, 're_tax_payment_months', None) or [1, 4, 7, 10],
                     bonus_overrides=_bonus_overrides or None,
                     kardin_records=engine_result.parsed.get('kardin_budget') or None,
                     t12_result=_t12_result_p1,
@@ -3526,6 +3551,7 @@ with tab2:
                         period_month=_period_month,
                         cash_received=fee_result.cash_received if fee_result and fee_result.cash_received > 0 else None,
                         loan_data=engine_result.parsed.get('loan'),
+                        property_config=_active_cfg,
                     )
                     st.session_state.pass2_output_files["qc_report"] = qc_report
                     qc_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_QC_Workbook.xlsx")
@@ -3879,6 +3905,25 @@ with tab2:
         if _bank_rec or _daca_data or _dev_rec:
             st.markdown("### Bank Reconciliation Summary")
             _rec_cols = st.columns(3)
+            # Derive bank account labels from property config
+            _ba_cfg = getattr(_active_cfg, 'bank_accounts', None) or {}
+            _gl_acc = getattr(_active_cfg, 'gl_accounts', None) or {}
+            _op_slug   = next((k for k, v in _ba_cfg.items() if str(v.get('gl_account','')).strip() == str(_gl_acc.get('cash_operating','111100')).strip()), None)
+            _daca_slug = next((k for k, v in _ba_cfg.items() if str(v.get('gl_account','')).strip() == str(_gl_acc.get('daca','115100')).strip()), None)
+            _dev_slugs = [k for k in _ba_cfg if k not in (_op_slug, _daca_slug)] if _ba_cfg else []
+            def _ba_label(slug):
+                if not slug or slug not in _ba_cfg:
+                    return slug or 'Operating'
+                ba = _ba_cfg[slug]
+                lbl  = ba.get('label', slug)
+                last4 = ba.get('last4', '')
+                gl   = ba.get('gl_account', '')
+                return f"{lbl}{' (' + last4 + ')' if last4 else ''}{' — GL ' + gl if gl else ''}"
+            _op_lbl   = _ba_label(_op_slug)   if _op_slug   else f"Operating — GL {_gl_acc.get('cash_operating','111100')}"
+            _daca_lbl = _ba_label(_daca_slug) if _daca_slug else f"DACA — GL {_gl_acc.get('daca','115100')}"
+            _op_gl_code   = str(_gl_acc.get('cash_operating', '111100'))
+            _daca_gl_code = str(_gl_acc.get('daca', '115100'))
+
             with _rec_cols[0]:
                 if _bank_rec:
                     _bank_bal  = float(_bank_rec.get('bank_statement_balance') or 0)
@@ -3887,13 +3932,13 @@ with tab2:
                     _diff_111  = _rec_bal - _gl_111
                     _icon_111  = "✅" if abs(_diff_111) < 0.02 else "❌"
                     st.markdown(f"""
-**PNC Operating (x3993) — GL 111100** {_icon_111}
+**{_op_lbl}** {_icon_111}
 | | |
 |---|---:|
 | Bank Statement Balance | ${_bank_bal:,.2f} |
 | Less: Outstanding Checks ({len(_bank_rec.get('outstanding_checks') or [])}) | (${_out_total:,.2f}) |
 | Reconciled Bank Balance | **${_rec_bal:,.2f}** |
-| GL Balance (111100) | ${_gl_111:,.2f} |
+| GL Balance ({_op_gl_code}) | ${_gl_111:,.2f} |
 | **Difference** | **${_diff_111:+,.2f}** |
 """)
                 else:
@@ -3904,11 +3949,11 @@ with tab2:
                     _diff_daca = _daca_end - _daca_gl
                     _icon_daca = "✅" if abs(_diff_daca) < 0.02 else "❌"
                     st.markdown(f"""
-**KeyBank DACA (x5132) — GL 115100** {_icon_daca}
+**{_daca_lbl}** {_icon_daca}
 | | |
 |---|---:|
 | Bank Statement Ending Balance | ${_daca_end:,.2f} |
-| GL Balance (115100) | ${_daca_gl:,.2f} |
+| GL Balance ({_daca_gl_code}) | ${_daca_gl:,.2f} |
 | **Difference** | **${_diff_daca:+,.2f}** |
 """)
                 else:
@@ -3921,8 +3966,9 @@ with tab2:
                     _dev_gl_bal    = float(_dev_rec.get('gl_balance') or 0)
                     _dev_diff      = _dev_rec_bal - _dev_gl_bal
                     _dev_icon      = "✅" if abs(_dev_diff) < 0.02 else "❌"
+                    _dev_lbl = _ba_label(_dev_slugs[0]) if _dev_slugs else "Secondary Account"
                     st.markdown(f"""
-**Development Account — revlabs** {_dev_icon}
+**{_dev_lbl}** {_dev_icon}
 | | |
 |---|---:|
 | Bank Statement Balance | ${_dev_bank_bal:,.2f} |
@@ -3932,7 +3978,7 @@ with tab2:
 | **Difference** | **${_dev_diff:+,.2f}** |
 """)
                 else:
-                    st.caption("Upload revlabs Bank Rec PDF to see Development account rec summary")
+                    st.caption("Upload secondary bank statement to see Development account rec summary")
             st.divider()
 
         # ── Engine Bank Match Detail (collapsible) ─────────────────────────
@@ -4733,7 +4779,7 @@ with tab4:
         )
         _default_members = '\n'.join(
             _edit_cfg.team_members if (_edit_cfg and _edit_cfg.team_members)
-            else ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
+            else []
         )
         _team_text = st.text_area(
             "Team members (one per line)",
@@ -5064,7 +5110,7 @@ with tab4:
             # Parse team members from text area (one per line)
             _team_members_parsed = [
                 m.strip() for m in _team_text.splitlines() if m.strip()
-            ] or ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']
+            ]  # empty list is valid; config will have no team_members
 
             # Parse tenants
             _tenants_list = []

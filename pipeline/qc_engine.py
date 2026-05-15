@@ -561,7 +561,8 @@ def check_7_misc(budget_rows: List[dict],
                  jll_rate: float = 0.0125,
                  grp_rate: float = 0.0175,
                  loan_data=None,
-                 period_month: int = 1) -> QCResult:
+                 period_month: int = 1,
+                 property_config=None) -> QCResult:
     """
     Spot-checks for:
     7a. Management fee accrual vs calculated fee (cash received × rate)
@@ -574,8 +575,19 @@ def check_7_misc(budget_rows: List[dict],
     kardin_records = kardin_records or []
     tb_map = tb_result.account_map if tb_result else {}
 
+    # ── Derive rates and GL code from property_config if available ─────────────
+    if property_config is not None:
+        _fees = getattr(property_config, 'management_fees', None) or []
+        if _fees:
+            # Use first two fee lines as jll / grp (or sum if only one)
+            jll_rate = _fees[0].rate if len(_fees) >= 1 else jll_rate
+            grp_rate = _fees[1].rate if len(_fees) >= 2 else 0.0
+        _gl_accts = getattr(property_config, 'gl_accounts', None) or {}
+        mgmt_fee_code = str(_gl_accts.get('mgmt_fee_expense', '637130')).strip() or '637130'
+    else:
+        mgmt_fee_code = '637130'
+
     # ── 7a: Management Fee ─────────────────────────────────────
-    mgmt_fee_code = '637130'
     bc_map = {str(r.get('account_code', '') or '').strip(): r for r in budget_rows}
 
     if mgmt_fee_code in bc_map and cash_received is not None and cash_received > 0:
@@ -776,10 +788,11 @@ def run_qc(
     kardin_records: List[dict] = None,
     accrual_entries: List[dict] = None,
     period: str = '',
-    property_name: str = 'Revolution Labs Owner, LLC',
+    property_name: str = '',
     period_month: int = 1,
     cash_received: float = None,
     loan_data=None,
+    property_config=None,
 ) -> QCReport:
     """
     Run all 7 QC checks and return a QCReport.
@@ -807,7 +820,8 @@ def run_qc(
         check_5_gl_vs_workpapers(gl_parsed, tb_result),
         check_6_accruals_vs_budget(budget_rows, kardin_records, accrual_entries, period_month),
         check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received,
-                     loan_data=loan_data, period_month=period_month),
+                     loan_data=loan_data, period_month=period_month,
+                     property_config=property_config),
     ]
 
     return QCReport(
