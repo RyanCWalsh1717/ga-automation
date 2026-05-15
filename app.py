@@ -104,6 +104,9 @@ def _save_checklist_now() -> None:
             st.session_state.close_tracker,
             st.session_state.get('custom_checklist_items', []),
             _code, _pkey,
+            locked    = st.session_state.get('checklist_locked', False),
+            locked_by = st.session_state.get('checklist_locked_by'),
+            locked_at = st.session_state.get('checklist_locked_at'),
         )
         save_checklist(_code, _pkey, _state, str(_DATA_DIR))
     except Exception:
@@ -363,6 +366,14 @@ if "custom_checklist_items" not in st.session_state:
     st.session_state.custom_checklist_items = []
 if "checklist_loaded" not in st.session_state:
     st.session_state.checklist_loaded = False
+if "checklist_locked" not in st.session_state:
+    st.session_state.checklist_locked = False
+if "checklist_locked_by" not in st.session_state:
+    st.session_state.checklist_locked_by = None
+if "checklist_locked_at" not in st.session_state:
+    st.session_state.checklist_locked_at = None
+if "last_completed_step" not in st.session_state:
+    st.session_state.last_completed_step = None
 
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
@@ -516,9 +527,13 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pass2_output_files    = {}
     st.session_state.uploaded_files        = {}
     # Reset checklist so the new property's data is loaded
-    st.session_state.checklist_loaded = False
-    st.session_state.close_tracker = {}
+    st.session_state.checklist_loaded    = False
+    st.session_state.close_tracker       = {}
     st.session_state.custom_checklist_items = []
+    st.session_state.checklist_locked    = False
+    st.session_state.checklist_locked_by = None
+    st.session_state.checklist_locked_at = None
+    st.session_state.last_completed_step = None
 
 # Load config for the selected property
 from property_config import load_property_config as _load_prop_cfg
@@ -785,13 +800,15 @@ with tab0:
     if not st.session_state.get('checklist_loaded', False):
         try:
             _ck_state = load_checklist(_ck_prop, _ck_pkey, str(_DATA_DIR))
-            _ct_loaded, _ci_loaded = state_to_session(_ck_state)
-            # Merge: don't overwrite steps already set by auto-detect in Pass 1/2
+            _ct_loaded, _ci_loaded, _lk, _lk_by, _lk_at = state_to_session(_ck_state)
             for _sk, _sv in _ct_loaded.items():
                 if _sk not in st.session_state.close_tracker:
                     st.session_state.close_tracker[_sk] = _sv
             if not st.session_state.custom_checklist_items:
                 st.session_state.custom_checklist_items = _ci_loaded
+            st.session_state.checklist_locked    = _lk
+            st.session_state.checklist_locked_by = _lk_by
+            st.session_state.checklist_locked_at = _lk_at
         except Exception:
             pass
         st.session_state.checklist_loaded = True
@@ -836,7 +853,10 @@ with tab0:
         )
         if _period_chosen != st.session_state.checklist_period_key:
             st.session_state.checklist_period_key = _period_chosen
-            st.session_state.checklist_loaded = False
+            st.session_state.checklist_loaded    = False
+            st.session_state.checklist_locked    = False
+            st.session_state.checklist_locked_by = None
+            st.session_state.checklist_locked_at = None
             st.rerun()
 
     with _ck_col_prog:
@@ -847,21 +867,197 @@ with tab0:
         _total_all = _n_steps + _n_custom
         _done_all  = _n_done + _n_cdone
         _pct = int(100 * _done_all / _total_all) if _total_all else 0
-        st.markdown(f"**{period_key_to_label(_ck_pkey)} Close**")
-        st.progress(_pct)
-        _pct_color = '#2E7D32' if _pct == 100 else '#1565C0'
-        st.markdown(
-            f"<span style='font-size:0.85rem;color:{_pct_color};font-weight:600;'>"
-            f"{_done_all} / {_total_all} tasks complete ({_pct}%)</span>",
-            unsafe_allow_html=True,
-        )
+        _ck_locked = st.session_state.get('checklist_locked', False)
+
+        # Lock badge or progress
+        if _ck_locked:
+            st.markdown(
+                f"<div style='background:#E8F5E9;border:1px solid #2E7D32;border-radius:6px;"
+                f"padding:8px 14px;font-size:0.85rem;color:#1B5E20;font-weight:600;'>"
+                f"🔒 Period Locked &nbsp;·&nbsp; {period_key_to_label(_ck_pkey)} &nbsp;·&nbsp; "
+                f"Locked by {st.session_state.get('checklist_locked_by','—')} "
+                f"at {st.session_state.get('checklist_locked_at','—')}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(f"**{period_key_to_label(_ck_pkey)} Close**")
+            st.progress(_pct)
+            _pct_color = '#2E7D32' if _pct == 100 else '#1565C0'
+            st.markdown(
+                f"<span style='font-size:0.85rem;color:{_pct_color};font-weight:600;'>"
+                f"{_done_all} / {_total_all} tasks complete ({_pct}%)</span>",
+                unsafe_allow_html=True,
+            )
+
+    # ── Lock / Unlock controls ─────────────────────────────────────────────────
+    _ck_locked = st.session_state.get('checklist_locked', False)
+    _lock_col, _lock_spacer = st.columns([3, 5])
+    with _lock_col:
+        if not _ck_locked:
+            if _pct == 100:
+                # All tasks done — offer lock
+                if st.button("🔒 Lock Period", use_container_width=True,
+                             help="Locks this period's checklist. All steps are complete. "
+                                  "Use Unlock for corrections."):
+                    st.session_state.checklist_locked    = True
+                    st.session_state.checklist_locked_by = st.session_state.prepared_by
+                    st.session_state.checklist_locked_at = datetime.now().strftime('%m/%d/%Y %H:%M')
+                    _save_checklist_now()
+                    st.rerun()
+            else:
+                # Not all done — allow locking but warn
+                if st.button("🔒 Lock Period Anyway", use_container_width=True,
+                             help=f"Lock even though {_total_all - _done_all} task(s) remain. "
+                                  "Use this if the close is complete but some steps were skipped."):
+                    st.session_state.checklist_locked    = True
+                    st.session_state.checklist_locked_by = st.session_state.prepared_by
+                    st.session_state.checklist_locked_at = datetime.now().strftime('%m/%d/%Y %H:%M')
+                    _save_checklist_now()
+                    st.rerun()
+        else:
+            if st.button("🔓 Unlock Period", use_container_width=True,
+                         help="Unlock to make corrections."):
+                st.session_state.checklist_locked    = False
+                st.session_state.checklist_locked_by = None
+                st.session_state.checklist_locked_at = None
+                _save_checklist_now()
+                st.rerun()
 
     st.divider()
+
+    # ── Reviewer notification callout ──────────────────────────────────────────
+    # Shown after a step is marked complete; cleared by Dismiss button.
+    _last_step = st.session_state.get('last_completed_step')
+    if _last_step is not None:
+        # Per-step notification config
+        _STEP_NOTIFS = {
+            0: {
+                'emoji': '📋', 'color': '#1565C0', 'bg': '#E3F2FD',
+                'headline': 'Next: Start Pass 1',
+                'body': ('JLL has confirmed bank rec and payments are complete for {period}. '
+                         'Upload Pass 1 source files and generate the JE CSVs.'),
+            },
+            1: {
+                'emoji': '📤', 'color': '#1565C0', 'bg': '#E3F2FD',
+                'headline': 'Next: Upload JE CSVs to Yardi',
+                'body': ('Pass 1 JEs have been generated for {period}. '
+                         'Download the Accruals, Prepaid, and Manual JE CSVs, upload them to '
+                         'Yardi, then run the final close.'),
+            },
+            2: {
+                'emoji': '⚙️', 'color': '#1565C0', 'bg': '#E3F2FD',
+                'headline': 'Next: Run final close in Yardi',
+                'body': ('JEs have been uploaded to Yardi for {period}. '
+                         'Run the final close to post all entries.'),
+            },
+            3: {
+                'emoji': '📥', 'color': '#1565C0', 'bg': '#E3F2FD',
+                'headline': 'Next: Re-export final files from Yardi',
+                'body': ('Final close has been run in Yardi for {period}. '
+                         'Re-export the GL, TB, BC, and Bank Rec — then return to upload Pass 2 files.'),
+            },
+            4: {
+                'emoji': '🗂️', 'color': '#1565C0', 'bg': '#E3F2FD',
+                'headline': 'Next: Upload Pass 2 files & generate reports',
+                'body': ('Final Yardi files are ready for {period}. '
+                         'Upload them to the Pass 2 section and click Generate Reports.'),
+            },
+            5: {
+                'emoji': '📊', 'color': '#1565C0', 'bg': '#E3F2FD',
+                'headline': 'Next: Generate Pass 2 reports',
+                'body': ('Pass 2 files uploaded for {period}. '
+                         'Click Generate Reports in the Pass 2 tab.'),
+            },
+            6: {
+                'emoji': '🔍', 'color': '#5C3317', 'bg': '#FFF8E1',
+                'headline': 'Action needed: QC review — Ryan & Natasha',
+                'body': ('Pass 2 reports have been generated for {period}. '
+                         'Ryan and Natasha: please review the QC workbook, workpapers, '
+                         'and exception report before releasing the final package.'),
+                'draft': True,
+                'draft_label': '📋 Suggested review note for Natasha:',
+                'draft_fn': lambda period, prop, team, user: (
+                    f"Hi {next((m.split()[0] for m in team if 'natasha' in m.lower()), 'Natasha')},\n\n"
+                    f"Pass 2 reports for {period} ({prop}) are ready for QC review.\n\n"
+                    f"Please check:\n"
+                    f"  1. QC Workbook (7 checks)\n"
+                    f"  2. Workpapers (GL vs TB tie-out)\n"
+                    f"  3. Budget Comparison with variance comments\n"
+                    f"  4. Exception Report\n\n"
+                    f"Let me know if anything looks off.\n\n"
+                    f"Thanks,\n{user}"
+                ),
+            },
+            7: {
+                'emoji': '📦', 'color': '#2D6F50', 'bg': '#E8F5E9',
+                'headline': 'Action needed: Release final package to Lauren',
+                'body': ('{period} QC review is complete for {prop}. '
+                         'The final package is ready for Lauren Sullivan. '
+                         'Upload the deliverables and mark Step 9 complete.'),
+                'draft': True,
+                'draft_label': '📋 Suggested message for Lauren:',
+                'draft_fn': lambda period, prop, team, user: (
+                    f"Hi {next((m.split()[0] for m in team if 'lauren' in m.lower()), 'Lauren')},\n\n"
+                    f"The {period} monthly close package for {prop} is ready for your review. "
+                    f"All QC checks have passed and the workpapers have been signed off.\n\n"
+                    f"Please let us know if you have any questions.\n\n"
+                    f"Thank you,\n{user}"
+                ),
+            },
+            8: {
+                'emoji': '🎉', 'color': '#2D6F50', 'bg': '#E8F5E9',
+                'headline': 'Close complete!',
+                'body': ('The {period} monthly close for {prop} is fully complete. '
+                         'All 9 steps confirmed. Great work!'),
+            },
+        }
+
+        _ni = _STEP_NOTIFS.get(_last_step)
+        if _ni:
+            _period_lbl  = period_key_to_label(_ck_pkey) if '_ck_pkey' in dir() else period_key_to_label(st.session_state.get('checklist_period_key', current_period_key()))
+            _team_members = list(getattr(_active_cfg, 'team_members', None) or
+                                 ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+            _prepared_by  = st.session_state.get('prepared_by', 'Ryan Walsh')
+            _body_text = _ni['body'].format(
+                period=_period_lbl,
+                prop=_prop_display,
+            )
+            st.markdown(
+                f"<div style='background:{_ni['bg']};border-left:4px solid {_ni['color']};"
+                f"border-radius:6px;padding:12px 16px;margin-bottom:12px;'>"
+                f"<div style='font-weight:700;color:{_ni['color']};font-size:0.92rem;'>"
+                f"{_ni['emoji']} Step {_last_step + 1} Complete &nbsp;·&nbsp; {_ni['headline']}"
+                f"</div>"
+                f"<div style='font-size:0.85rem;color:#424242;margin-top:5px;'>{_body_text}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            # Draft message for handoff steps (6 → Natasha, 7 → Lauren)
+            if _ni.get('draft'):
+                _draft_text = _ni['draft_fn'](
+                    _period_lbl, _prop_display, _team_members, _prepared_by
+                )
+                st.markdown(f"**{_ni['draft_label']}**")
+                st.text_area(
+                    'draft_msg',
+                    value=_draft_text,
+                    height=140,
+                    key=f'notif_draft_{_last_step}',
+                    label_visibility='collapsed',
+                )
+            _nd_col, _ = st.columns([1, 6])
+            with _nd_col:
+                if st.button('✕ Dismiss', key='notif_dismiss_btn', use_container_width=True):
+                    st.session_state.last_completed_step = None
+                    st.rerun()
 
     # ── Step checklist ─────────────────────────────────────────────────────────
     # Group into Pre-Close / Post-Close
     _PHASE_PRE  = list(range(0, 5))   # steps 0–4
     _PHASE_POST = list(range(5, 9))   # steps 5–8
+
+    _ck_locked = st.session_state.get('checklist_locked', False)
 
     def _render_phase(phase_label: str, step_indices: list) -> None:
         st.markdown(
@@ -900,7 +1096,13 @@ with tab0:
                     unsafe_allow_html=True,
                 )
             with _sc5:
-                if _stype == 'manual' and not _is_done:
+                if _ck_locked:
+                    st.markdown(
+                        "<div style='font-size:0.75rem;color:#9E9E9E;padding-top:6px;'>"
+                        "🔒 locked</div>",
+                        unsafe_allow_html=True,
+                    )
+                elif _stype == 'manual' and not _is_done:
                     if st.button('Mark Complete', key=f'ck_mark_{_si}',
                                  use_container_width=True):
                         st.session_state.close_tracker[_si] = {
@@ -909,6 +1111,7 @@ with tab0:
                             'auto':         False,
                         }
                         _save_checklist_now()
+                        st.session_state.last_completed_step = _si
                         st.rerun()
                 elif _is_done and _stype == 'manual':
                     if st.button('↩ Undo', key=f'ck_undo_{_si}',
@@ -960,7 +1163,13 @@ with tab0:
                 unsafe_allow_html=True,
             )
         with _cc5:
-            if not _ci_done:
+            if _ck_locked:
+                st.markdown(
+                    "<div style='font-size:0.75rem;color:#9E9E9E;padding-top:6px;'>"
+                    "🔒 locked</div>",
+                    unsafe_allow_html=True,
+                )
+            elif not _ci_done:
                 if st.button('Mark Complete', key=f'ci_mark_{_ci_idx}',
                              use_container_width=True):
                     st.session_state.custom_checklist_items[_ci_idx]['completed']    = True
@@ -979,26 +1188,27 @@ with tab0:
                     _save_checklist_now()
                     st.rerun()
 
-    # ── Add custom task ────────────────────────────────────────────────────────
-    with st.expander('➕  Add a custom task for this close', expanded=False):
-        _new_label = st.text_input('Task description', key='new_custom_task_label',
-                                   placeholder='e.g. Confirm Berkadia loan pay-off')
-        if st.button('Add Task', key='add_custom_task_btn', type='primary'):
-            if _new_label.strip():
-                _new_id = f'custom_{len(st.session_state.custom_checklist_items)}'
-                st.session_state.custom_checklist_items.append({
-                    'id':           _new_id,
-                    'label':        _new_label.strip(),
-                    'created_by':   st.session_state.prepared_by,
-                    'created_at':   datetime.now().strftime('%m/%d/%Y %H:%M'),
-                    'completed':    False,
-                    'completed_by': None,
-                    'completed_at': None,
-                })
-                _save_checklist_now()
-                st.rerun()
-            else:
-                st.warning('Please enter a task description.')
+    # ── Add custom task (hidden when locked) ──────────────────────────────────
+    if not _ck_locked:
+        with st.expander('➕  Add a custom task for this close', expanded=False):
+            _new_label = st.text_input('Task description', key='new_custom_task_label',
+                                       placeholder='e.g. Confirm Berkadia loan pay-off')
+            if st.button('Add Task', key='add_custom_task_btn', type='primary'):
+                if _new_label.strip():
+                    _new_id = f'custom_{len(st.session_state.custom_checklist_items)}'
+                    st.session_state.custom_checklist_items.append({
+                        'id':           _new_id,
+                        'label':        _new_label.strip(),
+                        'created_by':   st.session_state.prepared_by,
+                        'created_at':   datetime.now().strftime('%m/%d/%Y %H:%M'),
+                        'completed':    False,
+                        'completed_by': None,
+                        'completed_at': None,
+                    })
+                    _save_checklist_now()
+                    st.rerun()
+                else:
+                    st.warning('Please enter a task description.')
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1294,14 +1504,27 @@ with tab1:
     st.divider()
 
     # ── Pass 1 Run Button ─────────────────────────────────────────────────────
+    # Warn if Pass 1 has already been run — re-running after uploading JEs to
+    # Yardi would generate duplicate journal entries.
+    if st.session_state.pass1_complete:
+        _rerun_run_count = st.session_state.get('pass1_run_count', 1)
+        st.warning(
+            f"⚠️ **Pass 1 has already been run** ({_rerun_run_count}× this session). "
+            f"If you've already imported the JE CSVs into Yardi, re-running will generate "
+            f"**duplicate journal entries**. Only continue if you have NOT yet uploaded to Yardi "
+            f"or if you've reversed/deleted the prior batch.",
+            icon="⚠️",
+        )
+
     col_p1a, col_p1b = st.columns([3, 1])
     with col_p1a:
         pass1_button = st.button(
-            "🚀 Generate JEs",
+            "🚀 Generate JEs" if not st.session_state.pass1_complete else "🔁 Re-run Pass 1",
             disabled=not gl_uploaded,
             use_container_width=True,
             key="pass1_run_btn",
             help="Parse pre-close GL and generate all accrual JE CSVs for Yardi upload",
+            type="secondary" if st.session_state.pass1_complete else "primary",
         )
     with col_p1b:
         if st.button("🔄 Reset Pass 1", use_container_width=True, key="reset_pass1"):
@@ -1754,6 +1977,7 @@ with tab1:
                         "auto":         True,
                     }
                     _save_checklist_now()
+                    st.session_state.last_completed_step = 1
 
                 # ── Pass 1 Run Log ────────────────────────────────────────────
                 try:
@@ -3459,6 +3683,8 @@ with tab2:
                     _ck_changed = True
                 if _ck_changed:
                     _save_checklist_now()
+                    # Notify at step 6 (highest: QC review ready for team)
+                    st.session_state.last_completed_step = 6
 
                 # ── Run Log ───────────────────────────────────────────────────
                 try:
@@ -3921,6 +4147,7 @@ with tab2:
                                 "auto":         True,
                             }
                             _save_checklist_now()
+                            st.session_state.last_completed_step = 7
                         st.rerun()
                 with _col_status:
                     st.markdown(
@@ -4952,3 +5179,66 @@ with tab4:
             # Preview
             with st.expander("📄 Preview generated config.yaml"):
                 st.code(_yaml_str, language="yaml")
+
+    # ── Deactivate / Reactivate property (outside form, existing properties only) ──
+    if not _is_new and _edit_cfg is not None:
+        st.divider()
+        from property_writer import deactivate_property as _deactivate, reactivate_property as _reactivate
+        _prop_is_active = getattr(_edit_cfg, 'active', True)
+
+        if _prop_is_active:
+            st.markdown("#### 🗃️ Deactivate Property")
+            st.caption(
+                "Hides this property from the selector and pipeline without deleting any data. "
+                "All configs, checklists, and workpapers are preserved. "
+                "You can reactivate it at any time."
+            )
+            if "confirm_deactivate" not in st.session_state:
+                st.session_state.confirm_deactivate = False
+
+            if not st.session_state.confirm_deactivate:
+                if st.button(f"Deactivate {_edit_cfg.display()}", type="secondary"):
+                    st.session_state.confirm_deactivate = True
+                    st.rerun()
+            else:
+                st.warning(
+                    f"⚠️ This will hide **{_edit_cfg.display()}** from the property selector. "
+                    f"No data will be deleted. Reactivate any time from this tab."
+                )
+                _dc1, _dc2 = st.columns(2)
+                if _dc1.button("✅ Yes, Deactivate", use_container_width=True):
+                    _dok, _dmsg = _deactivate(_edit_code, str(_DATA_DIR))
+                    st.session_state.confirm_deactivate = False
+                    if _dok:
+                        st.success(f"Property deactivated. {_dmsg}")
+                    else:
+                        st.error(f"Deactivation failed: {_dmsg}")
+                if _dc2.button("❌ Cancel", use_container_width=True):
+                    st.session_state.confirm_deactivate = False
+                    st.rerun()
+        else:
+            st.markdown("#### 🔄 Reactivate Property")
+            st.caption("This property is currently deactivated. Reactivate to restore it to the selector.")
+            if st.button(f"Reactivate {_edit_cfg.display()}", type="primary"):
+                _rok, _rmsg = _reactivate(_edit_code, str(_DATA_DIR))
+                if _rok:
+                    st.success(f"Property reactivated. {_rmsg}")
+                else:
+                    st.error(f"Reactivation failed: {_rmsg}")
+
+    # ── Archived properties ───────────────────────────────────────────────────
+    from property_config import discover_all_properties as _disc_all
+    _all_with_inactive = _disc_all(str(_DATA_DIR))
+    _inactive = [p for p in _all_with_inactive if not p.get('active', True)]
+    if _inactive:
+        with st.expander(f"🗃️ Archived Properties ({len(_inactive)})", expanded=False):
+            for _ip in _inactive:
+                _ic1, _ic2 = st.columns([4, 2])
+                _ic1.markdown(f"**{_ip['display_name']}** &nbsp; `{_ip['code']}`")
+                if _ic2.button("Reactivate", key=f"reactivate_{_ip['code']}",
+                               use_container_width=True):
+                    _rok2, _rmsg2 = _reactivate(_ip['code'], str(_DATA_DIR))
+                    if _rok2:
+                        st.success(f"Reactivated {_ip['display_name']}. {_rmsg2}")
+                    else:
+                        st.error(f"Failed: {_rmsg2}")

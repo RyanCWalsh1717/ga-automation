@@ -157,6 +157,11 @@ class PropertyConfig:
     # ── Accrual engine settings ───────────────────────────────────────────────
     accrual_materiality_floor: float = 500.00
 
+    # ── Active flag ───────────────────────────────────────────────────────────
+    # Set active: false in config.yaml to hide a property from the selector
+    # without deleting its data.  Re-activate by setting it back to true.
+    active: bool = True
+
     # ── Output file prefixes ──────────────────────────────────────────────────
     file_prefix_internal:    str = 'GA'       # e.g. GA_Accruals_JE.csv
     file_prefix_deliverable: str = ''         # e.g. RevLabs_Jan2026_Workpapers.xlsx
@@ -257,6 +262,7 @@ class PropertyConfig:
             fiscal_year_start_month = int(d.get('fiscal_year_start_month', 1)),
             team_members            = list(d.get('team_members') or
                                           ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']),
+            active                  = bool(d.get('active', True)),
             default_split_schedule  = str(d.get('default_split_schedule', '')),
             tenants                 = [
                 {'key': str(t.get('key', '')), 'name': str(t.get('name', ''))}
@@ -367,17 +373,8 @@ class PropertyConfig:
 
 # ── Property discovery ────────────────────────────────────────────────────────
 
-def discover_properties(data_dir: str) -> List[Dict[str, Any]]:
-    """
-    Scan data_dir for subfolders containing config.yaml.
-    Returns a list of dicts with 'code', 'display_name', 'address', 'cfg'.
-    Sorted alphabetically by display name.
-
-    Usage (sidebar selector):
-        props = discover_properties(str(_DATA_DIR))
-        codes = [p['code'] for p in props]
-        names = {p['code']: p['display_name'] for p in props}
-    """
+def _scan_all_properties(data_dir: str) -> List[Dict[str, Any]]:
+    """Internal: scan all property folders regardless of active flag."""
     results = []
     if not os.path.isdir(data_dir):
         return results
@@ -390,16 +387,39 @@ def discover_properties(data_dir: str) -> List[Dict[str, Any]]:
         try:
             cfg = PropertyConfig.load(entry.name, data_dir)
             results.append({
-                'code':         cfg.property_code or entry.name,
-                'display_name': cfg.display(),
-                'address':      cfg.property_address,
+                'code':          cfg.property_code or entry.name,
+                'display_name':  cfg.display(),
+                'address':       cfg.property_address,
                 'property_type': cfg.property_type,
-                'size_sf':      cfg.property_size_sf,
-                'cfg':          cfg,
+                'size_sf':       cfg.property_size_sf,
+                'active':        cfg.active,
+                'cfg':           cfg,
             })
         except Exception:
             pass
     return results
+
+
+def discover_properties(data_dir: str) -> List[Dict[str, Any]]:
+    """
+    Scan data_dir for active properties (active: true in config.yaml).
+    Returns a list of dicts with 'code', 'display_name', 'address', 'cfg'.
+    Sorted alphabetically by display name.
+
+    Usage (property selector):
+        props = discover_properties(str(_DATA_DIR))
+        codes = [p['code'] for p in props]
+        names = {p['code']: p['display_name'] for p in props}
+    """
+    return [p for p in _scan_all_properties(data_dir) if p.get('active', True)]
+
+
+def discover_all_properties(data_dir: str) -> List[Dict[str, Any]]:
+    """
+    Like discover_properties() but includes inactive (deactivated) properties.
+    Used by the Properties admin tab to show archived properties.
+    """
+    return _scan_all_properties(data_dir)
 
 
 def load_property_config(property_code: str, data_dir: str = 'data') -> PropertyConfig:

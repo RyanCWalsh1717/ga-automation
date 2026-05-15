@@ -329,3 +329,45 @@ def save_image_local(
         return True, path
     except Exception as e:
         return False, str(e)
+
+
+# ── Deactivate / Reactivate property ─────────────────────────────────────────
+
+def _set_active_flag(property_code: str, active: bool, data_dir: str) -> tuple[bool, str]:
+    """
+    Toggle the `active:` flag in config.yaml without rewriting the whole file.
+    Reads the YAML, flips the flag, saves locally + GitHub.
+    Returns (success, message).
+    """
+    import yaml as _yaml
+    path = os.path.join(data_dir, property_code, 'config.yaml')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = _yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return False, f'config.yaml not found for {property_code}'
+    except Exception as e:
+        return False, str(e)
+
+    raw['active'] = active
+    yaml_content = _yaml.dump(raw, default_flow_style=False, allow_unicode=True,
+                              sort_keys=False, width=80)
+
+    local_ok, local_msg = save_local(property_code, yaml_content, data_dir)
+    gh_ok, gh_msg = save_to_github(
+        property_code, yaml_content,
+        commit_message=f"{'Activate' if active else 'Deactivate'} property: {property_code}",
+    )
+    if local_ok or gh_ok:
+        return True, gh_msg if gh_ok else local_msg
+    return False, f'Local: {local_msg} | GitHub: {gh_msg}'
+
+
+def deactivate_property(property_code: str, data_dir: str) -> tuple[bool, str]:
+    """Set active: false on a property config. Hides from the property selector."""
+    return _set_active_flag(property_code, active=False, data_dir=data_dir)
+
+
+def reactivate_property(property_code: str, data_dir: str) -> tuple[bool, str]:
+    """Set active: true on a property config. Restores it to the selector."""
+    return _set_active_flag(property_code, active=True, data_dir=data_dir)

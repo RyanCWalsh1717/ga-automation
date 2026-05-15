@@ -148,6 +148,9 @@ def _empty_state(property_code: str, period_key: str) -> Dict[str, Any]:
         'property_code': property_code,
         'steps':         {},
         'custom_items':  [],
+        'locked':        False,
+        'locked_by':     None,
+        'locked_at':     None,
     }
 
 
@@ -221,6 +224,9 @@ def session_to_state(
     custom_items: List[Dict],
     property_code: str,
     period_key: str,
+    locked: bool = False,
+    locked_by: Optional[str] = None,
+    locked_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert app session_state format → persistence format."""
     steps = {str(k): v for k, v in close_tracker.items()}
@@ -229,14 +235,24 @@ def session_to_state(
         'property_code': property_code,
         'steps':         steps,
         'custom_items':  custom_items,
+        'locked':        locked,
+        'locked_by':     locked_by,
+        'locked_at':     locked_at,
     }
 
 
-def state_to_session(state: Dict[str, Any]) -> Tuple[Dict[int, Dict], List[Dict]]:
-    """Convert persistence format → (close_tracker dict, custom_items list)."""
+def state_to_session(
+    state: Dict[str, Any],
+) -> Tuple[Dict[int, Dict], List[Dict], bool, Optional[str], Optional[str]]:
+    """
+    Convert persistence format → (close_tracker, custom_items, locked, locked_by, locked_at).
+    """
     close_tracker = {int(k): v for k, v in (state.get('steps') or {}).items()}
     custom_items  = list(state.get('custom_items') or [])
-    return close_tracker, custom_items
+    locked        = bool(state.get('locked', False))
+    locked_by     = state.get('locked_by')
+    locked_at     = state.get('locked_at')
+    return close_tracker, custom_items, locked, locked_by, locked_at
 
 
 # ── Convenience: current-month period key ────────────────────────────────────
