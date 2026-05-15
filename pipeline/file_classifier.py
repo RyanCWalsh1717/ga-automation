@@ -121,15 +121,15 @@ def _build_signals(property_config) -> dict:
         'daca_banks'           → str set — bank names for DACA PDF (e.g. 'keybank')
     """
     if not property_config:
-        # RevLabs hardcoded fallback
+        # No config — return empty signals; GL detection falls back to "general ledger" text match
         return {
-            'operating_accounts': {'1092223993'},
-            'dev_accounts':       {'466007913132', '3132'},
-            'daca_accounts':      {'329681415132', 'x5132', '5132'},
-            'property_codes':     {'revlabspm'},
-            'operating_banks':    {'pnc'},
-            'dev_banks':          {'bank of america', 'bofa'},
-            'daca_banks':         {'keybank', 'daca'},
+            'operating_accounts': set(),
+            'dev_accounts':       set(),
+            'daca_accounts':      set(),
+            'property_codes':     set(),
+            'operating_banks':    set(),
+            'dev_banks':          set(),
+            'daca_banks':         set(),
         }
 
     operating_accounts: set = set()
@@ -168,10 +168,9 @@ def _build_signals(property_config) -> dict:
             if full:      operating_accounts.add(full)
             if bank_name: operating_banks.add(bank_name)
 
-    # Ensure bank name sets are never empty (RevLabs fallback values)
-    if not operating_banks: operating_banks = {'pnc'}
-    if not dev_banks:       dev_banks = {'bank of america', 'bofa'}
-    if not daca_banks:      daca_banks = {'keybank', 'daca'}
+    # daca_banks must always contain 'daca' so DACA PDFs match regardless of config
+    if 'daca' not in daca_banks:
+        daca_banks.add('daca')
 
     prop_code = (property_config.property_code or '').lower()
 
@@ -179,7 +178,7 @@ def _build_signals(property_config) -> dict:
         'operating_accounts': operating_accounts,
         'dev_accounts':       dev_accounts,
         'daca_accounts':      daca_accounts,
-        'property_codes':     {prop_code} if prop_code else {'revlabspm'},
+        'property_codes':     {prop_code} if prop_code else set(),
         'operating_banks':    operating_banks,
         'dev_banks':          dev_banks,
         'daca_banks':         daca_banks,
@@ -351,7 +350,7 @@ def _classify_xlsx(file_bytes: bytes, signals: dict = None) -> Tuple[str, float]
     if "general ledger" in all_text:
         return "gl", 0.95
     # Yardi GL header contains the property code in parentheses, e.g. "(revlabspm)"
-    _prop_codes = _s.get('property_codes', {'revlabspm'})
+    _prop_codes = _s.get('property_codes', set())
     if any(code in all_text for code in _prop_codes):
         return "gl", 0.85
 

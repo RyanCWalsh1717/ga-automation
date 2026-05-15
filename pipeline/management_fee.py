@@ -279,9 +279,9 @@ def _cash_from_daca(daca_parsed: dict) -> Optional[float]:
     return float(val)
 
 
-def _cash_from_gl(gl_parsed) -> Optional[float]:
+def _cash_from_gl(gl_parsed, cash_account: str = _CASH_OPERATING) -> Optional[float]:
     """
-    Sum debit transactions in the operating cash account (111100).
+    Sum debit transactions in the operating cash account (default 111100).
 
     In double-entry:  Debit to cash = cash received (money coming in)
                       Credit to cash = cash paid out
@@ -295,7 +295,7 @@ def _cash_from_gl(gl_parsed) -> Optional[float]:
         return None
 
     for acct in gl_parsed.accounts:
-        if str(acct.account_code).strip() != _CASH_OPERATING:
+        if str(acct.account_code).strip() != cash_account:
             continue
 
         receipts = 0.0
@@ -404,6 +404,17 @@ def calculate(
     # 1. Receivable Summary — preferred (explicit Prepayment row, no scanning required)
     rs_cash, rs_prepay = _cash_from_receivable_summary(receivable_summary)
     if rs_cash is not None:
+        # L-7: warn when gross cash exists but is fully offset by prepayment exclusion
+        if rs_cash == 0.0 and rs_prepay > 0:
+            import warnings as _w
+            _w.warn(
+                f'Management fee basis is $0 after excluding ${rs_prepay:,.2f} prepayment '
+                f'from Receivable Summary. All cash collected this period was classified as '
+                f'prepayment. Verify the Receivable Summary Prepayment row is correct — '
+                f'if tenants paid regular rent this period, the fee should not be zero.',
+                UserWarning,
+                stacklevel=2,
+            )
         return ManagementFeeResult(
             cash_received=rs_cash,
             cash_source='receivable_summary',
@@ -415,6 +426,14 @@ def calculate(
     # 2. Receivable Detail — alternate (JLL's exact method, excludes prepayments)
     rd_cash, prepay_excl = _cash_from_receivable_detail(receivable_detail, ar_aging)
     if rd_cash is not None:
+        if rd_cash == 0.0 and prepay_excl > 0:
+            import warnings as _w
+            _w.warn(
+                f'Management fee basis is $0 after excluding ${prepay_excl:,.2f} prepayment '
+                f'from Receivable Detail. Verify the AR Aging prepayment balance is correct.',
+                UserWarning,
+                stacklevel=2,
+            )
         src = 'receivable_detail+ar_aging' if ar_aging is not None else 'receivable_detail'
         return ManagementFeeResult(
             cash_received=rd_cash,
@@ -435,7 +454,7 @@ def calculate(
         )
 
     # 4. GL cash account — fallback when neither Receivable report nor DACA uploaded
-    gl_cash = _cash_from_gl(gl_parsed)
+    gl_cash = _cash_from_gl(gl_parsed, cash_account=_cash_acct)
     if gl_cash is not None:
         return ManagementFeeResult(
             cash_received=gl_cash,
@@ -585,7 +604,7 @@ def accrued_fee_from_bc(budget_rows: list[dict]) -> float:
 
 # ── Prior-period catch-up detection ───────────────────────────────────────────
 
-def detect_prior_period_catchup(gl_data) -> Optional[float]:
+def detect_prior_period_catchup(gl_data, mgmt_fee_account: str = _MGMT_FEE_CODE) -> Optional[float]:
     """
     Detect whether the prior month's management fee accrual auto-reversed
     without a matching invoice entry, leaving a net credit in 637130.
@@ -628,7 +647,7 @@ def detect_prior_period_catchup(gl_data) -> Optional[float]:
         return None
 
     for acct in gl_data.accounts:
-        if str(acct.account_code).strip() != _MGMT_FEE_CODE:
+        if str(acct.account_code).strip() != mgmt_fee_account:
             continue
 
         # Sum credits (auto-reversals) and debits (invoice/accrual entries) in GL.

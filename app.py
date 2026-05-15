@@ -1850,14 +1850,20 @@ with tab1:
                     except Exception:
                         _ar_aging_parsed = None
 
-                fee_result = calculate_mgmt_fee(
-                    gl_parsed=gl_parsed,
-                    budget_rows=bc_parsed or [],
-                    daca_parsed=_daca_parsed,
-                    receivable_summary=_rs_parsed,
-                    receivable_detail=_rd_parsed,
-                    ar_aging=_ar_aging_parsed,
-                )
+                import warnings as _warnings_fee
+                with _warnings_fee.catch_warnings(record=True) as _fee_warns:
+                    _warnings_fee.simplefilter("always")
+                    fee_result = calculate_mgmt_fee(
+                        gl_parsed=gl_parsed,
+                        budget_rows=bc_parsed or [],
+                        daca_parsed=_daca_parsed,
+                        receivable_summary=_rs_parsed,
+                        receivable_detail=_rd_parsed,
+                        ar_aging=_ar_aging_parsed,
+                    )
+                for _fw in _fee_warns:
+                    if issubclass(_fw.category, UserWarning):
+                        st.warning(str(_fw.message), icon="⚠️")
                 fee_je = build_management_fee_je(
                     fee_result,
                     period=close_period,
@@ -1866,7 +1872,10 @@ with tab1:
                     property_config=_active_cfg,
                 )
 
-                _catchup_amount = detect_prior_period_catchup(gl_parsed)
+                _catchup_amount = detect_prior_period_catchup(
+                    gl_parsed,
+                    mgmt_fee_account=_active_cfg.gl_account('mgmt_fee_expense', '637130') if _active_cfg else '637130',
+                )
                 _catchup_je = []
                 if _catchup_amount and _catchup_amount > 0:
                     _catchup_je = build_catchup_je(
@@ -3684,7 +3693,7 @@ with tab2:
                         )
                         if _bc_file and os.path.exists(_bc_file):
                             _annotated_bc_path = os.path.join(
-                                st.session_state.temp_dir, "GA_Budget_Comparison_Internal.xlsx"
+                                st.session_state.temp_dir, f"{_pfx_int}_Budget_Comparison_Internal.xlsx"
                             )
                             write_comments_to_budget_comparison(
                                 input_path=_bc_file,
