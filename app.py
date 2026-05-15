@@ -1762,13 +1762,16 @@ with tab1:
                 # Build visual amortization schedule
                 amort_lines = build_prepaid_amortization(nexus_data or [], close_period=close_period)
 
-                # Get release lines now — used to suppress duplicate amortization
-                # in build_accrual_entries(); build_prepaid_release_je() called
-                # after je_lines so JE numbering stays sequential.
-                ledger_release_lines = prepaid_ledger.get_current_amortization(ledger_active, close_period)
+                # Phase-1 release scan — used only to build _ledger_release_accounts
+                # for build_accrual_entries().  This call does NOT yet know which
+                # newly-added Nexus invoices were suppressed, so it conservatively
+                # skips month-1 for all new items.  The definitive ledger_release_lines
+                # (used for JE generation) is computed in Phase 2 below, after we
+                # know which Nexus JEs were actually emitted.
+                _pre_release_lines = prepaid_ledger.get_current_amortization(ledger_active, close_period)
                 _ledger_release_accounts = {
                     str(item.get('gl_account_number', '')).strip()
-                    for item in ledger_release_lines
+                    for item in _pre_release_lines
                     if item.get('gl_account_number')
                 }
 
@@ -1800,6 +1803,26 @@ with tab1:
                     if issubclass(_w.category, UserWarning):
                         st.warning(str(_w.message), icon="⚠️")
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
+
+                # Phase-2 release scan — now that we know which Nexus JEs fired,
+                # determine which newly-added prepaid invoice numbers were suppressed
+                # (expense already in GL, invoice deduplicated).  For those items,
+                # month-1 must be emitted by the prepaid ledger instead of being
+                # silently skipped, otherwise the expense is permanently lost.
+                _emitted_nexus_invs = {
+                    str(l.get('invoice_number', '') or '').strip().lower()
+                    for l in je_lines
+                    if l.get('source') == 'nexus' and l.get('invoice_number')
+                }
+                _suppressed_prepaid_invs = {
+                    inv.strip().lower()
+                    for inv in (newly_added or [])
+                    if inv.strip().lower() and inv.strip().lower() not in _emitted_nexus_invs
+                } or None
+                ledger_release_lines = prepaid_ledger.get_current_amortization(
+                    ledger_active, close_period,
+                    suppressed_invoice_numbers=_suppressed_prepaid_invs,
+                )
 
                 # Build prepaid release JEs after je_lines so JE numbers are sequential
                 prepaid_release_je = build_prepaid_release_je(

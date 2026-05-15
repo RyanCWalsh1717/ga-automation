@@ -439,7 +439,8 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
 
 # ── Generate current period amortization JE lines ───────────
 
-def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict]:
+def get_current_amortization(active: List[Dict], close_period: str,
+                              suppressed_invoice_numbers: Optional[set] = None) -> List[Dict]:
     """
     Return one amortization record per active ledger item for the current period.
 
@@ -447,14 +448,29 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
       DR  [gl_account_number]  amount_for_this_month
       CR  135150 Prepaid Other  amount_for_this_month
 
-    Items with months_amortized == 0 added THIS period: first month is handled
-      by the Nexus accrual JE — skipped here to avoid a duplicate.
+    Items with months_amortized == 0 added THIS period: first month is normally
+      handled by the Nexus accrual JE — skipped here to avoid a duplicate.
+      EXCEPTION: if the Nexus JE was suppressed (invoice already in GL and
+      deduplicated by build_accrual_entries), pass the invoice number in
+      ``suppressed_invoice_numbers`` so month-1 is emitted here instead.
+      Without this, month-1 expense would be permanently lost — advance_period()
+      still increments months_amortized, so month-2 fires next close as if
+      month-1 had been handled.
     Items with months_amortized == 0 added in a PRIOR period (initial / legacy
       ledger setup): rebased to release this period by treating close_period − 1
       month as the new anchor. The item is updated in-place so advance_period
       and all future closes chain forward correctly.
     Items with months_amortized >= 1: normal release — fires when
       anchor + months_amortized == close_period.
+
+    Args:
+        active:                      Active ledger items (from load() or merge_nexus())
+        close_period:                Current close period string e.g. 'Mar-2026'
+        suppressed_invoice_numbers:  Optional set of invoice number strings (lowercased)
+                                     whose Nexus accrual JE was NOT emitted because the
+                                     expense was already in GL.  When a new item's invoice
+                                     number is in this set, month-1 is emitted by the ledger
+                                     rather than skipped.
 
     Day-based proration: if the item has daily_rate > 0 (set automatically by
     merge_nexus() when service_start is mid-month or service_end is mid-month),
@@ -491,11 +507,43 @@ def get_current_amortization(active: List[Dict], close_period: str) -> List[Dict
             # prior period in seed/legacy files).
             anchor = first_added or date(svc_start.year, svc_start.month, 1)
 
-            # Items added this period: month 1 expense is covered by the Nexus
-            # accrual JE — skip to avoid a duplicate.
+            # Items added this period: month-1 expense is normally covered by the
+            # Nexus accrual JE — skip here to avoid a duplicate.
+            # EXCEPTION: when the Nexus JE was suppressed (expense was already
+            # posted to GL and deduplicated by build_accrual_entries), the prepaid
+            # ledger must emit month-1 itself.  The caller signals suppression by
+            # including the invoice number in suppressed_invoice_numbers.
             if (close_date and anchor.year == close_date.year
                     and anchor.month == close_date.month):
-                continue
+                _inv_key = str(item.get('invoice_number', '') or '').strip().lower()
+                _nexus_suppressed = (
+                    bool(suppressed_invoice_numbers)
+                    and bool(_inv_key)
+                    and _inv_key in suppressed_invoice_numbers
+                )
+                if not _nexus_suppressed:
+                    continue  # Nexus JE covers month-1; skip here to avoid duplicate
+
+                # Nexus JE was suppressed — emit month-1 directly.
+                # anchor == close_date, months_done == 0 → amort_month = close_date.
+                # We do NOT rebase the anchor (no in-place mutation) so that
+                # advance_period() increments months_amortized 0→1 and next month
+                # uses anchor=service_start + 1 = month-2 correctly.
+                _m1_amount = _month_amount(item, close_date)
+                results.append({
+                    'vendor':            item.get('vendor', ''),
+                    'invoice_number':    item.get('invoice_number', ''),
+                    'description':       item.get('description', ''),
+                    'gl_account_number': item.get('gl_account_number', ''),
+                    'gl_account':        item.get('gl_account', ''),
+                    'monthly_amount':    _m1_amount,
+                    'period_label':      _date_to_period(close_date),
+                    'month_index':       1,
+                    'total_months':      int(item.get('total_months', 1) or 1),
+                    'source':            'prepaid_ledger',
+                    'is_day_based':      float(item.get('daily_rate') or 0) > 0,
+                })
+                continue  # skip legacy-rebase block and amort_month check below
 
             # Legacy / initial-setup item: months_amortized was never incremented
             # (e.g. the prepaid ledger was created manually for the first time).
