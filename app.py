@@ -428,12 +428,17 @@ _LOGO_SRC   = _img_b64('grp_logo.png') or _img_b64('grp_logo.svg')
 def _prop_hero_src(property_code: str) -> Optional[str]:
     """
     Return a base64 data-URI for the property's hero photo.
-    Checks data/{property_code}/hero.jpg|png|webp first,
-    then falls back to assets/{property_code}_hero.jpg,
-    then to the generic revlabs_hero fallback.
+
+    Search order:
+      1. data/{property_code}/hero.jpg|jpeg|png|webp  (property data dir)
+      2. assets/{property_code}_hero.jpg|...           (exact code match)
+      3. assets/{base_code}_hero.jpg|...               (code without trailing 'pm',
+         e.g. revlabspm → revlabs_hero.jpg)
+    Returns None if no image is found (banner renders text-only).
     """
     import base64 as _b64mod
     _exts = ['.jpg', '.jpeg', '.png', '.webp']
+
     # 1. Property-specific file in data dir
     for _ext in _exts:
         _p = _DATA_DIR / property_code / f'hero{_ext}'
@@ -442,12 +447,23 @@ def _prop_hero_src(property_code: str) -> Optional[str]:
             _mime = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
                      'png': 'image/png', 'webp': 'image/webp'}.get(_ext.lstrip('.'), 'image/jpeg')
             return f'data:{_mime};base64,{_raw}'
-    # 2. Assets folder named after the property
+
+    # 2. Assets folder — exact property code prefix (e.g. revlabspm_hero.jpg)
     for _ext in _exts:
         _src = _img_b64(f'{property_code}_hero{_ext}')
         if _src:
             return _src
-    # No hero image found — return None (hero banner renders text-only)
+
+    # 3. Assets folder — code without trailing 'pm' suffix
+    #    Yardi property codes often end with 'pm' (property management) but
+    #    legacy asset files may use the shorter name (revlabspm → revlabs_hero.jpg).
+    if property_code.endswith('pm'):
+        _base = property_code[:-2]
+        for _ext in _exts:
+            _src = _img_b64(f'{_base}_hero{_ext}')
+            if _src:
+                return _src
+
     return None
 
 _HERO_SRC = _prop_hero_src(st.session_state.get('active_property_code', ''))
