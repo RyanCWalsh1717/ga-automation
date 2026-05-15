@@ -603,7 +603,7 @@ _stc.html(f"""<!DOCTYPE html>
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
-_prior_period_outstanding_default = 0.0  # replaced by sidebar widget below
+_prior_period_outstanding_default = 0.0
 
 # ── Property discovery (used by main-page selector + sidebar card) ───────────
 _all_props   = _discover_properties()
@@ -701,18 +701,7 @@ st.session_state.prepared_by = st.sidebar.text_input(
     help="Stamped on every workpaper tab and the run log.",
 )
 
-prior_period_outstanding = st.sidebar.number_input(
-    "Prior Period Outstanding Checks ($)",
-    min_value=0.0,
-    value=_prior_period_outstanding_default,
-    step=100.0,
-    format="%.2f",
-    help=(
-        "Enter the total of outstanding checks from the prior period. "
-        "Only needed when using a PNC bank statement instead of the Yardi Bank Rec PDF. "
-        "Leave 0 if the Yardi Bank Rec PDF is uploaded — outstanding checks are read from it automatically."
-    ),
-)
+prior_period_outstanding = _prior_period_outstanding_default
 
 if not st.session_state.confirm_reset_all:
     if st.sidebar.button("🔄 Reset All", use_container_width=True,
