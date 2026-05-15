@@ -112,6 +112,8 @@ def detect_period_state(
     period: str,
     gl_data=None,
     reference_date: Optional[date] = None,
+    period_signal_account: str = _PERIOD_SIGNAL_ACCOUNT,
+    period_signal_threshold: float = _PERIOD_SIGNAL_THRESHOLD,
 ) -> dict:
     """
     Determine where we are in the monthly close cycle.
@@ -186,13 +188,13 @@ def detect_period_state(
     gl_net_credit = 0.0
     if gl_data and hasattr(gl_data, 'accounts'):
         for acct in gl_data.accounts:
-            if str(acct.account_code).strip() == _PERIOD_SIGNAL_ACCOUNT:
+            if str(acct.account_code).strip() == period_signal_account:
                 period_debits  = sum(float(t.debit  or 0) for t in acct.transactions)
                 period_credits = sum(float(t.credit or 0) for t in acct.transactions)
                 gl_net_credit = period_credits - period_debits
                 break
 
-    gl_signal = gl_net_credit > _PERIOD_SIGNAL_THRESHOLD
+    gl_signal = gl_net_credit > period_signal_threshold
     result['gl_signal_detected'] = gl_signal
     result['gl_signal_amount'] = round(gl_net_credit, 2)
 
@@ -1383,9 +1385,28 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
                 except Exception:
                     result.property_name = '[Property Name]'
 
-            # Period-state detection — run after period and GL are known
+            # Period-state detection — run after period and GL are known.
+            # Property config loaded here for signal account override; falls back
+            # to module-level defaults (213100 / $100) when config unavailable.
             if result.period:
-                result.period_state = detect_period_state(result.period, gl_data=gl)
+                try:
+                    from property_config import get_config as _get_cfg_ps
+                    _ps_cfg = _get_cfg_ps(gl.metadata.property_code or '')
+                    _sig_acct  = str((_ps_cfg.gl_accounts or {}).get(
+                        'period_signal_account', _PERIOD_SIGNAL_ACCOUNT
+                    )).strip() or _PERIOD_SIGNAL_ACCOUNT
+                    _sig_thresh = float(
+                        getattr(_ps_cfg, 'period_signal_threshold', _PERIOD_SIGNAL_THRESHOLD)
+                        or _PERIOD_SIGNAL_THRESHOLD
+                    )
+                except Exception:
+                    _sig_acct  = _PERIOD_SIGNAL_ACCOUNT
+                    _sig_thresh = _PERIOD_SIGNAL_THRESHOLD
+                result.period_state = detect_period_state(
+                    result.period, gl_data=gl,
+                    period_signal_account=_sig_acct,
+                    period_signal_threshold=_sig_thresh,
+                )
         except Exception as e:
             result.add_exception("error", "parse", "yardi_gl", f"GL parse failed: {e}")
 

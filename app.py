@@ -3431,7 +3431,7 @@ with tab2:
                                 st.caption(f"⚠️ Could not read Pass 2 prepaid ledger: {_pe}")
                         if not _prepaid_active:
                             # Fall back to same-session Pass 1 data (already post-advance)
-                            _p1_data = st.session_state.get('pass1_output', {})
+                            _p1_data = st.session_state.get('pass1_output_files', {})
                             _prepaid_active = _p1_data.get('ledger_active', [])
 
                         bs_workpaper_generator.generate(

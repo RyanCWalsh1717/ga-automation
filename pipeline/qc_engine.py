@@ -28,6 +28,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+import threading
+
 from variance_comments import classify_tier, TIER1_ABS, TIER1_PCT, TIER2_MIN
 from property_config import is_revenue_account, is_expense_account, is_balance_sheet_account
 
@@ -35,21 +37,23 @@ from property_config import is_revenue_account, is_expense_account, is_balance_s
 # ── Account type helpers — delegate to per-property COA config ─────────────────
 # Defaults match the standard Yardi COA (4xxxxx=revenue, 5-8xxxxx=expense,
 # 1-3xxxxx=BS).  Override via PropertyConfig when onboarding a new property.
-# Module-level config reference set by run_qc() so individual check functions
-# can use property-specific COA prefixes without changing every signature.
-_QC_CFG = None
+#
+# Thread-local storage isolates each user's QC run in Streamlit Cloud's
+# multi-threaded environment — prevents one user's property config from
+# overwriting another's while check functions are executing.
+_qc_thread_local = threading.local()
 
 
 def _is_revenue(code: str, cfg=None) -> bool:
-    return is_revenue_account(code, cfg=cfg or _QC_CFG)
+    return is_revenue_account(code, cfg=cfg or getattr(_qc_thread_local, 'cfg', None))
 
 
 def _is_expense(code: str, cfg=None) -> bool:
-    return is_expense_account(code, cfg=cfg or _QC_CFG)
+    return is_expense_account(code, cfg=cfg or getattr(_qc_thread_local, 'cfg', None))
 
 
 def _is_balance_sheet(code: str, cfg=None) -> bool:
-    return is_balance_sheet_account(code, cfg=cfg or _QC_CFG)
+    return is_balance_sheet_account(code, cfg=cfg or getattr(_qc_thread_local, 'cfg', None))
 
 
 def _safe_float(v) -> float:
@@ -817,10 +821,10 @@ def run_qc(
     """
     kardin_records = kardin_records or []
 
-    # Set module-level config so _is_revenue/_is_expense/_is_balance_sheet
+    # Set thread-local config so _is_revenue/_is_expense/_is_balance_sheet
     # use property-specific COA prefixes without changing every check signature.
-    global _QC_CFG
-    _QC_CFG = property_config
+    # Thread-local isolates concurrent user sessions in Streamlit Cloud.
+    _qc_thread_local.cfg = property_config
 
     checks = [
         check_1_tb_to_budget(tb_result, budget_rows),

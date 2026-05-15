@@ -187,7 +187,10 @@ def _cash_from_receivable_summary(rs_parsed) -> tuple:
     if total <= 0:
         return None, 0.0
 
-    return (net if net > 0 else None), prepay
+    # Return 0.0 (not None) when net==0 — cash was received but fully consumed by
+    # prepayments. Returning None would cause fallthrough to DACA/GL/revenue proxy
+    # and overstate the fee basis.
+    return (net if net > 0 else 0.0), prepay
 
 
 def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:

@@ -519,7 +519,9 @@ def detect_retax_amortization(
             # 1st release months (Feb/May/Aug/Nov): beg = 2/3 × bill → ×1.5
             # 2nd release months (Mar/Jun/Sep/Dec): beg = 1/3 × bill → ×3.0
             if beg_135120 > 100:
-                _FIRST_RELEASE = {2, 5, 8, 11}
+                # Compute release months dynamically from the configured payment months
+                # 1st release = month after each payment month; 2nd release = 2 months after
+                _FIRST_RELEASE = {(m % 12) + 1 for m in _payment_months}
                 multiplier = 1.5 if period_month in _FIRST_RELEASE else 3.0
                 bill        = _round(beg_135120 * multiplier)
                 auto_source = (
@@ -2725,7 +2727,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         })
 
         # CR line: Accrued Expenses (213100) or Accrued Interest (213200) depending on DR account
-        _cr_acct, _cr_name = _cr_for(acct_code)
+        _cr_acct, _cr_name = _cr_for(gl_account)
         je_lines.append({
             'je_number':      je_id,
             'line':           2,

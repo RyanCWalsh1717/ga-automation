@@ -154,6 +154,12 @@ class PropertyConfig:
     # ── Property identifiers ──────────────────────────────────────────────────
     parcel_ids: List[str] = field(default_factory=list)
 
+    # ── Period-state detection ────────────────────────────────────────────────
+    # Account whose net credit signals that Yardi's close cycle has started.
+    # Override via gl_accounts: {period_signal_account: '213100'} in config.yaml.
+    # Threshold: minimum net credit (absolute $) to register the signal.
+    period_signal_threshold: float = 100.0
+
     # ── Accrual engine settings ───────────────────────────────────────────────
     accrual_materiality_floor: float = 500.00
 
@@ -261,6 +267,7 @@ class PropertyConfig:
             payment_check         = d.get('payment_check') or {},
             re_tax_payment_months = list(d.get('re_tax_payment_months') or [1, 4, 7, 10]),
             parcel_ids            = list(d.get('parcel_ids') or []),
+            period_signal_threshold   = float(d.get('period_signal_threshold', 100.0)),
             accrual_materiality_floor = float(d.get('accrual_materiality_floor', 500.0)),
             file_prefix_internal    = str(d.get('file_prefix_internal', 'GA')),
             file_prefix_deliverable = str(d.get('file_prefix_deliverable', '')),
