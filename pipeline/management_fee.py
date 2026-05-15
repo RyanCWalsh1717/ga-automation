@@ -239,17 +239,23 @@ def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
     scan_prepay = 0.0
 
     if ar_aging is not None and hasattr(ar_aging, 'prepayment_balance'):
-        ar_prepay = float(ar_aging.prepayment_balance or 0)
+        # AR Aging prepayment_balance can be negative in application months (a tenant
+        # applies a prior prepayment against current rent). abs() ensures we exclude
+        # the correct cash amount regardless of the direction of the Yardi balance.
+        ar_prepay = abs(float(ar_aging.prepayment_balance or 0))
 
     if hasattr(rd_parsed, 'prepayment_receipts'):
         scan_prepay = float(rd_parsed.prepayment_receipts or 0)
     elif isinstance(rd_parsed, dict):
         scan_prepay = float(rd_parsed.get('prepayment_receipts', 0) or 0)
 
-    # max() handles cross-tenant netting: charge-code scan wins when AR Aging
-    # net under-states true prepayments; AR Aging wins when scan misses a
-    # prepayment not flagged by its charge code.
-    prepay = max(ar_prepay, scan_prepay)
+    # When AR Aging is available it is the primary source (authoritative Yardi balance).
+    # The charge-code scan is used only as a fallback when AR Aging is not uploaded,
+    # to avoid double-counting in months where AR Aging net differs from scan total.
+    if ar_aging is not None:
+        prepay = ar_prepay
+    else:
+        prepay = scan_prepay
 
     net = max(0.0, total - prepay)
     return (net if net > 0 else None), prepay
@@ -625,12 +631,42 @@ def detect_prior_period_catchup(gl_data) -> Optional[float]:
         if str(acct.account_code).strip() != _MGMT_FEE_CODE:
             continue
 
-        # Sum credits (auto-reversals) and debits (invoice entries) already in GL.
-        # The current-period new accrual from build_management_fee_je() is NOT in
-        # the GL at this point — it is built and posted as a separate entry (MGT-001).
-        # We only look at what Yardi has already recorded.
-        period_debits  = sum(float(txn.debit  or 0) for txn in acct.transactions)
-        period_credits = sum(float(txn.credit or 0) for txn in acct.transactions)
+        # Sum credits (auto-reversals) and debits (invoice/accrual entries) in GL.
+        # The current-period new accrual (MGT-001) is NOT in the GL yet — it has
+        # not been posted. We only look at what Yardi has already recorded.
+        #
+        # H-6 improvement: filter transaction types to reduce false positives.
+        # Auto-reversals in Yardi have "reverse" or "auto" in their description,
+        # OR their reference matches a prior-month JE pattern (e.g. "MGT-001").
+        # Legitimate AP invoice debits reference vendors or check numbers.
+        # We still sum ALL debits (conservative) but credit-side we prefer to
+        # identify auto-reversals. When no description signal is available we
+        # fall back to summing all credits (safe default).
+        _auto_rev_keywords = ('reverse', 'auto-rev', 'autorev', 'auto rev')
+
+        def _is_auto_reversal(txn) -> bool:
+            desc = (str(getattr(txn, 'description', '') or '')).lower()
+            ref  = (str(getattr(txn, 'reference',   '') or '')).lower()
+            rems = (str(getattr(txn, 'remarks',     '') or '')).lower()
+            return any(kw in desc or kw in ref or kw in rems for kw in _auto_rev_keywords)
+
+        # Use heuristic filter only when at least one transaction looks like an
+        # auto-reversal; fall back to raw totals when the GL has no such signals
+        # (avoids silently zeroing out the catch-up on unfamiliar GL exports).
+        _has_any_rev_signal = any(_is_auto_reversal(t) for t in acct.transactions
+                                   if float(t.credit or 0) > 0)
+
+        if _has_any_rev_signal:
+            # Filtered mode: credits = identified auto-reversals only
+            period_credits = sum(
+                float(txn.credit or 0) for txn in acct.transactions
+                if _is_auto_reversal(txn)
+            )
+        else:
+            # Fallback: sum all credits (preserves original behaviour on older exports)
+            period_credits = sum(float(txn.credit or 0) for txn in acct.transactions)
+
+        period_debits = sum(float(txn.debit or 0) for txn in acct.transactions)
 
         # Net credit = auto-reversal exceeded invoice postings → catch-up gap
         net_credit = period_credits - period_debits

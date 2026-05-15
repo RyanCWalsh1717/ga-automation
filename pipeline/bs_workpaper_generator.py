@@ -216,7 +216,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                            bank_rec_xlsx_filepath: str = None,
                            daca_bank_rec_xlsx_filepath: str = None,
                            dev_bank_rec_xlsx_filepath: str = None,
-                           prepared_by: str = '') -> str:
+                           prepared_by: str = '',
+                           property_config=None) -> str:
     """
     Generate the monthly close workpaper (GL vs TB tie-out + bank recs).
 
@@ -491,6 +492,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 capital_schedule_data=capital_schedule_data,
                 berkadia_loans=berkadia_loans,
                 prior_tab_detail=_prior_full_detail,
+                property_config=property_config,
             )
         elif acct.account_code in _ACCRUAL_SCHEDULE_ACCOUNTS:
             _write_accrual_schedule_tab(
@@ -3161,7 +3163,8 @@ def generate(gl_result, tb_result, output_path: str,
              bank_rec_xlsx_filepath: str = None,
              daca_bank_rec_xlsx_filepath: str = None,
              dev_bank_rec_xlsx_filepath: str = None,
-             prepared_by: str = '') -> str:
+             prepared_by: str = '',
+             property_config=None) -> str:
     """Alias for generate_bs_workpaper — called from app.py."""
     return generate_bs_workpaper(gl_result, tb_result, output_path, period,
                                   property_name, prepaid_ledger_active,
@@ -3180,4 +3183,5 @@ def generate(gl_result, tb_result, output_path: str,
                                   bank_rec_xlsx_filepath=bank_rec_xlsx_filepath,
                                   daca_bank_rec_xlsx_filepath=daca_bank_rec_xlsx_filepath,
                                   dev_bank_rec_xlsx_filepath=dev_bank_rec_xlsx_filepath,
-                                  prepared_by=prepared_by)
+                                  prepared_by=prepared_by,
+                                  property_config=property_config)

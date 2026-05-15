@@ -495,12 +495,15 @@ def detect_retax_amortization(
 
     # Collect current-period net changes and beginning balances
     net_641110 = 0.0   # Real Estate Taxes expense (positive = net debit)
+    net_115200 = 0.0   # RE Tax Escrow (positive = net debit; Berkadia credit → negative)
     net_135120 = 0.0   # Prepaid RE Taxes asset   (positive = net debit)
     beg_135120 = 0.0   # Prepaid RE Taxes beginning balance (for release auto-detect)
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         if code == _RETAX_EXPENSE_ACCT:
             net_641110 = float(getattr(acct, 'net_change', 0) or 0)
+        elif code == _RETAX_ESCROW_ACCT:
+            net_115200 = float(getattr(acct, 'net_change', 0) or 0)
         elif code == _RETAX_PREPAID_ACCT:
             net_135120 = float(getattr(acct, 'net_change', 0) or 0)
             beg_135120 = float(getattr(acct, 'beginning_balance', 0) or 0)
@@ -510,10 +513,17 @@ def detect_retax_amortization(
     auto_source = ''
     if bill <= 0:
         if period_month in _payment_months:
-            # Berkadia's auto-post makes net_641110 ≈ quarterly bill this month
-            if net_641110 > 10_000:
+            # Berkadia auto-posts: DR 641110 / CR 115200 for the full quarterly bill.
+            # Use the 115200 net credit as the bill signal — it is the clean bill amount
+            # unaffected by prior-period auto-reversals that also debit 641110.
+            _berkadia_credit = -net_115200  # 115200 has a net CREDIT → negative net_change
+            if _berkadia_credit > 10_000:
+                bill        = _berkadia_credit
+                auto_source = f'auto-detected from GL 115200 Berkadia credit ${_berkadia_credit:,.2f}'
+            elif net_641110 > 10_000:
+                # Fallback: 115200 absent from GL (e.g. older Yardi export), use 641110 net
                 bill        = net_641110
-                auto_source = f'auto-detected from GL 641110 net debit ${net_641110:,.2f}'
+                auto_source = f'auto-detected from GL 641110 net debit ${net_641110:,.2f} (115200 not in GL)'
         else:
             # Back-calculate from 135120 beginning balance
             # 1st release months (Feb/May/Aug/Nov): beg = 2/3 × bill → ×1.5
@@ -530,6 +540,21 @@ def detect_retax_amortization(
                 )
 
     if bill <= 0:
+        # H-5: Surface a meaningful warning when we're in a payment month but can't
+        # auto-detect the bill from either 115200 (Berkadia credit) or 641110 (net debit).
+        # Silent None returns cause the RE tax deferral JE to be skipped without any
+        # indication to the user — this surfaces the failure so it can be investigated.
+        if period_month in _payment_months:
+            import warnings as _warnings
+            _warnings.warn(
+                f'RE tax bill could not be auto-detected for payment month {period_month} '
+                f'(GL 115200 credit = ${-net_115200:,.2f}, GL 641110 net debit = ${net_641110:,.2f}). '
+                f'No Berkadia entry found in GL. RE tax deferral JE will be skipped. '
+                f'Enter the bill amount manually in the One-Off Accruals table '
+                f'(DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes).',
+                UserWarning,
+                stacklevel=3,
+            )
         return None
 
     if period_month in _payment_months:
@@ -581,87 +606,9 @@ def detect_retax_amortization(
         }
 
 
-
-def detect_retax_escrow_je(
-    gl_data,
-    loan_data,
-    period: str = '',
-    re_tax_bill_amount: float = 0.0,
-) -> Optional[Dict[str, Any]]:
-    """
-    [RETIRED — no longer called as of May 2026]
-
-    Previously generated DR 641110 / CR 115200 in payment months (Jan/Apr/Jul/Oct).
-    This entry is now handled automatically by Yardi as part of the Berkadia loan
-    payment entry — the pipeline no longer needs to post it.
-
-    The pipeline now uses detect_retax_amortization() for all months:
-      - Payment months: DR 135120 Prepaid RE Taxes / CR 641110 RE Taxes (2/3 deferral)
-      - Release months: DR 641110 RE Taxes / CR 135120 Prepaid RE Taxes (1/3 release)
-
-    Retained for reference.  Not called from build_accrual_entries().
-    """
-    if not gl_data or not hasattr(gl_data, 'accounts'):
-        return None
-    if not loan_data:
-        return None
-
-    # Parse period month
-    _MONTH_MAP = {
-        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
-        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
-        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-    }
-    period_month = 0
-    for abbr, num in _MONTH_MAP.items():
-        if abbr in (period or '').lower():
-            period_month = num
-            break
-
-    # Only generate in payment months
-    if period_month not in _RETAX_PAYMENT_MONTHS:
-        return None
-
-    # Need the user-provided quarterly bill amount
-    if re_tax_bill_amount <= 0:
-        return None
-
-    # Suppress only if 641110 has net new expense (positive net_change = net debit).
-    # This means the payment JE was already posted directly in Yardi before the
-    # pipeline ran. A net credit means prior accruals auto-reversed — still need
-    # to post the quarterly bill this payment month.
-    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
-        if str(acct.account_code).strip() == _RETAX_EXPENSE_ACCT:
-            if acct.net_change > 0.01:
-                return None   # already posted — skip
-            break
-
-    # Berkadia escrow balance for informational note
-    loans = loan_data if isinstance(loan_data, list) else [loan_data]
-    berkadia_escrow = 0.0
-    for ln in loans:
-        if isinstance(ln, dict):
-            berkadia_escrow += float(ln.get('tax_escrow_balance', 0) or 0)
-        else:
-            berkadia_escrow += float(getattr(ln, 'tax_escrow_balance', 0) or 0)
-
-    return {
-        'account_code':   _RETAX_EXPENSE_ACCT,
-        'account_name':   'Real Estate Taxes',
-        'amount':         _round(re_tax_bill_amount),
-        'credit_account': _RETAX_ESCROW_ACCT,
-        'credit_name':    'RE Tax Escrow',
-        'source':         'prepaid_amortization',
-        'confidence':     'high',
-        'auto_reverse':   False,
-        'description': (
-            f'RE Tax quarterly bill — Berkadia pays from escrow to town. '
-            f'${re_tax_bill_amount:,.2f} '
-            f'(DR {_RETAX_EXPENSE_ACCT} / CR {_RETAX_ESCROW_ACCT}; '
-            f'Berkadia escrow balance ${berkadia_escrow:,.2f}). '
-            f'Prior-month accruals auto-reverse this period — 641110 and 135120 net to zero.'
-        ),
-    }
+# detect_retax_escrow_je() removed May 2026 — retired, never called.
+# Berkadia handles DR 641110 / CR 115200 automatically in Yardi.
+# All RE tax pipeline entries generated by detect_retax_amortization().
 
 
 # ── Tenant utility billing detection ────────────────────────
@@ -944,7 +891,7 @@ def detect_invoice_proration_accruals(
                 for _vname, _vgroup in _vendor_groups.items():
                     _vamt       = sum(g[2] for g in _vgroup)
                     _vstart     = min(g[0] for g in _vgroup)
-                    _vdays      = max(1, (latest_end - _vstart).days)
+                    _vdays      = max(1, (latest_end - _vstart).days + 1)  # inclusive day count
                     _vrate      = _vamt / _vdays
                     _vaccrual   = _vrate * uncovered
                     if _vaccrual < materiality:
@@ -1163,396 +1110,8 @@ def detect_invoice_proration_accruals(
     return candidates
 
 
-# ── Layer 3: Budget gap detection ────────────────────────────
-
-def detect_budget_gaps(gl_data, budget_data, period: str = '') -> List[Dict[str, Any]]:
-    """
-    Identify accounts that have a budget amount but zero GL activity.
-
-    Each candidate is classified with a **confidence** tier:
-
-    HIGH — Fixed predictable monthly cost.  The monthly budget equals exactly
-        1/12 of the annual budget (within 2%).  Typical examples: property
-        insurance, real estate taxes, fixed-fee service contracts.  These can
-        be posted without additional review.
-
-    MEDIUM — Regular recurring cost whose invoice timing is slightly
-        inconsistent (e.g., landscaping contracts, training programs, amenity
-        services).  The budget is a reasonable estimate; reviewer should confirm
-        no invoice is already in transit.
-
-    LOW — Irregular or discretionary spend (repairs, one-time maintenance,
-        variable operating costs).  The account name contains a repair/
-        discretionary keyword.  An absence of an invoice in the GL likely means
-        the work did NOT happen this month.  These are included in the JE CSV
-        marked 'REVIEW REQUIRED' so the reviewer can decide whether to keep,
-        reduce, or delete the entry before posting.
-
-    Returns list of dicts including: account_code, account_name, budget_amount,
-        source ('budget_gap'), confidence ('high'|'medium'|'low'), description.
-    """
-    # ── Escrow-funded expense accounts ────────────────────────────────────────
-    # These expenses are recognized on the income statement when the actual
-    # payment is made from the dedicated escrow account (115200, 115300), NOT
-    # accrued monthly.  The lender funds the escrow from the monthly mortgage
-    # payment; Berkadia/servicer disburses when the bill is due.  Accruing them
-    # monthly would double-count against payments already booked YTD.
-    #
-    # Lender escrow account mapping:
-    #   115200  RE Tax Escrow      →  641110  Real Estate Taxes
-    #   115300  Insurance Escrow   →  639110  Insurance-Property
-    #                              →  639120  Insurance-General Liability
-    #
-    # Do NOT add these to the budget gap — they are budget-to-actual timing
-    # differences only, not missing accruals.
-    # Note: 641110, 639110, 639120 are handled by Layer 0b amortization entries
-    # (detect_retax_amortization / detect_insurance_amortization) and are added
-    # to _covered before budget gap runs, so they never reach this layer.
-    # Any future escrow-funded accounts with no dedicated amortization function
-    # can be listed here as a safety net.
-    _ESCROW_FUNDED: set = set()
-
-    # Account name keywords that signal irregular / repair-type spend.
-    # Accounts matching any of these get LOW confidence.
-    _REPAIR_KW = (
-        'repair', 'repairs', 'maint-repair', 'maint repair',
-        'one-time', 'one time', 'discretionary',
-    )
-    # Account name keywords that signal fixed / scheduled costs → HIGH confidence.
-    _FIXED_KW = (
-        'insurance', 'tax', 'taxes', 'real estate', 'interest',
-    )
-
-    # ── Seasonal suppression ──────────────────────────────────────────────────
-    # Accounts matching these name keywords are only active Apr–Oct (months 4–10).
-    # Outside that window: suppress entirely (no accrual, no REVIEW flag).
-    # Inside the window: normalise monthly amount to annual / 7 (active months).
-    _SEASONAL_KW = ('landscap',)
-    _SEASONAL_ACTIVE_MONTHS = frozenset(range(4, 11))   # Apr=4 … Oct=10
-    _SEASONAL_ACTIVE_COUNT  = 7                          # Apr–Oct
-
-    # Parse period month (0 = unknown → seasonal filter disabled, accrue normally)
-    _MONTH_MAP_BG = {
-        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
-        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
-        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-    }
-    _period_month = 0
-    for _abbr, _num in _MONTH_MAP_BG.items():
-        if _abbr in (period or '').lower():
-            _period_month = _num
-            break
-
-    candidates = []
-
-    if not budget_data or not gl_data:
-        return candidates
-
-    # Build set of GL accounts with activity this period
-    gl_active = set()
-    # Also build a lookup for beginning balance (proxy for prior-period history)
-    gl_beg_bal: Dict[str, float] = {}
-    if hasattr(gl_data, 'accounts'):
-        for acct in gl_data.accounts:
-            if abs(acct.net_change) > 0.01:
-                gl_active.add(acct.account_code)
-            gl_beg_bal[str(acct.account_code).strip()] = acct.beginning_balance
-
-    # Check budget items
-    budget_items = []
-    if isinstance(budget_data, list):
-        budget_items = budget_data
-    elif hasattr(budget_data, 'line_items'):
-        budget_items = budget_data.line_items
-
-    for item in budget_items:
-        if isinstance(item, dict):
-            code = str(item.get('account_code', '') or '').strip()
-            name = str(item.get('account_name', '') or '').strip()
-            ptd_budget = item.get('ptd_budget', 0) or 0
-            ptd_actual = item.get('ptd_actual', 0) or 0
-            ytd_budget = item.get('ytd_budget', 0) or 0
-            annual = item.get('annual', 0) or 0
-        else:
-            code = str(getattr(item, 'account_code', '') or '').strip()
-            name = str(getattr(item, 'account_name', '') or '').strip()
-            ptd_budget = getattr(item, 'ptd_budget', 0) or 0
-            ptd_actual = getattr(item, 'ptd_actual', 0) or 0
-            ytd_budget = getattr(item, 'ytd_budget', 0) or 0
-            annual = getattr(item, 'annual', 0) or 0
-
-        if not code or 'TOTAL' in name.upper():
-            continue
-
-        # Skip escrow-funded accounts — recognized at payment date, not monthly
-        if code in _ESCROW_FUNDED:
-            continue
-
-        # ── Seasonal suppression ───────────────────────────────────────────────
-        # Interior landscaping (633120) is year-round — only suppress exterior.
-        name_lower_pre = name.lower()
-        is_seasonal = (any(kw in name_lower_pre for kw in _SEASONAL_KW)
-                       and 'interior' not in name_lower_pre)
-        if is_seasonal and _period_month > 0:
-            if _period_month not in _SEASONAL_ACTIVE_MONTHS:
-                # Off-season: suppress entirely — no accrual, no REVIEW flag
-                continue
-            # In-season: normalise to annual / active_months so the PTD budget
-            # (which spreads annual cost across 12 months) is replaced with the
-            # correct per-active-month rate.
-            # Guard: if the budget is already on 7 months (ptd_budget ≈ annual/7),
-            # the Kardin budget has been corrected — use ptd_budget as-is.
-            if abs(annual) > 0:
-                already_normalised = (
-                    abs(ptd_budget) > 0 and
-                    abs(abs(ptd_budget) - abs(annual) / _SEASONAL_ACTIVE_COUNT) < 1.0
-                )
-                if not already_normalised:
-                    ptd_budget = abs(annual) / _SEASONAL_ACTIVE_COUNT
-
-        # Only expense accounts — uses per-property COA config (defaults to 5/6/7/8xxxxx)
-        if not is_expense_account(code):
-            continue
-
-        # Materiality floor: skip trivial amounts (matches overall pipeline floor).
-        if abs(ptd_budget) < 2500:
-            continue
-
-        # Skip if YTD budget is zero but annual exists (not yet allocated)
-        if abs(ytd_budget) < 1 and abs(annual) > 0:
-            continue
-
-        # Seasonality: if PTD budget is less than 30% of monthly average,
-        # this is likely a low-budget month — don't accrue
-        if abs(annual) > 0:
-            monthly_avg = abs(annual) / 12
-            if monthly_avg > 0 and abs(ptd_budget) < monthly_avg * 0.3:
-                continue
-
-        # ── Confidence classification ──────────────────────────────────────
-        name_lower = name.lower()
-
-        # Does this account have ANY history in the GL this fiscal year?
-        # (beginning_balance reflects Jan–prior month cumulative activity)
-        has_prior_history = abs(gl_beg_bal.get(code, 0.0)) > 50.0
-        # Is it a known fixed-cost account (insurance, RE taxes)?
-        is_fixed = any(kw in name_lower for kw in _FIXED_KW)
-        # Is it a repair / irregular / discretionary account?
-        is_repair = any(kw in name_lower for kw in _REPAIR_KW)
-
-        if is_repair:
-            # Repair accounts are inherently irregular — always LOW
-            confidence = 'low'
-        elif is_fixed:
-            # Fixed costs (insurance, RE taxes): budget = precise monthly amount.
-            # Even if GL history is zero (e.g., first year, or prepaid route),
-            # these are contractually fixed → keep HIGH.
-            confidence = 'high'
-        elif not has_prior_history:
-            # No prior GL activity this fiscal year + not a known fixed cost.
-            # Two likely causes:
-            #   a) Seasonal expense (e.g., landscaping in winter) — don't accrue.
-            #   b) New contract with first invoice pending — might need accrual.
-            # Both are LOW confidence: reviewer must decide.
-            confidence = 'low'
-        elif abs(annual) > 0:
-            monthly_avg = abs(annual) / 12
-            deviation = abs(abs(ptd_budget) - monthly_avg) / monthly_avg if monthly_avg > 0 else 1.0
-            # Within 2% of the flat monthly rate → effectively fixed → HIGH
-            confidence = 'high' if deviation <= 0.02 else 'medium'
-        else:
-            confidence = 'medium'
-
-        # ── PASS 1 only fires for zero-activity accounts ──────────────────
-        # Partial coverage (some GL activity, gap below budget) is handled
-        # by PASS 2 below so the accrual amount is correctly set to the gap.
-        if abs(ptd_actual) >= 1:
-            continue
-
-        # ── Contract/service filter ────────────────────────────────────────
-        # Layer 3 (budget gap) fires for accounts that are clearly recurring
-        # obligations: contracted services, utilities, payroll, fixed costs.
-        # Repair/irregular accounts and truly discretionary spend without a
-        # prior-year signal are better handled by Layer 4 (historical).
-        _CONTRACT_KW_L3 = (
-            # Service contracts
-            'contract', 'contracted', 'agreement',
-            'janitorial', 'elevator', 'pest', 'extermina',
-            'hvac', 'fire', 'landscap', 'snow', 'trash', 'recycl',
-            'management', 'maintenance', 'parking', 'security',
-            'cleaning', 'porter', 'engineer', 'technician',
-            # Utilities
-            'electric', 'gas', 'water', 'sewer', 'utilit',
-            # Payroll / HR
-            'payroll', 'wage', 'salary', 'labor', 'benefit',
-            # Tenant amenities / food service / tenant relations
-            'food', 'catering', 'amenity', 'fitness', 'tenant relation',
-            # Fixed obligations
-            'insurance', 'tax', 'license',
-        )
-        # Also allow utility (613xxx) and payroll-adjacent (615xxx) account ranges
-        # even if the account name doesn't contain a matching keyword
-        _is_utility_range  = code.startswith(('613', '614'))
-        _is_payroll_range  = code.startswith('615')
-        if (not is_fixed
-                and not any(kw in name_lower for kw in _CONTRACT_KW_L3)
-                and not _is_utility_range
-                and not _is_payroll_range):
-            continue
-
-        # ── Build human-readable description ──────────────────────────────
-        if confidence == 'high':
-            desc = (
-                f'Budget gap accrual — {name}: ${abs(ptd_budget):,.2f}/month '
-                f'(fixed monthly cost, no GL activity this period)'
-            )
-        elif confidence == 'low' and not has_prior_history and not is_repair:
-            desc = (
-                f'REVIEW REQUIRED — {name}: budget ${abs(ptd_budget):,.2f} but '
-                f'no GL activity in any prior month this year. '
-                f'Confirm whether the expense was incurred (may be seasonal).'
-            )
-        elif confidence == 'low':
-            desc = (
-                f'REVIEW REQUIRED — {name}: budget ${abs(ptd_budget):,.2f} but '
-                f'no invoice received. Confirm whether work was performed before posting.'
-            )
-        else:
-            desc = (
-                f'Budget gap accrual — {name}: budgeted ${abs(ptd_budget):,.2f}, '
-                f'no GL activity this period. Confirm invoice is in transit.'
-            )
-
-        candidates.append({
-            'account_code':  code,
-            'account_name':  name,
-            'budget_amount': abs(ptd_budget),
-            'source':        'budget_gap',
-            'confidence':    confidence,
-            'description':   desc,
-        })
-
-    # ── PASS 2: Partial contract coverage ─────────────────────────────────────
-    # Accounts that have SOME GL activity this period but are significantly below
-    # their PTD budget, and whose name contains "contract" — indicating a known
-    # recurring service contract where one or more invoices may be missing.
-    #
-    # Example: HVAC-Contract Svc budgeted $12,676/month; GL shows $3,526 (one
-    # vendor's monthly payment received, another's March invoice not yet arrived).
-    #
-    # Detection criteria — ALL must be true:
-    #   1. Account is a recurring obligation (keyword match OR 613/614/615 code range)
-    #   2. ptd_actual > 0 (has some activity — distinguishes from zero-activity gaps)
-    #   3. ptd_actual < ptd_budget × 0.90 (below 90% of expected monthly spend)
-    #   4. Gap (ptd_budget − ptd_actual) ≥ $2,500 materiality
-    #   5. Has prior-period history (beginning_balance > 0), OR it is January
-    #   6. Not already captured by the main gap loop (ptd_actual >= 1 so main loop skipped it)
-    #
-    # Accrual amount: budget gap (ptd_budget − ptd_actual).
-    # Confidence: 'medium' for utilities/payroll, 'low' for contract accounts.
-
-    _partial_coded = {c['account_code'] for c in candidates}
-
-    for item in budget_items:
-        if isinstance(item, dict):
-            code     = str(item.get('account_code', '') or '').strip()
-            name     = str(item.get('account_name', '') or '').strip()
-            ptd_b    = float(item.get('ptd_budget', 0) or 0)
-            ptd_a    = float(item.get('ptd_actual', 0) or 0)
-        else:
-            code     = str(getattr(item, 'account_code', '') or '').strip()
-            name     = str(getattr(item, 'account_name', '') or '').strip()
-            ptd_b    = float(getattr(item, 'ptd_budget', 0) or 0)
-            ptd_a    = float(getattr(item, 'ptd_actual', 0) or 0)
-
-        if not code or 'TOTAL' in name.upper():
-            continue
-        if code[0] not in ('5', '6', '7', '8'):
-            continue
-        if code in _partial_coded:
-            continue
-        if code in _ESCROW_FUNDED:
-            continue
-
-        # Keyword / account-range gate — same expanded set as PASS 1
-        _name_l = name.lower()
-        _is_fixed_p2      = any(kw in _name_l for kw in _FIXED_KW)
-        _EXPANDED_KW_P2 = (
-            'contract', 'contracted', 'agreement',
-            'janitorial', 'elevator', 'pest', 'extermina',
-            'hvac', 'fire', 'landscap', 'snow', 'trash', 'recycl',
-            'management', 'maintenance', 'parking', 'security',
-            'cleaning', 'porter', 'engineer', 'technician',
-            'electric', 'gas', 'water', 'sewer', 'utilit',
-            'payroll', 'wage', 'salary', 'labor', 'benefit',
-            'food', 'catering', 'amenity', 'fitness', 'tenant relation',
-            'insurance', 'tax', 'license',
-        )
-        _is_util_p2    = code.startswith(('613', '614'))
-        _is_payroll_p2 = code.startswith('615')
-        if (not _is_fixed_p2
-                and not any(kw in _name_l for kw in _EXPANDED_KW_P2)
-                and not _is_util_p2
-                and not _is_payroll_p2):
-            continue
-
-        if abs(ptd_a) < 1:
-            continue   # zero-activity — already handled by main loop
-        if abs(ptd_b) < 2500:
-            continue
-        gap = abs(ptd_b) - abs(ptd_a)
-        if gap < 2500:
-            continue
-        if abs(ptd_a) >= abs(ptd_b) * 0.90:
-            continue   # >= 90% covered — within normal invoice timing variation
-
-        # Check prior history — P&L beginning balances are 0 in January
-        # (fiscal year reset), so skip this guard in month 1.
-        has_history = abs(gl_beg_bal.get(code, 0.0)) > 50.0
-        if not has_history and _period_month != 1:
-            continue
-
-        # Accrual amount = the budget gap (what hasn't been billed yet).
-        # For utilities / payroll accounts, the gap IS the right accrual amount.
-        # For traditional contract accounts, also use the gap; the smallest-invoice
-        # heuristic understated the accrual whenever multiple invoices are missing.
-        suggested = _round(gap)
-
-        # Confidence: medium for utilities/payroll (predictable recurring), low for others
-        _is_recurring_p2 = _is_util_p2 or _is_payroll_p2 or any(
-            kw in _name_l for kw in ('electric', 'gas', 'water', 'sewer', 'utilit',
-                                      'payroll', 'wage', 'salary', 'labor'))
-        _conf_p2 = 'medium' if _is_recurring_p2 else 'low'
-
-        # Check if this is a known periodic-billing account (quarterly, etc.)
-        _periodic_info = PERIODIC_CONTRACT_ACCOUNTS.get(code)
-        _review_prefix = '' if _is_recurring_p2 else 'REVIEW — '
-
-        _entry: Dict[str, Any] = {
-            'account_code':  code,
-            'account_name':  name,
-            'budget_amount': suggested,
-            'source':        'budget_gap',
-            'confidence':    _conf_p2,
-            'description': (
-                f'{_review_prefix}Partial coverage: {name} — '
-                f'${abs(ptd_a):,.2f} billed of ${abs(ptd_b):,.2f} budget '
-                f'({abs(ptd_a)/abs(ptd_b)*100:.0f}% covered). '
-                f'Accruing gap of ${suggested:,.2f}.'
-                + ('' if _is_recurring_p2 else
-                   ' Confirm outstanding invoices before posting.')
-            ),
-        }
-
-        if _periodic_info:
-            _entry['periodic_flag']    = True
-            _entry['periodic_label']   = _periodic_info['label']
-            _entry['periodic_billing'] = _periodic_info['billing_cycle']
-
-        candidates.append(_entry)
-
-    return candidates
-
+# detect_budget_gaps() removed May 2026 — retired, never called per CLAUDE.md.
+# Budget gap accrual logic was removed; accruing to budget is not good practice.
 
 # ── Layer 4 (runs before budget gap): Historical pattern detection ────────────
 
@@ -1966,8 +1525,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # when parsing from the full Nexus Invoice Detail export.  This secondary
     # filter catches any records passed in via other paths (e.g. test fixtures)
     # and respects an explicit status_filter override if provided.
-    _default_statuses = {'in progress', 'pending approval',
-                         'submitted for payment', 'completed'}
+    _default_statuses = {'pending', 'in progress', 'pending approval',
+                         'in yardi', 'submitted for payment', 'completed'}
     _filter_set = {s.lower() for s in status_filter} if status_filter else _default_statuses
     invoices = [inv for inv in invoices
                 if (inv.get('invoice_status', '') or '').strip().lower() in _filter_set
@@ -3081,10 +2640,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _monthly = _round(_annual / 12.0)
                 if _monthly < 100:
                     continue
-                # Suppress if GL already shows the bonus payment
-                _net = _gl_net_bonus.get(_ba_code, 0.0)
-                if _net >= _monthly:
-                    continue
+                # Note: Mode (a) does NOT suppress based on GL net because the user
+                # entered only the BONUS portion of payroll — not total payroll.
+                # Comparing GL total payroll to bonus/12 would always suppress incorrectly.
+                # The _covered set (checked above) handles the main suppression case.
                 _bon_id = f"BON-{je_num:04d}"
                 _bon_desc = (
                     f'Accrual {_fmt_period(period)} — {_ba_cfg["label"]} '

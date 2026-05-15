@@ -150,7 +150,10 @@ def _pdf_via_libreoffice(xlsx_path: str, pdf_dir: str) -> bool:
 def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
                        invoice_prefix: str = 'RevLabsPM',
                        payment_ach: dict = None,
-                       payment_check: dict = None) -> None:
+                       payment_check: dict = None,
+                       jll_rate: float = _JLL_RATE,
+                       jll_minimum: float = _JLL_MIN,
+                       total_rate: float = _TOTAL_RATE) -> None:
     """
     Reportlab fallback — closely matches the template layout.
     Used when neither win32com nor LibreOffice is available.
@@ -186,8 +189,8 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
     inv_num    = f'{invoice_prefix}{month:02d}{year}'
     month_lbl  = _MONTH_MAP.get(month, str(month))
 
-    total_fee  = round(cash_received * _TOTAL_RATE, 2)
-    jll_fee    = round(max(cash_received * _JLL_RATE, _JLL_MIN), 2)
+    total_fee  = round(cash_received * total_rate, 2)
+    jll_fee    = round(max(cash_received * jll_rate, jll_minimum), 2)
     balance    = round(max(total_fee - jll_fee, 0.0), 2)
 
     W, H = letter
@@ -259,7 +262,7 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
     c.drawString(DATE_X, _y(214), inv_date_s)
     c.drawString(DESC_X, _y(214), f'{month_lbl} {year} Property Management Fee')
     c.drawRightString(R_COLL, _y(214), _money(cash_received))
-    c.drawRightString(R_RATE, _y(214), '3.00%')
+    c.drawRightString(R_RATE, _y(214), f'{total_rate * 100:.2f}%')
     c.drawRightString(R_AMT,  _y(214), _money(total_fee))
     c.setLineWidth(0.5); c.line(L, _y(222), R, _y(222))
 
@@ -268,7 +271,7 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
     c.drawString(DATE_X, _y(238), inv_date_s)
     c.drawString(DESC_X, _y(238), 'Less: JLL Portion')
     c.drawRightString(R_COLL, _y(238), _money(cash_received))
-    c.drawRightString(R_RATE, _y(238), '1.25%')
+    c.drawRightString(R_RATE, _y(238), f'{jll_rate * 100:.2f}%')
     c.drawRightString(R_AMT,  _y(238), _money(jll_fee, neg=True))
     c.setLineWidth(0.5); c.line(L, _y(246), R, _y(246))
 
@@ -343,13 +346,30 @@ def generate_invoice(
     Returns:
         PDF bytes.
     """
-    # Resolve invoice prefix and payment instructions from property_config
+    # Resolve invoice prefix, payment instructions, and fee rates from property_config
     cfg_prefix = (
         getattr(property_config, 'invoice_prefix', None) or 'RevLabsPM'
         if property_config else 'RevLabsPM'
     )
     cfg_ach   = (getattr(property_config, 'payment_ach', None)   or {}) if property_config else {}
     cfg_check = (getattr(property_config, 'payment_check', None) or {}) if property_config else {}
+
+    # Pull fee rates from config so the invoice matches what was actually agreed.
+    # Falls back to the module-level defaults (JLL 1.25%, total 3.00%, min $5,000)
+    # when no config is supplied or the config has no management_fees defined.
+    if property_config and getattr(property_config, 'management_fees', None):
+        cfg_jll_rate  = getattr(property_config, 'management_fee_jll_rate', _JLL_RATE)
+        cfg_total_rate = getattr(property_config, 'total_management_fee_rate', _TOTAL_RATE)
+        # JLL minimum from the JLL fee line (ManagementFeeLineConfig.minimum)
+        _jll_line = next(
+            (f for f in property_config.management_fees if f.name.upper() == 'JLL'),
+            None,
+        )
+        cfg_jll_min = _jll_line.minimum if _jll_line else _JLL_MIN
+    else:
+        cfg_jll_rate  = _JLL_RATE
+        cfg_total_rate = _TOTAL_RATE
+        cfg_jll_min   = _JLL_MIN
 
     if output_path is None:
         year, month = _parse_period(period)
@@ -368,7 +388,9 @@ def generate_invoice(
         # Template missing or openpyxl issue — skip straight to reportlab
         _pdf_via_reportlab(period, cash_received, pdf_path,
                            invoice_prefix=cfg_prefix,
-                           payment_ach=cfg_ach, payment_check=cfg_check)
+                           payment_ach=cfg_ach, payment_check=cfg_check,
+                           jll_rate=cfg_jll_rate, jll_minimum=cfg_jll_min,
+                           total_rate=cfg_total_rate)
         with open(pdf_path, 'rb') as fh:
             return fh.read()
 
@@ -390,7 +412,9 @@ def generate_invoice(
     if not pdf_ok:
         _pdf_via_reportlab(period, cash_received, pdf_path,
                            invoice_prefix=cfg_prefix,
-                           payment_ach=cfg_ach, payment_check=cfg_check)
+                           payment_ach=cfg_ach, payment_check=cfg_check,
+                           jll_rate=cfg_jll_rate, jll_minimum=cfg_jll_min,
+                           total_rate=cfg_total_rate)
 
     try:
         os.remove(xlsx_path)

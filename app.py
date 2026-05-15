@@ -495,7 +495,7 @@ st.markdown(f"""
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
-prior_period_outstanding = 0.0  # Yardi Bank Rec PDF includes all outstanding items
+_prior_period_outstanding_default = 0.0  # replaced by sidebar widget below
 
 # ── Property discovery (used by main-page selector + sidebar card) ───────────
 _all_props   = _discover_properties()
@@ -541,6 +541,14 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.checklist_locked_by = None
     st.session_state.checklist_locked_at = None
     st.session_state.last_completed_step = None
+    # Clear preparer name so it re-seeds from new property's team
+    st.session_state.prepared_by         = ''
+    # Clear file-type overrides so assignments from property A don't bleed to B
+    st.session_state.bulk_overrides_p1   = {}
+    st.session_state.bulk_overrides_p2   = {}
+    st.session_state.bulk_overrides_wp   = {}
+    # Clear JE description overrides keyed to prior property's run
+    st.session_state.je_desc_overrides   = {}
 
 # Load config for the selected property
 from property_config import load_property_config as _load_prop_cfg
@@ -585,6 +593,19 @@ st.session_state.prepared_by = st.sidebar.text_input(
     help="Stamped on every workpaper tab and the run log.",
 )
 
+prior_period_outstanding = st.sidebar.number_input(
+    "Prior Period Outstanding Checks ($)",
+    min_value=0.0,
+    value=_prior_period_outstanding_default,
+    step=100.0,
+    format="%.2f",
+    help=(
+        "Enter the total of outstanding checks from the prior period. "
+        "Only needed when using a PNC bank statement instead of the Yardi Bank Rec PDF. "
+        "Leave 0 if the Yardi Bank Rec PDF is uploaded — outstanding checks are read from it automatically."
+    ),
+)
+
 if not st.session_state.confirm_reset_all:
     if st.sidebar.button("🔄 Reset All", use_container_width=True,
                          help="Clear all results and uploaded files"):
@@ -620,8 +641,10 @@ else:
             "Line Description": ["", ""],
         })
         st.session_state.pop("_pcje_latest", None)
-        if "manual_accruals_df" in st.session_state:
-            st.session_state.manual_accruals_df["Amount ($)"] = 0.0
+        # Fully rebuild accruals seed — zeroing only the Amount column would
+        # leave stale account codes/vendors that suppress automated accruals.
+        st.session_state.manual_accruals_df = _build_accruals_seed_df(_active_cfg)
+        st.session_state._accruals_df_for_property = _selected_code
         st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
         st.session_state.custom_checklist_items = []
         st.session_state.checklist_loaded    = False
@@ -1601,6 +1624,18 @@ with tab1:
                 nexus_data = engine_result.parsed.get('nexus_accrual')
                 close_period = engine_result.period or ''
 
+                # Guard: if the GL didn't yield a period we cannot label outputs.
+                if not close_period:
+                    st.error(
+                        "⚠️ **Could not determine close period from GL.**  "
+                        "The period label (e.g. 'Jan-2026') is required for all "
+                        "output file names. Check that the GL file is a valid Yardi "
+                        "export and that the header row contains a recognisable date.",
+                        icon="❌",
+                    )
+                    st.session_state.pass1_complete = False
+                    st.stop()
+
                 # ── Loan statement date validation ────────────────────────────
                 # Interest paid on the 7th covers the PRIOR month.  For the
                 # January close, the correct statement is the one due 2/7/2026.
@@ -1738,25 +1773,32 @@ with tab1:
                 }
 
                 _gl_activity_log = []
-                je_lines = build_accrual_entries(
-                    nexus_data or [],
-                    period=close_period,
-                    property_name=engine_result.property_name or '',
-                    gl_data=gl_parsed,
-                    budget_data=bc_parsed,
-                    manual_accruals=_manual_accruals_input or [],
-                    tenant_utility_rows=_tenant_utility_rows or None,
-                    loan_data=engine_result.parsed.get('loan'),
-                    re_tax_bill_amount=_re_tax_bill_amount,
-                    re_tax_payment_months=getattr(_active_cfg, 're_tax_payment_months', None) or [1, 4, 7, 10],
-                    bonus_overrides=_bonus_overrides or None,
-                    kardin_records=engine_result.parsed.get('kardin_budget') or None,
-                    t12_result=_t12_result_p1,
-                    gl_activity_log=_gl_activity_log,
-                    receivable_detail=_rd_parsed,
-                    ledger_release_accounts=_ledger_release_accounts,
-                    payroll_accounts=getattr(_active_cfg, 'payroll_accounts', None) or None,
-                )
+                import warnings as _warnings_mod
+                with _warnings_mod.catch_warnings(record=True) as _captured_warnings:
+                    _warnings_mod.simplefilter("always")
+                    je_lines = build_accrual_entries(
+                        nexus_data or [],
+                        period=close_period,
+                        property_name=engine_result.property_name or '',
+                        gl_data=gl_parsed,
+                        budget_data=bc_parsed,
+                        manual_accruals=_manual_accruals_input or [],
+                        tenant_utility_rows=_tenant_utility_rows or None,
+                        loan_data=engine_result.parsed.get('loan'),
+                        re_tax_bill_amount=_re_tax_bill_amount,
+                        re_tax_payment_months=getattr(_active_cfg, 're_tax_payment_months', None) or [1, 4, 7, 10],
+                        bonus_overrides=_bonus_overrides or None,
+                        kardin_records=engine_result.parsed.get('kardin_budget') or None,
+                        t12_result=_t12_result_p1,
+                        gl_activity_log=_gl_activity_log,
+                        receivable_detail=_rd_parsed,
+                        ledger_release_accounts=_ledger_release_accounts,
+                        payroll_accounts=getattr(_active_cfg, 'payroll_accounts', None) or None,
+                    )
+                # Surface any pipeline UserWarnings (e.g. missing Berkadia RE tax entry) in the UI
+                for _w in _captured_warnings:
+                    if issubclass(_w.category, UserWarning):
+                        st.warning(str(_w.message), icon="⚠️")
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
                 # Build prepaid release JEs after je_lines so JE numbers are sequential
@@ -3215,6 +3257,17 @@ with tab2:
                 bc_parsed    = engine_result.parsed.get('budget_comparison') or []
                 close_period = engine_result.period or ''
 
+                # Guard: period must be detected before we can label any outputs.
+                if not close_period:
+                    st.error(
+                        "⚠️ **Could not determine close period from final GL.**  "
+                        "The period label is required for all output file names. "
+                        "Ensure you have uploaded the final (post-close) Yardi GL export.",
+                        icon="❌",
+                    )
+                    st.session_state.pass2_complete = False
+                    st.stop()
+
                 # Initialise variables that may be assigned later in conditional
                 # parse blocks — ensures they are always defined if those blocks
                 # are skipped due to missing files or upstream exceptions.
@@ -3458,6 +3511,7 @@ with tab2:
                             daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
                             dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
                             prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
+                            property_config=_active_cfg,
                         )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:

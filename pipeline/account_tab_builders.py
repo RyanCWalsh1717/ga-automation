@@ -1438,9 +1438,10 @@ def _group_cash_gl_transactions(gl_acct) -> list:
 def build_111100_tab(wb, period: str, property_name: str,
                      gl_acct=None, tb_entry=None,
                      bank_rec_data: Dict = None,
+                     property_config=None,
                      **_):
     """
-    Operating Cash (PNC x3993) bank reconciliation workpaper.
+    Operating Cash bank reconciliation workpaper.
 
     Layout:
       1. GL Activity — Date | Description | Receipts | Disbursements | Running Balance
@@ -1466,7 +1467,24 @@ def build_111100_tab(wb, period: str, property_name: str,
     BAL_COL   = 6   # F — Running Balance
     NCOLS     = 5   # B-F
 
-    next_row = _write_tab_header(ws, '111100', 'Cash - Operating Account (PNC x3993)',
+    # Derive the operating bank account label from config if available.
+    # Falls back to the generic label when no bank_accounts config is present.
+    _bank_label = 'Cash - Operating Account'
+    if property_config:
+        _bank_accounts = getattr(property_config, 'bank_accounts', {}) or {}
+        _op_acct = next(
+            (ba for ba in _bank_accounts.values()
+             if getattr(ba, 'gl_account', '') == '111100'),
+            None,
+        )
+        if _op_acct:
+            _label_parts = [getattr(_op_acct, 'bank_name', '') or '',
+                             getattr(_op_acct, 'last4', '') or '']
+            _suffix = ' '.join(p for p in _label_parts if p)
+            if _suffix:
+                _bank_label = f'Cash - Operating Account ({_suffix})'
+
+    next_row = _write_tab_header(ws, '111100', _bank_label,
                                  period, property_name, ncols=NCOLS)
     next_row += 1
     next_row = _write_col_headers(

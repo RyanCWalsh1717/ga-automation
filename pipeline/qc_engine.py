@@ -606,7 +606,9 @@ def check_7_misc(budget_rows: List[dict],
         expected_total = expected_jll + expected_grp
         diff = abs(ptd_actual - expected_total)
 
-        flag = 'INFO' if diff < 500 else 'FLAG'
+        # 0.5% of expected fee, floor $50 — flat $500 was too wide for large cash bases
+        _mgmt_tolerance = max(50.0, expected_total * 0.005)
+        flag = 'INFO' if diff < _mgmt_tolerance else 'FLAG'
         findings.append(QCFinding(
             account_code=mgmt_fee_code,
             account_name='Admin-Management Fees',

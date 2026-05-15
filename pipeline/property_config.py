@@ -254,7 +254,7 @@ class PropertyConfig:
             property_display_name = str(d.get('property_display_name', '')),
             property_address      = str(d.get('property_address', '')),
             property_type         = str(d.get('property_type', '')),
-            property_size_sf      = d.get('property_size_sf'),
+            property_size_sf      = int(d['property_size_sf']) if d.get('property_size_sf') is not None else None,
             investor_name         = str(d.get('investor_name', '')),
             management_company    = str(d.get('management_company', '')),
             management_code       = str(d.get('management_code', '')),
@@ -276,6 +276,11 @@ class PropertyConfig:
             team_members            = list(d.get('team_members') or []),
             active                  = bool(d.get('active', True)),
             payroll_accounts        = list(d.get('payroll_accounts') or ['615110', '637110']),
+            coa_revenue_prefixes    = tuple(d['coa_revenue_prefixes'])    if d.get('coa_revenue_prefixes')    else ('4',),
+            coa_expense_prefixes    = tuple(d['coa_expense_prefixes'])    if d.get('coa_expense_prefixes')    else ('5', '6', '7', '8'),
+            coa_bs_asset_prefixes   = tuple(d['coa_bs_asset_prefixes'])   if d.get('coa_bs_asset_prefixes')   else ('1',),
+            coa_bs_liability_prefixes = tuple(d['coa_bs_liability_prefixes']) if d.get('coa_bs_liability_prefixes') else ('2',),
+            coa_bs_equity_prefixes  = tuple(d['coa_bs_equity_prefixes'])  if d.get('coa_bs_equity_prefixes')  else ('3',),
             default_split_schedule  = str(d.get('default_split_schedule', '')),
             tenants                 = [
                 {'key': str(t.get('key', '')), 'name': str(t.get('name', ''))}
