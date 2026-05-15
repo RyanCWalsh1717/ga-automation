@@ -2244,22 +2244,24 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         amount = entry['amount']
         desc   = entry['description']
         je_lines.append({
-            'je_number':      je_id, 'line': 1, 'date': '',
-            'account_code':   acct_code,
-            'account_name':   entry['account_name'],
-            'description':    desc, 'reference': ref,
-            'debit':          _round(amount), 'credit': 0,
-            'vendor':         vendor, 'invoice_number': '',
-            'source':         'prepaid_amortization', 'confidence': 'high',
+            'je_number':         je_id, 'line': 1, 'date': '',
+            'account_code':      acct_code,
+            'account_name':      entry['account_name'],
+            'description':       desc, 'reference': ref,
+            'debit':             _round(amount), 'credit': 0,
+            'vendor':            vendor, 'invoice_number': '',
+            'source':            'prepaid_amortization', 'confidence': 'high',
+            'reverse_next_month': 0,  # prepaid movements are permanent — no reversal
         })
         je_lines.append({
-            'je_number':      je_id, 'line': 2, 'date': '',
-            'account_code':   entry['credit_account'],
-            'account_name':   entry['credit_name'],
-            'description':    desc, 'reference': ref,
-            'debit':          0, 'credit': _round(amount),
-            'vendor':         vendor, 'invoice_number': '',
-            'source':         'prepaid_amortization', 'confidence': 'high',
+            'je_number':         je_id, 'line': 2, 'date': '',
+            'account_code':      entry['credit_account'],
+            'account_name':      entry['credit_name'],
+            'description':       desc, 'reference': ref,
+            'debit':             0, 'credit': _round(amount),
+            'vendor':            vendor, 'invoice_number': '',
+            'source':            'prepaid_amortization', 'confidence': 'high',
+            'reverse_next_month': 0,  # prepaid movements are permanent — no reversal
         })
         _amort_accounts.add(acct_code)
         _amort_accounts.add(entry.get('credit_account', ''))  # cover both sides

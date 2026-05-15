@@ -169,7 +169,7 @@ fiscal_year_start_month: 1     # January
 insurance_policies:
   - name:            "Property Insurance"
     expense_account: "639110"
-    monthly_amount:  0.00     # ← replace with actual monthly amount (annual ÷ 12)
+    monthly_amount:  4037.78
   - name:            "Umbrella Policy"
     expense_account: "639110"
-    monthly_amount:  0.00     # ← replace with actual monthly amount (annual ÷ 12)
+    monthly_amount:  666.90
