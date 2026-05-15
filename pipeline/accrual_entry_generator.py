@@ -330,6 +330,7 @@ def detect_insurance_amortization(
     budget_data,
     period: str = '',
     insurance_policies: Optional[List[Dict[str, Any]]] = None,
+    kardin_records: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate monthly insurance expense entries from Prepaid Insurance (135110).
@@ -345,16 +346,22 @@ def detect_insurance_amortization(
       2. The insurance expense account has no current-period GL activity
          (i.e., JLL hasn't posted the entry yet — normal for pre-close GL)
 
-    Two modes:
-      Config-driven (insurance_policies provided):
+    Three modes (first matching wins):
+      Mode A — Config-driven (insurance_policies provided):
         Generates ONE JE line per policy entry in the list.  Each policy has
         a name, expense_account, and fixed monthly_amount.  Supports multiple
         policies on the same expense account (e.g. general property + umbrella,
         both on 639110).  Config amounts take precedence over the budget.
 
-      Budget-driven (insurance_policies is empty / None):
-        Falls back to the budget PTD column — one combined line per expense
-        account code.  Matches JLL's calculation within a few cents.
+      Mode B — Kardin-driven (kardin_records provided, no config):
+        Uses individual Kardin budget rows for insurance expense accounts.
+        Each row in Kardin (e.g. "Property Insurance", "Umbrella Policy") maps
+        to one JE line, using the month-specific budget amount (m1–m12).
+        This correctly handles multiple named policies on the same account code.
+
+      Mode C — BC-driven fallback (budget_data provided, no config or Kardin):
+        Falls back to the Budget Comparison PTD column — one combined line per
+        expense account code.  Matches JLL's calculation within a few cents.
 
     Returns a list of dicts: one per line, with 'credit_account' / 'credit_name'
     keys so build_accrual_entries() generates CR 135110 instead of 213100.
@@ -412,7 +419,50 @@ def detect_insurance_amortization(
             })
         return results
 
-    # ── Mode B: Budget-driven — one combined line per expense account code ─────
+    # ── Mode B: Kardin-driven — one line per named policy row ─────────────────
+    # Kardin exports each insurance policy as a separate row under the same
+    # account code (e.g. two rows under 639110: "Property Insurance" and
+    # "Umbrella Policy"), with monthly amounts in m1–m12.  We generate one JE
+    # line per Kardin row so both policies get their own description and amount.
+    _MMAP_INS = {
+        'jan': 'm1', 'feb': 'm2', 'mar': 'm3', 'apr': 'm4',
+        'may': 'm5', 'jun': 'm6', 'jul': 'm7', 'aug': 'm8',
+        'sep': 'm9', 'oct': 'm10', 'nov': 'm11', 'dec': 'm12',
+    }
+    _period_col = next(
+        (col for abbr, col in _MMAP_INS.items() if abbr in (period or '').lower()),
+        None,
+    )
+    _kardin_ins_rows = [
+        r for r in (kardin_records or [])
+        if str(r.get('account_code', '') or '').strip() in _INSURANCE_EXPENSE_ACCTS
+    ]
+    if _kardin_ins_rows and _period_col:
+        for row in _kardin_ins_rows:
+            code = str(row.get('account_code', '') or '').strip()
+            if code in already_posted:
+                continue
+            name    = str(row.get('description', '') or row.get('account_name', '') or code).strip()
+            monthly = abs(float(row.get(_period_col, 0) or 0))
+            if monthly < 1.0:
+                continue
+            results.append({
+                'account_code':   code,
+                'account_name':   'Insurance',
+                'amount':         _round(monthly),
+                'credit_account': _PREPAID_INSURANCE_ACCT,
+                'credit_name':    'Prepaid Insurance',
+                'source':         'prepaid_amortization',
+                'confidence':     'high',
+                'description': (
+                    f'Accrual {_period_label} — {name} '
+                    f'(insurance prepaid amortization ${monthly:,.2f}/mo, '
+                    f'prepaid balance ${prepaid_balance:,.2f})'
+                ),
+            })
+        return results
+
+    # ── Mode C: BC-driven fallback — one combined line per expense account code ─
     budget_rows = budget_data if isinstance(budget_data, list) else []
     for row in budget_rows:
         code = str(row.get('account_code', '') or '').strip()
@@ -2224,6 +2274,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         for ins in detect_insurance_amortization(
             gl_data, budget_data, period=period,
             insurance_policies=insurance_policies or None,
+            kardin_records=kardin_records or None,
         ):
             _post_amort(ins, 'INS', 'INS-AMORT', '[Insurance Amortization]')
     elif _ledger_ins_covered:
