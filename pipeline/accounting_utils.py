@@ -17,6 +17,18 @@ higher precision is kept until the final JE line is assembled.
 from decimal import Decimal, ROUND_HALF_UP
 
 
+def _safe_float(v) -> float:
+    """Safely convert any value to float. Returns 0.0 for None, non-numeric strings, etc."""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).replace(',', '').strip())
+    except Exception:
+        return 0.0
+
+
 def _round(value: float, places: int = 2) -> float:
     """
     Round a float to *places* decimal digits using HALF_UP (accounting standard).

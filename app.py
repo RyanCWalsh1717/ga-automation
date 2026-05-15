@@ -657,6 +657,19 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.bulk_overrides_wp   = {}
     # Clear JE description overrides keyed to prior property's run
     st.session_state.je_desc_overrides   = {}
+    st.session_state.pop('_je_desc_run', None)
+    # Clear post-close JE table and sign-off state so Property A data doesn't bleed into B
+    st.session_state.signoff_state        = {}
+    st.session_state.post_close_je_df    = _pd.DataFrame({
+        'JE #': [], 'DR Account': [], 'DR Amount': [], 'CR Account': [], 'CR Amount': [],
+        'Description': [],
+    }) if '_pd' in dir() else st.session_state.get('post_close_je_df', {})
+    st.session_state.pop('_pcje_latest', None)
+    # Increment upload widget keys so Streamlit discards Property A's file buffers
+    st.session_state.upload_key_p1 = st.session_state.get('upload_key_p1', 0) + 1
+    st.session_state.upload_key_p2 = st.session_state.get('upload_key_p2', 0) + 1
+    # Clear the prior period label so workpaper carry-forward uses the correct month
+    st.session_state.pop('prior_period_label_input', None)
 
 # Load config for the selected property
 from property_config import load_property_config as _load_prop_cfg
@@ -753,6 +766,11 @@ else:
         st.session_state.bulk_overrides_wp   = {}
         st.session_state['pass1_gl_activity_log'] = []
         st.session_state.je_desc_overrides   = {}
+        # Clear keys missed by prior Reset All logic
+        st.session_state.pop('_je_desc_run', None)
+        st.session_state.pop('prior_period_label_input', None)
+        for _k in [k for k in st.session_state.keys() if k.startswith('je_add_count_')]:
+            del st.session_state[_k]
         st.rerun()
     if _ra_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_all_btn"):
         st.session_state.confirm_reset_all = False
@@ -1635,7 +1653,7 @@ with tab1:
                 "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
                                        help=_split_sch_help),
             },
-            key="manual_accruals_editor",
+            key=f"manual_accruals_editor_{_selected_code}",
         )
         st.session_state.manual_accruals_df = accruals_edited_df
 
@@ -1827,8 +1845,9 @@ with tab1:
                     try:
                         from parsers.yardi_receivable_summary import parse as _parse_rs
                         _rs_parsed = _parse_rs(_rs_file)
-                    except Exception:
+                    except Exception as _e:
                         _rs_parsed = None
+                        st.warning(f"⚠️ Receivable Summary parse failed — management fee will fall back to a less precise source: {_e}")
 
                 # Parse Receivable Detail — alternate management fee source, also used
                 # by the accrual engine (Mode b per-tenant electric breakdown).
@@ -1838,8 +1857,9 @@ with tab1:
                     try:
                         from parsers.yardi_receivable_detail import parse as _parse_rd
                         _rd_parsed = _parse_rd(_rd_file)
-                    except Exception:
+                    except Exception as _e:
                         _rd_parsed = None
+                        st.warning(f"⚠️ Receivable Detail parse failed — management fee will fall back to a less precise source: {_e}")
 
                 # Step 3: Prepaid ledger — load → merge → release lines
                 # Ledger contains Prepaid Other (135150) items only.
@@ -1849,6 +1869,12 @@ with tab1:
                 progress_bar.progress(45)
 
                 ledger_path = st.session_state.uploaded_files.get("prepaid_ledger")
+                if not ledger_path:
+                    st.warning(
+                        "⚠️ **No Prepaid Ledger uploaded** — prepaid amortization releases will be skipped. "
+                        "Upload the prior-month `GA_Prepaid_Ledger_Updated.xlsx` to carry forward.",
+                        icon=None,
+                    )
                 ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
 
                 # Merge Nexus Invoice Detail into ledger

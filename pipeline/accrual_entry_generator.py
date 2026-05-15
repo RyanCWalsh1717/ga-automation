@@ -28,7 +28,7 @@ from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Any, Optional
 from openpyxl import Workbook
 
-from accounting_utils import _round
+from accounting_utils import _round, _safe_float
 from property_config import is_expense_account
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -119,16 +119,28 @@ def _build_gl_invoice_lookup(gl_data) -> dict:
 
 
 def _is_invoice_in_gl(invoice_number: str, gl_lookup: dict) -> bool:
-    """Check if an invoice number already appears in GL transactions,
-    either as a direct reference match or as a substring of a control number."""
+    """Check if an invoice number already appears in GL transactions.
+
+    Match strategy (in order):
+      1. Exact match against GL reference field (by_reference dict)
+      2. Exact match against GL control number (by_control dict)
+      3. Case-insensitive exact match after stripping whitespace
+
+    Substring matching is intentionally NOT used — e.g. invoice "123" must not
+    match GL control "P-91234", which would silently suppress a real open invoice.
+    """
     if not invoice_number:
         return False
     inv = invoice_number.strip()
     if inv in gl_lookup['by_reference']:
         return True
-    for ctrl in gl_lookup['by_control']:
-        if inv in ctrl:
-            return True
+    # Exact control-number match only (no substring)
+    if inv in gl_lookup['by_control']:
+        return True
+    # Case-insensitive fallback
+    inv_lower = inv.lower()
+    if any(inv_lower == ctrl.lower() for ctrl in gl_lookup['by_control']):
+        return True
     return False
 
 
@@ -980,7 +992,7 @@ def detect_invoice_proration_accruals(
                 for _vname, _vgroup in _vendor_groups.items():
                     _vamt       = sum(g[2] for g in _vgroup)
                     _vstart     = min(g[0] for g in _vgroup)
-                    _vdays      = max(1, (latest_end - _vstart).days + 1)  # inclusive day count
+                    _vdays      = max(1, (latest_end - _vstart).days)  # exclusive end (matches uncovered convention)
                     _vrate      = _vamt / _vdays
                     _vaccrual   = _vrate * uncovered
                     if _vaccrual < materiality:
@@ -2301,6 +2313,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # in the codebase for reference but is NO LONGER CALLED — Berkadia's Yardi loan
     # payment entries post this automatically each payment month.
 
+    _seen_nexus_inv_nums: set = set()  # intra-batch dedup — Nexus sometimes has duplicate rows
+
     for inv in invoices:
         vendor = str(inv.get('vendor', '') or '')
         inv_num = str(inv.get('invoice_number', '') or '')
@@ -2314,12 +2328,25 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         if amount == 0:
             continue
 
+        # Guard: blank GL account would produce an invalid JE that Yardi rejects at import
+        if not gl_account:
+            continue
+
         # Skip if user has manually specified this account in the One-Off table —
         # their override (with amount > 0) or suppression (amount = 0) takes precedence.
         if gl_account in _manual_accounts:
             continue
 
-        # Dedup — two strategies, first-match wins:
+        # Intra-batch dedup: Nexus sometimes submits the same invoice twice (resubmit,
+        # dual approval workflow). Both would clear the GL dedup check and generate
+        # duplicate JEs. Deduplicate within this Nexus batch first.
+        if inv_num:
+            _inv_key = f'{inv_num}|{gl_account}'
+            if _inv_key in _seen_nexus_inv_nums:
+                continue
+            _seen_nexus_inv_nums.add(_inv_key)
+
+        # Dedup against GL — two strategies, first-match wins:
         #   Strategy 1 (exact):     invoice number matches GL reference/control
         #   Strategy 2 (fuzzy):     vendor name + amount already posted to same account
         #                           (fires only when invoice number is absent)

@@ -249,13 +249,11 @@ def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
     elif isinstance(rd_parsed, dict):
         scan_prepay = float(rd_parsed.get('prepayment_receipts', 0) or 0)
 
-    # When AR Aging is available it is the primary source (authoritative Yardi balance).
-    # The charge-code scan is used only as a fallback when AR Aging is not uploaded,
-    # to avoid double-counting in months where AR Aging net differs from scan total.
-    if ar_aging is not None:
-        prepay = ar_prepay
-    else:
-        prepay = scan_prepay
+    # Take the larger of the two prepayment signals — conservative (excludes more
+    # from the fee basis).  AR Aging gives a net figure (cross-tenant netting may
+    # reduce it); the charge-code scan gives a gross figure.  max() ensures we
+    # never exclude less than either source found, matching the documented intent.
+    prepay = max(ar_prepay, scan_prepay)
 
     net = max(0.0, total - prepay)
     return (net if net > 0 else None), prepay

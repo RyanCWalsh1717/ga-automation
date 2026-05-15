@@ -278,9 +278,9 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
         return QCResult('CHECK_3', 'Trial Balance Self-Balance',
                         'FAIL', 'Trial Balance not available.', [])
 
-    # TB self-balance check
+    # TB self-balance check — Yardi TBs balance to the penny; tolerance is $0.01
     diff = abs(tb_result.total_debits - tb_result.total_credits)
-    if diff > 0.05:
+    if diff > 0.01:
         findings.append(QCFinding(
             account_code='TB-TOTAL',
             account_name='Trial Balance Total',
@@ -655,7 +655,7 @@ def check_7_misc(budget_rows: List[dict],
             note=(f'Accrued: ${ptd_actual:,.2f} | '
                   f'Calculated: ${expected_total:,.2f} '
                   f'(Cash ${cash_received:,.2f} × JLL {jll_rate:.2%} + GRP {grp_rate:.2%}). '
-                  + ('Ties.' if diff < 500 else f'Difference: ${diff:,.2f} — update accrual.')),
+                  + ('Ties.' if diff < _mgmt_tolerance else f'Difference: ${diff:,.2f} — update accrual.')),
         ))
     elif mgmt_fee_code in bc_map:
         ptd_actual = _safe_float(bc_map[mgmt_fee_code].get('ptd_actual', 0))
