@@ -132,7 +132,10 @@ st.set_page_config(
 )
 
 # ── Custom CSS ───────────────────────────────────────────────
-st.markdown("""
+# st.html() is the supported API for raw HTML injection in Streamlit ≥ 1.31.
+# st.markdown(..., unsafe_allow_html=True) was deprecated in 1.36 and strips
+# complex div structures; use st.html() for all HTML/CSS blocks.
+st.html("""
 <style>
     /* ── Brand palette ── */
     :root {
@@ -296,7 +299,7 @@ st.markdown("""
         padding-top: 12px;
     }
 </style>
-""", unsafe_allow_html=True)
+""")
 
 
 # ── Session state initialization ─────────────────────────────
@@ -481,7 +484,7 @@ if _hero_cfg.property_type:
     _hero_badges.append(f"🔬 {_hero_cfg.property_type}")
 _hero_badge_html = " ".join(f'<span class="grp-badge">{b}</span>' for b in _hero_badges)
 
-st.markdown(f"""
+st.html(f"""
 <div class="grp-hero">
     {_photo_html}
     <div class="grp-hero-body">
@@ -491,7 +494,7 @@ st.markdown(f"""
     </div>
     <div class="grp-hero-logo">{_logo_html}</div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
