@@ -368,7 +368,8 @@ def detect_insurance_amortization(
     """
     results: List[Dict[str, Any]] = []
 
-    if not gl_data or not budget_data:
+    # gl_data is always required; budget_data is only needed for Mode C (BC fallback)
+    if not gl_data:
         return results
 
     _period_label = _fmt_period(period)
@@ -2272,7 +2273,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # (ledger releases DR the same expense accounts / CR 135150 — running
     # detect_insurance_amortization() on top would double-count the expense).
     _ledger_ins_covered = (ledger_release_accounts or set()) & _INSURANCE_EXPENSE_ACCTS
-    if gl_data and budget_data and not _ledger_ins_covered:
+    if gl_data and (budget_data or insurance_policies or kardin_records) and not _ledger_ins_covered:
         for ins in detect_insurance_amortization(
             gl_data, budget_data, period=period,
             insurance_policies=insurance_policies or None,
