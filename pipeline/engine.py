@@ -1116,37 +1116,52 @@ def check_debt_service(gl_result, loan_result,
     total_loan_interest = 0
     for loan in loans:
         if isinstance(loan, dict):
-            interest_ytd = loan.get('interest_paid_ytd', 0)
+            # payment_interest = current-month interest from the Berkadia statement.
+            # Prefer this over interest_paid_ytd — it is the PTD amount that should
+            # match the GL accrual for this period.
+            interest_ptd = loan.get('payment_interest') or loan.get('interest_paid_ytd', 0)
             principal = loan.get('principal_balance', 0)
             name = loan.get('property_name', loan.get('name', 'Unknown'))
         else:
-            interest_ytd = getattr(loan, 'interest_paid_ytd', 0)
+            interest_ptd = getattr(loan, 'payment_interest', None) or getattr(loan, 'interest_paid_ytd', 0)
             principal = getattr(loan, 'principal_balance', 0)
             name = getattr(loan, 'property_name', getattr(loan, 'name', 'Unknown'))
 
-        interest_ytd = interest_ytd if isinstance(interest_ytd, (int, float)) else 0
-        principal = principal if isinstance(principal, (int, float)) else 0
-        total_loan_interest += interest_ytd
+        interest_ptd = float(interest_ptd) if isinstance(interest_ptd, (int, float)) else 0.0
+        principal = float(principal) if isinstance(principal, (int, float)) else 0.0
+        total_loan_interest += interest_ptd
         result["loans"].append({
             "name": name,
             "principal_balance": principal,
-            "interest_paid_ytd": interest_ytd,
+            "interest_paid_ptd": interest_ptd,
         })
 
     result["loan_interest_total"] = total_loan_interest
 
-    # Note: GL interest is PTD (one month), loan interest_paid_ytd is YTD
-    # For a proper reconciliation we'd need to compare at the same level
-    # For now, flag if GL has no interest when loans exist
-    if loans and gl_interest == 0:
+    # Compare GL PTD interest to sum of loan statement PTD interest amounts.
+    # Both are now on the same period basis (single month), so a real comparison is valid.
+    variance = abs(abs(gl_interest) - total_loan_interest)
+    result["variance"] = round(variance, 2)
+
+    if loans and abs(gl_interest) == 0:
         exceptions.append(Exception_(
             severity="warning", category="balance",
             source="debt_service",
             description="Loan statements exist but no GL interest expense found",
         ))
+    elif loans and variance > 50:
+        exceptions.append(Exception_(
+            severity="warning", category="balance",
+            source="debt_service",
+            description=(
+                f"Interest variance: GL PTD ${abs(gl_interest):,.2f} vs "
+                f"loan statements ${total_loan_interest:,.2f} "
+                f"(difference ${variance:,.2f}) — verify interest accrual"
+            ),
+        ))
 
-    if abs(gl_interest) > 0:
-        result["reconciled"] = True
+    # Reconciled = loans exist, GL has interest, and variance is within $50
+    result["reconciled"] = bool(loans and abs(gl_interest) > 0 and variance <= 50)
 
     return result, exceptions
 

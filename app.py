@@ -1921,6 +1921,7 @@ with tab1:
                         ledger_release_accounts=_ledger_release_accounts,
                         payroll_accounts=getattr(_active_cfg, 'payroll_accounts', None) or None,
                         insurance_policies=getattr(_active_cfg, 'insurance_policies', None) or None,
+                        accrual_materiality_floor=getattr(_active_cfg, 'accrual_materiality_floor', 500.0),
                     )
                 # Surface any pipeline UserWarnings (e.g. missing Berkadia RE tax entry) in the UI
                 for _w in _captured_warnings:
@@ -3095,8 +3096,8 @@ with tab2:
 
     _P2_SLOT_KEYS = [
         "gl_pass2", "budget_comparison_pass2", "trial_balance_pass2",
-        "t12_statement_pass2", "loan_pass2", "prior_workpaper",
-        "bank_rec_dev_xlsx", "unknown",
+        "t12_statement_pass2", "loan_pass2", "bank_rec_pass2",
+        "prior_workpaper", "bank_rec_dev_xlsx", "unknown",
     ]
     _P2_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P2_SLOT_KEYS]
 
@@ -3392,6 +3393,10 @@ with tab2:
                     files_dict["trial_balance"] = st.session_state.uploaded_files["trial_balance_pass2"]
                 if st.session_state.uploaded_files.get("loan_pass2"):
                     files_dict["loan"] = st.session_state.uploaded_files["loan_pass2"]
+                if st.session_state.uploaded_files.get("bank_rec_pass2"):
+                    files_dict["bank_rec"] = st.session_state.uploaded_files["bank_rec_pass2"]
+                if st.session_state.uploaded_files.get("t12_statement_pass2"):
+                    files_dict["t12_statement"] = st.session_state.uploaded_files["t12_statement_pass2"]
 
                 # Auto-load committed Kardin budget if not uploaded this session
                 if not files_dict.get("kardin_budget") and _COMMITTED_BUDGET:

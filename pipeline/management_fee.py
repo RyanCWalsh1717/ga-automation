@@ -296,6 +296,10 @@ def _cash_from_gl(gl_parsed, cash_account: str = _CASH_OPERATING) -> Optional[fl
         if str(acct.account_code).strip() != cash_account:
             continue
 
+        _OPENING_KEYWORDS = (
+            'balance forward', 'opening balance', 'beg balance',
+            'beginning balance', 'beg. balance', 'forward balance',
+        )
         receipts = 0.0
         for txn in acct.transactions:
             if txn.debit <= 0:
@@ -304,6 +308,10 @@ def _cash_from_gl(gl_parsed, cash_account: str = _CASH_OPERATING) -> Optional[fl
             remarks_lower = (txn.remarks or '').lower()
             # Skip internal bank transfers
             if 'transfer' in desc_lower or 'transfer' in remarks_lower:
+                continue
+            # Skip the Yardi beginning-balance opening entry — it is a debit equal
+            # to the prior month's ending balance and is NOT cash received this period
+            if any(kw in desc_lower or kw in remarks_lower for kw in _OPENING_KEYWORDS):
                 continue
             receipts += txn.debit
 

@@ -320,14 +320,26 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
 # ══════════════════════════════════════════════════════════════
 
 def check_4_mom_swings(budget_rows: List[dict],
-                       swing_threshold: float = 10_000.0) -> QCResult:
+                       swing_threshold: float = 10_000.0,
+                       period_month: int = 0) -> QCResult:
     """
     For P&L accounts, derive prior-month actual = YTD actual - PTD actual.
     Flag if |PTD actual - prior month actual| > $10,000 or if sign changes.
 
-    Note: For month 1 (January), prior month = 0 (no prior YTD).
+    January (period_month=1): prior = YTD - PTD = 0 for all P&L accounts
+    because YTD == PTD in month 1. Every non-zero account would show a full-value
+    swing — flood of false positives. Suppress the check in January.
     """
     from variance_comments import _is_skip_row
+
+    # January: no prior-month data available — skip to avoid false positives
+    if period_month == 1:
+        return QCResult(
+            check_id='CHECK_4', check_name='Month-over-Month Swings',
+            status='PASS',
+            summary='January — no prior-month comparison available; MoM check skipped.',
+            findings=[],
+        )
 
     findings: List[QCFinding] = []
 
@@ -879,7 +891,7 @@ def run_qc(
         check_1_tb_to_budget(tb_result, budget_rows),
         check_2_budget_variances(budget_rows),
         check_3_tb_balance_and_gl(tb_result, gl_parsed),
-        check_4_mom_swings(budget_rows),
+        check_4_mom_swings(budget_rows, period_month=period_month),
         check_5_gl_vs_workpapers(gl_parsed, tb_result),
         check_6_accruals_vs_budget(budget_rows, kardin_records, accrual_entries, period_month),
         check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received,
