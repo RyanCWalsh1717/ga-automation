@@ -612,7 +612,12 @@ else:
             st.session_state.manual_accruals_df["Amount ($)"] = 0.0
         st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
         st.session_state.custom_checklist_items = []
-        st.session_state.checklist_loaded = False
+        st.session_state.checklist_loaded    = False
+        st.session_state.checklist_locked    = False
+        st.session_state.checklist_locked_by = None
+        st.session_state.checklist_locked_at = None
+        st.session_state.last_completed_step = None
+        st.session_state.pass1_run_count     = 0
         st.rerun()
     if _ra_col2.button("❌ Cancel", use_container_width=True, key="cancel_reset_all_btn"):
         st.session_state.confirm_reset_all = False
@@ -1541,6 +1546,7 @@ with tab1:
                     st.session_state.uploaded_files.pop(_clr, None)
             # Clear Pass 1 close tracker step (step 1 = JEs generated)
             st.session_state.close_tracker.pop(1, None)
+            st.session_state.pass1_run_count = 0
             st.rerun()
 
     # ── Pass 1 Processing ─────────────────────────────────────────────────────
@@ -5121,6 +5127,7 @@ with tab4:
                 fiscal_year_start_month = 1,
                 file_prefix_internal   = _file_pfx_int or _pfx_int,
                 file_prefix_deliverable = _file_pfx_del,
+                active                 = getattr(_edit_cfg, 'active', True) if not _is_new else True,
             )
             _yaml_str = config_to_yaml(_cfg_dict)
 
@@ -5181,9 +5188,9 @@ with tab4:
                 st.code(_yaml_str, language="yaml")
 
     # ── Deactivate / Reactivate property (outside form, existing properties only) ──
+    from property_writer import deactivate_property as _deactivate, reactivate_property as _reactivate
     if not _is_new and _edit_cfg is not None:
         st.divider()
-        from property_writer import deactivate_property as _deactivate, reactivate_property as _reactivate
         _prop_is_active = getattr(_edit_cfg, 'active', True)
 
         if _prop_is_active:

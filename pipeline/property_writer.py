@@ -62,6 +62,7 @@ def build_config_dict(
     fiscal_year_start_month: int,
     file_prefix_internal:   str,
     file_prefix_deliverable: str,
+    active:                 bool = True,
 ) -> dict:
     """Build the ordered dict that becomes the YAML config file."""
     banks = {}
@@ -99,6 +100,7 @@ def build_config_dict(
     }
     if property_type:        cfg['property_type']    = property_type
     if property_size_sf:     cfg['property_size_sf'] = property_size_sf
+    if not active:           cfg['active']           = False   # omit when True (defaults to True on load)
 
     cfg['investor_name']      = investor_name
     cfg['management_company'] = management_company
