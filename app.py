@@ -1755,6 +1755,7 @@ with tab1:
                     gl_activity_log=_gl_activity_log,
                     receivable_detail=_rd_parsed,
                     ledger_release_accounts=_ledger_release_accounts,
+                    payroll_accounts=getattr(_active_cfg, 'payroll_accounts', None) or None,
                 )
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 

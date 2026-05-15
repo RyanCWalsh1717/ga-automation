@@ -569,6 +569,7 @@ def _build_recon_from_yardi_rec(
     gl_result,
     bank_result: dict,
     prior_period_outstanding: float = 0.0,
+    cash_account_code: str = '111100',
 ) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
     """
     GRP's independent bank reconciliation — no JLL involvement.
@@ -598,11 +599,11 @@ def _build_recon_from_yardi_rec(
     bank_end   = bank_result.get('bank_statement_balance') or bank_result.get('ending_balance') or 0.0
     bank_begin = bank_result.get('beginning_balance') or 0.0
 
-    # GL ending balance from the main Yardi GL file (111100 account)
+    # GL ending balance from the main Yardi GL file (cash operating account)
     gl_cash_acct = None
     if hasattr(gl_result, 'accounts'):
         for acct in gl_result.accounts:
-            if acct.account_code == '111100':
+            if acct.account_code == cash_account_code:
                 gl_cash_acct = acct
                 break
 
@@ -855,6 +856,7 @@ def match_gl_to_bank(
     gl_result,
     bank_result,
     prior_period_outstanding: float = 0.0,
+    cash_account_code: str = '111100',
 ) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
     """
     GRP's independent bank reconciliation.
@@ -886,13 +888,14 @@ def match_gl_to_bank(
         return _build_recon_from_yardi_rec(
             gl_result, bank_result,
             prior_period_outstanding=prior_period_outstanding,
+            cash_account_code=cash_account_code,
         )
 
-    # Get GL cash account (111100)
+    # Get GL cash account (operating cash — account code from property config)
     gl_cash_acct = None
     if hasattr(gl_result, 'accounts'):
         for acct in gl_result.accounts:
-            if acct.account_code == "111100":
+            if acct.account_code == cash_account_code:
                 gl_cash_acct = acct
                 break
 
@@ -900,7 +903,7 @@ def match_gl_to_bank(
         exceptions.append(Exception_(
             severity="warning", category="balance",
             source="gl_bank_recon",
-            description="GL Cash-Operating (111100) account not found",
+            description=f"GL Cash-Operating ({cash_account_code}) account not found",
         ))
         return matches, exceptions, None
 
@@ -1072,7 +1075,8 @@ def match_gl_to_bank(
     return matches, exceptions, recon
 
 
-def check_debt_service(gl_result, loan_result) -> Tuple[dict, List[Exception_]]:
+def check_debt_service(gl_result, loan_result,
+                       interest_account_code: str = '801110') -> Tuple[dict, List[Exception_]]:
     """
     Reconcile debt service: compare loan statement interest/principal
     against GL interest expense entries.
@@ -1089,11 +1093,11 @@ def check_debt_service(gl_result, loan_result) -> Tuple[dict, List[Exception_]]:
     if loan_result is None:
         return result, exceptions
 
-    # Get GL interest expense (account 801110)
+    # Get GL interest expense (account code from property config)
     gl_interest = 0
     if hasattr(gl_result, 'accounts'):
         for acct in gl_result.accounts:
-            if acct.account_code == "801110":
+            if acct.account_code == interest_account_code:
                 gl_interest = acct.net_change
                 break
     result["gl_interest_expense"] = abs(gl_interest)
@@ -1500,9 +1504,22 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         result.exceptions.extend(gl_inv_exc)
 
     # ── Step 5: Match GL to bank ─────────────────────────────
+    # Load property config to read config-driven GL account codes
+    _engine_cfg = None
+    try:
+        from property_config import get_config as _get_cfg
+        _engine_cfg = _get_cfg(result.parsed.get('gl') and
+                               result.parsed['gl'].metadata.property_code or '')
+    except Exception:
+        pass
+    _gl_accts      = getattr(_engine_cfg, 'gl_accounts', None) or {}
+    _cash_code     = str(_gl_accts.get('cash_operating', '111100')).strip() or '111100'
+    _interest_code = str(_gl_accts.get('interest_expense', '801110')).strip() or '801110'
+
     if gl and bank_data:
         gl_bank_matches, gl_bank_exc, bank_recon = match_gl_to_bank(
-            gl, bank_data, prior_period_outstanding=prior_period_outstanding
+            gl, bank_data, prior_period_outstanding=prior_period_outstanding,
+            cash_account_code=_cash_code,
         )
         result.gl_bank_matches = gl_bank_matches
         result.bank_recon_detail = bank_recon
@@ -1510,7 +1527,8 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
 
     # ── Step 6: Debt service check ───────────────────────────
     if gl and loan_data:
-        ds_result, ds_exc = check_debt_service(gl, loan_data)
+        ds_result, ds_exc = check_debt_service(gl, loan_data,
+                                               interest_account_code=_interest_code)
         result.debt_service_check = ds_result
         result.exceptions.extend(ds_exc)
 

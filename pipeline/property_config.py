@@ -167,7 +167,7 @@ class PropertyConfig:
     file_prefix_deliverable: str = ''         # e.g. RevLabs_Jan2026_Workpapers.xlsx
 
     # ── Reference files ───────────────────────────────────────────────────────
-    kardin_budget_file:    str = 'GA_Kardin_Budget_FY2026.xlsx'
+    kardin_budget_file:    str = ''   # set in config.yaml; build_config_dict auto-derives from fiscal year
     fiscal_year_start_month: int = 1
 
     # ── Chart of Accounts classification (override for non-standard COA) ──────
@@ -176,6 +176,12 @@ class PropertyConfig:
     coa_bs_asset_prefixes:   tuple = field(default_factory=lambda: ('1',))
     coa_bs_liability_prefixes: tuple = field(default_factory=lambda: ('2',))
     coa_bs_equity_prefixes:  tuple = field(default_factory=lambda: ('3',))
+
+    # ── Payroll / bonus account codes ─────────────────────────────────────────
+    # GL accounts that Layer 4 (bonus accrual) should monitor.
+    # Defaults match the standard Yardi Residential/Commercial COA.
+    # Override in config.yaml as:  payroll_accounts: ['615110', '637110', '615120']
+    payroll_accounts: List[str] = field(default_factory=lambda: ['615110', '637110'])
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -258,11 +264,11 @@ class PropertyConfig:
             accrual_materiality_floor = float(d.get('accrual_materiality_floor', 500.0)),
             file_prefix_internal    = str(d.get('file_prefix_internal', 'GA')),
             file_prefix_deliverable = str(d.get('file_prefix_deliverable', '')),
-            kardin_budget_file      = str(d.get('kardin_budget_file', 'GA_Kardin_Budget_FY2026.xlsx')),
+            kardin_budget_file      = str(d.get('kardin_budget_file', '')),
             fiscal_year_start_month = int(d.get('fiscal_year_start_month', 1)),
-            team_members            = list(d.get('team_members') or
-                                          ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan']),
+            team_members            = list(d.get('team_members') or []),
             active                  = bool(d.get('active', True)),
+            payroll_accounts        = list(d.get('payroll_accounts') or ['615110', '637110']),
             default_split_schedule  = str(d.get('default_split_schedule', '')),
             tenants                 = [
                 {'key': str(t.get('key', '')), 'name': str(t.get('name', ''))}

@@ -1893,6 +1893,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           gl_activity_log: Optional[List[Dict]] = None,
                           receivable_detail=None,
                           ledger_release_accounts: Optional[set] = None,
+                          payroll_accounts: Optional[List[str]] = None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from four sources (in priority order):
@@ -3047,17 +3048,29 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             _period_month_num = _nm
             break
 
+    # Build effective payroll accounts dict — config can override which accounts are
+    # monitored for Layer 4 bonus accruals. Unknown codes get a generic label/keywords.
+    _effective_payroll: dict = PAYROLL_BONUS_ACCOUNTS
+    if payroll_accounts:
+        _effective_payroll = {
+            code: PAYROLL_BONUS_ACCOUNTS.get(code, {
+                'label':           f'Payroll-{code}',
+                'kardin_keywords': ['bonus', 'payroll'],
+            })
+            for code in payroll_accounts
+        }
+
     if gl_data and _period_month_num:
         # Build GL net_change for payroll accounts
         _gl_net_bonus: Dict[str, float] = {}
         for _ba in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
             _bc = str(_ba.account_code).strip()
-            if _bc in PAYROLL_BONUS_ACCOUNTS:
+            if _bc in _effective_payroll:
                 _gl_net_bonus[_bc] = _ba.net_change
 
         if bonus_overrides:
             # Mode (a): user-entered annual amounts
-            for _ba_code, _ba_cfg in PAYROLL_BONUS_ACCOUNTS.items():
+            for _ba_code, _ba_cfg in _effective_payroll.items():
                 if _ba_code in _covered:
                     continue
                 _annual = float(bonus_overrides.get(_ba_code, 0) or 0)

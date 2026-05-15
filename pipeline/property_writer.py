@@ -160,9 +160,15 @@ def build_config_dict(
     cfg['re_tax_payment_months']  = re_tax_payment_months or [1, 4, 7, 10]
     if parcel_ids: cfg['parcel_ids'] = [str(p) for p in parcel_ids if p]
 
-    cfg['kardin_budget_file']      = kardin_budget_file or 'GA_Kardin_Budget_FY2026.xlsx'
+    import datetime as _dt
+    _fy_start = fiscal_year_start_month or 1
+    _today    = _dt.date.today()
+    # Current fiscal year: if today is before FY start month, FY = current year - 1
+    _cur_fy   = _today.year if _today.month >= _fy_start else _today.year - 1
+    _default_budget = f'{file_prefix_internal or "GA"}_Kardin_Budget_FY{_cur_fy}.xlsx'
+    cfg['kardin_budget_file']      = kardin_budget_file or _default_budget
     cfg['fiscal_year_start_month'] = fiscal_year_start_month or 1
-    cfg['file_prefix_internal']    = file_prefix_internal or 'GA'
+    cfg['file_prefix_internal']    = (file_prefix_internal or '').strip() or 'GA'
     if file_prefix_deliverable:
         cfg['file_prefix_deliverable'] = file_prefix_deliverable
 
