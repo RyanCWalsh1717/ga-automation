@@ -50,8 +50,6 @@ tenants:
 # Pre-seeded rows in the One-Off Accruals table — recurring monthly items.
 # Amounts are left at $0 and filled in each month. vendor is optional.
 default_accruals:
-  - account_code: "613310"
-    account_name: Utilities-Water/Sewer
   - account_code: "637150"
     account_name: Admin-Tenant Relations
   - account_code: "637150"
