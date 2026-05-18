@@ -52,19 +52,48 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
 # ─────────────────────────────────────────────────────────────────
 
 def _parse_pdf(filepath: str) -> List[Dict[str, Any]]:
-    """Parse a single-loan Berkadia billing PDF using pdfplumber."""
+    """Parse a Berkadia billing PDF using pdfplumber.
+
+    Supports both single-loan PDFs (one page) and multi-loan PDFs where each
+    page (or pair of pages) represents a separate tranche.  Every page that
+    contains a recognisable Berkadia header ('Property:' + 'Loan No:') is
+    parsed independently and returned as its own loan dict.
+    """
     import pdfplumber
 
+    results = []
     with pdfplumber.open(filepath) as pdf:
-        page = pdf.pages[0]
-        text = page.extract_text()
+        # Accumulate consecutive pages into a single block per tranche.
+        # A new tranche starts whenever we see the header pattern on a page.
+        # If the statement is one page per tranche, each page produces one dict.
+        # If a tranche spans two pages, we concatenate and parse together.
+        current_lines: List[str] = []
+        header_pat = re.compile(r'Property:.+Loan No:', re.IGNORECASE)
 
-    if not text:
-        return []
+        for page in pdf.pages:
+            text = page.extract_text() or ''
+            page_lines = text.splitlines()
 
-    lines = text.splitlines()
-    result = _parse_pdf_text(lines)
-    return [result] if result else []
+            # Check whether this page starts a new tranche header
+            is_new_tranche = any(header_pat.search(ln) for ln in page_lines)
+
+            if is_new_tranche and current_lines:
+                # Parse the block we've accumulated so far
+                result = _parse_pdf_text(current_lines)
+                if result and result.get('loan_number'):
+                    results.append(result)
+                current_lines = page_lines
+            else:
+                # Either this is the first page or a continuation — append
+                current_lines.extend(page_lines)
+
+        # Parse the final accumulated block
+        if current_lines:
+            result = _parse_pdf_text(current_lines)
+            if result and result.get('loan_number'):
+                results.append(result)
+
+    return results
 
 
 def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
