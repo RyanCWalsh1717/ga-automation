@@ -1402,39 +1402,23 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # skip.  If GL has < 25% → partial posting (e.g. one of three Casella invoices
         # arrived), generate top-up for the remainder.
         #
-        # A net CREDIT (net_change ≤ 0) means prior-month accrual auto-reversed with
-        # no replacement — account still needs a full accrual; _gl_partial_offset = 0.
-        _gl_partial_offset = acct.net_change if acct.net_change > 0.01 else 0.0
+        # Strip J-entries that perfectly cancel each other from the partial-coverage
+        # signal.  Use K/P/C-only net so a $130K J-debit + $130K J-credit pair
+        # doesn't distort whether a real invoice has already posted this period.
+        _j_dr_total = _j_debits(acct)
+        _j_cr_total = _j_credits(acct)
+        _kpc_net    = acct.net_change - (_j_dr_total - _j_cr_total)  # K/P/C only
+        _gl_partial_offset = _kpc_net if _kpc_net > 0.01 else 0.0
 
         # ── Compound accrual: prior-month auto-reversal detected ──────────────
-        # When a prior-month J-entry auto-reverses into this period, the expense
-        # account shows a J-type credit equal to the prior compound amount.
-        #
-        # The correct new accrual is:
-        #   compound = j_credits (prior cumulative, now reversed) + monthly_rate
-        #
-        # Monthly rate source (in priority order):
-        #   1. BC annual ÷ 12      — preferred when BC data is available
-        #   2. Kardin annual ÷ 12  — used when account absent from Yardi BC
-        #   3. j_credits ÷ months_elapsed — last resort; may drift after mid-year bills
-        #
-        # Description: carries the original billing-period start date forward from the
-        # J-credit transaction description (e.g. "9/23/25") so the range shown in the
-        # new JE reads "{original_start}-{period_end}" (e.g. "9/23/25-1/31/2026").
-        #
-        # Guard: if non-J net change (real K/P/C invoice) ≥ 25% of monthly_rate
-        # → real bill has posted → suppress the compound accrual.
-        # Use net J-credit (credits minus debits) so paired entries that cancel
-        # (e.g. $130K J-debit + $130K J-credit from a bill/reversal cycle) are
-        # excluded.  Only the unmatched credit — the open prior-accrual reversal —
-        # is used as the compound base.  _j_credits() / _j_debits() are still used
-        # for _non_j_net to detect whether a real K/P/C invoice has posted.
+        # _net_j_credit strips paired J-entries (e.g. $130K bill + $130K reversal)
+        # so only the unmatched open reversal (e.g. $48K) is used as the base.
+        # _non_j_net uses the same K/P/C-only net (_kpc_net) to detect real bills.
         _j_cr = _net_j_credit(acct)
         # 8xxxxx accounts (interest, other income/expense) are flat monthly charges
         # handled by Layer 1b (Berkadia) — never compound them.
         if _j_cr > 500 and not code.startswith('8'):
-            _j_dr      = _j_debits(acct)
-            _non_j_net = acct.net_change - (_j_dr - _j_cr)  # K/P/C net only
+            _non_j_net = _kpc_net  # K/P/C net already computed above
 
             # Monthly rate: BC → Kardin → j_cr ÷ max(months_elapsed, 1)
             # Track whether a reliable budget-driven rate is available; this
