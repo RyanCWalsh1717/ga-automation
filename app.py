@@ -845,7 +845,9 @@ else:
         st.session_state._accruals_df_for_property = _selected_code
         st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
         st.session_state.custom_checklist_items = []
-        st.session_state.checklist_loaded    = False
+        # Set checklist_loaded = True so the load block does NOT immediately
+        # reload from the persistence file — keeps close_tracker empty after reset.
+        st.session_state.checklist_loaded    = True
         st.session_state.checklist_locked    = False
         st.session_state.checklist_locked_by = None
         st.session_state.checklist_locked_at = None
