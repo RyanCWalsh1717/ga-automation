@@ -2951,10 +2951,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         prorations = detect_invoice_proration_accruals(
             gl_data, period=period, month_end=_month_end
         )
+        _proration_covered: set = set()   # accounts handled by this layer
         for pro in prorations:
             if pro['account_code'] in _covered:
                 _other_claimants.setdefault(pro['account_code'], []).append('invoice_proration')
-                continue   # already handled by Nexus
+                continue   # already handled by Nexus or an earlier layer
 
             je_id   = f"IPR-{je_num:04d}"
             je_desc = pro['description']
@@ -2988,8 +2989,17 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'invoice_number': '',
                 'source':         'invoice_proration',
             })
-            _covered.add(pro['account_code'])
+            # Track covered accounts but do NOT add to _covered mid-loop —
+            # an account can have multiple proration candidates (e.g. 613110
+            # with Eversource + Hudson on different billing cycles). Adding
+            # to _covered after the first candidate would silently drop all
+            # subsequent candidates for the same account.
+            _proration_covered.add(pro['account_code'])
             je_num += 1
+
+        # Now mark all proration-handled accounts as covered so Layer 3
+        # (historical / budget) does not also accrue them.
+        _covered.update(_proration_covered)
 
     # ── GL-activity universal gate ──────────────────────────────────────────
     # After Layer 2, look for accounts with Journal Entry (J-type) activity
