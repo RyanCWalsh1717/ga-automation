@@ -85,6 +85,8 @@ class PropertyConfig:
 
     # ── Yardi identifiers ─────────────────────────────────────────────────────
     property_code:         str       # Yardi short code, e.g. 'revlabspm'
+    yardi_etl_code:        str = ''  # Override for ETL FinJournals PROPERTY field (max 8 chars).
+                                     # Leave blank to use property_code (truncated to 8 if needed).
     property_name:         str = ''  # Full legal entity, e.g. 'Revolution Labs Owner, LLC'
     property_display_name: str = ''  # Short UI name, e.g. 'Revolution Labs'
     property_address:      str = ''  # Street address for workpaper headers

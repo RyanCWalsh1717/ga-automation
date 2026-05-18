@@ -9,6 +9,7 @@
 
 # Yardi identifiers
 property_code:         revlabspm
+yardi_etl_code:        revlabspm   # ETL FinJournals PROPERTY field (max 8 chars — update if Yardi rejects)
 property_name:         Revolution Labs Owner, LLC
 property_display_name: Revolution Labs
 property_address:      1050 Waltham Street, Lexington, MA

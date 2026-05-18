@@ -2463,11 +2463,13 @@ with tab1:
 
                 _prop_code = (engine_result.parsed.get('gl') and
                               engine_result.parsed['gl'].metadata.property_code) or _active_cfg.property_code
+                # ETL PROPERTY field: max 8 chars. Use yardi_etl_code if configured.
+                _etl_code = (getattr(_active_cfg, 'yardi_etl_code', '') or _prop_code)[:8]
 
                 if all_je_lines:
                     _accrual_csv_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv")
                     generate_etl_csv(all_je_lines, _accrual_csv_path,
-                                     period=close_period, property_code=_prop_code,
+                                     period=close_period, property_code=_etl_code,
                                      auto_reverse=True)
 
                 # Persist Pass 1 outputs
@@ -2806,8 +2808,9 @@ with tab1:
                 try:
                     from accrual_entry_generator import generate_etl_csv as _gen_etl_ed
                     _ed_csv = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv")
+                    _p1_etl_code = (getattr(_active_cfg, 'yardi_etl_code', '') or _p1_prop)[:8]
                     _gen_etl_ed(_updated_lines, _ed_csv,
-                                period=result.period, property_code=_p1_prop,
+                                period=result.period, property_code=_p1_etl_code,
                                 auto_reverse=True)
                     p1["accrual_je_csv"] = _ed_csv
                 except Exception:
@@ -2914,9 +2917,10 @@ with tab1:
                             _add_csv_path = os.path.join(
                                 st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv"
                             )
-                            _gen_etl_add(
+                            _p1_etl_code_add = (getattr(_active_cfg, 'yardi_etl_code', '') or _p1_prop_add)[:8]
+                        _gen_etl_add(
                                 _updated_all, _add_csv_path,
-                                period=result.period, property_code=_p1_prop_add,
+                                period=result.period, property_code=_p1_etl_code_add,
                                 auto_reverse=True
                             )
                             p1["accrual_je_csv"] = _add_csv_path
@@ -5123,15 +5127,19 @@ with tab2:
                 st.session_state.temp_dir, "GA_PostClose_JE.csv"
             )
             _p2er = st.session_state.pass2_engine_result
-            _pcje_period   = (_p2er.period        if _p2er else '') or ''
-            _pcje_propname = (_p2er.property_name if _p2er else '') or _active_cfg.property_code
+            _pcje_period = (_p2er.period if _p2er else '') or ''
+            # ETL PROPERTY field is capped at 8 chars by Yardi.
+            # Use yardi_etl_code from config when set; otherwise truncate property_code.
+            _pcje_etl_code = (
+                getattr(_active_cfg, 'yardi_etl_code', '') or _active_cfg.property_code
+            )[:8]
             try:
                 from accrual_entry_generator import generate_etl_csv as _gen_etl_pc
                 _gen_etl_pc(
                     _pcje_lines,
                     _pcje_csv_path,
                     period=_pcje_period,
-                    property_code=_pcje_propname,
+                    property_code=_pcje_etl_code,
                     auto_reverse=False,  # post-close JEs are permanent — no reversal
                 )
                 st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
