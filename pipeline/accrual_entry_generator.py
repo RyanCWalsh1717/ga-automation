@@ -1344,11 +1344,14 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 ytd_actual_by_code[bcode] = ytd_a
                 budget_by_code[bcode] = item
 
+    _gl_seen_codes: set = set()   # tracks every expense account code visited in the GL loop
+
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         # Only expense accounts — uses per-property COA config (defaults to 5/6/7/8xxxxx)
         if not is_expense_account(code):
             continue
+        _gl_seen_codes.add(code)
 
         # Partial-coverage detection: if some (but not enough) invoices have already
         # posted this period, don't suppress entirely — compute the expected monthly
@@ -1553,6 +1556,60 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                     f'{_partial_note})'
                 ),
             })
+
+    # ── Budget-only fallback: accounts with Kardin budget but no GL activity ─────
+    #
+    # Semi-annual / irregular billing accounts (e.g. 613310 Water/Sewer,
+    # 631110 Elevator inspection) have ZERO GL activity between bills.  Because
+    # the main loop above only iterates gl_data.accounts, these accounts are
+    # completely invisible to Layers 1-4 when no bill has posted and no prior
+    # pipeline JE auto-reversal has landed.
+    #
+    # This pass fills that gap: for any expense account in the Kardin/BC budget
+    # that was NOT seen in the GL this period, generate a Kardin annual ÷ 12
+    # candidate (same as January Path B).  The outer generate_accrual_entries
+    # function still applies the _covered / _manual_accounts exclusion set, so
+    # accounts the user has manually handled are silently filtered out.
+    #
+    # Guards:
+    #   - Expense account only
+    #   - Annual budget ≥ $60K  (est. monthly ≥ $5K materiality floor)
+    #   - Account was NOT already processed in the GL loop above
+    for _b_code, _b_item in budget_by_code.items():
+        if _b_code in _gl_seen_codes:
+            continue   # handled by the GL loop above
+        if not is_expense_account(_b_code):
+            continue
+        if isinstance(_b_item, dict):
+            _b_annual = abs(float(
+                _b_item.get('annual') or _b_item.get('annual_budget')
+                or _b_item.get('ytd_budget') or 0
+            ))
+            _b_name = str(_b_item.get('account_name', '') or _b_code)
+        else:
+            _b_annual = abs(float(
+                getattr(_b_item, 'annual', None)
+                or getattr(_b_item, 'annual_budget', None) or 0
+            ))
+            _b_name = str(getattr(_b_item, 'account_name', '') or _b_code)
+        if _b_annual < 1:
+            continue
+        _b_monthly = _round(_b_annual / 12)
+        if _b_monthly < 5000:
+            continue   # below materiality floor
+        candidates.append({
+            'account_code':     _b_code,
+            'account_name':     _b_name,
+            'estimated_amount': _b_monthly,
+            'ytd_prior':        0.0,
+            'months_prior':     months_elapsed,
+            'source':           'historical',
+            'description': (
+                f'Accrual {_period_label} — {_b_name} '
+                f'(budget est. ${_b_monthly:,.0f}/mo, '
+                f'annual budget ${_b_annual:,.0f} ÷ 12; no GL activity this period)'
+            ),
+        })
 
     return candidates
 
