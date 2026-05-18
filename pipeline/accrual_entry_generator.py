@@ -1405,23 +1405,27 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # Guard: if non-J net change (real K/P/C invoice) ≥ 25% of monthly_rate
         # → real bill has posted → suppress the compound accrual.
         _j_cr = _j_credits(acct)
-        if _j_cr > 500 and months_elapsed >= 1:
+        if _j_cr > 500:
+            # months_elapsed >= 1 guard removed: compound accruals must also fire
+            # in January (months_elapsed=0) when a prior-fiscal-year or cross-month
+            # J-entry auto-reverses.  Use max(months_elapsed, 1) in the fallback
+            # rate to avoid division by zero; budget/Kardin sources are preferred.
             _j_dr      = _j_debits(acct)
             _non_j_net = acct.net_change - (_j_dr - _j_cr)  # K/P/C net only
 
-            # Monthly rate: BC → Kardin → j_cr ÷ months_elapsed
+            # Monthly rate: BC → Kardin → j_cr ÷ max(months_elapsed, 1)
             _bi = budget_by_code.get(code)
             if _bi is not None:
                 _bi_annual = abs(float(
                     (_bi.get('annual', 0) if isinstance(_bi, dict)
                      else getattr(_bi, 'annual', 0)) or 0
                 ))
-                _mthly_rt = _round(_bi_annual / 12) if _bi_annual >= 1 else _round(_j_cr / months_elapsed)
+                _mthly_rt = _round(_bi_annual / 12) if _bi_annual >= 1 else _round(_j_cr / max(months_elapsed, 1))
             elif code in kardin_annual_by_code:
                 _k_annual = kardin_annual_by_code[code]['annual']
-                _mthly_rt = _round(_k_annual / 12) if _k_annual >= 1 else _round(_j_cr / months_elapsed)
+                _mthly_rt = _round(_k_annual / 12) if _k_annual >= 1 else _round(_j_cr / max(months_elapsed, 1))
             else:
-                _mthly_rt = _round(_j_cr / months_elapsed)  # last resort
+                _mthly_rt = _round(_j_cr / max(months_elapsed, 1))  # last resort
 
             if _mthly_rt >= 5000:  # materiality floor — same as normal path
                 if _non_j_net >= _mthly_rt * 0.25:
