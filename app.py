@@ -5127,7 +5127,14 @@ with tab2:
                 st.session_state.temp_dir, "GA_PostClose_JE.csv"
             )
             _p2er = st.session_state.pass2_engine_result
-            _pcje_period = (_p2er.period if _p2er else '') or ''
+            # Prefer Pass 2 GL period; fall back to the sidebar period selector so
+            # the date field is never left blank (which triggers a today's-date fallback).
+            _pcje_period = (
+                (_p2er.period if _p2er else '') or ''
+                or period_key_to_label(
+                    st.session_state.get('checklist_period_key', '')
+                )
+            )
             # ETL PROPERTY field is capped at 8 chars by Yardi.
             # Use yardi_etl_code from config when set; otherwise truncate property_code.
             _pcje_etl_code = (

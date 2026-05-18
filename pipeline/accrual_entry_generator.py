@@ -3844,13 +3844,19 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
     from datetime import datetime, date
     from calendar import monthrange
 
-    # Derive period end date from period string (e.g. 'Jan-2026' → 01/31/2026)
+    # Derive period end date from period string (e.g. 'Jan-2026' → 01/31/2026).
+    # Try several format variants before giving up — avoids writing today's date
+    # when the period string is in an unexpected but parseable format.
     period_date = ''
-    try:
-        dt = datetime.strptime(period, '%b-%Y')
-        last_day = monthrange(dt.year, dt.month)[1]
-        period_date = date(dt.year, dt.month, last_day).strftime('%m/%d/%Y')
-    except Exception:
+    for _pfmt in ('%b-%Y', '%B-%Y', '%b %Y', '%B %Y', '%m-%Y', '%m/%Y'):
+        try:
+            dt = datetime.strptime(period.strip(), _pfmt)
+            last_day = monthrange(dt.year, dt.month)[1]
+            period_date = date(dt.year, dt.month, last_day).strftime('%m/%d/%Y')
+            break
+        except Exception:
+            pass
+    if not period_date:
         period_date = datetime.now().strftime('%m/%d/%Y')
 
     # Assign sequential batch numbers per unique JE number
