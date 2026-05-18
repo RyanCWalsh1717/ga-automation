@@ -1435,13 +1435,27 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             import calendar as _cal_c
             _start_date_str = ''
             _start_date_obj = None
+            # Find the J-credit transaction whose amount best matches _j_cr.
+            # When multiple J-entries exist (e.g. a $130K pair that cancels
+            # plus a $48K open balance), the paired entries carry the original
+            # billing start date while the net open entry carries the current
+            # billing period start.  Taking the first J-credit would pick the
+            # older date (e.g. 03/25/24) → huge month count → rate below floor.
+            # Matching on amount (diff closest to zero) picks the right entry.
+            _best_jt_cr = None
+            _best_jt_diff = float('inf')
             for _jt in getattr(acct, 'transactions', []):
                 if _jt.credit <= 0:
                     continue
                 if not str(getattr(_jt, 'control', '') or '').upper().startswith('J'):
                     continue
-                _txt = (f"{getattr(_jt, 'description', '') or ''} "
-                        f"{getattr(_jt, 'remarks', '') or ''}")
+                _diff = abs(_jt.credit - _j_cr)
+                if _diff < _best_jt_diff:
+                    _best_jt_diff = _diff
+                    _best_jt_cr = _jt
+            if _best_jt_cr is not None:
+                _txt = (f"{getattr(_best_jt_cr, 'description', '') or ''} "
+                        f"{getattr(_best_jt_cr, 'remarks', '') or ''}")
                 _dm = _re_c.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', _txt)
                 if _dm:
                     _start_date_str = _dm.group(1)
@@ -1452,7 +1466,6 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                             break
                         except ValueError:
                             pass
-                    break
 
             # ── Monthly rate: billing-period actual → BC → Kardin → fallback ──
             # Priority 1: j_cr ÷ full months in the billing period (most accurate).
