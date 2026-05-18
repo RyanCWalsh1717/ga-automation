@@ -2918,7 +2918,7 @@ with tab1:
                                 st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv"
                             )
                             _p1_etl_code_add = (getattr(_active_cfg, 'yardi_etl_code', '') or _p1_prop_add)[:8]
-                        _gen_etl_add(
+                            _gen_etl_add(
                                 _updated_all, _add_csv_path,
                                 period=result.period, property_code=_p1_etl_code_add,
                                 auto_reverse=True
