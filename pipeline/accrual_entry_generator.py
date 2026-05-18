@@ -1405,7 +1405,9 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # Guard: if non-J net change (real K/P/C invoice) ≥ 25% of monthly_rate
         # → real bill has posted → suppress the compound accrual.
         _j_cr = _j_credits(acct)
-        if _j_cr > 500:
+        # 8xxxxx accounts (interest, other income/expense) are flat monthly charges
+        # handled by Layer 1b (Berkadia) — never compound them.
+        if _j_cr > 500 and not code.startswith('8'):
             _j_dr      = _j_debits(acct)
             _non_j_net = acct.net_change - (_j_dr - _j_cr)  # K/P/C net only
 
