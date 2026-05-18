@@ -173,3 +173,6 @@ insurance_policies:
   - name:            "Umbrella Policy"
     expense_account: "639110"
     monthly_amount:  666.90
+  - name:            "General Liability"
+    expense_account: "639120"
+    monthly_amount:  871.39

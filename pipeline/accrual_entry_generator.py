@@ -3501,8 +3501,11 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
         period:        Accounting period label e.g. 'Jan-2026' — used to derive date
         property_code: Yardi property code (default 'revlabspm')
         book:          Unused — kept for signature compatibility
-        auto_reverse:  If True, BM = -1 (auto-reverse); if False, BM = 0.
-                       Accruals pass True; prepaid / post-close pass False.
+        auto_reverse:  Deprecated — kept for signature compatibility but ignored.
+                       BM is now determined per-batch: -1 if the batch contains any
+                       line posting to 213100 (Accrued Expenses); 0 otherwise.
+                       This ensures only true accrual entries auto-reverse, while
+                       prepaid, management fee, and reclassification batches do not.
                        Per-line override: set 'reverse_next_month' key on the dict.
 
     Returns:
@@ -3530,7 +3533,14 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
             batch_map[je_num] = batch_counter
             batch_counter += 1
 
-    bm_default = -1 if auto_reverse else 0
+    # Pre-scan: which JE batches contain at least one line posting to 213100?
+    # Only those batches are true accruals that should auto-reverse next month.
+    # All other batches (prepaid releases, mgmt fee, reclasses, etc.) get BM = 0.
+    _batches_with_213100: set = {
+        line.get('je_number', '')
+        for line in je_lines
+        if str(line.get('account_code', '') or '').strip() == '213100'
+    }
 
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -3554,8 +3564,10 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
             credit  = line.get('credit', 0) or 0
             amount  = round(debit - credit, 2)  # positive = DR, negative = CR
 
-            # Allow per-line override of BM (e.g. for mixed batches)
-            bm = line.get('reverse_next_month', bm_default)
+            # BM: -1 only if this batch touches 213100 (Accrued Expenses).
+            # Per-line 'reverse_next_month' key overrides batch-level logic.
+            bm_batch = -1 if je_num in _batches_with_213100 else 0
+            bm = line.get('reverse_next_month', bm_batch)
 
             row = [''] * 65
             row[_ETL_IDX['TRANNUM']]          = batch
