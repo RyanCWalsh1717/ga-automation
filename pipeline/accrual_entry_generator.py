@@ -1269,7 +1269,8 @@ def detect_invoice_proration_accruals(
 
 def detect_historical_recurring(gl_data, budget_data, period: str = '',
                                 t12_result=None,
-                                fiscal_year_start_month: int = 1) -> List[Dict[str, Any]]:
+                                fiscal_year_start_month: int = 1,
+                                kardin_records: Optional[List[Dict]] = None) -> List[Dict[str, Any]]:
     """
     Identify recurring expense patterns using Budget Comparison YTD actual data.
 
@@ -1343,6 +1344,25 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             if bcode:
                 ytd_actual_by_code[bcode] = ytd_a
                 budget_by_code[bcode] = item
+
+    # Build Kardin annual totals for accounts NOT already in budget_by_code.
+    # Kardin records carry m1–m12 monthly columns; annual = sum of all 12 months.
+    # This fills the gap for accounts that appear in Kardin but not in the Yardi BC
+    # (e.g. semi-annual accounts like 613310 Water/Sewer with no YTD BC activity).
+    kardin_annual_by_code: Dict[str, Dict] = {}   # {code: {'annual': float, 'name': str}}
+    for _kr in (kardin_records or []):
+        _kc = str(_kr.get('account_code', '') or '').strip()
+        if not _kc or _kc in budget_by_code:
+            continue   # already have BC data for this account — BC takes priority
+        _k_annual = sum(
+            abs(float(_kr.get(f'm{i}', 0) or 0)) for i in range(1, 13)
+        )
+        if _k_annual < 1:
+            continue
+        _k_name = str(_kr.get('description', '') or _kr.get('account_name', '') or _kc).strip()
+        # Keep the highest-annual record if the same code appears multiple times
+        if _kc not in kardin_annual_by_code or _k_annual > kardin_annual_by_code[_kc]['annual']:
+            kardin_annual_by_code[_kc] = {'annual': _k_annual, 'name': _k_name}
 
     _gl_seen_codes: set = set()   # tracks every expense account code visited in the GL loop
 
@@ -1581,7 +1601,17 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         'gross profit', 'operating income', 'noi', 'ebitda',
     )
 
-    for _b_code, _b_item in budget_by_code.items():
+    # Merge BC budget_by_code and Kardin-only accounts into one iterable.
+    # BC entries come first (already filtered into budget_by_code).
+    # Kardin-only entries (kardin_annual_by_code) fill gaps for accounts absent from BC.
+    _all_budget_codes: Dict[str, Any] = {**budget_by_code}
+    # Add Kardin-only entries as synthetic dicts so the loop below handles them uniformly
+    for _kc, _kv in kardin_annual_by_code.items():
+        if _kc not in _all_budget_codes:
+            _all_budget_codes[_kc] = {'account_code': _kc, 'account_name': _kv['name'],
+                                       'annual': _kv['annual']}
+
+    for _b_code, _b_item in _all_budget_codes.items():
         if _b_code in _gl_seen_codes:
             continue   # handled by the GL loop above
 
@@ -2871,7 +2901,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     if gl_data:
         historicals = detect_historical_recurring(gl_data, budget_data, period=period,
                                                     t12_result=t12_result,
-                                                    fiscal_year_start_month=fiscal_year_start_month)
+                                                    fiscal_year_start_month=fiscal_year_start_month,
+                                                    kardin_records=kardin_records)
         for hist in historicals:
             if hist['account_code'] in _covered:
                 _other_claimants.setdefault(hist['account_code'], []).append('historical')
