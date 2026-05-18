@@ -600,17 +600,22 @@ def detect_retax_amortization(
 
     _period_label = _fmt_period(period)
 
-    # Collect current-period net changes and beginning balances
+    # Collect current-period net changes, beginning balances, and per-account
+    # transaction lists for the single-transaction auto-detection logic below.
     net_641110 = 0.0   # Real Estate Taxes expense (positive = net debit)
     net_115200 = 0.0   # RE Tax Escrow (positive = net debit; Berkadia credit → negative)
     net_135120 = 0.0   # Prepaid RE Taxes asset   (positive = net debit)
     beg_135120 = 0.0   # Prepaid RE Taxes beginning balance (for release auto-detect)
+    txns_641110: list = []  # individual GLTransaction objects for 641110
+    txns_115200: list = []  # individual GLTransaction objects for 115200
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         if code == _RETAX_EXPENSE_ACCT:
-            net_641110 = float(getattr(acct, 'net_change', 0) or 0)
+            net_641110  = float(getattr(acct, 'net_change', 0) or 0)
+            txns_641110 = list(getattr(acct, 'transactions', None) or [])
         elif code == _RETAX_ESCROW_ACCT:
-            net_115200 = float(getattr(acct, 'net_change', 0) or 0)
+            net_115200  = float(getattr(acct, 'net_change', 0) or 0)
+            txns_115200 = list(getattr(acct, 'transactions', None) or [])
         elif code == _RETAX_PREPAID_ACCT:
             net_135120 = float(getattr(acct, 'net_change', 0) or 0)
             beg_135120 = float(getattr(acct, 'beginning_balance', 0) or 0)
@@ -620,17 +625,45 @@ def detect_retax_amortization(
     auto_source = ''
     if bill <= 0:
         if period_month in _payment_months:
-            # Berkadia auto-posts: DR 641110 / CR 115200 for the full quarterly bill.
-            # Use the 115200 net credit as the bill signal — it is the clean bill amount
-            # unaffected by prior-period auto-reversals that also debit 641110.
-            _berkadia_credit = -net_115200  # 115200 has a net CREDIT → negative net_change
-            if _berkadia_credit > 10_000:
-                bill        = _berkadia_credit
-                auto_source = f'auto-detected from GL 115200 Berkadia credit ${_berkadia_credit:,.2f}'
+            # Berkadia auto-posts ONE entry: DR 641110 / CR 115200 for the full bill.
+            # Net figures are unreliable because:
+            #   115200 net: polluted by monthly escrow deposit debits from the loan payment
+            #   641110 net: polluted by the prior-period pipeline release JE auto-reversal
+            #               (which credits 641110 for the 1/3 release amount)
+            #
+            # Solution: find the LARGEST SINGLE TRANSACTION in each account.
+            # The Berkadia auto-post is one big transaction; the noise entries are
+            # smaller and separate.
+            #
+            # Priority:
+            #   1. Largest single CREDIT in 115200 — cleanest; no pipeline JEs touch 115200
+            #   2. Largest single DEBIT  in 641110 — also reliable; pipeline releases are
+            #      typically much smaller than the quarterly bill
+            #   3. Net 641110 — last resort (may understate due to reversal credits)
+            _max_115200_cr = max(
+                (float(getattr(t, 'credit', 0) or 0) for t in txns_115200),
+                default=0.0,
+            )
+            _max_641110_dr = max(
+                (float(getattr(t, 'debit', 0) or 0) for t in txns_641110),
+                default=0.0,
+            )
+            if _max_115200_cr > 10_000:
+                bill        = _max_115200_cr
+                auto_source = (
+                    f'auto-detected from GL 115200 largest single credit '
+                    f'${_max_115200_cr:,.2f} (Berkadia tax payment)'
+                )
+            elif _max_641110_dr > 10_000:
+                bill        = _max_641110_dr
+                auto_source = (
+                    f'auto-detected from GL 641110 largest single debit '
+                    f'${_max_641110_dr:,.2f} (Berkadia tax payment)'
+                )
             elif net_641110 > 10_000:
-                # Fallback: 115200 absent from GL (e.g. older Yardi export), use 641110 net
+                # Last resort: net figure (may be understated if reversal credits present)
                 bill        = net_641110
-                auto_source = f'auto-detected from GL 641110 net debit ${net_641110:,.2f} (115200 not in GL)'
+                auto_source = f'auto-detected from GL 641110 net debit ${net_641110:,.2f} (fallback)'
         else:
             # Back-calculate from 135120 beginning balance
             # 1st release months (Feb/May/Aug/Nov): beg = 2/3 × bill → ×1.5
