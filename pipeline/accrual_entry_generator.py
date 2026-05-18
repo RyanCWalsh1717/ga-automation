@@ -233,7 +233,11 @@ TENANT_UTILITY_AR_ACCOUNT   = '133110'
 TENANT_UTILITY_AR_NAME      = 'Accounts Receivable Billback'
 ELEC_EXPENSE_ACCOUNT        = '613110'
 ELEC_EXPENSE_NAME           = 'Utilities - Electricity'
+GAS_EXPENSE_ACCOUNT         = '613210'   # Utilities - Gas (per-vendor daily-rate proration)
 ELEC_TENANT_REIMB_ACCOUNT   = '613115'
+# Metered utility accounts: use per-vendor daily-rate proration (separate line per vendor)
+# Both electricity (613110) and gas (613210) have multiple vendors / meters per billing period.
+_METERED_UTILITY_ACCOUNTS   = {ELEC_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT}
 ELEC_TENANT_REIMB_NAME      = 'Tenant Electric Reimbursement'
 TENANT_UTILITY_ACCOUNTS: dict = {
     '440500': {'label': 'Tenant Electric Recovery',     'budget_key': '440500'},
@@ -1045,20 +1049,27 @@ def detect_invoice_proration_accruals(
             #   dropping vendors whose billing cycle ends on a different day
             #   from the vendor with the global latest end date.
             #
-            # Everything else (gas, water, sewer, janitorial, HVAC, security,
+            # Everything else (water, sewer, janitorial, HVAC, security,
             #   elevator, etc.):
             #   Accrue the full prior invoice amount.  These are flat monthly
             #   service contracts or fixed utility bills — the current month
             #   will cost the same as the most recent invoice.
-            _is_electricity = (code == ELEC_EXPENSE_ACCOUNT)  # 613110 only
+            #   NOTE: Gas (613210) is now in _METERED_UTILITY_ACCOUNTS and uses
+            #   per-vendor daily-rate proration, same as electricity (613110).
+            _is_metered_utility = (code in _METERED_UTILITY_ACCOUNTS)  # 613110 elec, 613210 gas
 
-            if _is_electricity:
+            if _is_metered_utility:
                 # One accrual per vendor, using only their LATEST billing end date.
                 #
-                # RevLabs example:
+                # RevLabs electricity example:
                 #   Eversource  → latest end 12/31/25, invoice $24,450, 29-day cycle
                 #   Hudson      → latest end 12/31/25, invoice $45,918, 29-day cycle
                 #   Hudson old  → end 12/01/25, superseded by 12/31 invoice → skipped
+                #
+                # RevLabs gas example:
+                #   National Grid → latest end 12/22/25, 3 meters (HVAC, EMGEN, TYGEN)
+                #                   combined as one vendor line → $24,043.27
+                #   NRG Business  → latest end 12/22/25, invoice $18,951.27 (HVAC Supply)
                 #
                 # Algorithm:
                 #   1. Collect all (vendor, end_date) → transactions from by_end.
@@ -1095,9 +1106,12 @@ def detect_invoice_proration_accruals(
                         continue
 
                     _vendor_label = _vn if _vn else acct.account_name
+                    _util_label = (
+                        'gas' if code == GAS_EXPENSE_ACCOUNT else 'electricity'
+                    )
                     _vdesc_line = (
                         f'Accrual {_period_label} — {_vendor_label} '
-                        f'(electricity proration: last invoice '
+                        f'({_util_label} proration: last invoice '
                         f'{_vstart.strftime("%m/%d/%y")}'
                         f'-{_v_latest_end.strftime("%m/%d/%y")}, '
                         f'${_vamt:,.0f}/{_vdays}d = '
@@ -1116,7 +1130,8 @@ def detect_invoice_proration_accruals(
                         'invoice_total':  _round(_vamt),
                     })
             else:
-                # All other accounts: combine all vendors, accrue the full last invoice
+                # All other accounts (water, sewer, HVAC contracts, janitorial, etc.):
+                # combine all vendors and accrue the full last invoice amount (flat monthly rate).
                 group      = by_end[latest_end]
                 total_amount = sum(g[2] for g in group)
                 min_start    = min(g[0] for g in group)
