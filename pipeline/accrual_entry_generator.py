@@ -575,8 +575,14 @@ def detect_retax_amortization(
     if not gl_data or not hasattr(gl_data, 'accounts'):
         return None
 
-    # Use property-specific payment months or fall back to module default
-    _payment_months = frozenset(re_tax_payment_months) if re_tax_payment_months else _RETAX_PAYMENT_MONTHS
+    # Use property-specific payment months or fall back to module default.
+    # Cast to int to handle YAML parsing returning strings ('1','4','7','10')
+    # instead of integers — prevents period_month (int) membership check failing.
+    _payment_months = (
+        frozenset(int(m) for m in re_tax_payment_months)
+        if re_tax_payment_months
+        else _RETAX_PAYMENT_MONTHS
+    )
 
     # Parse period month ("Jan-2026" → 1)
     _MMAP = {
