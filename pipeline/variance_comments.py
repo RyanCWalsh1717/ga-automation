@@ -380,10 +380,13 @@ def build_gl_context(gl_parsed, account_code: str) -> dict:
 # 4. API PROMPT — GRP STANDARD
 # ══════════════════════════════════════════════════════════════
 
-_SYSTEM_PROMPT = """\
+# C-NEW-2: _SYSTEM_PROMPT is a template — property-specific strings are injected at
+# call time via _build_system_prompt().  The module-level constant is kept as the
+# canonical template; do NOT reference it directly in API calls.
+_SYSTEM_PROMPT_TEMPLATE = """\
 You are a CRE finance analyst at Greatland Realty Partners (GRP) writing monthly \
-variance commentary for the Revolution Labs property (1050 Waltham St, Lexington MA). \
-The audience is GRP management and the institutional investor Singerman Real Estate.
+variance commentary for the {property_display} property. \
+The audience is GRP management and the institutional investor {investor_name}.
 
 COMMENTARY STANDARDS — follow exactly:
 
@@ -425,6 +428,30 @@ DIRECTION CONVENTION (for your internal reasoning — do NOT write these words):
 - Revenue under budget = unfavorable to NOI
 - Expense under budget = favorable to NOI
 """
+
+# Back-compat alias — external code that imported _SYSTEM_PROMPT directly still works.
+_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
+    property_display='Revolution Labs property (1050 Waltham St, Lexington MA)',
+    investor_name='Singerman Real Estate',
+)
+
+
+def _build_system_prompt(
+    property_display: str = 'Revolution Labs property (1050 Waltham St, Lexington MA)',
+    investor_name: str = 'Singerman Real Estate',
+) -> str:
+    """Build the LLM system prompt with per-property strings injected.
+
+    Args:
+        property_display:  Human-readable property description, e.g.
+                           'Revolution Labs property (1050 Waltham St, Lexington MA)'
+        investor_name:     Capital partner name shown to the model, e.g.
+                           'Singerman Real Estate Partners'
+    """
+    return _SYSTEM_PROMPT_TEMPLATE.format(
+        property_display=property_display or 'Revolution Labs property (1050 Waltham St, Lexington MA)',
+        investor_name=investor_name or 'Singerman Real Estate',
+    )
 
 
 def _build_api_prompt(accounts_data: List[dict], period: str, property_name: str) -> str:
@@ -742,6 +769,7 @@ def generate_variance_comments_grp(
     property_name: str = 'Revolution Labs Owner, LLC',
     api_key: Optional[str] = None,
     je_adjustments: Optional[Dict[str, float]] = None,
+    investor_name: str = 'Singerman Real Estate',
 ) -> Dict[str, dict]:
     """
     Generate MTD and YTD variance comments for all budget comparison rows
@@ -866,7 +894,8 @@ def generate_variance_comments_grp(
     api_fallback_reason: Optional[str] = None   # set if API was requested but failed
     if api_key:
         comments_map, api_fallback_reason = _call_api(
-            accounts_data, period, property_name, api_key
+            accounts_data, period, property_name, api_key,
+            investor_name=investor_name,
         )
     else:
         comments_map = _generate_data_driven(accounts_data, period)
@@ -898,9 +927,15 @@ def _call_api(
     period: str,
     property_name: str,
     api_key: str,
+    investor_name: str = 'Singerman Real Estate',
 ) -> Tuple[Dict[str, dict], Optional[str]]:
     """
     Call Claude API and parse JSON response.
+
+    Args:
+        investor_name:  Capital partner name injected into the system prompt so
+                        comments use the correct investor reference rather than
+                        the hardcoded RevLabs default.
 
     Returns:
         (comments_map, fallback_reason)
@@ -913,10 +948,19 @@ def _call_api(
 
         prompt = _build_api_prompt(accounts_data, period, property_name)
 
+        # C-NEW-2: build prompt dynamically so property name and investor name are
+        # correct for any property — not hardcoded to RevLabs/Singerman.
+        _address = ''   # address not readily available here; use property_name only
+        _prop_display = f'{property_name} property' if property_name else 'this property'
+        _system = _build_system_prompt(
+            property_display=_prop_display,
+            investor_name=investor_name,
+        )
+
         message = client.messages.create(
             model='claude-sonnet-4-6',
             max_tokens=4096,
-            system=_SYSTEM_PROMPT,
+            system=_system,
             messages=[{'role': 'user', 'content': prompt}],
         )
 

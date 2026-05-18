@@ -114,7 +114,6 @@ pipeline/
     yardi_trial_balance.py      ← Yardi Trial Balance (.xlsx)
     yardi_budget_comparison.py  ← Yardi Budget Comparison (.xlsx)
     yardi_income_statement.py   ← Yardi Income Statement (.xlsx)
-    yardi_rent_roll.py          ← Yardi Tenancy Schedule (.xlsx)
     yardi_bank_rec.py           ← Yardi Bank Reconciliation PDF — preferred bank source.
                                   Reads pre-computed reconciled balance, outstanding checks,
                                   and reconciling difference directly from Yardi's output.

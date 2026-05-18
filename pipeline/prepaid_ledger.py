@@ -906,3 +906,118 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
         ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(col, 14)
 
     ws.freeze_panes = ws.cell(row=hdr_row + 1, column=1)
+
+
+# ── Seed Ledger Generator ─────────────────────────────────────────────────────
+
+def generate_seed(
+    items: List[Dict[str, Any]],
+    as_of_period: str,
+    output_path: Optional[str] = None,
+) -> bytes:
+    """
+    Build a prepaid ledger seed Excel file from a list of manually-entered items.
+
+    Intended for onboarding new or acquired properties: Ryan enters all active
+    prepaid items (with their current amortization state) and downloads the seed
+    file to upload as the "prior month ledger" on the first close.
+
+    Each item dict should contain:
+        vendor              (str)  — required
+        description         (str)  — required
+        gl_account_number   (str)  — required, 6-digit GL code (e.g. '619120')
+        gl_account          (str)  — GL account name (e.g. 'PPM Water Treatment')
+        total_amount        (float)— original total invoice / contract amount
+        monthly_amount      (float)— amortization per month; if 0 or missing,
+                                     auto-computed as total_amount ÷ total_months
+        service_start       (date | str) — first day of service period
+        service_end         (date | str) — last day of service period
+        months_amortized    (int)  — months already released by prior management
+                                     (0 = greenfield / not yet started)
+        invoice_number      (str)  — optional
+        invoice_date        (date | str) — optional
+
+    Returns the Excel file as bytes (also writes to output_path when provided).
+
+    Notes:
+    - Items with gl_account_number in _LEDGER_EXCLUDED_GL_ACCOUNTS (639110, 639120,
+      641110) are silently skipped — those accounts are managed by dedicated
+      detect_insurance_amortization / detect_retax_amortization functions.
+    - total_months is computed from service_start → service_end using relativedelta.
+    - remaining_months = total_months − months_amortized (floor 0).
+    - first_added_period is set to as_of_period for all items.
+    - daily_rate is set to 0 (seed items use monthly amortization only).
+    """
+    import io
+
+    active: List[Dict[str, Any]] = []
+
+    for raw in items:
+        code = str(raw.get('gl_account_number', '') or '').strip()
+        if code in _LEDGER_EXCLUDED_GL_ACCOUNTS:
+            continue   # insurance/RE-tax: handled by dedicated functions
+
+        vendor = str(raw.get('vendor', '') or '').strip()
+        if not vendor:
+            continue   # skip blank rows
+
+        s_start = _ensure_date(raw.get('service_start'))
+        s_end   = _ensure_date(raw.get('service_end'))
+
+        # Compute total_months from date range; fall back to caller-supplied value
+        if s_start and s_end and s_end >= s_start:
+            rd = relativedelta(s_end + relativedelta(days=1), s_start)
+            total_months = rd.years * 12 + rd.months
+            if total_months < 1:
+                total_months = 1
+        else:
+            total_months = max(1, int(raw.get('total_months', 1) or 1))
+
+        months_amortized = max(0, int(raw.get('months_amortized', 0) or 0))
+        remaining_months = max(0, total_months - months_amortized)
+
+        total_amount  = float(raw.get('total_amount', 0)  or 0)
+        monthly_amount = float(raw.get('monthly_amount', 0) or 0)
+        if monthly_amount <= 0 and total_months > 0:
+            monthly_amount = round(total_amount / total_months, 2)
+
+        active.append({
+            'vendor':             vendor,
+            'invoice_number':     str(raw.get('invoice_number', '') or ''),
+            'invoice_date':       _ensure_date(raw.get('invoice_date')),
+            'description':        str(raw.get('description', '') or ''),
+            'gl_account_number':  code,
+            'gl_account':         str(raw.get('gl_account', '') or ''),
+            'total_amount':       total_amount,
+            'monthly_amount':     monthly_amount,
+            'service_start':      s_start,
+            'service_end':        s_end,
+            'total_months':       float(total_months),
+            'months_amortized':   float(months_amortized),
+            'remaining_months':   float(remaining_months),
+            'first_added_period': as_of_period,
+            'daily_rate':         0.0,
+        })
+
+    # Build the workbook using the existing save() pipeline (identical format to
+    # a real ledger so prepaid_ledger.load() reads it without any special handling)
+    buf_path = output_path or '__seed_tmp__.xlsx'
+
+    # Use a BytesIO buffer when no path is specified
+    if output_path:
+        save(active, [], output_path, period=as_of_period)
+        with open(output_path, 'rb') as fh:
+            return fh.read()
+    else:
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            _tmp = tmp.name
+        try:
+            save(active, [], _tmp, period=as_of_period)
+            with open(_tmp, 'rb') as fh:
+                return fh.read()
+        finally:
+            try:
+                os.unlink(_tmp)
+            except Exception:
+                pass

@@ -641,18 +641,30 @@ def detect_retax_amortization(
                 )
 
     if bill <= 0:
-        # H-5: Surface a meaningful warning when we're in a payment month but can't
-        # auto-detect the bill from either 115200 (Berkadia credit) or 641110 (net debit).
-        # Silent None returns cause the RE tax deferral JE to be skipped without any
-        # indication to the user — this surfaces the failure so it can be investigated.
+        import warnings as _warnings
+        # H-5 / A-6: Surface a meaningful warning so a zero-bill never silently
+        # suppresses the RE tax JE without any indication to the user.
         if period_month in _payment_months:
-            import warnings as _warnings
+            # Payment month: couldn't find the Berkadia credit or 641110 net debit.
             _warnings.warn(
                 f'RE tax bill could not be auto-detected for payment month {period_month} '
                 f'(GL 115200 credit = ${-net_115200:,.2f}, GL 641110 net debit = ${net_641110:,.2f}). '
                 f'No Berkadia entry found in GL. RE tax deferral JE will be skipped. '
                 f'Enter the bill amount manually in the One-Off Accruals table '
                 f'(DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes).',
+                UserWarning,
+                stacklevel=3,
+            )
+        else:
+            # Release month: 135120 beginning balance was ≤ $100, so back-calculation
+            # returned $0.  Either the prepaid was already fully released or the
+            # GL beginning balance is missing/wrong.
+            _warnings.warn(
+                f'RE tax release JE skipped for month {period_month}: GL 135120 '
+                f'beginning balance is ${beg_135120:,.2f} (expected > $100 for a '
+                f'release month).  If a release is expected, check the 135120 '
+                f'beginning balance in the GL export or enter the amount manually '
+                f'(DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes).',
                 UserWarning,
                 stacklevel=3,
             )
@@ -1217,7 +1229,8 @@ def detect_invoice_proration_accruals(
 # ── Layer 4 (runs before budget gap): Historical pattern detection ────────────
 
 def detect_historical_recurring(gl_data, budget_data, period: str = '',
-                                t12_result=None) -> List[Dict[str, Any]]:
+                                t12_result=None,
+                                fiscal_year_start_month: int = 1) -> List[Dict[str, Any]]:
     """
     Identify recurring expense patterns using Budget Comparison YTD actual data.
 
@@ -1260,9 +1273,18 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             month_num = num
             break
 
-    # months_elapsed = full months closed before the current period
-    # Jan=1 → 0 prior months; Feb=2 → 1; Mar=3 → 2; etc.
-    months_elapsed = month_num - 1 if month_num > 0 else 0
+    # months_elapsed = full fiscal months closed before the current period.
+    # For calendar-year properties (fiscal_year_start_month=1): Jan=0, Feb=1 … Dec=11.
+    # For non-January fiscal years: rebase month_num to the fiscal year so that,
+    # e.g., a July FY-start property in December has fiscal month 6 → months_elapsed=5.
+    _fy_start = int(fiscal_year_start_month or 1)
+    if _fy_start < 1 or _fy_start > 12:
+        _fy_start = 1
+    if month_num > 0:
+        fiscal_month_num = (month_num - _fy_start) % 12 + 1
+    else:
+        fiscal_month_num = 0
+    months_elapsed = fiscal_month_num - 1 if fiscal_month_num > 0 else 0
 
     # Build YTD actual and budget lookups from Budget Comparison data
     ytd_actual_by_code: Dict[str, float] = {}
@@ -1337,9 +1359,16 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 continue
             bi = budget_by_code[code]
             if isinstance(bi, dict):
-                bi_annual = abs(float(bi.get('annual', 0) or 0))
+                # A-11: Try multiple key names — BC parser may export 'annual_budget'
+                # or 'ytd_budget' instead of 'annual' depending on export version.
+                # Silent 0 here suppresses ALL January Layer 3 accruals for the account.
+                bi_annual = abs(float(
+                    bi.get('annual') or bi.get('annual_budget') or bi.get('ytd_budget') or 0
+                ))
             else:
-                bi_annual = abs(float(getattr(bi, 'annual', 0) or 0))
+                bi_annual = abs(float(
+                    getattr(bi, 'annual', None) or getattr(bi, 'annual_budget', None) or 0
+                ))
 
             if bi_annual < 1:
                 continue
@@ -1557,6 +1586,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           ledger_release_accounts: Optional[set] = None,
                           payroll_accounts: Optional[List[str]] = None,
                           insurance_policies: Optional[List[Dict]] = None,
+                          periodic_contract_accounts: Optional[dict] = None,
+                          accrual_materiality_floor: float = 500.0,
+                          fiscal_year_start_month: int = 1,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from four sources (in priority order):
@@ -2667,7 +2699,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # this period — the average prior month spend is used as the accrual estimate.
     if gl_data:
         historicals = detect_historical_recurring(gl_data, budget_data, period=period,
-                                                    t12_result=t12_result)
+                                                    t12_result=t12_result,
+                                                    fiscal_year_start_month=fiscal_year_start_month)
         for hist in historicals:
             if hist['account_code'] in _covered:
                 _other_claimants.setdefault(hist['account_code'], []).append('historical')
@@ -2743,6 +2776,16 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             })
             for code in payroll_accounts
         }
+
+    # C-2: Build effective periodic contract accounts dict — config can override
+    # which accounts are treated as periodic (quarterly/semi-annual) service contracts.
+    # Falls back to the module-level PERIODIC_CONTRACT_ACCOUNTS constant (RevLabs
+    # defaults: 617110, 619120, 627230) when no per-property override is supplied.
+    _effective_periodic: dict = (
+        periodic_contract_accounts
+        if periodic_contract_accounts is not None
+        else PERIODIC_CONTRACT_ACCOUNTS
+    )
 
     if gl_data and _period_month_num:
         # Build GL net_change for payroll accounts
@@ -3529,6 +3572,138 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
             row[_ETL_IDX['ReverseNextMonth']] = bm
 
             writer.writerow(row)
+
+    return output_path
+
+
+def build_reversing_je_csv(
+    source_etl_path: str,
+    next_period: str,
+    output_path: str,
+    property_code: str = '',
+) -> str:
+    """
+    Generate a Yardi ETL import CSV that reverses all entries in an existing
+    accrual JE CSV.  Use this to manually post reversals if Yardi auto-reversal
+    fails, or to pre-review what Yardi will reverse on the 1st of next month.
+
+    Strategy:
+      - Read source ETL CSV (skip rows 1–2: 'FinJournals' header and column header)
+      - Flip every AMOUNT sign (positive DR → negative CR, and vice versa)
+      - Update DATE / POSTMONTH to the last day of next_period
+      - Prefix REMARK / DESC with 'REV - '
+      - Append '-REV' to REF so the batch is identifiable in Yardi
+      - Set ReverseNextMonth = 0  (reversals don't themselves auto-reverse)
+      - Re-sequence TRANNUM from 1
+
+    Args:
+        source_etl_path:  Path to an existing GA ETL accruals CSV
+        next_period:      Period for the reversals e.g. 'Feb-2026'
+        output_path:      Where to write the reversing CSV
+        property_code:    Override Yardi property code (default: preserve from source)
+
+    Returns:
+        output_path
+    """
+    import csv as _csv_rev
+    from calendar import monthrange as _monthrange_rev
+
+    # Derive last-day date for next_period
+    next_date = ''
+    try:
+        _dt_rev = datetime.strptime(next_period, '%b-%Y')
+        _last_rev = _monthrange_rev(_dt_rev.year, _dt_rev.month)[1]
+        from datetime import date as _date_rev
+        next_date = _date_rev(_dt_rev.year, _dt_rev.month, _last_rev).strftime('%m/%d/%Y')
+    except Exception:
+        pass
+
+    # Index shortcuts
+    _ti  = _ETL_IDX['TRANNUM']
+    _di  = _ETL_IDX['DATE']
+    _pi  = _ETL_IDX['POSTMONTH']
+    _pri = _ETL_IDX['PROPERTY']
+    _ai  = _ETL_IDX['AMOUNT']
+    _ri  = _ETL_IDX['REMARK']
+    _rfi = _ETL_IDX['REF']
+    _dsi = _ETL_IDX['DESC']
+    _bmi = _ETL_IDX['ReverseNextMonth']
+
+    # Read source, skip the two header rows
+    rows_in: List[List] = []
+    try:
+        with open(source_etl_path, newline='', encoding='utf-8') as _fh_rev:
+            for i, row in enumerate(_csv_rev.reader(_fh_rev)):
+                if i < 2 or not any(row):
+                    continue
+                rows_in.append(list(row))
+    except Exception:
+        rows_in = []
+
+    def _write_header(w):
+        r1 = [''] * 65
+        r1[0] = 'FinJournals'
+        w.writerow(r1)
+        w.writerow(_ETL_HEADERS)
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as _fh_out:
+        _w = _csv_rev.writer(_fh_out)
+        _write_header(_w)
+
+        if not rows_in:
+            return output_path
+
+        # Map original TRANNUM values to new sequential batch numbers
+        _batch_map: Dict[str, int] = {}
+        _bc = 1
+        for _row in rows_in:
+            _ob = _row[_ti] if len(_row) > _ti else ''
+            if _ob not in _batch_map:
+                _batch_map[_ob] = _bc
+                _bc += 1
+
+        for _row in rows_in:
+            r = _row + [''] * max(0, 65 - len(_row))   # pad to 65 cols
+
+            # Re-batch
+            r[_ti] = _batch_map.get(r[_ti], 1)
+
+            # Update dates
+            if next_date:
+                r[_di] = next_date
+                r[_pi] = next_date
+
+            # Override property code
+            if property_code:
+                r[_pri] = property_code
+
+            # Flip amount sign
+            try:
+                r[_ai] = round(-float(r[_ai]), 2)
+            except (ValueError, TypeError):
+                pass
+
+            # Prefix descriptions with 'REV - '
+            for _idx in (_ri, _dsi):
+                try:
+                    _v = str(r[_idx])
+                    if _v and not _v.startswith('REV - '):
+                        r[_idx] = f'REV - {_v}'[:60]
+                except (IndexError, TypeError):
+                    pass
+
+            # Suffix REF with '-REV'
+            try:
+                _rv = str(r[_rfi])
+                if _rv and not _rv.endswith('-REV'):
+                    r[_rfi] = f'{_rv}-REV'[:30]
+            except (IndexError, TypeError):
+                pass
+
+            # No auto-reversal on the reversals themselves
+            r[_bmi] = 0
+
+            _w.writerow(r)
 
     return output_path
 

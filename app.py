@@ -716,6 +716,94 @@ st.session_state.prepared_by = st.sidebar.text_input(
 
 prior_period_outstanding = _prior_period_outstanding_default
 
+# ── Report an Issue ───────────────────────────────────────────
+with st.sidebar.expander("🐛 Report an Issue", expanded=False):
+    _fb_reporter  = st.session_state.get('prepared_by', '') or ''
+    _fb_prop      = st.session_state.get('active_property_code', '') or ''
+    _fb_period    = ''
+    try:
+        from checklist_persistence import period_key_to_label as _ptl
+        _fb_period = _ptl(st.session_state.get('checklist_period_key', ''))
+    except Exception:
+        pass
+
+    _fb_severity = st.selectbox(
+        "Severity",
+        ["low", "medium", "high", "critical"],
+        index=1,
+        key="fb_severity",
+        format_func=lambda s: {
+            "low": "🟢 Low — cosmetic / minor",
+            "medium": "🟡 Medium — something's off",
+            "high": "🟠 High — blocking a task",
+            "critical": "🔴 Critical — wrong numbers",
+        }[s],
+    )
+    _fb_desc = st.text_area(
+        "Describe the issue",
+        placeholder="What happened? What did you expect? Which tab/section?",
+        key="fb_description",
+        height=100,
+    )
+    if st.button("Submit Issue", use_container_width=True, key="fb_submit"):
+        if _fb_desc.strip():
+            try:
+                import json as _fb_json
+                from pathlib import Path as _FbPath
+                _fb_log = _FbPath(__file__).parent / 'data' / 'feedback_log.jsonl'
+                _fb_log.parent.mkdir(parents=True, exist_ok=True)
+                _fb_entry = {
+                    'submitted_at':  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'reporter':      _fb_reporter or 'Unknown',
+                    'property_code': _fb_prop,
+                    'period':        _fb_period,
+                    'severity':      _fb_severity,
+                    'description':   _fb_desc.strip(),
+                    'status':        'open',
+                }
+                with open(_fb_log, 'a', encoding='utf-8') as _fb_fh:
+                    _fb_fh.write(_fb_json.dumps(_fb_entry) + '\n')
+                st.success("Issue logged — Ryan will review on the next health check.")
+            except Exception as _fb_err:
+                st.error(f"Could not save issue: {_fb_err}")
+        else:
+            st.warning("Please describe the issue before submitting.")
+
+# ── Session Save / Load ───────────────────────────────────────
+with st.sidebar.expander("💾 Save / Load Session", expanded=False):
+    st.caption(
+        "Save your table inputs (One-Off Accruals, manual JEs) to a file "
+        "and reload them in a future session without re-entering data. "
+        "File uploads must be re-uploaded separately."
+    )
+    from session_snapshot import save_snapshot, load_snapshot, restore_snapshot, snapshot_filename as _snap_filename
+    _snap_bytes = save_snapshot(st.session_state)
+    st.download_button(
+        label="⬇️ Save Session Data",
+        data=_snap_bytes,
+        file_name=_snap_filename(st.session_state),
+        mime="application/json",
+        use_container_width=True,
+        help="Downloads a JSON file with your table inputs and settings.",
+    )
+    _snap_upload = st.file_uploader(
+        "Load session file",
+        type=["json"],
+        key="session_snapshot_upload",
+        label_visibility="collapsed",
+    )
+    if _snap_upload is not None:
+        _snap_data = load_snapshot(_snap_upload.read())
+        if _snap_data:
+            _restored = restore_snapshot(_snap_data, st.session_state)
+            if _restored:
+                st.success(f"Restored: {', '.join(_restored)}")
+                st.rerun()
+            else:
+                st.warning("File loaded but nothing to restore — may be an older format.")
+        else:
+            st.error("Could not parse snapshot file.")
+
 if not st.session_state.confirm_reset_all:
     if st.sidebar.button("🔄 Reset All", use_container_width=True,
                          help="Clear all results and uploaded files"):
@@ -972,6 +1060,177 @@ with tab0:
         st.session_state.checklist_loaded = True
 
     from close_tracker_generator import CLOSE_TRACKER_STEPS as _CTS
+
+    # ── Portfolio Overview ─────────────────────────────────────────────────────
+    _all_props = _discover_properties()
+    if len(_all_props) > 1:
+        with st.expander(f"🏢 Portfolio Overview — {len(_all_props)} Properties", expanded=False):
+            _po_rows = []
+            for _pp in _all_props:
+                _pp_code  = _pp['code']
+                _pp_name  = _pp.get('display_name', _pp_code)
+                _pp_addr  = _pp.get('address', '')
+                # Load persisted checklist for this property / current period
+                try:
+                    _pp_state = load_checklist(_pp_code, _ck_pkey, str(_DATA_DIR))
+                    _pp_ct, _pp_ci, _pp_lk, _, _ = state_to_session(_pp_state)
+                    _pp_steps = len(_CTS)
+                    _pp_done  = sum(1 for i in range(_pp_steps) if i in _pp_ct)
+                    _pp_cust  = len(_pp_ci)
+                    _pp_cdone = sum(1 for c in _pp_ci if c.get('completed'))
+                    _pp_total = _pp_steps + _pp_cust
+                    _pp_all   = _pp_done + _pp_cdone
+                    _pp_pct   = int(100 * _pp_all / _pp_total) if _pp_total else 0
+                    _pp_status = (
+                        "🔒 Locked" if _pp_lk else
+                        ("✅ Complete" if _pp_pct == 100 else
+                         (f"🔄 {_pp_pct}% ({_pp_all}/{_pp_total})" if _pp_all > 0 else "⬜ Not started"))
+                    )
+                except Exception:
+                    _pp_status = "—"
+                    _pp_pct    = 0
+                _po_rows.append({
+                    "Property":   _pp_name,
+                    "Address":    _pp_addr,
+                    "Period":     period_key_to_label(_ck_pkey),
+                    "Status":     _pp_status,
+                    "Progress":   f"{_pp_pct}%",
+                    "Active":     "⬤" if _pp_code == _ck_prop else "",
+                })
+            import pandas as _pd_po
+            st.dataframe(
+                _pd_po.DataFrame(_po_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                "Progress reflects persisted checklist data for the selected close period. "
+                "Switch properties using the selector in the sidebar."
+            )
+    # ── Cross-Period Trending ──────────────────────────────────────────────────
+    try:
+        from period_metrics import load_metrics as _load_metrics
+        _trend_all = _load_metrics(str(_DATA_DIR), _ck_prop)
+    except Exception:
+        _trend_all = []
+
+    if _trend_all:
+        # Filter to the current fiscal year only.
+        # Fiscal year: starts on fiscal_year_start_month, ends the month before.
+        # E.g. FY-start=1 → Jan–Dec of the same calendar year.
+        #      FY-start=7 → Jul year N to Jun year N+1.
+        from datetime import date as _dt_date
+        _fy_sm   = int(getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1)
+        _today   = _dt_date.today()
+        _cur_mo  = _today.month
+        _cur_yr  = _today.year
+
+        # Which fiscal year are we currently in?
+        if _fy_sm == 1:
+            _fy_start_yr = _cur_yr
+        elif _cur_mo >= _fy_sm:
+            _fy_start_yr = _cur_yr       # FY started earlier this calendar year
+        else:
+            _fy_start_yr = _cur_yr - 1  # FY started last calendar year
+
+        # Build the set of (year, month) pairs that belong to this FY
+        _fy_months: set = set()
+        for _fi in range(12):
+            _fm = (_fy_sm - 1 + _fi) % 12 + 1
+            _fy = _fy_start_yr if _fm >= _fy_sm else _fy_start_yr + 1
+            _fy_months.add((_fy, _fm))
+
+        # Filter records to current FY
+        import re as _re_trend
+        _mo_map_t = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                         Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+        def _in_fy(record: dict) -> bool:
+            m = _re_trend.search(
+                r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](\d{4})',
+                record.get('period', '')
+            )
+            if not m:
+                return False
+            return (int(m.group(2)), _mo_map_t.get(m.group(1), 0)) in _fy_months
+
+        _trend_data = [r for r in _trend_all if _in_fy(r)]
+
+        # Build fiscal year label for the expander title
+        _fy_end_yr = _fy_start_yr if _fy_sm == 1 else (
+            _fy_start_yr + 1 if _fy_sm > 1 else _fy_start_yr
+        )
+        if _fy_sm == 1:
+            _fy_label = f"FY {_fy_start_yr}"
+        else:
+            _mo_names_t = {v: k for k, v in _mo_map_t.items()}
+            _fy_end_mo  = (_fy_sm - 2) % 12 + 1
+            _fy_label   = (f"FY {_mo_names_t[_fy_sm]} {_fy_start_yr} – "
+                           f"{_mo_names_t[_fy_end_mo]} {_fy_end_yr}")
+
+    if _trend_all and _trend_data:
+        with st.expander(
+            f"📈 {_fy_label} Trending — {len(_trend_data)} / 12 period(s)",
+            expanded=False,
+        ):
+            import pandas as _pd_trend
+
+            _periods = [r.get('period', '') for r in _trend_data]
+
+            # ── NOI chart ────────────────────────────────────────────────
+            st.markdown("##### Net Operating Income")
+            _noi_df = _pd_trend.DataFrame({
+                'Period':   _periods,
+                'Revenue':  [r.get('revenue', 0) for r in _trend_data],
+                'Expenses': [r.get('expenses', 0) for r in _trend_data],
+                'NOI':      [r.get('noi', 0) for r in _trend_data],
+            }).set_index('Period')
+            st.line_chart(_noi_df[['NOI', 'Revenue', 'Expenses']], height=220)
+
+            # ── Management fee + cash row ────────────────────────────────
+            _tr_col1, _tr_col2 = st.columns(2)
+            with _tr_col1:
+                st.markdown("##### Management Fee")
+                _fee_df = _pd_trend.DataFrame({
+                    'Period': _periods,
+                    'Fee':    [r.get('fee_amount', 0) for r in _trend_data],
+                }).set_index('Period')
+                st.bar_chart(_fee_df, height=180)
+
+            with _tr_col2:
+                st.markdown("##### Operating Cash Balance")
+                _cash_df = _pd_trend.DataFrame({
+                    'Period':    _periods,
+                    'Operating': [r.get('operating_cash', 0) for r in _trend_data],
+                    'DACA':      [r.get('daca_balance', 0) for r in _trend_data],
+                }).set_index('Period')
+                st.line_chart(_cash_df, height=180)
+
+            # ── QC status summary ────────────────────────────────────────
+            st.markdown("##### QC Status by Period")
+            _qc_rows = []
+            for r in _trend_data:
+                _qc_status = r.get('qc_overall', 'unknown')
+                _qc_icon   = {'pass': '✅', 'warn': '⚠️', 'fail': '❌'}.get(_qc_status, '—')
+                _qc_rows.append({
+                    'Period':  r.get('period', ''),
+                    'Status':  f"{_qc_icon} {_qc_status.title()}",
+                    'Pass':    r.get('qc_pass', 0),
+                    'Warn':    r.get('qc_warn', 0),
+                    'Fail':    r.get('qc_fail', 0),
+                    'NOI':     f"${r.get('noi', 0):,.0f}",
+                    'Fee':     f"${r.get('fee_amount', 0):,.0f}",
+                })
+            st.dataframe(
+                _pd_trend.DataFrame(_qc_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                f"Showing {_fy_label} only. Metrics saved automatically after each "
+                f"successful Pass 2 run. Resets to a fresh chart when the new fiscal year begins."
+            )
+
+    st.divider()
 
     # ── Top control bar ───────────────────────────────────────────────────────
     _ck_col_name, _ck_col_period, _ck_col_prog = st.columns([2, 2, 4])
@@ -1683,6 +1942,35 @@ with tab1:
             icon="⚠️",
         )
 
+    # ── Year-end / fiscal year-end banner ────────────────────────
+    # Detect if close period is the last month of the fiscal year and surface
+    # a reminder about year-end-specific items (bonus true-ups, layer 3 reset).
+    try:
+        _p1_close_period_raw = st.session_state.uploaded_files.get('gl', '')
+        # Prefer parsed GL period (from engine result if available) else fall back
+        # to the period embedded in any prior pass1 result
+        _fy_close_period = ''
+        if st.session_state.pass1_engine_result:
+            _fy_close_period = getattr(st.session_state.pass1_engine_result, 'period', '') or ''
+        _fy_start_mo = int(getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1)
+        _fy_end_mo   = (_fy_start_mo - 2) % 12 + 1   # last month of fiscal year
+        _fy_mo_map   = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                            Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+        _fy_match    = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](\d{4})',
+                                 _fy_close_period)
+        if _fy_match and _fy_mo_map.get(_fy_match.group(1)) == _fy_end_mo:
+            _fy_label = 'December' if _fy_end_mo == 12 else _fy_match.group(1)
+            st.info(
+                f"🗓️ **Year-End Close ({_fy_close_period})** — this is the last month of the fiscal year. "
+                f"Key reminders: (1) Layer 3 historical averages cover all 12 fiscal months — "
+                f"review accruals carefully before posting. "
+                f"(2) Confirm all bonus true-ups are reflected in the One-Off Accruals table. "
+                f"(3) Verify prepaid items expiring this month get their final release.",
+                icon="📅",
+            )
+    except Exception:
+        pass
+
     col_p1a, col_p1b = st.columns([3, 1])
     with col_p1a:
         pass1_button = st.button(
@@ -1921,7 +2209,9 @@ with tab1:
                         ledger_release_accounts=_ledger_release_accounts,
                         payroll_accounts=getattr(_active_cfg, 'payroll_accounts', None) or None,
                         insurance_policies=getattr(_active_cfg, 'insurance_policies', None) or None,
+                        periodic_contract_accounts=getattr(_active_cfg, 'periodic_contract_accounts', None) or None,
                         accrual_materiality_floor=getattr(_active_cfg, 'accrual_materiality_floor', 500.0),
+                        fiscal_year_start_month=getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1,
                     )
                 # Surface any pipeline UserWarnings (e.g. missing Berkadia RE tax entry) in the UI
                 for _w in _captured_warnings:
@@ -2031,6 +2321,7 @@ with tab1:
                         period=close_period,
                         property_code=engine_result.property_name or _active_cfg.property_code,
                         je_number=f'MGT-{len(je_lines)//2 + 2:03d}',
+                        property_config=_active_cfg,
                     )
 
                 # Step 5: One-Off Accrual JEs
@@ -3806,6 +4097,7 @@ with tab2:
                             period=close_period,
                             property_name=engine_result.property_name or _prop_entity,
                             api_key=api_key,
+                            investor_name=getattr(_active_cfg, 'investor_name', 'Singerman Real Estate') or 'Singerman Real Estate',
                             # No je_adjustments — GL is the final source of truth
                         )
                         _fallback_reasons = {
@@ -3912,11 +4204,49 @@ with tab2:
                         qc_report           = _at_qc,
                         prior_accrual_check = _at_prior,
                         files_uploaded      = st.session_state.uploaded_files,
+                        property_config     = _active_cfg,
                     )
                     st.session_state.pass2_output_files["audit_trail"] = _at_path
                 except Exception as _ate:
                     st.warning(f"Audit trail skipped: {_ate}")
                     st.session_state.pass2_output_files["audit_trail"] = None
+
+                # ── Step 8: JE Verification ───────────────────────────────────
+                # Compare Pass 1 JE lines against J-type transactions in the
+                # final GL to confirm every entry actually posted to Yardi.
+                status_text.text("Step 8/8: Verifying JE posting...")
+                progress_bar.progress(98)
+                try:
+                    from je_verifier import verify_je_posting, write_je_verification_tab
+                    _p1_out_v = st.session_state.get('pass1_output_files', {})
+                    _p1_je_lines_v = _p1_out_v.get('all_je_lines') or []
+                    _gl_for_v = engine_result.parsed.get('gl') if engine_result.parsed else None
+
+                    if _p1_je_lines_v and _gl_for_v:
+                        _je_ver_result = verify_je_posting(_p1_je_lines_v, _gl_for_v)
+                        st.session_state.pass2_output_files['je_verification'] = _je_ver_result
+
+                        # Append the verification tab to the existing QC workbook
+                        _qc_wb_path = st.session_state.pass2_output_files.get('qc_workbook')
+                        if _qc_wb_path and os.path.exists(_qc_wb_path):
+                            try:
+                                from openpyxl import load_workbook as _load_qc_wb
+                                _qc_wb = _load_qc_wb(_qc_wb_path)
+                                write_je_verification_tab(_qc_wb, _je_ver_result, period=close_period)
+                                _qc_wb.save(_qc_wb_path)
+                            except Exception as _qc_tab_err:
+                                st.warning(f"JE Verification tab could not be added to QC workbook: {_qc_tab_err}")
+                    else:
+                        st.session_state.pass2_output_files['je_verification'] = None
+                        if not _p1_je_lines_v:
+                            st.info(
+                                "JE Verification skipped — Pass 1 JE data not found in this session. "
+                                "Run Pass 1 and Pass 2 in the same session to enable verification.",
+                                icon="ℹ️",
+                            )
+                except Exception as _jve:
+                    st.warning(f"JE Verification skipped: {_jve}")
+                    st.session_state.pass2_output_files['je_verification'] = None
 
                 # ── Auto-detect Close Tracker Steps 5 & 6 ────────────────────
                 _ct = st.session_state.close_tracker
@@ -3968,6 +4298,24 @@ with tab2:
                 st.session_state.pass2_complete = True
                 st.success("Pass 2 complete! Download reports below.", icon="✅")
 
+                # ── Persist period metrics for cross-period trending ──────
+                try:
+                    from period_metrics import save_metrics as _save_metrics
+                    _pm_gl   = engine_result.parsed.get('gl') if engine_result.parsed else None
+                    _pm_qc   = st.session_state.pass2_output_files.get('qc_report')
+                    _pm_fee  = st.session_state.pass2_output_files.get('fee_result')
+                    _save_metrics(
+                        data_dir      = str(_DATA_DIR),
+                        property_code = _active_cfg.property_code or '',
+                        period        = close_period,
+                        property_name = engine_result.property_name or _prop_display,
+                        gl_data       = _pm_gl,
+                        qc_report     = _pm_qc,
+                        fee_result    = _pm_fee,
+                    )
+                except Exception:
+                    pass  # metrics are non-critical; never block report delivery
+
             except Exception as e:
                 tb = traceback.format_exc()
                 st.error(f"Pass 2 error: {str(e)}", icon="❌")
@@ -4017,6 +4365,82 @@ with tab2:
             <h3 style="color: {status_color}; margin: 0;">{status_text_str}</h3>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── JE Verification Panel ──────────────────────────────────────────
+        _je_ver = p2.get('je_verification')
+        if _je_ver is not None:
+            st.markdown("### JE Posting Verification")
+            _jv_color = '#2ecc71' if _je_ver.all_verified else ('#f39c12' if _je_ver.missing_count == 0 else '#e74c3c')
+            _jv_icon  = '✅' if _je_ver.all_verified else ('⚠️' if _je_ver.missing_count == 0 else '❌')
+            st.markdown(f"""
+            <div style="background:{_jv_color}20;border-left:5px solid {_jv_color};
+                 padding:10px 15px;border-radius:5px;margin:10px 0 5px;">
+                <strong style="color:{_jv_color};">{_jv_icon} {_je_ver.summary}</strong>
+            </div>""", unsafe_allow_html=True)
+
+            if not _je_ver.all_verified:
+                # Show problem JEs immediately — reviewer needs to act
+                _problem_jes = [j for j in _je_ver.je_results
+                                if j.status in ('MISSING', 'PARTIAL', 'AMOUNT_MISMATCH')]
+                if _problem_jes:
+                    _jv_rows = []
+                    for _pj in _problem_jes:
+                        _missing_accts = [f"{l.account_code}" for l in _pj.lines if l.match_status == 'not_found']
+                        _mismatch_notes = [l.note for l in _pj.lines if l.match_status == 'amount_mismatch']
+                        _note = ''
+                        if _missing_accts:
+                            _note = f"Accts not found in GL: {', '.join(_missing_accts)}"
+                        if _mismatch_notes:
+                            _note += (' | ' if _note else '') + '; '.join(_mismatch_notes)
+                        _jv_rows.append({
+                            'JE #':    _pj.je_number,
+                            'Status':  _pj.status,
+                            'Source':  _pj.source.replace('_', ' ').title(),
+                            'Lines':   _pj.line_count,
+                            'Found':   _pj.verified_count,
+                            'Missing': _pj.missing_count,
+                            'Note':    _note,
+                        })
+                    import pandas as _pd_jv
+                    st.dataframe(
+                        _pd_jv.DataFrame(_jv_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            'Status': st.column_config.TextColumn(width='small'),
+                            'Lines':  st.column_config.NumberColumn(width='small'),
+                            'Found':  st.column_config.NumberColumn(width='small'),
+                            'Missing':st.column_config.NumberColumn(width='small'),
+                        }
+                    )
+                    if _je_ver.missing_count > 0:
+                        st.warning(
+                            f"⚠️ **{_je_ver.missing_count} JE(s) not found in the final GL.** "
+                            f"This means they may not have imported into Yardi. "
+                            f"Check the Yardi import log, re-upload the CSV, and regenerate Pass 2 to re-verify. "
+                            f"See the **JE Verification** tab in the QC Workbook for full line-level detail.",
+                            icon="⚠️",
+                        )
+
+            with st.expander(f"All JEs ({_je_ver.total_je_count} total)", expanded=False):
+                _all_jv_rows = []
+                for _aj in _je_ver.je_results:
+                    _all_jv_rows.append({
+                        'JE #':    _aj.je_number,
+                        'Status':  _aj.status,
+                        'Source':  _aj.source.replace('_', ' ').title(),
+                        'Lines':   _aj.line_count,
+                        'Found':   _aj.verified_count,
+                    })
+                import pandas as _pd_jv2
+                st.dataframe(_pd_jv2.DataFrame(_all_jv_rows), use_container_width=True, hide_index=True)
+
+        elif p2.get('je_verification') is None and st.session_state.get('pass1_complete'):
+            st.info(
+                "JE Verification is available when Pass 1 and Pass 2 are run in the same session. "
+                "Re-run Pass 1 then immediately run Pass 2 to enable it.",
+                icon="ℹ️",
+            )
 
         # ── QC Summary Panel ───────────────────────────────────────────────
         qc_report = p2.get("qc_report")
@@ -4352,6 +4776,119 @@ with tab2:
                         if mime:
                             kw["mime"] = mime
                         st.download_button(**kw)
+
+        # ── Reversing JE ──────────────────────────────────────────────────────
+        # Offered in Pass 2 after the close is confirmed — the period is locked in
+        # from the final GL, and the JEs are already posted to Yardi.  Use this CSV
+        # to manually post reversals if Yardi auto-reversal fails, or to pre-review
+        # what Yardi will reverse on the 1st of next month.
+        _p2_rev_src = st.session_state.get('pass1_output_files', {}).get('accrual_je_csv')
+        with st.expander("🔄 Reversing JE CSV — Next Month Setup", expanded=False):
+            if _p2_rev_src and os.path.exists(_p2_rev_src):
+                st.caption(
+                    "Flips every DR/CR in the Pass 1 accruals CSV and dates them to "
+                    "the next period. Yardi auto-reverses BM=-1 entries on the 1st, "
+                    "but download this as a backup or to post manually if needed."
+                )
+                # Auto-fill next period from Pass 2 close period
+                _p2_rev_next = ''
+                try:
+                    _p2_mo_map = dict(Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,
+                                      Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12)
+                    _p2_mo_names = {v: k for k, v in _p2_mo_map.items()}
+                    _p2_m = re.search(
+                        r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ](\d{4})',
+                        result.period or '',
+                    )
+                    if _p2_m:
+                        _p2_mo  = _p2_mo_map[_p2_m.group(1)]
+                        _p2_yr  = int(_p2_m.group(2))
+                        _p2_nmo = _p2_mo % 12 + 1
+                        _p2_nyr = _p2_yr + (1 if _p2_mo == 12 else 0)
+                        _p2_rev_next = f"{_p2_mo_names[_p2_nmo]}-{_p2_nyr}"
+                except Exception:
+                    pass
+                _p2_rev_period = st.text_input(
+                    "Reversing period",
+                    value=_p2_rev_next,
+                    help="Period the reversals will post to (auto-filled to next month).",
+                    key="p2_rev_period_input",
+                )
+                if _p2_rev_period:
+                    try:
+                        from accrual_entry_generator import build_reversing_je_csv as _p2_build_rev
+                        _p2_rev_out = os.path.join(
+                            st.session_state.temp_dir,
+                            f"{_pfx_int}_Reversing_JE_{_p2_rev_period.replace('-', '')}.csv",
+                        )
+                        _p2_build_rev(
+                            source_etl_path=_p2_rev_src,
+                            next_period=_p2_rev_period,
+                            output_path=_p2_rev_out,
+                            property_code=getattr(_active_cfg, 'property_code', '') or '',
+                        )
+                        with open(_p2_rev_out, 'rb') as _p2_rf:
+                            st.download_button(
+                                label=f"⬇️ Download Reversing JE — {_p2_rev_period}",
+                                data=_p2_rf.read(),
+                                file_name=os.path.basename(_p2_rev_out),
+                                mime="text/csv",
+                                use_container_width=True,
+                                key="p2_dl_rev_je",
+                            )
+                    except Exception as _p2_rev_err:
+                        st.error(f"Reversing JE generation failed: {_p2_rev_err}")
+            else:
+                st.info(
+                    "Pass 1 accruals CSV not found in this session. "
+                    "Complete Pass 1 first, or upload the Accruals JE CSV below.",
+                    icon="ℹ️",
+                )
+                _p2_rev_manual = st.file_uploader(
+                    "Upload Accruals JE CSV (GA_Accruals_JE.csv)",
+                    type=["csv"],
+                    key="p2_rev_manual_upload",
+                )
+                if _p2_rev_manual is not None:
+                    _p2_rev_manual_path = os.path.join(
+                        st.session_state.temp_dir, "p2_rev_manual_accruals.csv"
+                    )
+                    with open(_p2_rev_manual_path, 'wb') as _p2_wf:
+                        _p2_wf.write(_p2_rev_manual.read())
+                    st.session_state['p2_rev_manual_csv'] = _p2_rev_manual_path
+                    st.rerun()
+                # Use manually uploaded file if available
+                _p2_rev_src_manual = st.session_state.get('p2_rev_manual_csv')
+                if _p2_rev_src_manual and os.path.exists(_p2_rev_src_manual):
+                    _p2_rev_period_m = st.text_input(
+                        "Reversing period",
+                        help="e.g. 'May-2026'",
+                        key="p2_rev_period_manual",
+                    )
+                    if _p2_rev_period_m:
+                        try:
+                            from accrual_entry_generator import build_reversing_je_csv as _p2_build_rev_m
+                            _p2_rev_out_m = os.path.join(
+                                st.session_state.temp_dir,
+                                f"{_pfx_int}_Reversing_JE_{_p2_rev_period_m.replace('-', '')}.csv",
+                            )
+                            _p2_build_rev_m(
+                                source_etl_path=_p2_rev_src_manual,
+                                next_period=_p2_rev_period_m,
+                                output_path=_p2_rev_out_m,
+                                property_code=getattr(_active_cfg, 'property_code', '') or '',
+                            )
+                            with open(_p2_rev_out_m, 'rb') as _p2_rf_m:
+                                st.download_button(
+                                    label=f"⬇️ Download Reversing JE — {_p2_rev_period_m}",
+                                    data=_p2_rf_m.read(),
+                                    file_name=os.path.basename(_p2_rev_out_m),
+                                    mime="text/csv",
+                                    use_container_width=True,
+                                    key="p2_dl_rev_je_manual",
+                                )
+                        except Exception as _p2_rev_err_m:
+                            st.error(f"Reversing JE generation failed: {_p2_rev_err_m}")
 
         # ── Sign-off Checklist ─────────────────────────────────────────────────
         st.divider()
@@ -5511,3 +6048,497 @@ with tab4:
                         st.success(f"Reactivated {_ip['display_name']}. {_rmsg2}")
                     else:
                         st.error(f"Failed: {_rmsg2}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PREPAID LEDGER SEED BUILDER
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("## 📋 Prepaid Ledger Seed Builder")
+    st.markdown(
+        "Use this to create the **prior-month prepaid ledger seed** for a new or "
+        "acquired property. Enter every active prepaid item (service contracts, "
+        "software subscriptions, prepaid maintenance, etc.) and download the "
+        "correctly formatted `.xlsx` file to upload as the 'prior month ledger' "
+        "on the first close.\n\n"
+        "> **Note:** Insurance (639110/639120) and RE Tax (641110) are excluded "
+        "automatically — those are handled by dedicated amortization functions "
+        "driven by `config.yaml → insurance_policies` and the GL."
+    )
+
+    _seed_col1, _seed_col2 = st.columns([2, 1])
+    with _seed_col1:
+        _seed_period = st.text_input(
+            "As-Of Period (the period BEFORE your first close)",
+            value="Dec-2025",
+            help="e.g. 'Dec-2025' if your first pipeline close is January 2026. "
+                 "This becomes the 'first_added_period' for all items.",
+            key="seed_as_of_period",
+        )
+    with _seed_col2:
+        _seed_scenario = st.radio(
+            "Scenario",
+            options=["Existing GRP Property", "New Property"],
+            index=0,
+            key="seed_scenario",
+            help="Existing GRP Property: set 'Months Amortized' to reflect months already released. "
+                 "New Property: leave at 0.",
+        )
+
+    _is_acquisition = _seed_scenario == "Existing GRP Property"
+
+    if _is_acquisition:
+        st.info(
+            "**Existing GRP Property:** Set *Months Already Amortized* for each item to "
+            "reflect how many months have already been released. "
+            "The pipeline will pick up from the correct remaining balance.",
+            icon="🏢",
+        )
+    else:
+        st.info(
+            "**New Property:** Leave *Months Already Amortized* at 0 for all items. "
+            "The pipeline will start amortizing from the beginning on the first close.",
+            icon="🏗️",
+        )
+
+    import pandas as _pd_seed
+
+    _seed_default_rows = [
+        {"Vendor": "", "Description": "", "GL Account #": "", "GL Account Name": "",
+         "Total Amount": 0.0, "Monthly Amount": 0.0,
+         "Service Start": None, "Service End": None,
+         "Months Amortized": 0, "Invoice #": "", "Invoice Date": None},
+    ]
+    _seed_df = st.data_editor(
+        _pd_seed.DataFrame(_seed_default_rows),
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Vendor":            st.column_config.TextColumn("Vendor *", width="medium"),
+            "Description":       st.column_config.TextColumn("Description *", width="large"),
+            "GL Account #":      st.column_config.TextColumn("GL Account # *", width="small",
+                                    help="6-digit GL code, e.g. '619120'. "
+                                         "DO NOT enter 639110/639120/641110 — those are auto-handled."),
+            "GL Account Name":   st.column_config.TextColumn("GL Account Name", width="medium"),
+            "Total Amount":      st.column_config.NumberColumn("Total Amount ($)", format="$%.2f", min_value=0.0),
+            "Monthly Amount":    st.column_config.NumberColumn("Monthly Amount ($)", format="$%.2f", min_value=0.0,
+                                    help="Leave 0 to auto-compute: Total ÷ contract months."),
+            "Service Start":     st.column_config.DateColumn("Service Start *", format="MM/DD/YYYY"),
+            "Service End":       st.column_config.DateColumn("Service End *",   format="MM/DD/YYYY"),
+            "Months Amortized":  st.column_config.NumberColumn("Months Amortized",
+                                    help="Months already released by prior management. 0 = not yet started.",
+                                    min_value=0, step=1, format="%d"),
+            "Invoice #":         st.column_config.TextColumn("Invoice #", width="small"),
+            "Invoice Date":      st.column_config.DateColumn("Invoice Date", format="MM/DD/YYYY"),
+        },
+        key="prepaid_seed_editor",
+    )
+
+    # Preview calculated values
+    _seed_preview_rows = []
+    for _, _srow in _seed_df.iterrows():
+        _sv = str(_srow.get("Vendor", "") or "").strip()
+        _ss = _srow.get("Service Start")
+        _se = _srow.get("Service End")
+        if not _sv or _ss is None or _se is None:
+            continue
+        try:
+            from dateutil.relativedelta import relativedelta as _rd
+            from datetime import date as _date
+            if hasattr(_ss, 'date'):
+                _ss = _ss.date()
+            if hasattr(_se, 'date'):
+                _se = _se.date()
+            _rd_val = _rd((_se + _rd(days=1)), _ss)
+            _tm = max(1, _rd_val.years * 12 + _rd_val.months)
+        except Exception:
+            _tm = 1
+        _ma = max(0, int(_srow.get("Months Amortized", 0) or 0))
+        _rm = max(0, _tm - _ma)
+        _total = float(_srow.get("Total Amount", 0) or 0)
+        _mo_amt = float(_srow.get("Monthly Amount", 0) or 0) or (round(_total / _tm, 2) if _tm else 0)
+        _gl = str(_srow.get("GL Account #", "") or "").strip()
+        _excluded = _gl in {"639110", "639120", "641110"}
+        _seed_preview_rows.append({
+            "Vendor": _sv,
+            "GL": _gl + (" ⚠️ excluded" if _excluded else ""),
+            "Total Mo.": _tm,
+            "Amortized": _ma,
+            "Remaining": _rm,
+            "Monthly $": f"${_mo_amt:,.2f}",
+            "Remaining $": f"${_rm * _mo_amt:,.2f}",
+        })
+
+    if _seed_preview_rows:
+        st.markdown("**Preview** — calculated fields:")
+        st.dataframe(_pd_seed.DataFrame(_seed_preview_rows), use_container_width=True, hide_index=True)
+
+    _seed_items_valid = [
+        {
+            "vendor":           str(r.get("Vendor", "") or "").strip(),
+            "description":      str(r.get("Description", "") or "").strip(),
+            "gl_account_number":str(r.get("GL Account #", "") or "").strip(),
+            "gl_account":       str(r.get("GL Account Name", "") or "").strip(),
+            "total_amount":     float(r.get("Total Amount", 0) or 0),
+            "monthly_amount":   float(r.get("Monthly Amount", 0) or 0),
+            "service_start":    r.get("Service Start"),
+            "service_end":      r.get("Service End"),
+            "months_amortized": int(r.get("Months Amortized", 0) or 0),
+            "invoice_number":   str(r.get("Invoice #", "") or "").strip(),
+            "invoice_date":     r.get("Invoice Date"),
+        }
+        for _, r in _seed_df.iterrows()
+        if str(r.get("Vendor", "") or "").strip()
+    ]
+
+    if _seed_items_valid and _seed_period:
+        try:
+            from prepaid_ledger import generate_seed as _gen_seed
+            _seed_bytes = _gen_seed(_seed_items_valid, _seed_period)
+            _seed_prop_code = (_edit_code if not _is_new else "property") if '_edit_code' in dir() else "property"
+            st.download_button(
+                label="⬇️ Download Prepaid Ledger Seed",
+                data=_seed_bytes,
+                file_name=f"GA_Prepaid_Ledger_Seed_{_seed_period.replace('-', '')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                help="Upload this as the 'Prior Month Prepaid Ledger' on the first close.",
+            )
+            st.caption(
+                f"✅ {len(_seed_items_valid)} item(s) included "
+                f"(any 639110/639120/641110 accounts were excluded automatically)."
+            )
+        except Exception as _se_err:
+            st.error(f"Seed generation failed: {_se_err}")
+    else:
+        st.caption("Add at least one item with Vendor, Service Start, and Service End to generate the seed file.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FIRST-CLOSE CHECKLIST
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("## 📝 First-Close Checklist")
+
+    _chk_scenario = st.radio(
+        "Property type",
+        options=["Existing GRP Property", "New Property"],
+        horizontal=True,
+        key="first_close_checklist_type",
+    )
+
+    if _chk_scenario == "Existing GRP Property":
+        st.markdown("""
+### Existing GRP Property — Before First Close
+
+**1. Property Config**
+- [ ] Create the property config in the **⚙️ Properties → Add/Edit** form above
+- [ ] Confirm `invoice_prefix`, `investor_name`, `management_fees` rates
+- [ ] Add `insurance_policies` entries (name, expense_account, monthly_amount) — this drives the insurance amortization JE each month
+- [ ] Set `re_tax_payment_months` to the correct quarterly billing months for this jurisdiction
+
+**2. Kardin Budget**
+- [ ] Upload the current-year Kardin budget to `data/{property_code}/` in GitHub (filename must match `kardin_budget_file` in config)
+
+**3. Prepaid Ledger Seed** ← most critical for acquisitions
+- [ ] Gather all active prepaid schedules from prior management (insurance is excluded; focus on service contracts, subscriptions, maintenance agreements)
+- [ ] Enter each item in the **Prepaid Ledger Seed Builder** above with the correct **Months Amortized** (= months already released by prior manager)
+- [ ] Download the seed file and upload it as the "Prior Month Prepaid Ledger" in the Pass 1 sidebar on the first close
+- [ ] Verify the **Remaining** column in the preview — it determines how many more months the pipeline will amortize
+
+**4. T12 for Layer 3 Historical Accruals**
+- [ ] Source the T12 from prior management in Yardi Income Statement format (`.xlsx`)
+- [ ] ⚠️ If T12 is unavailable, Layer 3 will rely on BC YTD ÷ months elapsed — expect over/under accruals on the first 1–2 closes while history builds
+- [ ] Upload the T12 in the Pass 1 sidebar under "Reference" files
+
+**5. Bank Rec Starting Balance**
+- [ ] Confirm prior period outstanding checks with the prior manager (if any)
+- [ ] On the first close, upload the Yardi Bank Rec PDF as the bank rec source — it carries the correct reconciled balance forward automatically
+
+**6. On the First Close — Review Carefully**
+- [ ] **Layer 3 accruals** may fire for accounts that prior management handled differently — review all "historical" source entries before uploading to Yardi
+- [ ] **Pass 2 → Accrual Check tab** will be empty on the first close (no prior pipeline J-type JEs to compare against) — this is expected
+- [ ] **Prior accrual check warning** in Pass 2 is expected to show $0 — not a bug
+- [ ] Review the prepaid ledger `Remaining` column after the first close to confirm the amortization schedule looks correct going forward
+""")
+    else:
+        st.markdown("""
+### New Property — Before First Close
+
+**1. Property Config**
+- [ ] Create the property config in the **⚙️ Properties → Add/Edit** form above
+- [ ] Add any `insurance_policies` entries if insurance policies are active from day 1
+- [ ] Set `re_tax_payment_months` for this jurisdiction
+
+**2. Kardin Budget**
+- [ ] Upload the current-year Kardin budget to `data/{property_code}/` in GitHub
+
+**3. Prepaid Ledger Seed**
+- [ ] If there are NO active prepaids at open: skip — the ledger starts empty
+- [ ] If prepaids exist from day 1 (e.g. insurance paid at inception): use the **Prepaid Ledger Seed Builder** above with `Months Amortized = 0`
+
+**4. On the First Close**
+- [ ] T12 upload is optional — there is no history, so Layer 3 will be silent (expected for month 1)
+- [ ] January Layer 3 uses the annual budget ÷ 12 fallback for accounts with zero GL activity — review these accruals carefully
+- [ ] **Pass 2 → Accrual Check tab** will be empty on the first close — expected
+- [ ] The BS Workpaper starts fresh — do not upload a prior workpaper (leave that slot blank)
+""")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # WORKPAPER SEED BUILDER  (Existing GRP Property only)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("## 📊 Workpaper Seed Builder")
+    st.markdown(
+        "For **Existing GRP Properties** being transitioned to the pipeline: enter prior "
+        "period GL ending balances for the specific BS accounts you want to carry forward. "
+        "The tool generates a starter `GA_Workpapers.xlsx` in the pipeline's rolling-table "
+        "format — upload it as the 'Prior Month Workpaper' on the first Pass 2 close and "
+        "history carries forward automatically every month after that.\n\n"
+        "You don't need to enter every account — just the ones where historical continuity "
+        "matters (e.g. 111100 Operating Cash, 115100 DACA, 213100 Accrued Expenses, "
+        "135150 Prepaid Other)."
+    )
+
+    _wp_col1, _wp_col2 = st.columns([2, 1])
+    with _wp_col1:
+        _wp_prop_name = st.text_input(
+            "Property Name (for workpaper headers)",
+            value=_edit_cfg.display() if ('_edit_cfg' in dir() and _edit_cfg) else '',
+            placeholder="e.g. Revolution Labs",
+            key="wp_seed_property_name",
+        )
+    with _wp_col2:
+        _wp_as_of = st.text_input(
+            "Last Period of Historical Data",
+            value="",
+            placeholder="e.g. Apr-2026",
+            help="The most recent period included in the seed — becomes the 'prior period' "
+                 "label on the first pipeline close.",
+            key="wp_seed_as_of_period",
+        )
+
+    st.caption(
+        "Enter one row per **account per period**. You can enter multiple periods for the "
+        "same account (e.g., Jan-2026 through Apr-2026) — the tool builds the full rolling "
+        "history table for each account automatically."
+    )
+
+    import pandas as _pd_wp
+    _wp_default = [
+        {"Account Code": "111100", "Account Name": "PNC Operating Cash",   "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
+        {"Account Code": "115100", "Account Name": "DACA KeyBank x5132",   "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
+        {"Account Code": "213100", "Account Name": "Accrued Expenses",      "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
+        {"Account Code": "135150", "Account Name": "Prepaid Other",         "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
+    ]
+    _wp_df = st.data_editor(
+        _pd_wp.DataFrame(_wp_default),
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Account Code":      st.column_config.TextColumn("Account Code *",  width="small"),
+            "Account Name":      st.column_config.TextColumn("Account Name *",  width="medium"),
+            "Period":            st.column_config.TextColumn("Period *",         width="small",
+                                    help="Format: Jan-2026, Feb-2026, etc."),
+            "GL Ending Balance": st.column_config.NumberColumn("GL Ending Balance", format="$%.2f"),
+            "TB Ending Balance": st.column_config.NumberColumn("TB Ending Balance", format="$%.2f",
+                                    help="Leave 0 to default to GL ending balance."),
+        },
+        key="wp_seed_editor",
+    )
+
+    # Compute preview — group by account, show period count and latest balance
+    _wp_preview = {}
+    for _, _wr in _wp_df.iterrows():
+        _wc = str(_wr.get("Account Code", "") or "").strip()
+        _wn = str(_wr.get("Account Name", "") or "").strip()
+        _wp = str(_wr.get("Period", "") or "").strip()
+        if not _wc or not _wp:
+            continue
+        _wg = float(_wr.get("GL Ending Balance", 0) or 0)
+        _wt = float(_wr.get("TB Ending Balance", 0) or 0) or _wg
+        key = (_wc, _wn)
+        if key not in _wp_preview:
+            _wp_preview[key] = []
+        _wp_preview[key].append({"period": _wp, "gl": _wg, "tb": _wt})
+
+    if _wp_preview:
+        _prev_rows = []
+        for (_wc, _wn), periods in sorted(_wp_preview.items()):
+            try:
+                from bs_workpaper_generator import _seed_period_sort as _sps
+                periods_sorted = sorted(periods, key=lambda r: _sps(r['period']))
+            except Exception:
+                periods_sorted = periods
+            latest = periods_sorted[-1]
+            _prev_rows.append({
+                "Account": f"{_wc} {_wn}",
+                "Periods": len(periods_sorted),
+                "Earliest": periods_sorted[0]['period'],
+                "Latest": latest['period'],
+                "Latest GL Balance": f"${latest['gl']:,.2f}",
+            })
+        st.markdown("**Preview:**")
+        st.dataframe(_pd_wp.DataFrame(_prev_rows), use_container_width=True, hide_index=True)
+
+    _wp_entries = [
+        {
+            "account_code": str(r.get("Account Code", "") or "").strip(),
+            "account_name": str(r.get("Account Name", "") or "").strip(),
+            "period":       str(r.get("Period", "") or "").strip(),
+            "gl_ending":    float(r.get("GL Ending Balance", 0) or 0),
+            "tb_ending":    float(r.get("TB Ending Balance", 0) or 0),
+        }
+        for _, r in _wp_df.iterrows()
+        if str(r.get("Account Code", "") or "").strip()
+        and str(r.get("Period", "") or "").strip()
+    ]
+
+    if _wp_entries and _wp_as_of:
+        try:
+            from bs_workpaper_generator import generate_workpaper_seed as _gen_wp_seed
+            _wp_bytes = _gen_wp_seed(
+                entries=_wp_entries,
+                property_name=_wp_prop_name or '',
+                as_of_period=_wp_as_of,
+            )
+            st.download_button(
+                label="⬇️ Download Workpaper Seed",
+                data=_wp_bytes,
+                file_name=f"GA_Workpapers_Seed_{_wp_as_of.replace('-', '')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                help="Upload this as the 'Prior Month Workpaper' in Pass 2 on the first close.",
+            )
+            _acct_count  = len({e['account_code'] for e in _wp_entries})
+            _period_count = len({e['period'] for e in _wp_entries})
+            st.caption(
+                f"✅ {_acct_count} account(s) × {_period_count} period(s) — "
+                f"the pipeline will carry this history forward from {_wp_as_of} onward."
+            )
+        except Exception as _wpe:
+            st.error(f"Workpaper seed generation failed: {_wpe}")
+    else:
+        st.caption(
+            "Fill in Account Code, Account Name, Period, and GL Ending Balance for at least "
+            "one row, and set the 'Last Period of Historical Data' field above."
+        )
+
+# ── Feedback Inbox (bottom of Properties tab) ──────────────────────────────────
+with tab4:
+    st.divider()
+    st.markdown("## 🐛 Feedback Inbox")
+    st.caption(
+        "Issues submitted by the team via the 'Report an Issue' sidebar form. "
+        "Mark items resolved once fixed — the health check agent will skip resolved items."
+    )
+
+    try:
+        import json as _fb_inbox_json
+        from pathlib import Path as _FbInboxPath
+        _fb_log_path = _FbInboxPath(__file__).parent / 'data' / 'feedback_log.jsonl'
+
+        if not _fb_log_path.exists():
+            st.info("No feedback submitted yet.", icon="ℹ️")
+        else:
+            # Load all items
+            _fb_all = []
+            for _fb_line in _fb_log_path.read_text(encoding='utf-8').splitlines():
+                _fb_line = _fb_line.strip()
+                if not _fb_line:
+                    continue
+                try:
+                    _fb_all.append(_fb_inbox_json.loads(_fb_line))
+                except Exception:
+                    continue
+
+            if not _fb_all:
+                st.info("No feedback items found.", icon="ℹ️")
+            else:
+                _sev_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+                _sev_icon  = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}
+                _status_icon = {'open': '⬜', 'acknowledged': '🔵', 'resolved': '✅'}
+
+                # Filter controls
+                _fb_filter_col1, _fb_filter_col2 = st.columns(2)
+                with _fb_filter_col1:
+                    _fb_show_status = st.multiselect(
+                        "Show status",
+                        ['open', 'acknowledged', 'resolved'],
+                        default=['open', 'acknowledged'],
+                        key="fb_inbox_status_filter",
+                    )
+                with _fb_filter_col2:
+                    _fb_show_sev = st.multiselect(
+                        "Show severity",
+                        ['critical', 'high', 'medium', 'low'],
+                        default=['critical', 'high', 'medium', 'low'],
+                        key="fb_inbox_sev_filter",
+                    )
+
+                _fb_filtered = [
+                    item for item in _fb_all
+                    if item.get('status', 'open') in _fb_show_status
+                    and item.get('severity', 'medium') in _fb_show_sev
+                ]
+                _fb_filtered.sort(
+                    key=lambda x: (_sev_order.get(x.get('severity', 'medium'), 2),
+                                   x.get('submitted_at', ''))
+                )
+
+                st.caption(f"Showing {len(_fb_filtered)} of {len(_fb_all)} item(s)")
+
+                _fb_changed = False
+                for _fbi, _fb_item in enumerate(_fb_filtered):
+                    _fb_sev    = _fb_item.get('severity', 'medium')
+                    _fb_status = _fb_item.get('status', 'open')
+                    _fb_si     = _sev_icon.get(_fb_sev, '🟡')
+                    _fb_sti    = _status_icon.get(_fb_status, '⬜')
+
+                    with st.container():
+                        _fbc1, _fbc2, _fbc3 = st.columns([5, 2, 2])
+                        with _fbc1:
+                            st.markdown(
+                                f"**{_fb_si} [{_fb_sev.upper()}]** &nbsp; "
+                                f"{_fb_item.get('submitted_at', '')} &nbsp;·&nbsp; "
+                                f"{_fb_item.get('reporter', '?')} "
+                                f"({_fb_item.get('property_code', '')} / "
+                                f"{_fb_item.get('period', '')})"
+                            )
+                            st.markdown(
+                                f"<div style='padding:4px 0 8px 0;color:#212121;'>"
+                                f"{_fb_item.get('description', '')}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        with _fbc2:
+                            _new_status = st.selectbox(
+                                "Status",
+                                ['open', 'acknowledged', 'resolved'],
+                                index=['open', 'acknowledged', 'resolved'].index(_fb_status),
+                                key=f"fb_status_{_fbi}",
+                                label_visibility="collapsed",
+                            )
+                        with _fbc3:
+                            if st.button("Save", key=f"fb_save_{_fbi}",
+                                         use_container_width=True):
+                                # Update this item's status in the full list
+                                _orig_idx = next(
+                                    (i for i, x in enumerate(_fb_all)
+                                     if x.get('submitted_at') == _fb_item.get('submitted_at')
+                                     and x.get('description') == _fb_item.get('description')),
+                                    None,
+                                )
+                                if _orig_idx is not None:
+                                    _fb_all[_orig_idx]['status'] = _new_status
+                                    _fb_changed = True
+
+                    st.divider()
+
+                if _fb_changed:
+                    # Rewrite the log with updated statuses
+                    with open(_fb_log_path, 'w', encoding='utf-8') as _fb_wf:
+                        for _fb_row in _fb_all:
+                            _fb_wf.write(_fb_inbox_json.dumps(_fb_row) + '\n')
+                    st.success("Status updated.")
+                    st.rerun()
+
+    except Exception as _fb_inbox_err:
+        st.error(f"Could not load feedback log: {_fb_inbox_err}")

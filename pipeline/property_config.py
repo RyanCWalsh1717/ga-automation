@@ -189,6 +189,18 @@ class PropertyConfig:
     # Override in config.yaml as:  payroll_accounts: ['615110', '637110', '615120']
     payroll_accounts: List[str] = field(default_factory=lambda: ['615110', '637110'])
 
+    # ── Periodic contract accounts ────────────────────────────────────────────
+    # GL accounts treated as periodic (quarterly / semi-annual) service contracts
+    # for Layer 2 invoice proration and supplement seed-row purposes.
+    # None = use the module-level PERIODIC_CONTRACT_ACCOUNTS default in
+    # accrual_entry_generator.py (617110, 619120, 627230 for RevLabs).
+    # Override in config.yaml as a dict, e.g.:
+    #   periodic_contract_accounts:
+    #     '617110': {label: 'HVAC Contract',       billing_cycle: 'quarterly'}
+    #     '619120': {label: 'PPM Water Treatment',  billing_cycle: 'monthly'}
+    # C-2: ensures a new property can override these without touching source code.
+    periodic_contract_accounts: Optional[dict] = None
+
     # ── QC account lists ──────────────────────────────────────────────────────
     # Per-property overrides for the P&L and BS account lists used in QC checks
     # (Check 1 TB→BC tie-out, Check 2 variances, Check 5 GL vs workpapers).
@@ -331,6 +343,11 @@ class PropertyConfig:
             ],
             qc_pl_accounts          = d.get('qc_pl_accounts') or None,
             qc_bs_accounts          = d.get('qc_bs_accounts') or None,
+            # C-2: per-property periodic contract accounts (dict of {code: {label, billing_cycle}})
+            periodic_contract_accounts = (
+                {str(k): v for k, v in d['periodic_contract_accounts'].items()}
+                if isinstance(d.get('periodic_contract_accounts'), dict) else None
+            ),
         )
 
     # ── Computed properties (backward compatibility + convenience) ────────────

@@ -3185,3 +3185,193 @@ def generate(gl_result, tb_result, output_path: str,
                                   dev_bank_rec_xlsx_filepath=dev_bank_rec_xlsx_filepath,
                                   prepared_by=prepared_by,
                                   property_config=property_config)
+
+
+# ── Workpaper Seed Generator ──────────────────────────────────────────────────
+
+_SEED_MONTH_ORDER = dict(Jan=1, Feb=2, Mar=3, Apr=4, May=5, Jun=6,
+                         Jul=7, Aug=8, Sep=9, Oct=10, Nov=11, Dec=12)
+
+
+def _seed_period_sort(period_str: str):
+    """Sort key for period strings like 'Jan-2026'."""
+    parts = str(period_str).split('-')
+    if len(parts) == 2:
+        mon = _SEED_MONTH_ORDER.get(parts[0], 0)
+        yr  = int(parts[1]) if parts[1].isdigit() else 0
+        return (yr, mon)
+    return (0, 0)
+
+
+def _write_seed_account_tab(wb: 'Workbook', account_code: str, account_name: str,
+                             history_rows: list, property_name: str) -> None:
+    """
+    Write one account tab in the rolling-table format expected by
+    _extract_new_format_history().  Tab name: '{account_code} {account_name}'.
+
+    Columns B–G: Period | Beg Balance | Net Activity | GL Ending | TB Ending | Variance
+    """
+    tab_name = _safe_sheet_name(f'{account_code} {account_name}')
+    ws = wb.create_sheet(tab_name)
+    ws.sheet_properties.tabColor = COLOR_BS_STD
+    ws.column_dimensions['A'].width = 2
+
+    col_widths = {'B': 14, 'C': 16, 'D': 16, 'E': 16, 'F': 16, 'G': 14}
+    for col_letter, width in col_widths.items():
+        ws.column_dimensions[col_letter].width = width
+
+    # Row 1 — account header
+    hdr_val = f'{account_code}  {account_name}'
+    c = ws.cell(row=1, column=_B, value=hdr_val)
+    _apply(c, font=_font(bold=True, size=13, color='FFFFFF'),
+           fill=_fill(DARK_BLUE),
+           align=Alignment(horizontal='left', vertical='center'))
+    ws.merge_cells(start_row=1, start_column=_B, end_row=1, end_column=_G)
+    ws.row_dimensions[1].height = 22
+
+    # Row 2 — property + seed note
+    sub = ws.cell(row=2, column=_B,
+                  value=f'{property_name}  |  Historical seed — imported prior balances')
+    _apply(sub, font=_font(italic=True, size=9, color='FFFFFF'),
+           fill=_fill(DARK_BLUE),
+           align=Alignment(horizontal='left'))
+    ws.merge_cells(start_row=2, start_column=_B, end_row=2, end_column=_G)
+
+    # Row 3 — blank spacer
+    ws.row_dimensions[3].height = 6
+
+    # Row 4 — column headers  (col B must contain "Period" exactly — read by extractor)
+    hist_hdrs = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
+    for ci, h in enumerate(hist_hdrs):
+        c = ws.cell(row=4, column=_B + ci, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(MED_BLUE), border=THIN,
+               align=Alignment(horizontal='center', wrap_text=True))
+    ws.row_dimensions[4].height = 28
+
+    # Rows 5+ — data
+    _NUM_FMT = '#,##0.00;(#,##0.00);"-"'
+    for i, hist in enumerate(history_rows):
+        row_num = 5 + i
+        _var = round((hist.get('gl_end', 0.0) or 0.0) - (hist.get('tb_end', 0.0) or 0.0), 2)
+        vals = [
+            hist.get('period', ''),
+            hist.get('beg_bal', 0.0),
+            hist.get('net_change', 0.0),
+            hist.get('gl_end', 0.0),
+            hist.get('tb_end', hist.get('gl_end', 0.0)),
+            _var,
+        ]
+        alt = _fill(LIGHT_GRAY) if i % 2 == 1 else None
+        for ci, val in enumerate(vals):
+            c = ws.cell(row=row_num, column=_B + ci, value=val)
+            c.border = THIN
+            if alt:
+                c.fill = alt
+            if isinstance(val, float):
+                c.number_format = _NUM_FMT
+                c.alignment = Alignment(horizontal='right')
+            elif ci == 0:  # period
+                c.alignment = Alignment(horizontal='center')
+        # Variance cell colour
+        vc = ws.cell(row=row_num, column=_B + 5)
+        _vz = abs(_var) < 0.02
+        vc.fill  = _fill(GREEN_FILL if _vz else RED_FILL)
+        vc.font  = _font(size=10, color='006100' if _vz else '9C0006')
+
+    ws.freeze_panes = 'B5'
+
+
+def generate_workpaper_seed(
+    entries: list,
+    property_name: str = '',
+    as_of_period: str = '',
+) -> bytes:
+    """
+    Build a starter GA_Workpapers.xlsx from manually-entered prior-period account balances.
+
+    Intended for onboarding existing GRP properties to the pipeline.  Ryan enters
+    prior-period GL ending balances for specific BS accounts (e.g. the last 3–6
+    months of history), downloads the seed, and uploads it as the "prior month
+    workpaper" on the first pipeline close.  Every subsequent close carries
+    forward normally.
+
+    Each entry dict:
+        account_code    (str)   — 6-digit GL code, e.g. '111100'
+        account_name    (str)   — display name, e.g. 'PNC Operating Cash'
+        period          (str)   — 'Jan-2026', 'Feb-2026', …
+        gl_ending       (float) — GL ending balance for this period
+        tb_ending       (float) — TB ending balance (if omitted, same as gl_ending)
+
+    The function computes:
+        beg_bal    = prior period gl_ending (0 for the earliest period per account)
+        net_change = gl_ending − beg_bal
+        variance   = gl_ending − tb_ending
+
+    The output is readable by _extract_account_history() in bs_workpaper_generator.py,
+    meaning the pipeline's first close will carry this history forward automatically.
+
+    Returns the workbook as raw bytes.
+    """
+    import io
+    from collections import defaultdict
+    from openpyxl import Workbook as _WB
+
+    # ── Group entries by account ────────────────────────────────
+    by_account: dict = defaultdict(list)
+    for entry in entries:
+        code = str(entry.get('account_code', '') or '').strip()
+        if not code:
+            continue
+        name = str(entry.get('account_name', '') or '').strip()
+        period = str(entry.get('period', '') or '').strip()
+        if not period:
+            continue
+        gl_end = float(entry.get('gl_ending', 0) or 0)
+        tb_end = float(entry.get('tb_ending', 0) or 0) or gl_end
+        by_account[(code, name)].append({
+            'period': period,
+            'gl_end': gl_end,
+            'tb_end': tb_end,
+        })
+
+    # ── Sort each account's rows chronologically; compute beg/net ──
+    account_history: dict = {}
+    for (code, name), rows in by_account.items():
+        sorted_rows = sorted(rows, key=lambda r: _seed_period_sort(r['period']))
+        history = []
+        prev_gl = 0.0
+        for row in sorted_rows:
+            gl_end     = row['gl_end']
+            tb_end     = row['tb_end']
+            beg_bal    = prev_gl
+            net_change = round(gl_end - beg_bal, 2)
+            history.append({
+                'period':     row['period'],
+                'beg_bal':    beg_bal,
+                'net_change': net_change,
+                'gl_end':     gl_end,
+                'tb_end':     tb_end,
+                'variance':   round(gl_end - tb_end, 2),
+            })
+            prev_gl = gl_end
+        account_history[(code, name)] = history
+
+    # ── Build workbook ──────────────────────────────────────────
+    wb = _WB()
+    wb.remove(wb.active)   # remove default empty sheet
+
+    # Summary Page first (provides period-end anchor for 135150 DATEDIF formulas)
+    _write_summary_page(wb, as_of_period or next(
+        (r['period'] for rows in account_history.values() for r in rows[-1:]),
+        '',
+    ))
+
+    # Account tabs — sorted by code for a tidy workbook
+    for (code, name), history in sorted(account_history.items(), key=lambda x: x[0][0]):
+        _write_seed_account_tab(wb, code, name, history, property_name)
+
+    # Return as bytes
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()

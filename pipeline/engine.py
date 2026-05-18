@@ -1331,7 +1331,6 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
                 "gl": "/path/to/GL.xlsx",
                 "income_statement": "/path/to/IS.xlsx",
                 "budget_comparison": "/path/to/Budget.xlsx",
-                "rent_roll": "/path/to/RentRoll.xlsx",
                 "nexus_accrual": "/path/to/Nexus.xls",
                 "pnc_bank": "/path/to/PNC.pdf",
                 "loan": "/path/to/Loan.xlsx",
@@ -1351,7 +1350,6 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
     from parsers.yardi_gl import parse_gl
     from parsers.yardi_income_statement import parse as parse_is
     from parsers.yardi_budget_comparison import parse as parse_bc
-    from parsers.yardi_rent_roll import parse as parse_rr
     from parsers.nexus_accrual import parse as parse_nexus
     from parsers.pnc_bank_statement import parse as parse_pnc
     from parsers.yardi_bank_rec import parse as parse_yardi_bank_rec
@@ -1442,15 +1440,6 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
             _warn_empty("Budget Comparison", bc_data, "yardi_bc")
         except Exception as e:
             result.add_exception("error", "parse", "yardi_bc", f"Budget parse failed: {e}")
-
-    rr_data = None
-    if "rent_roll" in files and files["rent_roll"]:
-        try:
-            rr_data = parse_rr(files["rent_roll"])
-            result.parsed["rent_roll"] = rr_data
-            _warn_empty("Rent Roll", rr_data, "yardi_rr")
-        except Exception as e:
-            result.add_exception("error", "parse", "yardi_rr", f"Rent Roll parse failed: {e}")
 
     nexus_data = None
     if "nexus_accrual" in files and files["nexus_accrual"]:

@@ -13,7 +13,7 @@ The main workbook contains:
   - TB-YTD: Trial Balance Year-to-Date
   - GL-MTD: General Ledger Month-to-Date
   - GL-YTD: General Ledger Year-to-Date
-  - Tenancy Schedule: Lease and unit information
+  - Tenancy Schedule: Placeholder tab (Tenancy data sourced directly from Yardi)
 
 The exception report contains:
   - Summary: Overview of pipeline run
@@ -24,8 +24,8 @@ The exception report contains:
 """
 
 import os
-from datetime import datetime, date
-from typing import Optional, List, Dict
+from datetime import datetime
+from typing import Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -367,7 +367,6 @@ def generate_report(engine_result, output_path: str) -> str:
     # Extract parsed data
     gl_data = engine_result.parsed.get('gl')
     is_data = engine_result.parsed.get('income_statement')
-    rent_roll_data = engine_result.parsed.get('rent_roll')
 
     # --- Tab 1: Balance Sheet (BS) ---
     bs_tab = _build_bs_tab_from_gl(gl_data)
@@ -417,10 +416,7 @@ def generate_report(engine_result, output_path: str) -> str:
         _write_empty_tab(wb, 'GL - YTD')
 
     # --- Tab 8: Tenancy Schedule ---
-    if rent_roll_data:
-        _write_tenancy_tab(wb, rent_roll_data)
-    else:
-        _write_empty_tab(wb, 'Tenancy Schedule')
+    _write_empty_tab(wb, 'Tenancy Schedule')
 
     # Write workbook
     wb.save(output_path)
@@ -629,69 +625,6 @@ def _write_gl_tab(wb: Workbook, gl_data, tab_name: str, mtd_only: bool = False):
 
         ws.cell(row=row_num, column=11, value=txn.remarks)
         _apply_style(ws.cell(row=row_num, column=11), _data_style(alternate))
-
-    _auto_width_columns(ws, len(headers))
-
-
-def _write_tenancy_tab(wb: Workbook, rent_roll_data: List[Dict]):
-    """
-    Write Tenancy Schedule tab.
-    Columns: Property, Unit(s), Lease, Lease Type, Area, Lease From, Lease To, Term,
-             Tenancy Years, Monthly Rent, Monthly Rent/Area, Annual Rent, Annual Rent/Area,
-             Annual Rec./Area, Annual Misc/Area, Security Deposit, LOC Amount
-    """
-    ws = wb.create_sheet('Tenancy Schedule')
-
-    headers = ['Property', 'Unit(s)', 'Lease', 'Lease Type', 'Area', 'Lease From', 'Lease To',
-               'Term', 'Tenancy Years', 'Monthly Rent', 'Monthly Rent/Area', 'Annual Rent',
-               'Annual Rent/Area', 'Annual Rec./Area', 'Annual Misc/Area', 'Security Deposit', 'LOC Amount']
-
-    for col_num, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col_num, value=header)
-        _apply_style(cell, _header_style())
-
-    # Map rent roll data fields to report columns
-    field_map = {
-        'Property': 'property',
-        'Unit(s)': 'units',
-        'Lease': 'tenant',
-        'Lease Type': 'lease_type',
-        'Area': 'area',
-        'Lease From': 'lease_from',
-        'Lease To': 'lease_to',
-        'Term': 'term_months',
-        'Tenancy Years': 'tenancy_years',
-        'Monthly Rent': 'monthly_rent',
-        'Monthly Rent/Area': 'monthly_rent_per_area',
-        'Annual Rent': 'annual_rent',
-        'Annual Rent/Area': 'annual_rent_per_area',
-        'Annual Rec./Area': 'annual_rec_per_area',
-        'Annual Misc/Area': 'annual_misc_per_area',
-        'Security Deposit': 'security_deposit',
-        'LOC Amount': 'loc_amount',
-    }
-
-    # Write data rows
-    for row_num, item in enumerate(rent_roll_data, start=2):
-        alternate = (row_num - 2) % 2 == 1
-
-        for col_num, header in enumerate(headers, start=1):
-            field = field_map.get(header, header.lower().replace('/', '_').replace(' ', '_'))
-            val = item.get(field) if isinstance(item, dict) else getattr(item, field, None)
-
-            # Format dates
-            if isinstance(val, date):
-                val = val.strftime('%m/%d/%Y')
-
-            ws.cell(row=row_num, column=col_num, value=val)
-
-            # Apply appropriate style
-            if header in ['Area', 'Monthly Rent', 'Monthly Rent/Area', 'Annual Rent',
-                          'Annual Rent/Area', 'Annual Rec./Area', 'Annual Misc/Area',
-                          'Security Deposit', 'LOC Amount']:
-                _apply_style(ws.cell(row=row_num, column=col_num), _currency_style(alternate))
-            else:
-                _apply_style(ws.cell(row=row_num, column=col_num), _data_style(alternate))
 
     _auto_width_columns(ws, len(headers))
 

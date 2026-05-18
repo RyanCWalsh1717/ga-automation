@@ -712,6 +712,7 @@ def build_catchup_je(
     ap_account: str = '213100',
     ap_account_name: str = 'Accrued Expenses',
     je_number: str = 'MGT-002',
+    property_config=None,
 ) -> list[dict]:
     """
     Build the catch-up journal entry for an unmatched prior-period
@@ -723,10 +724,22 @@ def build_catchup_je(
     This entry offsets the credit left in 637130 by the auto-reversal and
     re-establishes the management fee expense for the prior period.
 
+    Args:
+        property_config: Optional PropertyConfig — when provided, the mgmt fee
+            expense account is read from config instead of the module-level
+            _MGMT_FEE_CODE constant, enabling per-property overrides.
+
     Returns list of two JE line dicts in the standard pipeline format.
     """
     if catchup_amount <= 0:
         return []
+
+    # B-7: resolve mgmt fee account from config when available so this function
+    # works correctly for properties that use a different expense code.
+    _fee_acct = (
+        property_config.gl_account('mgmt_fee_expense', _MGMT_FEE_CODE)
+        if property_config else _MGMT_FEE_CODE
+    )
 
     _period_label = _fmt_period(period)
     desc = (
@@ -739,7 +752,7 @@ def build_catchup_je(
             'je_number':      je_number,
             'line':           1,
             'date':           period,
-            'account_code':   _MGMT_FEE_CODE,
+            'account_code':   _fee_acct,
             'account_name':   'Admin-Management Fees',
             'description':    desc,
             'reference':      'MGMT-CATCHUP',

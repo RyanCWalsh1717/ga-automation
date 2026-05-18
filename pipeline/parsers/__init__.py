@@ -8,7 +8,6 @@ Parsers:
   yardi_gl                  – General Ledger Detail (backbone of work papers)
   yardi_income_statement    – Income Statement (Accrual)
   yardi_budget_comparison   – Budget vs. Actual Comparison
-  yardi_rent_roll           – Rent Roll / Tenancy Schedule
   nexus_accrual             – Nexus Invoice / Accrual Detail
   pnc_bank_statement        – PNC Bank Statement (PDF)
   berkadia_loan             – Berkadia Loan Servicer Statements
@@ -19,7 +18,6 @@ Parsers:
 from . import yardi_gl
 from . import yardi_income_statement
 from . import yardi_budget_comparison
-from . import yardi_rent_roll
 from . import nexus_accrual
 from . import pnc_bank_statement
 from . import berkadia_loan
@@ -30,7 +28,6 @@ __all__ = [
     'yardi_gl',
     'yardi_income_statement',
     'yardi_budget_comparison',
-    'yardi_rent_roll',
     'nexus_accrual',
     'pnc_bank_statement',
     'berkadia_loan',

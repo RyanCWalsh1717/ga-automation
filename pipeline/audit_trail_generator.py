@@ -413,7 +413,7 @@ def _build_je_log(ws, all_je_lines: List[dict]):
 
 # ── Tab 3: Management Fee ─────────────────────────────────────────────────────
 
-def _build_mgmt_fee(ws, fee_result, period: str, property_name: str):
+def _build_mgmt_fee(ws, fee_result, period: str, property_name: str, property_config=None):
     ws.title = '3 - Management Fee'
     ws.sheet_properties.tabColor = '2E7D32'
 
@@ -482,6 +482,14 @@ def _build_mgmt_fee(ws, fee_result, period: str, property_name: str):
     row = _write_kv(ws, row, 'Amount', _money(total_fee))
     row = _write_kv(ws, row, 'JE Reference', 'MGT-001')
 
+    # C-9: resolve per-property strings from config instead of hardcoding RevLabs values.
+    _inv_prefix   = (getattr(property_config, 'invoice_prefix', '') or 'RevLabsPM') if property_config else 'RevLabsPM'
+    _bill_to      = (getattr(property_config, 'property_name', '') or 'Revolution Labs Owner, LLC') if property_config else 'Revolution Labs Owner, LLC'
+    _payable_to   = (getattr(property_config, 'management_company', '') or 'Greatland Realty Partners') if property_config else 'Greatland Realty Partners'
+    # Append 'LLC' only when the company name doesn't already contain a suffix.
+    if _payable_to and not any(s in _payable_to for s in ('LLC', 'LP', 'Inc', 'Corp')):
+        _payable_to = _payable_to + ' LLC'
+
     inv_num = None
     try:
         import re, calendar
@@ -492,7 +500,7 @@ def _build_mgmt_fee(ws, fee_result, period: str, property_name: str):
             mo = mos.get(m.group(1).lower(), 0)
             yr = int(m.group(2))
             if mo:
-                inv_num = f'RevLabsPM{mo:02d}{yr}'
+                inv_num = f'{_inv_prefix}{mo:02d}{yr}'
     except Exception:
         pass
     if inv_num:
@@ -500,8 +508,8 @@ def _build_mgmt_fee(ws, fee_result, period: str, property_name: str):
         _write_section_header(ws, row, 'INVOICE', 3)
         row += 1
         row = _write_kv(ws, row, 'Invoice Number', inv_num)
-        row = _write_kv(ws, row, 'Bill To', 'Revolution Labs Owner, LLC')
-        row = _write_kv(ws, row, 'Payable To', 'Greatland Realty Partners LLC')
+        row = _write_kv(ws, row, 'Bill To', _bill_to)
+        row = _write_kv(ws, row, 'Payable To', _payable_to)
         row = _write_kv(ws, row, 'GRP Net Due', _money(grp_fee))
 
 
@@ -697,6 +705,7 @@ def generate_audit_trail(
     qc_report=None,
     prior_accrual_check: Optional[List[dict]] = None,
     files_uploaded: Optional[Dict[str, Any]] = None,
+    property_config=None,
 ) -> str:
     """
     Generate the GA Pipeline Audit Trail workbook.
@@ -710,6 +719,9 @@ def generate_audit_trail(
         qc_report:           QCReport from qc_engine.py (or None).
         prior_accrual_check: Output of check_prior_accrual_vs_actual() (or None).
         files_uploaded:      Dict {key: path} of uploaded files for inventory tab.
+        property_config:     Optional PropertyConfig — when provided, per-property
+                             values (invoice prefix, entity names) override the
+                             RevLabs defaults hardcoded in earlier versions (C-9).
 
     Returns:
         output_path (for chaining).
@@ -731,7 +743,7 @@ def generate_audit_trail(
     _build_je_log(ws2, all_je_lines)
 
     ws3 = wb.create_sheet()
-    _build_mgmt_fee(ws3, fee_result, period, property_name)
+    _build_mgmt_fee(ws3, fee_result, period, property_name, property_config=property_config)
 
     ws4 = wb.create_sheet()
     _build_accrual_check(ws4, prior_accrual_check)
