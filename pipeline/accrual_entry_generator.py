@@ -1575,11 +1575,23 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
     #   - Expense account only
     #   - Annual budget ≥ $60K  (est. monthly ≥ $5K materiality floor)
     #   - Account was NOT already processed in the GL loop above
+    # Keywords that indicate a total / subtotal / summary row — never accrue these
+    _TOTAL_KEYWORDS = (
+        'total', 'subtotal', 'sub-total', 'net operating', 'net income',
+        'gross profit', 'operating income', 'noi', 'ebitda',
+    )
+
     for _b_code, _b_item in budget_by_code.items():
         if _b_code in _gl_seen_codes:
             continue   # handled by the GL loop above
+
+        # Must be a valid 6-digit numeric account code — rules out blank codes,
+        # short codes, and codes like "TOTAL" that sneak through budget parsers.
+        if not (_b_code and len(_b_code) == 6 and _b_code.isdigit()):
+            continue
         if not is_expense_account(_b_code):
             continue
+
         if isinstance(_b_item, dict):
             _b_annual = abs(float(
                 _b_item.get('annual') or _b_item.get('annual_budget')
@@ -1592,6 +1604,11 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 or getattr(_b_item, 'annual_budget', None) or 0
             ))
             _b_name = str(getattr(_b_item, 'account_name', '') or _b_code)
+
+        # Skip total / subtotal / summary rows by name
+        if any(kw in _b_name.lower() for kw in _TOTAL_KEYWORDS):
+            continue
+
         if _b_annual < 1:
             continue
         _b_monthly = _round(_b_annual / 12)
