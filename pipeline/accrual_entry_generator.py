@@ -1037,7 +1037,10 @@ def detect_invoice_proration_accruals(
             #   exact uncovered days gives the most accurate accrual.
             #   BREAKOUT: generate one candidate per vendor so electric service
             #   (Eversource delivery) and electric supplier (competitive supplier,
-            #   e.g. Constellation) appear as separate JE lines.
+            #   e.g. Hudson, Constellation) appear as separate JE lines.
+            #   Each vendor uses ITS OWN latest billing end date — avoids
+            #   dropping vendors whose billing cycle ends on a different day
+            #   from the vendor with the global latest end date.
             #
             # Everything else (gas, water, sewer, janitorial, HVAC, security,
             #   elevator, etc.):
@@ -1047,24 +1050,31 @@ def detect_invoice_proration_accruals(
             _is_electricity = (code == ELEC_EXPENSE_ACCOUNT)  # 613110 only
 
             if _is_electricity:
-                # Sanity cap: don't extrapolate more than 2× the billing period.
-                group_for_cap = by_end[latest_end]
-                _cap_period_days = max(1, (latest_end - min(g[0] for g in group_for_cap)).days)
-                if uncovered > _cap_period_days * 2.0:
-                    continue
+                # Collect all transactions grouped by vendor across ALL end dates.
+                _all_vendor_txns: Dict[str, List[tuple]] = defaultdict(list)
+                for _end_dt, _grp in by_end.items():
+                    for _g in _grp:
+                        _all_vendor_txns[_g[3]].append(_g)  # key on vendor_desc
 
-                # Group by vendor within the latest billing end date so each
-                # vendor (service vs. supplier) gets its own proration entry.
-                _vendor_groups: Dict[str, List[tuple]] = defaultdict(list)
-                for _g in by_end[latest_end]:
-                    _vendor_groups[_g[3]].append(_g)   # key on vendor_desc
+                for _vname, _vgroup in _all_vendor_txns.items():
+                    # Each vendor gets its own latest billing end date.
+                    _v_latest_end  = max(g[1] for g in _vgroup)
+                    _v_uncovered   = (month_end - _v_latest_end).days
+                    if _v_uncovered <= 0:
+                        continue  # This vendor's bill already covers the full month
 
-                for _vname, _vgroup in _vendor_groups.items():
-                    _vamt       = sum(g[2] for g in _vgroup)
-                    _vstart     = min(g[0] for g in _vgroup)
-                    _vdays      = max(1, (latest_end - _vstart).days)  # exclusive end (matches uncovered convention)
-                    _vrate      = _vamt / _vdays
-                    _vaccrual   = _vrate * uncovered
+                    # Only use transactions up to this vendor's latest end date.
+                    _v_latest_grp  = [g for g in _vgroup if g[1] == _v_latest_end]
+                    _vamt          = sum(g[2] for g in _v_latest_grp)
+                    _vstart        = min(g[0] for g in _v_latest_grp)
+                    _vdays         = max(1, (_v_latest_end - _vstart).days)
+
+                    # Sanity cap: don't extrapolate more than 2× the billing period.
+                    if _v_uncovered > _vdays * 2.0:
+                        continue
+
+                    _vrate    = _vamt / _vdays
+                    _vaccrual = _vrate * _v_uncovered
                     if _vaccrual < materiality:
                         continue
                     _vendor_label = _vname if _vname else acct.account_name
@@ -1072,9 +1082,9 @@ def detect_invoice_proration_accruals(
                         f'Accrual {_period_label} — {_vendor_label} '
                         f'(electricity proration: last invoice '
                         f'{_vstart.strftime("%m/%d/%y")}'
-                        f'-{latest_end.strftime("%m/%d/%y")}, '
+                        f'-{_v_latest_end.strftime("%m/%d/%y")}, '
                         f'${_vamt:,.0f}/{_vdays}d = '
-                        f'${_vrate:,.2f}/day × {uncovered} days uncovered)'
+                        f'${_vrate:,.2f}/day × {_v_uncovered} days uncovered)'
                     )
                     candidates.append({
                         'account_code':   code,
@@ -1084,7 +1094,7 @@ def detect_invoice_proration_accruals(
                         'description':    _vdesc,
                         'vendor':         _vendor_label,
                         'daily_rate':     round(_vrate, 4),
-                        'uncovered_days': uncovered,
+                        'uncovered_days': _v_uncovered,
                         'period_days':    _vdays,
                         'invoice_total':  _round(_vamt),
                     })
