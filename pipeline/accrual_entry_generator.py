@@ -1017,18 +1017,20 @@ def detect_invoice_proration_accruals(
             if start is None:
                 start, end = _parse_date_range(txn.description or '')
             if start and end:
-                # Capture vendor description for electricity breakout.
-                # Primary: txn.description (vendor name when Yardi stores it there).
-                # Fallback: remarks with the billing date range stripped — Yardi
-                # often stores the vendor name alongside the billing period in
-                # remarks (e.g. "01.15.26-02.13.26 EVERSOURCE ENERGY"), so
-                # stripping the date leaves "EVERSOURCE ENERGY" as the key.
-                # This differentiates vendors (e.g. Eversource vs Hudson Energy)
-                # that share the same billing end date and identical description
-                # fields (which commonly holds the person who posted, not vendor).
+                # Build vendor key for electricity breakout so Eversource and
+                # Hudson Energy each get their own accrual line.
+                # Strategy: combine every available text field — description,
+                # remarks (date stripped), and the invoice reference number.
+                # Even when description and remarks are identical, Yardi assigns
+                # a distinct reference/invoice number per vendor, making the
+                # combined key unique.
                 _vdesc_d = (txn.description or '').split('(')[0].strip()
                 _vdesc_r = _DATE_RANGE_RE.sub('', txn.remarks or '').strip(' ,-').strip()
-                _vdesc = _vdesc_d or _vdesc_r[:60]
+                _vref    = (getattr(txn, 'reference', '') or '').strip()
+                # Prefer the most descriptive field; fall back along the chain.
+                # Join all non-empty parts so vendors with the same description
+                # but different invoice numbers still produce distinct keys.
+                _vdesc   = ' | '.join(p for p in [_vdesc_d, _vdesc_r[:50], _vref] if p)
                 by_end[end].append((start, end, amt, _vdesc))
                 has_range_txns = True
 
@@ -1096,7 +1098,16 @@ def detect_invoice_proration_accruals(
                         _vaccrual = _vrate * _v_uncovered
                         if _vaccrual < materiality:
                             continue
-                        _vendor_label = _vname if _vname else acct.account_name
+                        # Display label: prefer the human-readable parts
+                        # (description or cleaned remarks) over the raw reference.
+                        # The reference number is in _vname only as a tiebreaker.
+                        _vname_parts = [p for p in _vname.split(' | ') if p]
+                        _vendor_label = (
+                            next((p for p in _vname_parts
+                                  if p and not p.isdigit() and len(p) > 3
+                                  and p != acct.account_name), None)
+                            or acct.account_name
+                        )
                         _vdesc_line = (
                             f'Accrual {_period_label} — {_vendor_label} '
                             f'(electricity proration: last invoice '
