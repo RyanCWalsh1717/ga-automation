@@ -516,6 +516,7 @@ def _legacy_registry_fallback(property_code: str) -> PropertyConfig:
     if str(property_code).lower() == 'revlabspm':
         return PropertyConfig(
             property_code         = 'revlabspm',
+            yardi_etl_code        = 'revlabpm',   # 8-char ETL PROPERTY field
             property_name         = 'Revolution Labs Owner, LLC',
             property_display_name = 'Revolution Labs',
             property_address      = '1050 Waltham Street, Lexington, MA',
