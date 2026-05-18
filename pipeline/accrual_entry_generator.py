@@ -266,6 +266,25 @@ def _j_debits(gl_acct) -> float:
         if t.debit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J')
     )
 
+
+def _net_j_credit(gl_acct) -> float:
+    """
+    Net J-type credit on a GLAccount: total J-credits minus total J-debits.
+
+    Returns the amount that does NOT offset to zero across all J-entries.
+    Example: $130K J-debit + $130K J-credit + $48K J-credit → net = $48K.
+    The $130K pair cancels; only the unmatched $48K (the open prior-accrual
+    reversal) is returned.  Returns 0 if J-debits exceed J-credits.
+    """
+    if gl_acct is None:
+        return 0.0
+    txns = getattr(gl_acct, 'transactions', [])
+    j_cr = sum(t.credit for t in txns
+               if t.credit > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J'))
+    j_dr = sum(t.debit  for t in txns
+               if t.debit  > 0 and str(getattr(t, 'control', '') or '').upper().startswith('J'))
+    return max(0.0, round(j_cr - j_dr, 2))
+
 PREPAID_ASSET_ACCOUNT = '135150'
 PREPAID_ASSET_NAME    = 'Prepaid Other'
 
@@ -1405,7 +1424,12 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         #
         # Guard: if non-J net change (real K/P/C invoice) ≥ 25% of monthly_rate
         # → real bill has posted → suppress the compound accrual.
-        _j_cr = _j_credits(acct)
+        # Use net J-credit (credits minus debits) so paired entries that cancel
+        # (e.g. $130K J-debit + $130K J-credit from a bill/reversal cycle) are
+        # excluded.  Only the unmatched credit — the open prior-accrual reversal —
+        # is used as the compound base.  _j_credits() / _j_debits() are still used
+        # for _non_j_net to detect whether a real K/P/C invoice has posted.
+        _j_cr = _net_j_credit(acct)
         # 8xxxxx accounts (interest, other income/expense) are flat monthly charges
         # handled by Layer 1b (Berkadia) — never compound them.
         if _j_cr > 500 and not code.startswith('8'):
