@@ -1050,54 +1050,63 @@ def detect_invoice_proration_accruals(
             _is_electricity = (code == ELEC_EXPENSE_ACCOUNT)  # 613110 only
 
             if _is_electricity:
-                # Collect all transactions grouped by vendor across ALL end dates.
-                _all_vendor_txns: Dict[str, List[tuple]] = defaultdict(list)
+                # Generate one accrual per unique (end_date, vendor_desc) pair.
+                # Keying by end_date is the critical differentiator: Eversource
+                # and Hudson have different billing cycles and therefore different
+                # end dates, even when both post to 613110.  The vendor_desc
+                # (from txn.description) sub-splits entries that share an end date
+                # (e.g. delivery vs. supply on the same cycle).
+                #
+                # The sanity cap (uncovered > 2× period) naturally eliminates
+                # stale historical end dates — only the most recent billing cycle
+                # for each vendor survives.  No explicit "latest only" de-dup
+                # needed because old periods exceed the cap and are skipped.
                 for _end_dt, _grp in by_end.items():
-                    for _g in _grp:
-                        _all_vendor_txns[_g[3]].append(_g)  # key on vendor_desc
-
-                for _vname, _vgroup in _all_vendor_txns.items():
-                    # Each vendor gets its own latest billing end date.
-                    _v_latest_end  = max(g[1] for g in _vgroup)
-                    _v_uncovered   = (month_end - _v_latest_end).days
+                    _v_uncovered = (month_end - _end_dt).days
                     if _v_uncovered <= 0:
-                        continue  # This vendor's bill already covers the full month
+                        continue  # this billing cycle already covers the full month
 
-                    # Only use transactions up to this vendor's latest end date.
-                    _v_latest_grp  = [g for g in _vgroup if g[1] == _v_latest_end]
-                    _vamt          = sum(g[2] for g in _v_latest_grp)
-                    _vstart        = min(g[0] for g in _v_latest_grp)
-                    _vdays         = max(1, (_v_latest_end - _vstart).days)
+                    # Sub-group by vendor_desc within this end date so that
+                    # entries sharing an end date but different descriptions each
+                    # get their own line (e.g. Eversource delivery + supplier).
+                    _vd_subgroups: Dict[str, List[tuple]] = defaultdict(list)
+                    for _g in _grp:
+                        _vd_subgroups[_g[3]].append(_g)
 
-                    # Sanity cap: don't extrapolate more than 2× the billing period.
-                    if _v_uncovered > _vdays * 2.0:
-                        continue
+                    for _vname, _vgroup in _vd_subgroups.items():
+                        _vamt   = sum(g[2] for g in _vgroup)
+                        _vstart = min(g[0] for g in _vgroup)
+                        _vdays  = max(1, (_end_dt - _vstart).days)
 
-                    _vrate    = _vamt / _vdays
-                    _vaccrual = _vrate * _v_uncovered
-                    if _vaccrual < materiality:
-                        continue
-                    _vendor_label = _vname if _vname else acct.account_name
-                    _vdesc = (
-                        f'Accrual {_period_label} — {_vendor_label} '
-                        f'(electricity proration: last invoice '
-                        f'{_vstart.strftime("%m/%d/%y")}'
-                        f'-{_v_latest_end.strftime("%m/%d/%y")}, '
-                        f'${_vamt:,.0f}/{_vdays}d = '
-                        f'${_vrate:,.2f}/day × {_v_uncovered} days uncovered)'
-                    )
-                    candidates.append({
-                        'account_code':   code,
-                        'account_name':   acct.account_name,
-                        'accrual_amount': _round(_vaccrual),
-                        'source':         'invoice_proration',
-                        'description':    _vdesc,
-                        'vendor':         _vendor_label,
-                        'daily_rate':     round(_vrate, 4),
-                        'uncovered_days': _v_uncovered,
-                        'period_days':    _vdays,
-                        'invoice_total':  _round(_vamt),
-                    })
+                        # Sanity cap: don't extrapolate more than 2× the billing period.
+                        if _v_uncovered > _vdays * 2.0:
+                            continue
+
+                        _vrate    = _vamt / _vdays
+                        _vaccrual = _vrate * _v_uncovered
+                        if _vaccrual < materiality:
+                            continue
+                        _vendor_label = _vname if _vname else acct.account_name
+                        _vdesc_line = (
+                            f'Accrual {_period_label} — {_vendor_label} '
+                            f'(electricity proration: last invoice '
+                            f'{_vstart.strftime("%m/%d/%y")}'
+                            f'-{_end_dt.strftime("%m/%d/%y")}, '
+                            f'${_vamt:,.0f}/{_vdays}d = '
+                            f'${_vrate:,.2f}/day × {_v_uncovered} days uncovered)'
+                        )
+                        candidates.append({
+                            'account_code':   code,
+                            'account_name':   acct.account_name,
+                            'accrual_amount': _round(_vaccrual),
+                            'source':         'invoice_proration',
+                            'description':    _vdesc_line,
+                            'vendor':         _vendor_label,
+                            'daily_rate':     round(_vrate, 4),
+                            'uncovered_days': _v_uncovered,
+                            'period_days':    _vdays,
+                            'invoice_total':  _round(_vamt),
+                        })
             else:
                 # All other accounts: combine all vendors, accrue the full last invoice
                 group      = by_end[latest_end]
