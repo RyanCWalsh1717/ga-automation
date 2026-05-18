@@ -1364,7 +1364,8 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         if _kc not in kardin_annual_by_code or _k_annual > kardin_annual_by_code[_kc]['annual']:
             kardin_annual_by_code[_kc] = {'annual': _k_annual, 'name': _k_name}
 
-    _gl_seen_codes: set = set()   # tracks every expense account code visited in the GL loop
+    _gl_seen_codes: set    = set()   # every expense account visited in the GL loop
+    _gl_handled_codes: set = set()   # subset that actually produced a candidate
 
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
@@ -1496,6 +1497,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                             'source':           'historical',
                             'description':      _compound_desc,
                         })
+                        _gl_handled_codes.add(code)
                 continue  # compound path evaluated — skip BC YTD normal path
 
         # ── January fallback: no prior-year YTD data available ────────────────
@@ -1524,6 +1526,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                             f'no activity this period)'
                         ),
                     })
+                    _gl_handled_codes.add(code)
                     continue  # T12 gave a good signal — skip annual/12 fallback
                 # Dec actual < $5K (semi-annual / quarterly billing) — fall through
                 # to Path B so the Kardin annual÷12 estimate still fires.
@@ -1573,6 +1576,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                     f'{_partial_note})'
                 ),
             })
+            _gl_handled_codes.add(code)
             continue
 
         # ── Feb+ normal path: BC YTD ÷ months elapsed ─────────────────────────
@@ -1630,6 +1634,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                     f'{_partial_note})'
                 ),
             })
+            _gl_handled_codes.add(code)
 
     # ── Budget-only fallback: accounts with Kardin budget but no GL activity ─────
     #
@@ -1666,8 +1671,8 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                                        'annual': _kv['annual']}
 
     for _b_code, _b_item in _all_budget_codes.items():
-        if _b_code in _gl_seen_codes:
-            continue   # handled by the GL loop above
+        if _b_code in _gl_handled_codes:
+            continue   # GL loop already produced a candidate — don't duplicate
 
         # Must be a valid 6-digit numeric account code — rules out blank codes,
         # short codes, and codes like "TOTAL" that sneak through budget parsers.
