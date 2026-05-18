@@ -238,6 +238,9 @@ ELEC_TENANT_REIMB_ACCOUNT   = '613115'
 # Metered utility accounts: use per-vendor daily-rate proration (separate line per vendor)
 # Both electricity (613110) and gas (613210) have multiple vendors / meters per billing period.
 _METERED_UTILITY_ACCOUNTS   = {ELEC_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT}
+# Gas uses per-INVOICE accrual (one line per meter/service, not per vendor).
+# Electricity uses per-VENDOR accrual (all invoices from same vendor combined).
+_PER_INVOICE_UTILITY_ACCOUNTS = {GAS_EXPENSE_ACCOUNT}
 ELEC_TENANT_REIMB_NAME      = 'Tenant Electric Reimbursement'
 TENANT_UTILITY_ACCOUNTS: dict = {
     '440500': {'label': 'Tenant Electric Recovery',     'budget_key': '440500'},
@@ -1026,7 +1029,14 @@ def detect_invoice_proration_accruals(
                 # vendor name ("Eversource", "Hudson Energy Services LLC") and
                 # is stable across invoices from the same vendor.
                 _vname = (txn.description or '').split('(')[0].strip()
-                by_end[end].append((start, end, amt, _vname))
+                # Service description: remarks content after stripping the date-range prefix.
+                # e.g. "11.20.25-12.22.25 82953-68006 HVAC Delivery" → "82953-68006 HVAC Delivery"
+                # Used by per-invoice accounts (gas) to distinguish individual meters.
+                _rem_raw = (txn.remarks or '').strip()
+                _service_desc = re.sub(
+                    r'^\d{2}\.\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}\.\d{2}\s*', '', _rem_raw
+                ).strip()
+                by_end[end].append((start, end, amt, _vname, _service_desc))
                 has_range_txns = True
 
         if has_range_txns:
@@ -1066,69 +1076,116 @@ def detect_invoice_proration_accruals(
                 #   Hudson      → latest end 12/31/25, invoice $45,918, 29-day cycle
                 #   Hudson old  → end 12/01/25, superseded by 12/31 invoice → skipped
                 #
-                # RevLabs gas example:
-                #   National Grid → latest end 12/22/25, 3 meters (HVAC, EMGEN, TYGEN)
-                #                   combined as one vendor line → $24,043.27
-                #   NRG Business  → latest end 12/22/25, invoice $18,951.27 (HVAC Supply)
+                # RevLabs gas example (per-invoice):
+                #   National Grid meter 1 → end 12/22/25, $23,106.69 HVAC Delivery
+                #   National Grid meter 2 → end 12/22/25, $204.32    EMGEN
+                #   National Grid meter 3 → end 12/22/25, $732.26    TYGEN
+                #   NRG Business Marketing → end 12/22/25, $18,951.27 HVAC Supply
+                #   → 4 separate accrual lines
                 #
-                # Algorithm:
-                #   1. Collect all (vendor, end_date) → transactions from by_end.
-                #   2. For each vendor keep only the latest end date.
-                #   3. Generate one candidate per vendor at that latest end date.
+                # Gas (613210) uses PER-INVOICE grouping — one line per meter/invoice.
+                # Electricity (613110) uses PER-VENDOR grouping — all invoices from the
+                # same vendor (e.g. multiple Eversource line items) combined into one line.
 
-                # Step 1: map vendor → their latest end date
-                _vendor_latest_end: Dict[str, date] = {}
-                for _ed, _grp in by_end.items():
-                    for _g in _grp:
-                        _vn = _g[3]  # vendor name (description up to '(')
-                        if _vn not in _vendor_latest_end or _ed > _vendor_latest_end[_vn]:
-                            _vendor_latest_end[_vn] = _ed
+                if code in _PER_INVOICE_UTILITY_ACCOUNTS:
+                    # ── Gas: one accrual per invoice entry at the global latest end date ──
+                    # Use latest_end (already computed) — only accrue from the most recent
+                    # billing cycle.  If a meter had an older period, it's superseded.
+                    for _inv in by_end[latest_end]:
+                        _inv_start, _inv_end, _inv_amt, _inv_vname, _inv_service = _inv
+                        _v_uncovered = (month_end - _inv_end).days
+                        if _v_uncovered <= 0:
+                            continue
+                        _vdays = max(1, (_inv_end - _inv_start).days)
+                        if _v_uncovered > _vdays * 2.0:
+                            continue
+                        _vrate    = _inv_amt / _vdays
+                        _vaccrual = _vrate * _v_uncovered
+                        if _vaccrual < materiality:
+                            continue
+                        # Build a readable label: "NATIONAL GRID — 82953-68006 HVAC Delivery"
+                        _vendor_label = (
+                            f'{_inv_vname} — {_inv_service}' if _inv_service
+                            else (_inv_vname or acct.account_name)
+                        )
+                        _vdesc_line = (
+                            f'Accrual {_period_label} — {_vendor_label} '
+                            f'(gas proration: last invoice '
+                            f'{_inv_start.strftime("%m/%d/%y")}'
+                            f'-{_inv_end.strftime("%m/%d/%y")}, '
+                            f'${_inv_amt:,.0f}/{_vdays}d = '
+                            f'${_vrate:,.2f}/day × {_v_uncovered} days uncovered)'
+                        )
+                        candidates.append({
+                            'account_code':   code,
+                            'account_name':   acct.account_name,
+                            'accrual_amount': _round(_vaccrual),
+                            'source':         'invoice_proration',
+                            'description':    _vdesc_line,
+                            'vendor':         _vendor_label,
+                            'daily_rate':     round(_vrate, 4),
+                            'uncovered_days': _v_uncovered,
+                            'period_days':    _vdays,
+                            'invoice_total':  _round(_inv_amt),
+                        })
 
-                # Step 2 & 3: one accrual per vendor at their latest end date
-                for _vn, _v_latest_end in _vendor_latest_end.items():
-                    _v_uncovered = (month_end - _v_latest_end).days
-                    if _v_uncovered <= 0:
-                        continue  # vendor's latest invoice already covers the month
+                else:
+                    # ── Electricity: one accrual per vendor, using their latest end date ──
+                    # Algorithm:
+                    #   1. Map vendor → their latest end date across all billing periods.
+                    #   2. For each vendor, combine all their invoices at that latest end date.
+                    #   3. Generate one candidate per vendor.
 
-                    # Combine all transactions for this vendor at their latest end date
-                    _v_grp  = [g for g in by_end[_v_latest_end] if g[3] == _vn]
-                    _vamt   = sum(g[2] for g in _v_grp)
-                    _vstart = min(g[0] for g in _v_grp)
-                    _vdays  = max(1, (_v_latest_end - _vstart).days)
+                    # Step 1: map vendor → their latest end date
+                    _vendor_latest_end: Dict[str, date] = {}
+                    for _ed, _grp in by_end.items():
+                        for _g in _grp:
+                            _vn = _g[3]  # vendor name (index 3)
+                            if _vn not in _vendor_latest_end or _ed > _vendor_latest_end[_vn]:
+                                _vendor_latest_end[_vn] = _ed
 
-                    # Sanity cap: don't extrapolate more than 2× the billing period
-                    if _v_uncovered > _vdays * 2.0:
-                        continue
+                    # Step 2 & 3: one accrual per vendor at their latest end date
+                    for _vn, _v_latest_end in _vendor_latest_end.items():
+                        _v_uncovered = (month_end - _v_latest_end).days
+                        if _v_uncovered <= 0:
+                            continue  # vendor's latest invoice already covers the month
 
-                    _vrate    = _vamt / _vdays
-                    _vaccrual = _vrate * _v_uncovered
-                    if _vaccrual < materiality:
-                        continue
+                        # Combine all transactions for this vendor at their latest end date
+                        _v_grp  = [g for g in by_end[_v_latest_end] if g[3] == _vn]
+                        _vamt   = sum(g[2] for g in _v_grp)
+                        _vstart = min(g[0] for g in _v_grp)
+                        _vdays  = max(1, (_v_latest_end - _vstart).days)
 
-                    _vendor_label = _vn if _vn else acct.account_name
-                    _util_label = (
-                        'gas' if code == GAS_EXPENSE_ACCOUNT else 'electricity'
-                    )
-                    _vdesc_line = (
-                        f'Accrual {_period_label} — {_vendor_label} '
-                        f'({_util_label} proration: last invoice '
-                        f'{_vstart.strftime("%m/%d/%y")}'
-                        f'-{_v_latest_end.strftime("%m/%d/%y")}, '
-                        f'${_vamt:,.0f}/{_vdays}d = '
-                        f'${_vrate:,.2f}/day × {_v_uncovered} days uncovered)'
-                    )
-                    candidates.append({
-                        'account_code':   code,
-                        'account_name':   acct.account_name,
-                        'accrual_amount': _round(_vaccrual),
-                        'source':         'invoice_proration',
-                        'description':    _vdesc_line,
-                        'vendor':         _vendor_label,
-                        'daily_rate':     round(_vrate, 4),
-                        'uncovered_days': _v_uncovered,
-                        'period_days':    _vdays,
-                        'invoice_total':  _round(_vamt),
-                    })
+                        # Sanity cap: don't extrapolate more than 2× the billing period
+                        if _v_uncovered > _vdays * 2.0:
+                            continue
+
+                        _vrate    = _vamt / _vdays
+                        _vaccrual = _vrate * _v_uncovered
+                        if _vaccrual < materiality:
+                            continue
+
+                        _vendor_label = _vn if _vn else acct.account_name
+                        _vdesc_line = (
+                            f'Accrual {_period_label} — {_vendor_label} '
+                            f'(electricity proration: last invoice '
+                            f'{_vstart.strftime("%m/%d/%y")}'
+                            f'-{_v_latest_end.strftime("%m/%d/%y")}, '
+                            f'${_vamt:,.0f}/{_vdays}d = '
+                            f'${_vrate:,.2f}/day × {_v_uncovered} days uncovered)'
+                        )
+                        candidates.append({
+                            'account_code':   code,
+                            'account_name':   acct.account_name,
+                            'accrual_amount': _round(_vaccrual),
+                            'source':         'invoice_proration',
+                            'description':    _vdesc_line,
+                            'vendor':         _vendor_label,
+                            'daily_rate':     round(_vrate, 4),
+                            'uncovered_days': _v_uncovered,
+                            'period_days':    _vdays,
+                            'invoice_total':  _round(_vamt),
+                        })
             else:
                 # All other accounts (water, sewer, HVAC contracts, janitorial, etc.):
                 # combine all vendors and accrue the full last invoice amount (flat monthly rate).

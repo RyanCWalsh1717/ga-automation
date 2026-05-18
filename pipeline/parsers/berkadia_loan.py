@@ -54,44 +54,45 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
 def _parse_pdf(filepath: str) -> List[Dict[str, Any]]:
     """Parse a Berkadia billing PDF using pdfplumber.
 
-    Supports both single-loan PDFs (one page) and multi-loan PDFs where each
-    page (or pair of pages) represents a separate tranche.  Every page that
-    contains a recognisable Berkadia header ('Property:' + 'Loan No:') is
-    parsed independently and returned as its own loan dict.
+    Supports single-loan and multi-loan PDFs regardless of page layout.
+    All pages are concatenated into one text block, then split at every
+    occurrence of the Berkadia tranche header ('Property: ... Loan No:').
+    This handles all three cases:
+      - One tranche per page (3 pages → 3 tranches)
+      - Multiple tranches on one page
+      - One tranche spanning two pages
     """
     import pdfplumber
 
     results = []
     with pdfplumber.open(filepath) as pdf:
-        # Accumulate consecutive pages into a single block per tranche.
-        # A new tranche starts whenever we see the header pattern on a page.
-        # If the statement is one page per tranche, each page produces one dict.
-        # If a tranche spans two pages, we concatenate and parse together.
-        current_lines: List[str] = []
-        header_pat = re.compile(r'Property:.+Loan No:', re.IGNORECASE)
-
+        # Step 1: collect all text from every page into a flat line list
+        all_lines: List[str] = []
         for page in pdf.pages:
             text = page.extract_text() or ''
-            page_lines = text.splitlines()
+            all_lines.extend(text.splitlines())
 
-            # Check whether this page starts a new tranche header
-            is_new_tranche = any(header_pat.search(ln) for ln in page_lines)
+    if not all_lines:
+        return results
 
-            if is_new_tranche and current_lines:
-                # Parse the block we've accumulated so far
-                result = _parse_pdf_text(current_lines)
-                if result and result.get('loan_number'):
-                    results.append(result)
-                current_lines = page_lines
-            else:
-                # Either this is the first page or a continuation — append
-                current_lines.extend(page_lines)
+    # Step 2: find line indices where a new tranche header begins
+    header_pat = re.compile(r'Property:.+Loan No:', re.IGNORECASE)
+    split_indices = [i for i, ln in enumerate(all_lines) if header_pat.search(ln)]
 
-        # Parse the final accumulated block
-        if current_lines:
-            result = _parse_pdf_text(current_lines)
-            if result and result.get('loan_number'):
-                results.append(result)
+    if not split_indices:
+        # No header found — try parsing the whole text as a single tranche
+        result = _parse_pdf_text(all_lines)
+        if result and result.get('loan_number'):
+            results.append(result)
+        return results
+
+    # Step 3: slice the line list at each header boundary and parse each segment
+    split_indices.append(len(all_lines))   # sentinel for final slice
+    for i in range(len(split_indices) - 1):
+        segment = all_lines[split_indices[i]: split_indices[i + 1]]
+        result = _parse_pdf_text(segment)
+        if result and result.get('loan_number'):
+            results.append(result)
 
     return results
 
