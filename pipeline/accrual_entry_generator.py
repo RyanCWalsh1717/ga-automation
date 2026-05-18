@@ -1017,8 +1017,18 @@ def detect_invoice_proration_accruals(
             if start is None:
                 start, end = _parse_date_range(txn.description or '')
             if start and end:
-                # Capture vendor description for electricity breakout
-                _vdesc = (txn.description or '').split('(')[0].strip()
+                # Capture vendor description for electricity breakout.
+                # Primary: txn.description (vendor name when Yardi stores it there).
+                # Fallback: remarks with the billing date range stripped — Yardi
+                # often stores the vendor name alongside the billing period in
+                # remarks (e.g. "01.15.26-02.13.26 EVERSOURCE ENERGY"), so
+                # stripping the date leaves "EVERSOURCE ENERGY" as the key.
+                # This differentiates vendors (e.g. Eversource vs Hudson Energy)
+                # that share the same billing end date and identical description
+                # fields (which commonly holds the person who posted, not vendor).
+                _vdesc_d = (txn.description or '').split('(')[0].strip()
+                _vdesc_r = _DATE_RANGE_RE.sub('', txn.remarks or '').strip(' ,-').strip()
+                _vdesc = _vdesc_d or _vdesc_r[:60]
                 by_end[end].append((start, end, amt, _vdesc))
                 has_range_txns = True
 
