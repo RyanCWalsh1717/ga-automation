@@ -1415,6 +1415,14 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # so only the unmatched open reversal (e.g. $48K) is used as the base.
         # _non_j_net uses the same K/P/C-only net (_kpc_net) to detect real bills.
         _j_cr = _net_j_credit(acct)
+        # Fallback for Yardi auto-reversals that use non-'J' control codes
+        # (e.g. 'AJ', 'RJ') or store the reversal as a negative debit instead
+        # of a positive credit.  In either case _net_j_credit() returns 0.
+        # Guard: _kpc_net (K/P/C-only net, computed above) will also be a large
+        # negative on the expense account — that unexplained net credit IS the
+        # reversal. Use abs(_kpc_net) so the compound path can fire correctly.
+        if _j_cr < 500 and _kpc_net < -500:
+            _j_cr = abs(_kpc_net)
         # 8xxxxx accounts (interest, other income/expense) are flat monthly charges
         # handled by Layer 1b (Berkadia) — never compound them.
         if _j_cr > 500 and not code.startswith('8'):
