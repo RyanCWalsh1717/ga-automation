@@ -1324,6 +1324,64 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # no replacement — account still needs a full accrual; _gl_partial_offset = 0.
         _gl_partial_offset = acct.net_change if acct.net_change > 0.01 else 0.0
 
+        # ── Compound accrual: prior-month auto-reversal detected ──────────────
+        # When a prior-month J-entry auto-reverses into this period, the expense
+        # account shows a J-type credit equal to the prior compound amount.
+        #
+        # The correct new accrual is:
+        #   compound = j_credits (prior cumulative, now reversed) + monthly_rate
+        #
+        # Monthly rate source (in priority order):
+        #   1. BC/Kardin annual budget ÷ 12  — preferred; stable across the entire
+        #      year even after a real bill resets the compound cycle mid-year
+        #   2. j_credits ÷ months_elapsed    — fallback when no budget available;
+        #      works for H1 cycles that started from the fiscal-year open
+        #
+        # Why budget is preferred over j_cr ÷ months_elapsed:
+        #   After a semi-annual bill posts in e.g. July, the compound cycle
+        #   restarts in August with a fresh single-month j_credit.  In September,
+        #   j_cr / months_elapsed = Aug_accrual / 8 ≈ $1.8K (wrong).  The Kardin
+        #   annual ÷ 12 gives the correct $16.6K regardless of cycle position.
+        #
+        # Guard: if non-J net change (real K/P/C invoice) ≥ 25% of monthly_rate
+        # → real bill has posted → suppress the compound accrual.
+        _j_cr = _j_credits(acct)
+        if _j_cr > 500 and months_elapsed >= 1:
+            _j_dr      = _j_debits(acct)
+            _non_j_net = acct.net_change - (_j_dr - _j_cr)  # K/P/C net only
+
+            # Prefer BC/Kardin annual ÷ 12 as the monthly rate.
+            _bi = budget_by_code.get(code)
+            if _bi is not None:
+                _bi_annual = abs(float(
+                    (_bi.get('annual', 0) if isinstance(_bi, dict)
+                     else getattr(_bi, 'annual', 0)) or 0
+                ))
+                _mthly_rt = _round(_bi_annual / 12) if _bi_annual >= 1 else _round(_j_cr / months_elapsed)
+            else:
+                _mthly_rt = _round(_j_cr / months_elapsed)  # fallback
+
+            if _mthly_rt >= 5000:  # materiality floor — same as normal path
+                if _non_j_net >= _mthly_rt * 0.25:
+                    continue  # real invoice posted — suppress
+                _compound = _round(_j_cr + _mthly_rt)
+                if _compound >= 500:
+                    candidates.append({
+                        'account_code':     code,
+                        'account_name':     acct.account_name,
+                        'estimated_amount': _compound,
+                        'ytd_prior':        _j_cr,
+                        'months_prior':     months_elapsed,
+                        'source':           'historical',
+                        'description': (
+                            f'Accrual {_period_label} — {acct.account_name} '
+                            f'(compound: ${_j_cr:,.0f} prior accrual reversed + '
+                            f'${_mthly_rt:,.0f}/mo est., '
+                            f'month {months_elapsed + 1} of accrual cycle)'
+                        ),
+                    })
+            continue  # compound path handled — skip BC YTD normal path
+
         # ── January fallback: no prior-year YTD data available ────────────────
         # Prefer T12 December actual when uploaded; otherwise use annual budget ÷ 12.
         # This prevents the historical layer from going dark in the first month
