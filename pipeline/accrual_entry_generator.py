@@ -1420,36 +1420,90 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         if _j_cr > 500 and not code.startswith('8'):
             _non_j_net = _kpc_net  # K/P/C net already computed above
 
-            # Monthly rate: BC → Kardin → j_cr ÷ max(months_elapsed, 1)
-            # Track whether a reliable budget-driven rate is available; this
-            # determines whether the compound path is safe in January.
-            _bi = budget_by_code.get(code)
-            _has_budget_rate = False
-            if _bi is not None:
-                _bi_annual = abs(float(
-                    (_bi.get('annual', 0) if isinstance(_bi, dict)
-                     else getattr(_bi, 'annual', 0)) or 0
-                ))
-                if _bi_annual >= 1:
-                    _mthly_rt = _round(_bi_annual / 12)
-                    _has_budget_rate = True
-                else:
-                    _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
-            elif code in kardin_annual_by_code:
-                _k_annual = kardin_annual_by_code[code]['annual']
-                if _k_annual >= 1:
-                    _mthly_rt = _round(_k_annual / 12)
-                    _has_budget_rate = True
-                else:
-                    _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
-            else:
-                _mthly_rt = _round(_j_cr / max(months_elapsed, 1))  # last resort
+            # ── Parse billing start date from J-credit description ─────────────
+            # Done here (once) so it drives both the monthly rate computation
+            # (Priority 1 below) and the date-range description string built later.
+            import re as _re_c
+            import calendar as _cal_c
+            _start_date_str = ''
+            _start_date_obj = None
+            for _jt in getattr(acct, 'transactions', []):
+                if _jt.credit <= 0:
+                    continue
+                if not str(getattr(_jt, 'control', '') or '').upper().startswith('J'):
+                    continue
+                _txt = (f"{getattr(_jt, 'description', '') or ''} "
+                        f"{getattr(_jt, 'remarks', '') or ''}")
+                _dm = _re_c.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', _txt)
+                if _dm:
+                    _start_date_str = _dm.group(1)
+                    from datetime import datetime as _dt_c
+                    for _fmt in ('%m/%d/%Y', '%m/%d/%y'):
+                        try:
+                            _start_date_obj = _dt_c.strptime(_start_date_str, _fmt)
+                            break
+                        except ValueError:
+                            pass
+                    break
 
-            # In January (months_elapsed=0) only compound when a BC or Kardin rate
-            # is available.  Without a budget rate the fallback j_cr÷1 = j_cr would
-            # double the accrual (compound = 2×j_cr), which is wrong for accounts
-            # like 801110 interest where each month's accrual is independent.
-            # Fall through to January Path A/B for those accounts.
+            # ── Monthly rate: billing-period actual → BC → Kardin → fallback ──
+            # Priority 1: j_cr ÷ full months in the billing period (most accurate).
+            # Counts only full months — skips the prorated start month when billing
+            # began after the 15th (e.g. a 9/23 start means Oct is the first full
+            # month; Oct/Nov/Dec = 3 months → $48,068 ÷ 3 = $16,023/mo).
+            # This avoids Kardin "annual" figures that represent a partial contract
+            # year (e.g. 9-month annual ÷ 12 = ¾ of the true monthly rate).
+            _has_budget_rate = False
+            _mthly_rt = 0.0
+            if _start_date_obj is not None and month_num > 0:
+                _yr_m_rt = _re_c.search(r'\d{4}', period_str)
+                if _yr_m_rt:
+                    _p_yr_rt = int(_yr_m_rt.group())
+                    # Skip the partial start month if billing began after mid-month
+                    _cfm = _start_date_obj.month + (1 if _start_date_obj.day > 15 else 0)
+                    _cfy = _start_date_obj.year
+                    if _cfm > 12:
+                        _cfm, _cfy = 1, _cfy + 1
+                    # Walk forward counting full months before the current close month
+                    _full_months = 0
+                    _m_i, _y_i = _cfm, _cfy
+                    while (_y_i, _m_i) < (_p_yr_rt, month_num):
+                        _full_months += 1
+                        _m_i += 1
+                        if _m_i > 12:
+                            _m_i, _y_i = 1, _y_i + 1
+                    if _full_months >= 1:
+                        _mthly_rt = _round(_j_cr / _full_months)
+                        _has_budget_rate = True  # derived from actual billing data
+
+            # Priority 2: BC annual ÷ 12
+            if not _has_budget_rate:
+                _bi = budget_by_code.get(code)
+                if _bi is not None:
+                    _bi_annual = abs(float(
+                        (_bi.get('annual', 0) if isinstance(_bi, dict)
+                         else getattr(_bi, 'annual', 0)) or 0
+                    ))
+                    if _bi_annual >= 1:
+                        _mthly_rt = _round(_bi_annual / 12)
+                        _has_budget_rate = True
+                    else:
+                        _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
+                # Priority 3: Kardin annual ÷ 12
+                elif code in kardin_annual_by_code:
+                    _k_annual = kardin_annual_by_code[code]['annual']
+                    if _k_annual >= 1:
+                        _mthly_rt = _round(_k_annual / 12)
+                        _has_budget_rate = True
+                    else:
+                        _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
+                # Priority 4: last resort
+                else:
+                    _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
+
+            # In January (months_elapsed=0) only compound when a reliable rate
+            # is available.  Without one the fallback j_cr÷1 = j_cr would double
+            # the accrual (compound = 2×j_cr). Fall through to Jan Path A/B.
             _run_compound = months_elapsed >= 1 or _has_budget_rate
             if _run_compound:
                 if _mthly_rt >= 5000:  # materiality floor
@@ -1457,23 +1511,8 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                         continue  # real invoice posted — suppress
                     _compound = _round(_j_cr + _mthly_rt)
                     if _compound >= 500:
-                        # Build date-range description: parse original billing period
-                        # start date from the J-credit transaction description so the
-                        # new JE reads "9/23/25-1/31/2026" rather than "month N".
-                        import re as _re_c
-                        import calendar as _cal_c
-                        _start_date_str = ''
-                        for _jt in getattr(acct, 'transactions', []):
-                            if _jt.credit <= 0:
-                                continue
-                            if not str(getattr(_jt, 'control', '') or '').upper().startswith('J'):
-                                continue
-                            _txt = (f"{getattr(_jt, 'description', '') or ''} "
-                                    f"{getattr(_jt, 'remarks', '') or ''}")
-                            _dm = _re_c.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', _txt)
-                            if _dm:
-                                _start_date_str = _dm.group(1)
-                                break
+                        # Build date-range description using _start_date_str already
+                        # parsed above — JE reads "9/23/25-1/31/2026".
                         # Compute period end date (last day of close month)
                         _period_end_str = ''
                         if month_num:
