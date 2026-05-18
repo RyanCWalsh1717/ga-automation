@@ -1394,16 +1394,13 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         #   compound = j_credits (prior cumulative, now reversed) + monthly_rate
         #
         # Monthly rate source (in priority order):
-        #   1. BC/Kardin annual budget ÷ 12  — preferred; stable across the entire
-        #      year even after a real bill resets the compound cycle mid-year
-        #   2. j_credits ÷ months_elapsed    — fallback when no budget available;
-        #      works for H1 cycles that started from the fiscal-year open
+        #   1. BC annual ÷ 12      — preferred when BC data is available
+        #   2. Kardin annual ÷ 12  — used when account absent from Yardi BC
+        #   3. j_credits ÷ months_elapsed — last resort; may drift after mid-year bills
         #
-        # Why budget is preferred over j_cr ÷ months_elapsed:
-        #   After a semi-annual bill posts in e.g. July, the compound cycle
-        #   restarts in August with a fresh single-month j_credit.  In September,
-        #   j_cr / months_elapsed = Aug_accrual / 8 ≈ $1.8K (wrong).  The Kardin
-        #   annual ÷ 12 gives the correct $16.6K regardless of cycle position.
+        # Description: carries the original billing-period start date forward from the
+        # J-credit transaction description (e.g. "9/23/25") so the range shown in the
+        # new JE reads "{original_start}-{period_end}" (e.g. "9/23/25-1/31/2026").
         #
         # Guard: if non-J net change (real K/P/C invoice) ≥ 25% of monthly_rate
         # → real bill has posted → suppress the compound accrual.
@@ -1412,7 +1409,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             _j_dr      = _j_debits(acct)
             _non_j_net = acct.net_change - (_j_dr - _j_cr)  # K/P/C net only
 
-            # Prefer BC/Kardin annual ÷ 12 as the monthly rate.
+            # Monthly rate: BC → Kardin → j_cr ÷ months_elapsed
             _bi = budget_by_code.get(code)
             if _bi is not None:
                 _bi_annual = abs(float(
@@ -1420,14 +1417,56 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                      else getattr(_bi, 'annual', 0)) or 0
                 ))
                 _mthly_rt = _round(_bi_annual / 12) if _bi_annual >= 1 else _round(_j_cr / months_elapsed)
+            elif code in kardin_annual_by_code:
+                _k_annual = kardin_annual_by_code[code]['annual']
+                _mthly_rt = _round(_k_annual / 12) if _k_annual >= 1 else _round(_j_cr / months_elapsed)
             else:
-                _mthly_rt = _round(_j_cr / months_elapsed)  # fallback
+                _mthly_rt = _round(_j_cr / months_elapsed)  # last resort
 
             if _mthly_rt >= 5000:  # materiality floor — same as normal path
                 if _non_j_net >= _mthly_rt * 0.25:
                     continue  # real invoice posted — suppress
                 _compound = _round(_j_cr + _mthly_rt)
                 if _compound >= 500:
+                    # ── Build date-range description ─────────────────────────
+                    # Parse the original billing period start date from the
+                    # J-credit transaction description / remarks so we can carry
+                    # it forward: "9/23/25-1/31/2026" rather than "month 4 of cycle".
+                    import re as _re_c
+                    import calendar as _cal_c
+                    _start_date_str = ''
+                    for _jt in getattr(acct, 'transactions', []):
+                        if _jt.credit <= 0:
+                            continue
+                        if not str(getattr(_jt, 'control', '') or '').upper().startswith('J'):
+                            continue
+                        _txt = f"{getattr(_jt, 'description', '') or ''} {getattr(_jt, 'remarks', '') or ''}"
+                        _dm = _re_c.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', _txt)
+                        if _dm:
+                            _start_date_str = _dm.group(1)
+                            break
+                    # Compute period end date (last day of close month)
+                    _period_end_str = ''
+                    if month_num:
+                        _yr_m = _re_c.search(r'\d{4}', period_str)
+                        if _yr_m:
+                            _p_yr   = int(_yr_m.group())
+                            _p_last = _cal_c.monthrange(_p_yr, month_num)[1]
+                            _period_end_str = f'{month_num}/{_p_last}/{_p_yr}'
+                    if _start_date_str and _period_end_str:
+                        _compound_desc = (
+                            f'Accrual {_period_label} — {acct.account_name} '
+                            f'({_start_date_str}-{_period_end_str}; '
+                            f'${_j_cr:,.2f} prior accrual reversed + '
+                            f'${_mthly_rt:,.2f}/mo est.)'
+                        )
+                    else:
+                        _compound_desc = (
+                            f'Accrual {_period_label} — {acct.account_name} '
+                            f'(compound: ${_j_cr:,.0f} prior accrual reversed + '
+                            f'${_mthly_rt:,.0f}/mo est., '
+                            f'month {months_elapsed + 1} of accrual cycle)'
+                        )
                     candidates.append({
                         'account_code':     code,
                         'account_name':     acct.account_name,
@@ -1435,12 +1474,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                         'ytd_prior':        _j_cr,
                         'months_prior':     months_elapsed,
                         'source':           'historical',
-                        'description': (
-                            f'Accrual {_period_label} — {acct.account_name} '
-                            f'(compound: ${_j_cr:,.0f} prior accrual reversed + '
-                            f'${_mthly_rt:,.0f}/mo est., '
-                            f'month {months_elapsed + 1} of accrual cycle)'
-                        ),
+                        'description':      _compound_desc,
                     })
             continue  # compound path handled — skip BC YTD normal path
 
