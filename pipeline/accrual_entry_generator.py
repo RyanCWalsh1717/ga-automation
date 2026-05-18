@@ -1406,81 +1406,95 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # → real bill has posted → suppress the compound accrual.
         _j_cr = _j_credits(acct)
         if _j_cr > 500:
-            # months_elapsed >= 1 guard removed: compound accruals must also fire
-            # in January (months_elapsed=0) when a prior-fiscal-year or cross-month
-            # J-entry auto-reverses.  Use max(months_elapsed, 1) in the fallback
-            # rate to avoid division by zero; budget/Kardin sources are preferred.
             _j_dr      = _j_debits(acct)
             _non_j_net = acct.net_change - (_j_dr - _j_cr)  # K/P/C net only
 
             # Monthly rate: BC → Kardin → j_cr ÷ max(months_elapsed, 1)
+            # Track whether a reliable budget-driven rate is available; this
+            # determines whether the compound path is safe in January.
             _bi = budget_by_code.get(code)
+            _has_budget_rate = False
             if _bi is not None:
                 _bi_annual = abs(float(
                     (_bi.get('annual', 0) if isinstance(_bi, dict)
                      else getattr(_bi, 'annual', 0)) or 0
                 ))
-                _mthly_rt = _round(_bi_annual / 12) if _bi_annual >= 1 else _round(_j_cr / max(months_elapsed, 1))
+                if _bi_annual >= 1:
+                    _mthly_rt = _round(_bi_annual / 12)
+                    _has_budget_rate = True
+                else:
+                    _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
             elif code in kardin_annual_by_code:
                 _k_annual = kardin_annual_by_code[code]['annual']
-                _mthly_rt = _round(_k_annual / 12) if _k_annual >= 1 else _round(_j_cr / max(months_elapsed, 1))
+                if _k_annual >= 1:
+                    _mthly_rt = _round(_k_annual / 12)
+                    _has_budget_rate = True
+                else:
+                    _mthly_rt = _round(_j_cr / max(months_elapsed, 1))
             else:
                 _mthly_rt = _round(_j_cr / max(months_elapsed, 1))  # last resort
 
-            if _mthly_rt >= 5000:  # materiality floor — same as normal path
-                if _non_j_net >= _mthly_rt * 0.25:
-                    continue  # real invoice posted — suppress
-                _compound = _round(_j_cr + _mthly_rt)
-                if _compound >= 500:
-                    # ── Build date-range description ─────────────────────────
-                    # Parse the original billing period start date from the
-                    # J-credit transaction description / remarks so we can carry
-                    # it forward: "9/23/25-1/31/2026" rather than "month 4 of cycle".
-                    import re as _re_c
-                    import calendar as _cal_c
-                    _start_date_str = ''
-                    for _jt in getattr(acct, 'transactions', []):
-                        if _jt.credit <= 0:
-                            continue
-                        if not str(getattr(_jt, 'control', '') or '').upper().startswith('J'):
-                            continue
-                        _txt = f"{getattr(_jt, 'description', '') or ''} {getattr(_jt, 'remarks', '') or ''}"
-                        _dm = _re_c.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', _txt)
-                        if _dm:
-                            _start_date_str = _dm.group(1)
-                            break
-                    # Compute period end date (last day of close month)
-                    _period_end_str = ''
-                    if month_num:
-                        _yr_m = _re_c.search(r'\d{4}', period_str)
-                        if _yr_m:
-                            _p_yr   = int(_yr_m.group())
-                            _p_last = _cal_c.monthrange(_p_yr, month_num)[1]
-                            _period_end_str = f'{month_num}/{_p_last}/{_p_yr}'
-                    if _start_date_str and _period_end_str:
-                        _compound_desc = (
-                            f'Accrual {_period_label} — {acct.account_name} '
-                            f'({_start_date_str}-{_period_end_str}; '
-                            f'${_j_cr:,.2f} prior accrual reversed + '
-                            f'${_mthly_rt:,.2f}/mo est.)'
-                        )
-                    else:
-                        _compound_desc = (
-                            f'Accrual {_period_label} — {acct.account_name} '
-                            f'(compound: ${_j_cr:,.0f} prior accrual reversed + '
-                            f'${_mthly_rt:,.0f}/mo est., '
-                            f'month {months_elapsed + 1} of accrual cycle)'
-                        )
-                    candidates.append({
-                        'account_code':     code,
-                        'account_name':     acct.account_name,
-                        'estimated_amount': _compound,
-                        'ytd_prior':        _j_cr,
-                        'months_prior':     months_elapsed,
-                        'source':           'historical',
-                        'description':      _compound_desc,
-                    })
-            continue  # compound path handled — skip BC YTD normal path
+            # In January (months_elapsed=0) only compound when a BC or Kardin rate
+            # is available.  Without a budget rate the fallback j_cr÷1 = j_cr would
+            # double the accrual (compound = 2×j_cr), which is wrong for accounts
+            # like 801110 interest where each month's accrual is independent.
+            # Fall through to January Path A/B for those accounts.
+            _run_compound = months_elapsed >= 1 or _has_budget_rate
+            if _run_compound:
+                if _mthly_rt >= 5000:  # materiality floor
+                    if _non_j_net >= _mthly_rt * 0.25:
+                        continue  # real invoice posted — suppress
+                    _compound = _round(_j_cr + _mthly_rt)
+                    if _compound >= 500:
+                        # Build date-range description: parse original billing period
+                        # start date from the J-credit transaction description so the
+                        # new JE reads "9/23/25-1/31/2026" rather than "month N".
+                        import re as _re_c
+                        import calendar as _cal_c
+                        _start_date_str = ''
+                        for _jt in getattr(acct, 'transactions', []):
+                            if _jt.credit <= 0:
+                                continue
+                            if not str(getattr(_jt, 'control', '') or '').upper().startswith('J'):
+                                continue
+                            _txt = (f"{getattr(_jt, 'description', '') or ''} "
+                                    f"{getattr(_jt, 'remarks', '') or ''}")
+                            _dm = _re_c.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', _txt)
+                            if _dm:
+                                _start_date_str = _dm.group(1)
+                                break
+                        # Compute period end date (last day of close month)
+                        _period_end_str = ''
+                        if month_num:
+                            _yr_m = _re_c.search(r'\d{4}', period_str)
+                            if _yr_m:
+                                _p_yr   = int(_yr_m.group())
+                                _p_last = _cal_c.monthrange(_p_yr, month_num)[1]
+                                _period_end_str = f'{month_num}/{_p_last}/{_p_yr}'
+                        if _start_date_str and _period_end_str:
+                            _compound_desc = (
+                                f'Accrual {_period_label} — {acct.account_name} '
+                                f'({_start_date_str}-{_period_end_str}; '
+                                f'${_j_cr:,.2f} prior accrual reversed + '
+                                f'${_mthly_rt:,.2f}/mo est.)'
+                            )
+                        else:
+                            _compound_desc = (
+                                f'Accrual {_period_label} — {acct.account_name} '
+                                f'(compound: ${_j_cr:,.0f} prior accrual reversed + '
+                                f'${_mthly_rt:,.0f}/mo est., '
+                                f'month {months_elapsed + 1} of accrual cycle)'
+                            )
+                        candidates.append({
+                            'account_code':     code,
+                            'account_name':     acct.account_name,
+                            'estimated_amount': _compound,
+                            'ytd_prior':        _j_cr,
+                            'months_prior':     months_elapsed,
+                            'source':           'historical',
+                            'description':      _compound_desc,
+                        })
+                continue  # compound path evaluated — skip BC YTD normal path
 
         # ── January fallback: no prior-year YTD data available ────────────────
         # Prefer T12 December actual when uploaded; otherwise use annual budget ÷ 12.
