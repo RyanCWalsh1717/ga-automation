@@ -242,53 +242,46 @@ def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
     payment_reserves = 0.0
     payment_total = 0.0
 
-    # Narrow the search scope to the Payment Information section ONLY.
+    # Extract payment_interest using a full-text DOTALL search anchored on
+    # "PAYMENT INFORMATION FOR".  This is more reliable than line-by-line
+    # scoping because pdfplumber's column-ordering can vary:
+    #   - Two-column merge:  "Interest Paid YTD 409,694.58  Interest 403,805.67"
+    #                        on one line — section header approach still works,
+    #                        but only if the boundaries land correctly.
+    #   - Column-then-column: left column text (including "Interest Paid YTD")
+    #                        appears BEFORE "PAYMENT INFORMATION FOR", so the
+    #                        DOTALL search naturally skips them.
     #
-    # Root cause: the Account Activity table (header "Date Desc Total Principal
-    # Interest Escrows...") is rendered by pdfplumber such that later lines can
-    # contain "Interest <amount>" from activity rows (e.g. PMT REC'D interest).
-    # When we scan ALL lines the activity row overwrites the correct Payment Info
-    # value.  In January this is especially deceptive because Interest Paid YTD
-    # == PMT REC'D interest == 409,694.58, but the correct accrual amount is the
-    # upcoming Payment Info interest (403,805.67 = January interest due Feb).
+    # How the lazy .*? avoids false positives:
+    #   "Interest Rate: 6.78848" → ([\d,.-]+) tries "Rate" → FAIL, skip
+    #   "Interest Paid YTD …"    → ([\d,.-]+) tries "Paid" → FAIL, skip
+    #   "Interest 403,805.67"    → ([\d,.-]+) matches → CORRECT ✓
     #
-    # Fix: restrict search to lines between "PAYMENT INFORMATION FOR" and
-    # "Account Activity".  Falls back to all lines if boundary not found.
-    _pmt_start_idx = None
-    _acct_start_idx = None
-    for _i, _l in enumerate(lines):
-        if _pmt_start_idx is None and re.search(
-                r'PAYMENT INFORMATION FOR', _l, re.IGNORECASE):
-            _pmt_start_idx = _i
-        if _acct_start_idx is None and re.search(
-                r'Account Activity', _l, re.IGNORECASE):
-            _acct_start_idx = _i
-            break   # no need to look further
+    # The lazy quantifier finds the FIRST matching "Interest <amount>" after
+    # "PAYMENT INFORMATION FOR", which is always the payment breakdown amount.
+    _pi_m = re.search(
+        r'PAYMENT INFORMATION FOR.+?\bInterest\b\s+([\d,.-]+)',
+        full_text, re.DOTALL | re.IGNORECASE
+    )
+    if _pi_m:
+        _pi_candidate = _safe_float(_pi_m.group(1))
+        # Sanity check: monthly interest on a commercial loan is always > $1,000.
+        # Guards against accidentally matching the interest rate (6.78848) or
+        # a small deferred-interest value.
+        if _pi_candidate > 1000:
+            payment_interest = _pi_candidate
 
-    _pmt_lines = lines[
-        (_pmt_start_idx or 0): (_acct_start_idx if _acct_start_idx is not None else len(lines))
-    ]
+    # R.E. Taxes and Total Payment Due appear in the payment breakdown section
+    # with unique enough labels that a full-text search is safe.
+    _re_m = re.search(r'R\.E\. Taxes\s+([\d,.-]+)', full_text, re.IGNORECASE)
+    if _re_m:
+        payment_re_taxes = _safe_float(_re_m.group(1))
 
-    # In the PDF text, the right-side payment column appears on the same line as
-    # the left-side balance label. pdfplumber merges them left→right.
-    # e.g. "Interest Paid YTD   409,694.58   Interest   403,805.67"
-    # We want the bare "Interest <amount>" from the Payment Information column.
-    for line in _pmt_lines:
-        matches = list(re.finditer(r'\bInterest\b\s+([\d,.-]+)', line))
-        if matches:
-            # Take the last match that is NOT part of "Interest Paid YTD"
-            for mtch in reversed(matches):
-                if 'Paid' not in line[mtch.start():mtch.end()+20]:
-                    payment_interest = _safe_float(mtch.group(1))
-                    break
-
-        m = re.search(r'R\.E\. Taxes\s+([\d,.-]+)', line)
-        if m:
-            payment_re_taxes = _safe_float(m.group(1))
-
-        m = re.search(r'Total Payment Due\s+\$\s*([\d,.-]+)', line)
-        if m:
-            payment_total = _safe_float(m.group(1))
+    _tot_m = re.search(
+        r'Total Payment Due\s+\$\s*([\d,.-]+)', full_text, re.IGNORECASE
+    )
+    if _tot_m:
+        payment_total = _safe_float(_tot_m.group(1))
 
     # ── 5. Activity table ────────────────────────────────────────
     activity = _parse_activity_table(lines)
