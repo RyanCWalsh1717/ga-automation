@@ -2966,11 +2966,6 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # interest must always come from Berkadia statements or the user's one-off
     # accruals table, never from a historical average.
     if not loan_data:
-        import warnings as _w_dbg0
-        _w_dbg0.warn(
-            f"[Layer1b DEBUG] loan_data is EMPTY/None — 801110 reserved, Layer 3 blocked",
-            UserWarning, stacklevel=2
-        )
         _covered.add('801110')
         _covered.add('213200')
     if loan_data:
@@ -2980,21 +2975,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         if str(a.account_code).strip() == '801110'), None)
         _int_already = _j_debits(_int_gl) >= 1.0
 
-        # DEBUG — surface Layer 1b state in Streamlit UI via UserWarning
-        import warnings as _w_dbg
-        _dbg_pis = [(_ln.get('loan_number', '?'), _ln.get('payment_interest', 0))
-                    if isinstance(_ln, dict)
-                    else (getattr(_ln, 'loan_number', '?'), getattr(_ln, 'payment_interest', 0))
-                    for _ln in _loans]
-        _w_dbg.warn(
-            f"[Layer1b DEBUG] loan_data={len(_loans)} tranches | "
-            f"int_already={_int_already} (j_debits={_j_debits(_int_gl):.2f}) | "
-            f"801110_in_covered={'801110' in _covered} | "
-            f"tranches={_dbg_pis}",
-            UserWarning, stacklevel=2
-        )
-
-        if not _int_already and '801110' not in _covered:
+        # When Berkadia statements are uploaded, they are the source of truth for
+        # interest expense — generate INT- JEs regardless of what J-type entries
+        # are already in the GL (e.g. a prior incorrect accrual that was uploaded
+        # to Yardi and needs to be replaced).  The _int_already guard is intentionally
+        # bypassed here; the user must void the prior GL entry separately in Yardi.
+        if '801110' not in _covered:
             _any_interest_posted = False
             for _ln in _loans:
                 if isinstance(_ln, dict):
