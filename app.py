@@ -2399,22 +2399,22 @@ with tab1:
                     _sup_acct_code = _sup['account_code']
                     _sup_monthly   = round(float(_sup['amount']), 2)   # user-entered monthly rate
 
-                    # ── Compound accrual + real-invoice guard ────────────────────
-                    # The J-credit in the current GL = prior month's accrual that
-                    # auto-reversed.  Compound = j_credits + monthly_rate.
-                    # Guard: suppress when non-J (real K/P/C invoice) net >= monthly_rate.
+                    # ── Compound accrual logic ────────────────────────────────────
+                    # If the prior month's pipeline accrual auto-reversed (J-credit in
+                    # current GL), compound it with the user-entered monthly amount so
+                    # the liability builds correctly: cumulative = reversal + new month.
+                    #
+                    # The old "real-invoice guard" that suppressed user-entered accruals
+                    # when GL non-J activity >= monthly amount has been REMOVED.  The user
+                    # explicitly chose to accrue these items — silently dropping them caused
+                    # missed accruals.  If a real invoice is already in the GL the user
+                    # can simply leave the Amount at $0 to suppress without generating a JE.
                     _sga_obj   = _sup_gl_accts.get(_sup_acct_code)
-                    _sga_net   = float(getattr(_sga_obj, 'net_change', 0) or 0) if _sga_obj else 0.0
                     _sga_j_cr  = _sup_j_credits(_sga_obj)
-                    _sga_j_dr  = _sup_j_debits(_sga_obj)
-                    _sga_non_j = _sga_net - (_sga_j_dr - _sga_j_cr)   # K/P/C-type net
-
-                    if _sga_non_j >= _sup_monthly:
-                        continue   # real invoice posted — no accrual needed
 
                     _sup_compound   = _sga_j_cr + _sup_monthly
                     _sup_cmpd_note  = (f' — cumulative ${_sup_compound:,.0f} '
-                                       f'(${_sga_j_cr:,.0f} prior + ${_sup_monthly:,.0f}/mo)'
+                                       f'(${_sga_j_cr:,.0f} prior reversal + ${_sup_monthly:,.0f}/mo)'
                                        if _sga_j_cr > 0 else '')
 
                     _sje_id  = f'SUP-{_sup_base + _sup_counter + 1:04d}'
