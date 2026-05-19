@@ -340,6 +340,8 @@ if "pass2_output_files" not in st.session_state:
     st.session_state.pass2_output_files = {}
 if "upload_key_p2" not in st.session_state:
     st.session_state.upload_key_p2 = 0
+if "editor_reset_count" not in st.session_state:
+    st.session_state.editor_reset_count = 0
 
 # Audit trail & sign-off
 if "prepared_by" not in st.session_state:
@@ -832,6 +834,7 @@ else:
         st.session_state.close_tracker = {}
         st.session_state.upload_key_p1 += 1
         st.session_state.upload_key_p2 += 1
+        st.session_state.editor_reset_count = st.session_state.get('editor_reset_count', 0) + 1
         shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
         st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
         import pandas as _pd
@@ -1932,7 +1935,7 @@ with tab1:
                 "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
                                        help=_split_sch_help),
             },
-            key=f"manual_accruals_editor_{_selected_code}",
+            key=f"manual_accruals_editor_{_selected_code}_{st.session_state.get('editor_reset_count', 0)}",
         )
 
         # ── Account name auto-populate ────────────────────────────────────────
@@ -5150,7 +5153,7 @@ with tab2:
             "Credit ($)":       st.column_config.NumberColumn("Credit ($)", format="%.2f", min_value=0.0, width="small"),
             "Line Description": st.column_config.TextColumn("Line Description", width="large"),
         },
-        key="post_close_je_editor",
+        key=f"post_close_je_editor_{st.session_state.get('editor_reset_count', 0)}",
     )
     # Save latest edits for use by Add JE Lines on next render.
     # Do NOT feed _pcje_edited back into post_close_je_df here — doing so changes
