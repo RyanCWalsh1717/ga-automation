@@ -2886,7 +2886,14 @@ with tab1:
                 st.session_state[_add_counter_key] = 0
             _add_n = st.session_state[_add_counter_key]
 
-            with st.expander("Add entry to Accruals CSV", expanded=False):
+            # Keep the expander open after a successful add (st.rerun() collapses
+            # expanders that use a hardcoded expanded=False default).
+            _add_expanded_key = f"je_add_expanded_{_run_key}"
+            if _add_expanded_key not in st.session_state:
+                st.session_state[_add_expanded_key] = False
+
+            with st.expander("Add entry to Accruals CSV",
+                             expanded=st.session_state[_add_expanded_key]):
                 _ac1, _ac2, _ac3, _ac4, _ac5, _ac6 = st.columns([1.5, 1.5, 4, 1.8, 0.8, 0.8])
                 with _ac1:
                     _add_dr_raw = st.text_input(
@@ -3005,8 +3012,11 @@ with tab1:
                                 icon="⚠️",
                             )
 
-                        # Bump counter → clears input fields on next render
+                        # Bump counter → clears input fields on next render.
+                        # Keep expander open so the user can add another entry
+                        # without having to re-expand the section.
                         st.session_state[_add_counter_key] += 1
+                        st.session_state[_add_expanded_key] = True
                         st.rerun()
 
                 # ── Previously added entries ──────────────────────────────────
