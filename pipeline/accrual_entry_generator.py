@@ -2975,6 +2975,20 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         if str(a.account_code).strip() == '801110'), None)
         _int_already = _j_debits(_int_gl) >= 1.0
 
+        # DEBUG — surface Layer 1b state in Streamlit UI via UserWarning
+        import warnings as _w_dbg
+        _dbg_pis = [(_ln.get('loan_number', '?'), _ln.get('payment_interest', 0))
+                    if isinstance(_ln, dict)
+                    else (getattr(_ln, 'loan_number', '?'), getattr(_ln, 'payment_interest', 0))
+                    for _ln in _loans]
+        _w_dbg.warn(
+            f"[Layer1b DEBUG] loan_data={len(_loans)} tranches | "
+            f"int_already={_int_already} (j_debits={_j_debits(_int_gl):.2f}) | "
+            f"801110_in_covered={'801110' in _covered} | "
+            f"tranches={_dbg_pis}",
+            UserWarning, stacklevel=2
+        )
+
         if not _int_already and '801110' not in _covered:
             _any_interest_posted = False
             for _ln in _loans:
