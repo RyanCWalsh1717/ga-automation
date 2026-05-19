@@ -69,19 +69,27 @@ def _extract_gl_metrics(gl_data) -> dict:
         if not code:
             continue
 
-        # Period balance (MTD) — positive = credit for revenue, debit for expenses
-        ptd = _safe_float(getattr(acct, 'period_balance', None))
-        end = _safe_float(getattr(acct, 'balance', None))
+        # GLAccount fields: net_change = total_debits - total_credits (MTD activity)
+        #                   ending_balance = balance sheet ending balance
+        # Fall back to total_debits - total_credits if net_change is not present.
+        net_ch = _safe_float(
+            getattr(acct, 'net_change', None)
+            if getattr(acct, 'net_change', None) is not None
+            else (getattr(acct, 'total_debits', 0) - getattr(acct, 'total_credits', 0))
+        )
+        end = _safe_float(getattr(acct, 'ending_balance', None)
+                          or getattr(acct, 'balance', None))
 
         first = code[0] if code else ''
 
         if first == '4':
-            # Revenue accounts: credit balance reported as negative in Yardi GL
-            revenue += abs(ptd)
+            # Revenue accounts: credits exceed debits → net_change is negative
+            revenue += abs(net_ch)
         elif first in ('5', '6', '7', '8'):
-            expenses += abs(ptd)
+            # Expense accounts: debits exceed credits → net_change is positive
+            expenses += abs(net_ch)
             if code == '637130':
-                mgmt_fee += abs(ptd)
+                mgmt_fee += abs(net_ch)
         elif code == '111100':
             op_cash = end
         elif code == '115100':

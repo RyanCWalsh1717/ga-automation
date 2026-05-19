@@ -1184,21 +1184,13 @@ with tab0:
 
             _periods = [r.get('period', '') for r in _trend_data]
 
-            # ── NOI chart (before management fee) ────────────────────────
-            # management_fee is saved from GL 637130; exclude it from expenses
-            # so the NOI line shows property-level performance before the
-            # GRP/JLL fee deduction (the fee bar below shows the deduction).
-            def _noi_pre(r):
-                return r.get('noi', 0) + r.get('management_fee', 0)
-            def _exp_ex(r):
-                return r.get('expenses', 0) - r.get('management_fee', 0)
-
-            st.markdown("##### Net Operating Income *(before mgmt. fee)*")
+            # ── NOI chart ────────────────────────────────────────────────
+            st.markdown("##### Net Operating Income")
             _noi_df = _pd_trend.DataFrame({
                 'Period':   _periods,
                 'Revenue':  [r.get('revenue', 0) for r in _trend_data],
-                'Expenses': [_exp_ex(r) for r in _trend_data],
-                'NOI':      [_noi_pre(r) for r in _trend_data],
+                'Expenses': [r.get('expenses', 0) for r in _trend_data],
+                'NOI':      [r.get('noi', 0) for r in _trend_data],
             }).set_index('Period')
             st.line_chart(_noi_df[['NOI', 'Revenue', 'Expenses']], height=220)
 
@@ -1232,10 +1224,9 @@ with tab0:
                     'Status':   f"{_qc_icon} {_qc_status.title()}",
                     'Pass':     r.get('qc_pass', 0),
                     'Warn':     r.get('qc_warn', 0),
-                    'Fail':     r.get('qc_fail', 0),
-                    'NOI (pre-fee)': f"${_noi_pre(r):,.0f}",
-                    'Mgmt Fee':      f"${r.get('fee_amount', 0):,.0f}",
-                    'NOI (net)':     f"${r.get('noi', 0):,.0f}",
+                    'Fail':    r.get('qc_fail', 0),
+                    'NOI':     f"${r.get('noi', 0):,.0f}",
+                    'Fee':     f"${r.get('fee_amount', 0):,.0f}",
                 })
             st.dataframe(
                 _pd_trend.DataFrame(_qc_rows),
