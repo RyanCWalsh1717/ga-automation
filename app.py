@@ -4632,16 +4632,26 @@ with tab2:
             # Derive bank account labels from property config
             _ba_cfg = getattr(_active_cfg, 'bank_accounts', None) or {}
             _gl_acc = getattr(_active_cfg, 'gl_accounts', None) or {}
-            _op_slug   = next((k for k, v in _ba_cfg.items() if str(v.get('gl_account','')).strip() == str(_gl_acc.get('cash_operating','111100')).strip()), None)
-            _daca_slug = next((k for k, v in _ba_cfg.items() if str(v.get('gl_account','')).strip() == str(_gl_acc.get('daca','115100')).strip()), None)
+            def _ba_gl(v):
+                """Get gl_account from either a BankAccountConfig dataclass or a plain dict."""
+                if isinstance(v, dict):
+                    return str(v.get('gl_account', ''))
+                return str(getattr(v, 'gl_account', '') or '')
+            def _ba_attr(v, key, default=''):
+                """Get any attribute from either a BankAccountConfig dataclass or a plain dict."""
+                if isinstance(v, dict):
+                    return v.get(key, default) or default
+                return getattr(v, key, default) or default
+            _op_slug   = next((k for k, v in _ba_cfg.items() if _ba_gl(v).strip() == str(_gl_acc.get('cash_operating','111100')).strip()), None)
+            _daca_slug = next((k for k, v in _ba_cfg.items() if _ba_gl(v).strip() == str(_gl_acc.get('daca','115100')).strip()), None)
             _dev_slugs = [k for k in _ba_cfg if k not in (_op_slug, _daca_slug)] if _ba_cfg else []
             def _ba_label(slug):
                 if not slug or slug not in _ba_cfg:
                     return slug or 'Operating'
                 ba = _ba_cfg[slug]
-                lbl  = ba.get('label', slug)
-                last4 = ba.get('last4', '')
-                gl   = ba.get('gl_account', '')
+                lbl  = _ba_attr(ba, 'label', slug)
+                last4 = _ba_attr(ba, 'last4', '')
+                gl   = _ba_gl(ba)
                 return f"{lbl}{' (' + last4 + ')' if last4 else ''}{' — GL ' + gl if gl else ''}"
             _op_lbl   = _ba_label(_op_slug)   if _op_slug   else f"Operating — GL {_gl_acc.get('cash_operating','111100')}"
             _daca_lbl = _ba_label(_daca_slug) if _daca_slug else f"DACA — GL {_gl_acc.get('daca','115100')}"
