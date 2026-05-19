@@ -54,45 +54,62 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
 def _parse_pdf(filepath: str) -> List[Dict[str, Any]]:
     """Parse a Berkadia billing PDF using pdfplumber.
 
-    Supports single-loan and multi-loan PDFs regardless of page layout.
-    All pages are concatenated into one text block, then split at every
-    occurrence of the Berkadia tranche header ('Property: ... Loan No:').
-    This handles all three cases:
-      - One tranche per page (3 pages → 3 tranches)
-      - Multiple tranches on one page
-      - One tranche spanning two pages
+    Strategy 1 (primary): parse each physical page independently.
+    The Berkadia bulk-download format places exactly one loan tranche per page
+    (each page says 'Page 1 of 1').  Parsing page-by-page is more reliable
+    than pattern-splitting because pdfplumber renders template labels ('Property:',
+    'Loan No.') and their data values as separate text elements that do NOT land
+    on the same extracted line — making a single-line regex unreliable.
+
+    Strategy 2 (fallback): if per-page parsing yields no results, concatenate
+    all pages and split at every 'Property: … Loan No:' header occurrence.
+    This handles edge cases such as a tranche spanning two pages.
     """
     import pdfplumber
 
     results = []
+    page_texts: List[List[str]] = []
+
     with pdfplumber.open(filepath) as pdf:
-        # Step 1: collect all text from every page into a flat line list
-        all_lines: List[str] = []
         for page in pdf.pages:
             text = page.extract_text() or ''
-            all_lines.extend(text.splitlines())
+            page_texts.append(text.splitlines())
+
+    if not page_texts:
+        return results
+
+    # ── Strategy 1: one tranche per page ─────────────────────────
+    for page_lines in page_texts:
+        r = _parse_pdf_text(page_lines)
+        if r and r.get('loan_number'):
+            results.append(r)
+
+    if results:
+        return results
+
+    # ── Strategy 2: full-document header split ───────────────────
+    all_lines: List[str] = []
+    for pl in page_texts:
+        all_lines.extend(pl)
 
     if not all_lines:
         return results
 
-    # Step 2: find line indices where a new tranche header begins
     header_pat = re.compile(r'Property:.+Loan No:', re.IGNORECASE)
     split_indices = [i for i, ln in enumerate(all_lines) if header_pat.search(ln)]
 
     if not split_indices:
-        # No header found — try parsing the whole text as a single tranche
-        result = _parse_pdf_text(all_lines)
-        if result and result.get('loan_number'):
-            results.append(result)
+        r = _parse_pdf_text(all_lines)
+        if r and r.get('loan_number'):
+            results.append(r)
         return results
 
-    # Step 3: slice the line list at each header boundary and parse each segment
-    split_indices.append(len(all_lines))   # sentinel for final slice
+    split_indices.append(len(all_lines))
     for i in range(len(split_indices) - 1):
         segment = all_lines[split_indices[i]: split_indices[i + 1]]
-        result = _parse_pdf_text(segment)
-        if result and result.get('loan_number'):
-            results.append(result)
+        r = _parse_pdf_text(segment)
+        if r and r.get('loan_number'):
+            results.append(r)
 
     return results
 
@@ -109,7 +126,8 @@ def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
     as_of_date = ''
     payment_due_date = ''
 
-    # pdfplumber may collapse multiple spaces to single spaces, so use \s+ not \s{2,}
+    # Primary: all three fields on one line (ideal pdfplumber output).
+    # pdfplumber may collapse multiple spaces to single spaces, so use \s+.
     header_pat = re.compile(
         r'Property:\s*(.+?)\s+Loan No:\s*(\d+)\s+Interest Rate:\s*([\d.]+)'
     )
@@ -120,6 +138,50 @@ def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
             loan_number = m.group(2).strip()
             interest_rate = _safe_float(m.group(3))
             break
+
+    # Fallback: Berkadia PDFs render template labels ('Property:', 'Loan No.')
+    # and data values as separate text elements, so pdfplumber often does NOT
+    # produce them on the same line.  Extract each field individually.
+    if not loan_number:
+        # "Loan No. 11159010" appears in the mail-stub section at page bottom.
+        # "Loan No: 11159010" may appear in the balance/payment info section.
+        for line in lines:
+            m = re.search(r'Loan\s+No[.:]?\s*(\d{7,})', line, re.IGNORECASE)
+            if m:
+                loan_number = m.group(1).strip()
+                break
+
+    if not property_name:
+        # Look for "Property: Revolution Labs - Note A1" where the data value
+        # follows the label on the same line.
+        for line in lines:
+            m = re.search(r'Property:\s+(.+)', line, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip()
+                # Reject bare template lines that just repeat "Loan No" or are empty.
+                if candidate and not re.match(r'^Loan\s+No', candidate, re.IGNORECASE):
+                    property_name = candidate
+                    break
+        # Second fallback: any line that contains the property descriptor alone.
+        # The mail stub repeats the property name on its own line.
+        if not property_name:
+            for line in lines:
+                stripped = line.strip()
+                if (stripped
+                        and 10 < len(stripped) < 60
+                        and not re.search(r'\d{2}/\d{2}/\d{4}', stripped)
+                        and not re.search(r'[\d,]{6,}', stripped)
+                        and 'Berkadia' not in stripped
+                        and 'Revolution Labs' in stripped):
+                    property_name = stripped
+                    break
+
+    if not interest_rate:
+        for line in lines:
+            m = re.search(r'Interest Rate:\s*([\d.]+)', line, re.IGNORECASE)
+            if m:
+                interest_rate = _safe_float(m.group(1))
+                break
 
     # ── 2. Dates ─────────────────────────────────────────────────
     m_aof = re.search(r'BALANCE INFORMATION AS OF\s+([\d/]+)', full_text)
