@@ -234,13 +234,14 @@ TENANT_UTILITY_AR_NAME      = 'Accounts Receivable Billback'
 ELEC_EXPENSE_ACCOUNT        = '613110'
 ELEC_EXPENSE_NAME           = 'Utilities - Electricity'
 GAS_EXPENSE_ACCOUNT         = '613210'   # Utilities - Gas (per-vendor daily-rate proration)
+GAS_EXPENSE_ACCOUNT_ALT     = '613120'   # RevLabs actual gas GL account code
 ELEC_TENANT_REIMB_ACCOUNT   = '613115'
 # Metered utility accounts: use per-vendor daily-rate proration (separate line per vendor)
-# Both electricity (613110) and gas (613210) have multiple vendors / meters per billing period.
-_METERED_UTILITY_ACCOUNTS   = {ELEC_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT}
+# Both electricity (613110) and gas (613120/613210) have multiple vendors / meters per billing period.
+_METERED_UTILITY_ACCOUNTS   = {ELEC_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT_ALT}
 # Gas uses per-INVOICE accrual (one line per meter/service, not per vendor).
 # Electricity uses per-VENDOR accrual (all invoices from same vendor combined).
-_PER_INVOICE_UTILITY_ACCOUNTS = {GAS_EXPENSE_ACCOUNT}
+_PER_INVOICE_UTILITY_ACCOUNTS = {GAS_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT_ALT}
 ELEC_TENANT_REIMB_NAME      = 'Tenant Electric Reimbursement'
 TENANT_UTILITY_ACCOUNTS: dict = {
     '440500': {'label': 'Tenant Electric Recovery',     'budget_key': '440500'},
