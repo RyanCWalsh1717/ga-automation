@@ -163,7 +163,7 @@ class PropertyConfig:
     period_signal_threshold: float = 100.0
 
     # ── Accrual engine settings ───────────────────────────────────────────────
-    accrual_materiality_floor: float = 500.00
+    accrual_materiality_floor: float = 2500.00
 
     # ── Property Management System ────────────────────────────────────────────
     # 'yardi' — Yardi Voyager / Commercial (standard pipeline; current default).

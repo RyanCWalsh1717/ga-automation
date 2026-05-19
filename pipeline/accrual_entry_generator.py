@@ -935,7 +935,7 @@ def detect_invoice_proration_accruals(
     gl_data,
     period: str = '',
     month_end: Optional[date] = None,
-    materiality: float = 500.0,
+    materiality: float = 2500.0,
     metered_utility_accounts: Optional[List[str]] = None,
     per_invoice_utility_accounts: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
@@ -1433,7 +1433,8 @@ def detect_invoice_proration_accruals(
 def detect_historical_recurring(gl_data, budget_data, period: str = '',
                                 t12_result=None,
                                 fiscal_year_start_month: int = 1,
-                                kardin_records: Optional[List[Dict]] = None) -> List[Dict[str, Any]]:
+                                kardin_records: Optional[List[Dict]] = None,
+                                materiality: float = 2500.0) -> List[Dict[str, Any]]:
     """
     Identify recurring expense patterns using Budget Comparison YTD actual data.
 
@@ -1671,11 +1672,17 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             # the accrual (compound = 2×j_cr). Fall through to Jan Path A/B.
             _run_compound = months_elapsed >= 1 or _has_budget_rate
             if _run_compound:
-                if _mthly_rt >= 5000:  # materiality floor
-                    if _non_j_net >= _mthly_rt * 0.25:
-                        continue  # real invoice posted — suppress
+                if _mthly_rt >= materiality:  # materiality floor
+                    # Only suppress when there are payments BEYOND what is needed
+                    # to clear the auto-reversal.  If _non_j_net ≈ _j_cr the
+                    # payment is settling the prior-period accrual that just
+                    # reversed — not a new current-period invoice — so we still
+                    # need to accrue for the current month.
+                    _payment_beyond_reversal = max(0.0, _non_j_net - _j_cr)
+                    if _payment_beyond_reversal >= _mthly_rt * 0.25:
+                        continue  # real additional invoice beyond clearing reversal
                     _compound = _round(_j_cr + _mthly_rt)
-                    if _compound >= 500:
+                    if _compound >= 250:
                         # Build date-range description using _start_date_str already
                         # parsed above — JE reads "9/23/25-1/31/2026".
                         # Compute period end date (last day of close month)
@@ -1724,7 +1731,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             # so the Kardin annual÷12 estimate is used instead.
             if t12_result is not None and hasattr(t12_result, 'prior_month'):
                 dec_actual = abs(t12_result.prior_month(code, 1))  # Dec = prior to Jan
-                if dec_actual >= 5000:
+                if dec_actual >= materiality:
                     candidates.append({
                         'account_code': code,
                         'account_name': acct.account_name,
@@ -1740,7 +1747,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                     })
                     _gl_handled_codes.add(code)
                     continue  # T12 gave a good signal — skip annual/12 fallback
-                # Dec actual < $5K (semi-annual / quarterly billing) — fall through
+                # Dec actual below materiality floor (semi-annual / quarterly billing) — fall through
                 # to Path B so the Kardin annual÷12 estimate still fires.
 
             # Path B: annual budget ÷ 12 (no T12 available)
@@ -1763,14 +1770,14 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 continue
 
             est_monthly = bi_annual / 12
-            if est_monthly < 5000:
+            if est_monthly < materiality:
                 continue
 
             # Partial-coverage check (Jan path B)
             if _gl_partial_offset >= est_monthly * 0.25:
                 continue  # GL has ≥25% of expected — treat as fully covered
             _accrual_amt = est_monthly - _gl_partial_offset
-            if _accrual_amt < 500:
+            if _accrual_amt < 250:
                 continue
             _partial_note = (f' (partial top-up — ${_gl_partial_offset:,.0f} already in GL)'
                              if _gl_partial_offset > 0 else '')
@@ -1818,8 +1825,8 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # Estimate monthly amount from YTD ÷ months elapsed
         est_monthly = ytd_prior / months_elapsed
 
-        # Only flag if estimated monthly > $5,000 (material recurring expense)
-        if est_monthly >= 5000:
+        # Only flag if estimated monthly >= materiality (recurring expense threshold)
+        if est_monthly >= materiality:
             # Partial-coverage check: if some invoices already in GL but < 25% of
             # expected monthly, accrue the shortfall instead of the full amount.
             # This catches vendors like Casella where multiple invoices arrive
@@ -1827,7 +1834,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             if _gl_partial_offset >= est_monthly * 0.25:
                 continue  # GL has ≥25% of expected — treat as fully covered
             _accrual_amt = est_monthly - _gl_partial_offset
-            if _accrual_amt < 500:
+            if _accrual_amt < 250:
                 continue
             _partial_note = (f' (partial top-up — ${_gl_partial_offset:,.0f} already in GL)'
                              if _gl_partial_offset > 0 else '')
@@ -1864,7 +1871,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
     #
     # Guards:
     #   - Expense account only
-    #   - Annual budget ≥ $60K  (est. monthly ≥ $5K materiality floor)
+    #   - Annual budget ≥ $30K  (est. monthly ≥ $2.5K materiality floor)
     #   - Account was NOT already processed in the GL loop above
     # Keywords that indicate a total / subtotal / summary row — never accrue these
     _TOTAL_KEYWORDS = (
@@ -1913,7 +1920,7 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         if _b_annual < 1:
             continue
         _b_monthly = _round(_b_annual / 12)
-        if _b_monthly < 5000:
+        if _b_monthly < materiality:
             continue   # below materiality floor
         candidates.append({
             'account_code':     _b_code,
@@ -2061,7 +2068,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           periodic_contract_accounts: Optional[dict] = None,
                           metered_utility_accounts: Optional[List[str]] = None,
                           per_invoice_utility_accounts: Optional[List[str]] = None,
-                          accrual_materiality_floor: float = 500.0,
+                          accrual_materiality_floor: float = 2500.0,
                           fiscal_year_start_month: int = 1,
                           ) -> List[Dict[str, Any]]:
     """
@@ -3207,7 +3214,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         historicals = detect_historical_recurring(gl_data, budget_data, period=period,
                                                     t12_result=t12_result,
                                                     fiscal_year_start_month=fiscal_year_start_month,
-                                                    kardin_records=kardin_records)
+                                                    kardin_records=kardin_records,
+                                                    materiality=accrual_materiality_floor)
         for hist in historicals:
             if hist['account_code'] in _covered:
                 _other_claimants.setdefault(hist['account_code'], []).append('historical')
