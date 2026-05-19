@@ -1142,7 +1142,11 @@ def detect_invoice_proration_accruals(
                             continue
                         _vrate    = _inv_amt / _vdays
                         _vaccrual = _vrate * _v_uncovered
-                        if _vaccrual < materiality:
+                        # Per-invoice utility meters: do NOT apply the $500 materiality floor.
+                        # Each meter is a known, discrete recurring charge — a $200 EMGEN line
+                        # is just as real as a $23K HVAC delivery line.  The materiality floor
+                        # belongs in Layer 3 pattern detection, not here.
+                        if _vaccrual < 1.0:
                             continue
                         # Build a readable label: "NATIONAL GRID — 82953-68006 HVAC Delivery"
                         _vendor_label = (
