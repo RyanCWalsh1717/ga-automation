@@ -3026,6 +3026,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _covered.add('801110')
                 _covered.add('213200')
 
+        # Always reserve 801110/213200 when loan_data is provided — even if
+        # payment_interest extraction returned 0 for all tranches (e.g. PDF
+        # parse partial failure).  Layer 3 historical must NEVER auto-accrue
+        # interest when Berkadia statements have been uploaded.
+        _covered.add('801110')
+        _covered.add('213200')
+
     # ── Layer 2: Invoice-period proration ──
     if gl_data:
         prorations = detect_invoice_proration_accruals(
