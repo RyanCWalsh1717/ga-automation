@@ -2960,6 +2960,14 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # per loan tranche so each tranche is visible in the import CSV and workpaper.
     # Only fires when loan_data is provided and 801110 is not already posted in
     # the GL via J-type entries.
+    #
+    # Defensive guard: if loan_data is missing (PDF parse failed), mark 801110
+    # as reserved so Layer 3 historical NEVER auto-accrues interest expense —
+    # interest must always come from Berkadia statements or the user's one-off
+    # accruals table, never from a historical average.
+    if not loan_data:
+        _covered.add('801110')
+        _covered.add('213200')
     if loan_data:
         _loans = loan_data if isinstance(loan_data, list) else [loan_data]
         # Check GL once — skip all tranches if J-type interest already posted

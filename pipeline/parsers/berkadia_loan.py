@@ -143,12 +143,26 @@ def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
     # and data values as separate text elements, so pdfplumber often does NOT
     # produce them on the same line.  Extract each field individually.
     if not loan_number:
-        # "Loan No. 11159010" appears in the mail-stub section at page bottom.
-        # "Loan No: 11159010" may appear in the balance/payment info section.
+        # Fallback 1: "Loan No. 11159010" on one line — appears in the mail-stub
+        # section ("MAIL THIS PORTION WITH YOUR PAYMENT   Loan No. 11159010").
         for line in lines:
-            m = re.search(r'Loan\s+No[.:]?\s*(\d{7,})', line, re.IGNORECASE)
+            m = re.search(r'Loan\s+No[.:]?\s*0?(\d{7,8})\b', line, re.IGNORECASE)
             if m:
                 loan_number = m.group(1).strip()
+                break
+
+    if not loan_number:
+        # Fallback 2: Berkadia always prints the loan number TWICE consecutively
+        # in the footer/mail-stub area: "11159010 11159010 Revolution Labs - Note A1"
+        # Find any 7-9 digit number that appears ≥2 times on this page.
+        # Numbers with commas (dollar amounts like "69,078,145.99") won't match
+        # \b\d{7,9}\b because commas break the digit boundary.
+        import collections as _coll
+        _num_hits = re.findall(r'\b0?(\d{7,8})\b', full_text)
+        _num_counts = _coll.Counter(_num_hits)
+        for _n, _c in _num_counts.most_common():
+            if _c >= 2:
+                loan_number = _n
                 break
 
     if not property_name:
