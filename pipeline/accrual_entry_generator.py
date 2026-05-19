@@ -1104,11 +1104,36 @@ def detect_invoice_proration_accruals(
                 # same vendor (e.g. multiple Eversource line items) combined into one line.
 
                 if code in _eff_per_invoice:
-                    # ── Gas: one accrual per invoice entry at the global latest end date ──
-                    # Use latest_end (already computed) — only accrue from the most recent
-                    # billing cycle.  If a meter had an older period, it's superseded.
-                    for _inv in by_end[latest_end]:
-                        _inv_start, _inv_end, _inv_amt, _inv_vname, _inv_service = _inv
+                    # ── Gas: one accrual per meter, using each meter's OWN latest end date ──
+                    #
+                    # Mirrors the per-vendor electricity approach: every distinct
+                    # (vendor, service) combination is treated as one meter.  Each meter
+                    # finds its own most-recent billing end date independently — so a meter
+                    # that hasn't been re-billed this cycle (e.g. EMGEN) is not silently
+                    # dropped just because a different meter (e.g. TYGEN) has a newer invoice.
+                    #
+                    # Step 1: map each meter key → its latest end date
+                    _meter_latest_end: Dict[tuple, date] = {}
+                    for _ed, _grp in by_end.items():
+                        for _g in _grp:
+                            _mk = (_g[3], _g[4])  # (vendor_name, service_desc)
+                            if _mk not in _meter_latest_end or _ed > _meter_latest_end[_mk]:
+                                _meter_latest_end[_mk] = _ed
+
+                    # Step 2: one candidate per meter at its own latest end date
+                    for (_m_vname, _m_service), _m_latest_end in _meter_latest_end.items():
+                        _m_invs = [
+                            g for g in by_end[_m_latest_end]
+                            if g[3] == _m_vname and g[4] == _m_service
+                        ]
+                        if not _m_invs:
+                            continue
+                        _inv_start   = min(g[0] for g in _m_invs)
+                        _inv_end     = _m_latest_end
+                        _inv_amt     = sum(g[2] for g in _m_invs)
+                        _inv_vname   = _m_vname
+                        _inv_service = _m_service
+
                         _v_uncovered = (month_end - _inv_end).days
                         if _v_uncovered <= 0:
                             continue
