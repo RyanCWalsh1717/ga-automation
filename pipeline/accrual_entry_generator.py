@@ -2966,6 +2966,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # interest must always come from Berkadia statements or the user's one-off
     # accruals table, never from a historical average.
     if not loan_data:
+        import warnings as _w_dbg0
+        _w_dbg0.warn(
+            f"[Layer1b DEBUG] loan_data is EMPTY/None — 801110 reserved, Layer 3 blocked",
+            UserWarning, stacklevel=2
+        )
         _covered.add('801110')
         _covered.add('213200')
     if loan_data:
