@@ -1916,7 +1916,48 @@ with tab1:
             },
             key=f"manual_accruals_editor_{_selected_code}",
         )
-        st.session_state.manual_accruals_df = accruals_edited_df
+
+        # ── Account name auto-populate ────────────────────────────────────────
+        # When the user types an account code in a new row and leaves the Account
+        # Name blank, look it up from (1) the parsed GL, (2) property config
+        # defaults, and fill it in automatically on the next render.
+        _acct_name_lookup: dict = {}
+
+        # Source 1: property config default_accruals
+        for _da in (getattr(_active_cfg, 'default_accruals', None) or []):
+            _da_code = str(_da.get('account_code', '') or '').strip()
+            _da_name = str(_da.get('account_name', '') or '').strip()
+            if _da_code and _da_name:
+                _acct_name_lookup[_da_code] = _da_name
+
+        # Source 2: previously parsed GL (populated after the first Generate JEs run)
+        _p1_er_for_lookup = st.session_state.get('pass1_engine_result')
+        if _p1_er_for_lookup:
+            try:
+                _gl_for_lookup = getattr(_p1_er_for_lookup, 'parsed', {}).get('gl')
+                if _gl_for_lookup and hasattr(_gl_for_lookup, 'accounts'):
+                    for _gla in _gl_for_lookup.accounts:
+                        _gla_code = str(getattr(_gla, 'account_code', '') or '').strip()
+                        _gla_name = str(getattr(_gla, 'account_name', '') or '').strip()
+                        if _gla_code and _gla_name:
+                            _acct_name_lookup[_gla_code] = _gla_name
+            except Exception:
+                pass
+
+        # Apply: fill Account Name for any row where code is set but name is blank
+        _df_to_save = accruals_edited_df.copy()
+        _names_filled = 0
+        for _idx, _row in _df_to_save.iterrows():
+            _code_val = str(_row.get("Account Code", "") or "").strip()
+            _name_val = str(_row.get("Account Name", "") or "").strip()
+            if _code_val and not _name_val and _code_val in _acct_name_lookup:
+                _df_to_save.at[_idx, "Account Name"] = _acct_name_lookup[_code_val]
+                _names_filled += 1
+        if _names_filled:
+            st.session_state.manual_accruals_df = _df_to_save
+            st.rerun()
+        else:
+            st.session_state.manual_accruals_df = accruals_edited_df
 
         _accrual_active = accruals_edited_df[
             accruals_edited_df["Account Code"].fillna("").str.strip().astype(bool) &
