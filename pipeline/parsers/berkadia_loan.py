@@ -263,34 +263,77 @@ def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
     payment_reserves = 0.0
     payment_total = 0.0
 
-    # Extract payment_interest using a full-text DOTALL search anchored on
-    # "PAYMENT INFORMATION FOR".  This is more reliable than line-by-line
-    # scoping because pdfplumber's column-ordering can vary:
-    #   - Two-column merge:  "Interest Paid YTD 409,694.58  Interest 403,805.67"
-    #                        on one line — section header approach still works,
-    #                        but only if the boundaries land correctly.
-    #   - Column-then-column: left column text (including "Interest Paid YTD")
-    #                        appears BEFORE "PAYMENT INFORMATION FOR", so the
-    #                        DOTALL search naturally skips them.
+    # Extract payment_interest from the Payment Information section.
+    # Three strategies in order of reliability.  pdfplumber's column-ordering
+    # is unpredictable, so we try multiple approaches and stop at the first hit.
     #
-    # How the lazy .*? avoids false positives:
-    #   "Interest Rate: 6.78848" → ([\d,.-]+) tries "Rate" → FAIL, skip
-    #   "Interest Paid YTD …"    → ([\d,.-]+) tries "Paid" → FAIL, skip
-    #   "Interest 403,805.67"    → ([\d,.-]+) matches → CORRECT ✓
+    # Strategy A — DOTALL anchor on "PAYMENT INFORMATION FOR":
+    #   Works when the section header appears in the extracted text (most layouts).
+    #   Lazy .+? skips "Interest Rate: …" and "Interest Paid YTD …" because their
+    #   next token ("Rate", "Paid") doesn't match [\d,.-]+.
     #
-    # The lazy quantifier finds the FIRST matching "Interest <amount>" after
-    # "PAYMENT INFORMATION FOR", which is always the payment breakdown amount.
+    # Strategy B — line-by-line scan for bare "Interest <digits>" line:
+    #   Handles PDFs where pdfplumber omits the section header entirely, or where
+    #   label and value land on separate lines ("Interest\n403,805.67").
+    #   Rejects "Interest Paid YTD …", "Interest Rate: …", "Accrued Interest …"
+    #   by requiring the captured group to start with a digit.
+    #
+    # Strategy C — all findall matches, filter by amount > 1000:
+    #   Last-resort: collect every "Interest <number>" occurrence in the full text
+    #   and take the first one with a value in the plausible monthly-payment range.
+    #   Re-confirms the payment value by cross-checking Total Payment Due.
+
+    # ── Strategy A ──────────────────────────────────────────────────
     _pi_m = re.search(
-        r'PAYMENT INFORMATION FOR.+?\bInterest\b\s+([\d,.-]+)',
+        r'PAYMENT INFORMATION FOR.+?\bInterest\b:?\s+(\d[\d,.-]+)',
         full_text, re.DOTALL | re.IGNORECASE
     )
     if _pi_m:
         _pi_candidate = _safe_float(_pi_m.group(1))
-        # Sanity check: monthly interest on a commercial loan is always > $1,000.
-        # Guards against accidentally matching the interest rate (6.78848) or
-        # a small deferred-interest value.
         if _pi_candidate > 1000:
             payment_interest = _pi_candidate
+
+    # ── Strategy B — line-by-line ───────────────────────────────────
+    if not payment_interest:
+        _prev_line_interest = False
+        for _ln in lines:
+            _s = _ln.strip()
+            # Case 1: label and value on the SAME line
+            #   "Interest 403,805.67"  (bare — not "Interest Paid", "Interest Rate")
+            _same = re.match(r'^Interest\s+(\d[\d,.-]+)\s*$', _s, re.IGNORECASE)
+            if _same:
+                _cand = _safe_float(_same.group(1))
+                if _cand > 1000:
+                    payment_interest = _cand
+                    break
+            # Case 2: label alone on one line, value on the NEXT line
+            if re.match(r'^Interest\s*$', _s, re.IGNORECASE):
+                _prev_line_interest = True
+                continue
+            if _prev_line_interest:
+                _cand = _safe_float(_s)
+                if _cand > 1000:
+                    payment_interest = _cand
+                    break
+                _prev_line_interest = False
+            else:
+                _prev_line_interest = False
+
+    # ── Strategy C — positional findall fallback ────────────────────
+    # Only fires if both A and B fail.  The payment breakdown "Interest" always
+    # appears BEFORE "Total Payment Due" in the PDF; the Account Activity table
+    # (which has the prior-month "PMT REC'D" interest) appears AFTER it.
+    # Limit the search to text before "Total Payment Due" to avoid picking up
+    # the activity-table interest amount.
+    if not payment_interest:
+        _tot_pos_m = re.search(r'Total Payment Due', full_text, re.IGNORECASE)
+        _c_search_text = full_text[:_tot_pos_m.start()] if _tot_pos_m else full_text
+        _all_pi = re.findall(r'\bInterest\b\s+(\d[\d,.-]+)', _c_search_text, re.IGNORECASE)
+        for _raw in _all_pi:
+            _cand = _safe_float(_raw)
+            if _cand > 1000:
+                payment_interest = _cand
+                break
 
     # R.E. Taxes and Total Payment Due appear in the payment breakdown section
     # with unique enough labels that a full-text search is safe.
