@@ -5502,8 +5502,12 @@ with tab4:
         with st.expander(f"📋 Existing properties ({len(_existing)})", expanded=False):
             for _ep in _existing:
                 _ec = _ep['cfg']
+                _sys_badge = (
+                    "🏦 MRI" if getattr(_ec, 'property_system', 'yardi').lower() == 'mri'
+                    else "🏢 Yardi"
+                )
                 st.markdown(
-                    f"**{_ec.display()}** &nbsp; `{_ec.property_code}` &nbsp;|&nbsp; "
+                    f"**{_ec.display()}** &nbsp; `{_ec.property_code}` &nbsp; {_sys_badge} &nbsp;|&nbsp; "
                     f"{_ec.property_address} &nbsp;|&nbsp; "
                     f"{'  ·  '.join(f'{fl.name} {fl.rate:.2%}' for fl in _ec.management_fees)}"
                 )
@@ -5525,6 +5529,34 @@ with tab4:
         if _edit_cfg is None:
             return default
         return getattr(_edit_cfg, field, default) or default
+
+    # ── Property Management System ────────────────────────────────────────────
+    _sys_default_idx = (
+        0 if (not _edit_cfg or getattr(_edit_cfg, 'property_system', 'yardi').lower() == 'yardi')
+        else 1
+    )
+    _prop_system = st.radio(
+        "Property Management System",
+        options=["Yardi", "MRI"],
+        index=_sys_default_idx,
+        horizontal=True,
+        key="prop_system_radio",
+        help="Yardi: full pipeline support. MRI: onboarding instructions coming soon.",
+    )
+    _is_mri = (_prop_system == "MRI")
+
+    if _is_mri:
+        st.info(
+            "**MRI integration is coming soon.**\n\n"
+            "MRI Software properties use a different chart of accounts and file export "
+            "format from Yardi. Full onboarding instructions and account-mapping tools "
+            "will be available in a future pipeline update.\n\n"
+            "You can save this property record with system type **MRI** now — it will "
+            "appear in the property selector, and MRI-specific configuration fields "
+            "will be unlocked when that integration is built.",
+            icon="🔜",
+        )
+        st.markdown("---")
 
     # ── Building photo upload (outside form — file_uploader can't live in st.form) ──
     st.markdown("### 🏙️ Building Photo")
@@ -5568,15 +5600,85 @@ with tab4:
             else:
                 st.caption("No photo yet")
 
+    # ── Chart of Accounts upload (outside form) ───────────────────────────────
+    st.markdown("### 📊 Chart of Accounts")
+    st.caption(
+        "Upload this property's Chart of Accounts file (Excel or CSV). "
+        "Stored as `data/{property_code}/chart_of_accounts.xlsx` and used for "
+        "account validation, mapping, and future integrations. "
+        "For Yardi properties the COA is standardised — upload once and it carries "
+        "forward. Required when onboarding an MRI property."
+    )
+    _coa_col1, _coa_col2 = st.columns([2, 1])
+    with _coa_col1:
+        _coa_upload = st.file_uploader(
+            "Chart of Accounts (Excel / CSV)",
+            type=['xlsx', 'xls', 'csv'],
+            key='prop_coa_upload',
+            help="Saved to GitHub as data/{property_code}/chart_of_accounts.xlsx",
+        )
+        if _coa_upload is not None:
+            _coa_target = _photo_target_code  # same code as photo (empty for new properties)
+            if not _coa_target:
+                st.warning(
+                    "Enter the Property Code and save the config first, "
+                    "then re-upload the Chart of Accounts."
+                )
+            else:
+                from property_writer import save_image_to_github as _save_coa_gh, save_image_local as _save_coa_loc
+                _coa_bytes = _coa_upload.read()
+                _coa_ext   = _coa_upload.name.rsplit('.', 1)[-1].lower()
+                _coa_fname = f'chart_of_accounts.{_coa_ext}'
+                _cloc_ok, _cloc_msg = _save_coa_loc(_coa_target, _coa_bytes, _coa_fname, str(_DATA_DIR))
+                if github_configured():
+                    _cgh_ok, _cgh_msg = _save_coa_gh(_coa_target, _coa_bytes, _coa_fname)
+                    if _cgh_ok:
+                        st.success("✅ Chart of Accounts saved to GitHub.")
+                    else:
+                        st.warning(f"GitHub save failed: {_cgh_msg}. Saved locally.")
+                else:
+                    st.info("Chart of Accounts saved locally.")
+                # Show a quick preview if it's an xlsx/csv
+                try:
+                    import io as _coa_io
+                    import pandas as _coa_pd
+                    _coa_bytes_copy = bytes(_coa_bytes)
+                    if _coa_ext in ('xlsx', 'xls'):
+                        _coa_preview_df = _coa_pd.read_excel(_coa_io.BytesIO(_coa_bytes_copy), nrows=20)
+                    else:
+                        _coa_preview_df = _coa_pd.read_csv(_coa_io.BytesIO(_coa_bytes_copy), nrows=20)
+                    st.dataframe(_coa_preview_df, use_container_width=True, height=250)
+                    st.caption(f"Showing first 20 rows of {_coa_upload.name}")
+                except Exception:
+                    st.caption(f"Saved: {_coa_upload.name}")
+    with _coa_col2:
+        # Show whether a COA is already on file for this property
+        if not _is_new and _photo_target_code:
+            _coa_on_disk = False
+            for _ext in ('.xlsx', '.xls', '.csv'):
+                if (_DATA_DIR / _photo_target_code / f'chart_of_accounts{_ext}').exists():
+                    _coa_on_disk = True
+                    st.success(f"✅ COA on file: `chart_of_accounts{_ext}`", icon="📊")
+                    break
+            if not _coa_on_disk:
+                st.caption("No COA on file yet")
+
     st.markdown("---")
 
     with st.form("property_setup_form", clear_on_submit=False):
+        if _is_mri:
+            st.info(
+                "**MRI property** — fill in the basic information below and save. "
+                "MRI-specific configuration fields (COA mapping, account codes, export formats) "
+                "will be available in a future update.",
+                icon="🔜",
+            )
         st.markdown("### 1 · Basic Information")
         _c1, _c2 = st.columns(2)
-        _prop_code    = _c1.text_input("Yardi Property Code *",
+        _prop_code    = _c1.text_input("Property Code *",
                                         value='' if _is_new else _edit_cfg.property_code,
-                                        placeholder="e.g. lexlabspm",
-                                        help="Short code Yardi uses in GL exports. Lowercase, no spaces.")
+                                        placeholder="e.g. lexlabspm" if not _is_mri else "e.g. metropark01",
+                                        help="Short unique code for this property. Lowercase, no spaces.")
         _display_name = _c2.text_input("Display Name *",
                                         value=_ef('property_display_name'),
                                         placeholder="e.g. Lex Labs")
@@ -6012,6 +6114,7 @@ with tab4:
                 file_prefix_internal   = _file_pfx_int or _pfx_int,
                 file_prefix_deliverable = _file_pfx_del,
                 active                 = getattr(_edit_cfg, 'active', True) if not _is_new else True,
+                property_system        = _prop_system.lower(),
             )
             _yaml_str = config_to_yaml(_cfg_dict)
 

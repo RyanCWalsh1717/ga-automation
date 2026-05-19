@@ -165,6 +165,13 @@ class PropertyConfig:
     # ── Accrual engine settings ───────────────────────────────────────────────
     accrual_materiality_floor: float = 500.00
 
+    # ── Property Management System ────────────────────────────────────────────
+    # 'yardi' — Yardi Voyager / Commercial (standard pipeline; current default).
+    # 'mri'   — MRI Software (different COA and export formats; onboarding coming soon).
+    # Stored so the UI can gate Yardi-specific features and display appropriate
+    # instructions when an MRI property is selected.
+    property_system: str = 'yardi'
+
     # ── Active flag ───────────────────────────────────────────────────────────
     # Set active: false in config.yaml to hide a property from the selector
     # without deleting its data.  Re-activate by setting it back to true.
@@ -363,6 +370,7 @@ class PropertyConfig:
                 for p in (d.get('insurance_policies') or [])
                 if p.get('name') and float(p.get('monthly_amount', 0.0)) > 0
             ],
+            property_system         = str(d.get('property_system', 'yardi')).lower(),
             qc_pl_accounts          = d.get('qc_pl_accounts') or None,
             qc_bs_accounts          = d.get('qc_bs_accounts') or None,
             # C-2: per-property periodic contract accounts (dict of {code: {label, billing_cycle}})

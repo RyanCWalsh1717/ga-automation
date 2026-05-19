@@ -8,6 +8,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Yardi identifiers
+property_system:       yardi       # yardi | mri (MRI onboarding coming soon)
 property_code:         revlabspm
 yardi_etl_code:        revlabpm    # ETL FinJournals PROPERTY field (max 8 chars)
 property_name:         Revolution Labs Owner, LLC

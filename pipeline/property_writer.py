@@ -63,6 +63,7 @@ def build_config_dict(
     file_prefix_internal:   str,
     file_prefix_deliverable: str,
     active:                 bool = True,
+    property_system:        str = 'yardi',
 ) -> dict:
     """Build the ordered dict that becomes the YAML config file."""
     banks = {}
@@ -98,6 +99,9 @@ def build_config_dict(
         'property_display_name':  property_display_name,
         'property_address':       property_address,
     }
+    # Always write property_system so the UI can detect it reliably.
+    # 'yardi' is the default; MRI and future systems are stored explicitly.
+    cfg['property_system'] = (property_system or 'yardi').lower()
     if property_type:        cfg['property_type']    = property_type
     if property_size_sf:     cfg['property_size_sf'] = property_size_sf
     if not active:           cfg['active']           = False   # omit when True (defaults to True on load)
