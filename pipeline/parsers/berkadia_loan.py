@@ -78,10 +78,31 @@ def _parse_pdf(filepath: str) -> List[Dict[str, Any]]:
     if not page_texts:
         return results
 
+    def _has_financial_data(r: Dict[str, Any]) -> bool:
+        """Return True if the parsed result has any meaningful financial data.
+
+        Accepts pages even when loan_number cannot be extracted (pdfplumber
+        renders the loan number label and value as separate elements).
+        The accrual generator already handles an empty loan_number gracefully.
+        Filters out the summary 'Billing Statements Report' page (page 4)
+        which has no financial amounts.
+        """
+        if not r:
+            return False
+        return (
+            r.get('loan_number')
+            or float(r.get('payment_interest') or 0) > 0
+            or float(r.get('principal_balance') or 0) > 0
+            or float(r.get('payment_total') or 0) > 0
+        )
+
     # ── Strategy 1: one tranche per page ─────────────────────────
+    # Accept any page with financial data — the summary page (page 4:
+    # 'Billing Statements Report') produces no amounts so it is filtered out
+    # by _has_financial_data.  Pages 1-3 each have payment_interest > 0.
     for page_lines in page_texts:
         r = _parse_pdf_text(page_lines)
-        if r and r.get('loan_number'):
+        if _has_financial_data(r):
             results.append(r)
 
     if results:
@@ -100,7 +121,7 @@ def _parse_pdf(filepath: str) -> List[Dict[str, Any]]:
 
     if not split_indices:
         r = _parse_pdf_text(all_lines)
-        if r and r.get('loan_number'):
+        if _has_financial_data(r):
             results.append(r)
         return results
 
@@ -108,7 +129,7 @@ def _parse_pdf(filepath: str) -> List[Dict[str, Any]]:
     for i in range(len(split_indices) - 1):
         segment = all_lines[split_indices[i]: split_indices[i + 1]]
         r = _parse_pdf_text(segment)
-        if r and r.get('loan_number'):
+        if _has_financial_data(r):
             results.append(r)
 
     return results
