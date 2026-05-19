@@ -81,6 +81,7 @@ def _build_accruals_seed_df(cfg=None):
             "Vendor":         [r.get('vendor', '') for r in rows] + [''],
             "Amount ($)":     [0.0] * _n,
             "Description":    [''] * _n,
+            "Auto-Reverse":   [True] * _n,
             "Split Schedule": [''] * _n,
         })
     # No default_accruals in config — return a single blank row so the editor renders
@@ -90,6 +91,7 @@ def _build_accruals_seed_df(cfg=None):
         "Vendor":         [''],
         "Amount ($)":     [0.0],
         "Description":    [''],
+        "Auto-Reverse":   [True],
         "Split Schedule": [''],
     })
 
@@ -402,8 +404,9 @@ if "manual_accruals_df" not in st.session_state:
     st.session_state.manual_accruals_df = _build_accruals_seed_df()
     st.session_state._accruals_df_for_property = None
 
-# If session has stale columns from an older version, reset the whole table
-if any(_col in st.session_state.manual_accruals_df.columns for _col in ("CR Account", "Auto-Reverse")):
+# If session has stale columns from an older version, reset the whole table.
+# "CR Account" is deprecated; "Auto-Reverse" is now a valid column so is NOT listed here.
+if "CR Account" in st.session_state.manual_accruals_df.columns:
     st.session_state.manual_accruals_df = _build_accruals_seed_df()
     st.session_state._accruals_df_for_property = None
 
@@ -1885,9 +1888,11 @@ with tab1:
             "**Leave Amount at $0** to suppress automated detection for that account without generating a JE — "
             "use this when a JE has already been posted to Yardi to prevent double-counting."
         )
-        # Add Split Schedule column if not present (session upgrade)
+        # Session upgrades: add new columns to existing sessions without full reset
         if "Split Schedule" not in st.session_state.manual_accruals_df.columns:
             st.session_state.manual_accruals_df["Split Schedule"] = ""
+        if "Auto-Reverse" not in st.session_state.manual_accruals_df.columns:
+            st.session_state.manual_accruals_df["Auto-Reverse"] = True
 
         _split_sch_help = (
             "Leave blank to use the property default split schedule. "
@@ -1911,6 +1916,10 @@ with tab1:
                                        help="Positive amount — debit to expense account"),
                 "Description":     st.column_config.TextColumn("Description", width="large",
                                        help="Description for the Yardi JE line"),
+                "Auto-Reverse":    st.column_config.CheckboxColumn("Auto-Rev",
+                                       default=True, width="small",
+                                       help="✅ Checked = entry auto-reverses next month (ReverseNextMonth = -1). "
+                                            "Uncheck for permanent JEs that should NOT reverse (ReverseNextMonth = 0)."),
                 "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
                                        help=_split_sch_help),
             },
@@ -2393,6 +2402,7 @@ with tab1:
                         _vendor = str(_row.get("Vendor", "") or "").strip()
                         _desc   = str(_row.get("Description", "") or "").strip()
                         _split_sch_override = str(_row.get("Split Schedule", "") or "").strip()
+                        _row_auto_rev = bool(_row.get("Auto-Reverse", True))
                         _periodic_supplement_rows.append({
                             'account_code':    str(_row["Account Code"]).strip(),
                             'account_name':    str(_row.get("Account Name", "") or "").strip()
@@ -2400,7 +2410,7 @@ with tab1:
                             'amount':          float(_row["Amount ($)"]),
                             'description':     _desc or _vendor or 'one-off accrual',
                             'vendor':          _vendor,
-                            'auto_reverse':    True,   # all one-off accruals auto-reverse
+                            'auto_reverse':    _row_auto_rev,
                             'cr_account':      '213100',
                             'cr_account_name': 'Accrued Expenses',
                             '_split_schedule': _split_sch_override,  # '' = use property default
@@ -2466,6 +2476,8 @@ with tab1:
                     _sup_cr_name = _sup.get('cr_account_name', 'Accrued Expenses')
                     _sup_amt     = round(_sup_compound, 2)
                     _sup_split_sch = _sup.get('_split_schedule', '')
+                    # Auto-reverse: -1 = Yardi auto-reverses next month; 0 = permanent JE
+                    _sup_rev_flag = -1 if _sup.get('auto_reverse', True) else 0
                     _supplement_je_lines.extend([
                         {
                             'je_number': _sje_id, 'line': 1, 'date': close_period,
@@ -2474,6 +2486,7 @@ with tab1:
                             'debit': _sup_amt, 'credit': 0, 'vendor': _sup_vendor,
                             'invoice_number': '', 'source': 'contract_supplement', 'confidence': 'high',
                             '_split_schedule': _sup_split_sch,
+                            'reverse_next_month': _sup_rev_flag,
                         },
                         {
                             'je_number': _sje_id, 'line': 2, 'date': close_period,
@@ -2482,6 +2495,7 @@ with tab1:
                             'debit': 0, 'credit': _sup_amt, 'vendor': _sup_vendor,
                             'invoice_number': '', 'source': 'contract_supplement', 'confidence': 'high',
                             '_split_schedule': _sup_split_sch,
+                            'reverse_next_month': _sup_rev_flag,
                         },
                     ])
 
