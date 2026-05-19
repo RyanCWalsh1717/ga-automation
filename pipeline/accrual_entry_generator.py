@@ -1673,19 +1673,41 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             _run_compound = months_elapsed >= 1 or _has_budget_rate
             if _run_compound:
                 if _mthly_rt >= materiality:  # materiality floor
-                    # Only suppress when there are payments BEYOND what is needed
-                    # to clear the auto-reversal.  If _non_j_net ≈ _j_cr the
-                    # payment is settling the prior-period accrual that just
-                    # reversed — not a new current-period invoice — so we still
-                    # need to accrue for the current month.
-                    _payment_beyond_reversal = max(0.0, _non_j_net - _j_cr)
-                    if _payment_beyond_reversal >= _mthly_rt * 0.25:
-                        continue  # real additional invoice beyond clearing reversal
-                    _compound = _round(_j_cr + _mthly_rt)
-                    if _compound >= 250:
-                        # Build date-range description using _start_date_str already
-                        # parsed above — JE reads "9/23/25-1/31/2026".
-                        # Compute period end date (last day of close month)
+                    # Determine billing period length from the start date already
+                    # parsed from the J-credit description.  >45 days back from
+                    # period start = quarterly or longer → compound accrual.
+                    # No parseable date → monthly-only (safe default).
+                    _multi_period = False
+                    if _start_date_obj is not None and month_num:
+                        _yr_m_mp = _re_c.search(r'\d{4}', period_str)
+                        if _yr_m_mp:
+                            from datetime import date as _date_mp
+                            _p_yr_mp = int(_yr_m_mp.group())
+                            _period_start_mp = _date_mp(_p_yr_mp, month_num, 1)
+                            _multi_period = (
+                                (_period_start_mp - _start_date_obj.date()).days > 120
+                            )
+
+                    if _multi_period:
+                        # Quarterly / semi-annual: re-establish accumulated prior
+                        # obligation plus current month.  Only suppress when a
+                        # payment beyond the reversal signals the prior period is
+                        # already covered by an actual invoice.
+                        _payment_beyond_reversal = max(0.0, _non_j_net - _j_cr)
+                        if _payment_beyond_reversal >= _mthly_rt * 0.25:
+                            continue  # prior period settled + new invoice posted
+                        _accrual_amt  = _round(_j_cr + _mthly_rt)
+                        _accrual_type = 'compound'
+                    else:
+                        # Monthly billing cycle: prior period clears each month.
+                        # Suppress if the actual invoice has already posted.
+                        if _non_j_net >= _mthly_rt * 0.25:
+                            continue  # invoice already in GL
+                        _accrual_amt  = _round(_mthly_rt)
+                        _accrual_type = 'monthly'
+
+                    if _accrual_amt >= 250:
+                        # Build period-end string for description
                         _period_end_str = ''
                         if month_num:
                             _yr_m = _re_c.search(r'\d{4}', period_str)
@@ -1693,28 +1715,33 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                                 _p_yr   = int(_yr_m.group())
                                 _p_last = _cal_c.monthrange(_p_yr, month_num)[1]
                                 _period_end_str = f'{month_num}/{_p_last}/{_p_yr}'
-                        if _start_date_str and _period_end_str:
-                            _compound_desc = (
-                                f'Accrual {_period_label} — {acct.account_name} '
-                                f'({_start_date_str}-{_period_end_str}; '
-                                f'${_j_cr:,.2f} prior accrual reversed + '
-                                f'${_mthly_rt:,.2f}/mo est.)'
-                            )
+                        if _accrual_type == 'compound':
+                            if _start_date_str and _period_end_str:
+                                _entry_desc = (
+                                    f'Accrual {_period_label} — {acct.account_name} '
+                                    f'({_start_date_str}-{_period_end_str}; '
+                                    f'${_j_cr:,.2f} prior accrual reversed + '
+                                    f'${_mthly_rt:,.2f}/mo est.)'
+                                )
+                            else:
+                                _entry_desc = (
+                                    f'Accrual {_period_label} — {acct.account_name} '
+                                    f'(multi-period: ${_j_cr:,.0f} prior accrual '
+                                    f'reversed + ${_mthly_rt:,.0f}/mo est.)'
+                                )
                         else:
-                            _compound_desc = (
+                            _entry_desc = (
                                 f'Accrual {_period_label} — {acct.account_name} '
-                                f'(compound: ${_j_cr:,.0f} prior accrual reversed + '
-                                f'${_mthly_rt:,.0f}/mo est., '
-                                f'month {months_elapsed + 1} of accrual cycle)'
+                                f'(${_mthly_rt:,.0f}/mo est.)'
                             )
                         candidates.append({
                             'account_code':     code,
                             'account_name':     acct.account_name,
-                            'estimated_amount': _compound,
+                            'estimated_amount': _accrual_amt,
                             'ytd_prior':        _j_cr,
                             'months_prior':     months_elapsed,
                             'source':           'historical',
-                            'description':      _compound_desc,
+                            'description':      _entry_desc,
                         })
                         _gl_handled_codes.add(code)
                 continue  # compound path evaluated — skip BC YTD normal path
