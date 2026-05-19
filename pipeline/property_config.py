@@ -203,6 +203,26 @@ class PropertyConfig:
     # C-2: ensures a new property can override these without touching source code.
     periodic_contract_accounts: Optional[dict] = None
 
+    # ── Utility account routing overrides ────────────────────────────────────
+    # GL accounts that should use per-vendor / per-invoice daily-rate proration
+    # (the "metered utility" path in Layer 2) rather than the flat full-invoice path.
+    #
+    # The pipeline ships with module-level defaults for the standard COA codes
+    # (613110 electricity, 613210 gas).  Use these fields when the property's
+    # actual GL uses different account codes for the same expenses — for example,
+    # a property whose gas is posted to 613120 instead of 613210.
+    #
+    # metered_utility_accounts  — accounts that get per-vendor daily-rate proration
+    # per_invoice_utility_accounts — subset of the above that get one line *per invoice*
+    #                                (gas meters); electricity uses per-VENDOR grouping
+    #
+    # None = use the module-level defaults only (no additions).
+    # Override in config.yaml, e.g.:
+    #   metered_utility_accounts:    ['613120']
+    #   per_invoice_utility_accounts: ['613120']
+    metered_utility_accounts:    Optional[List[str]] = None
+    per_invoice_utility_accounts: Optional[List[str]] = None
+
     # ── QC account lists ──────────────────────────────────────────────────────
     # Per-property overrides for the P&L and BS account lists used in QC checks
     # (Check 1 TB→BC tie-out, Check 2 variances, Check 5 GL vs workpapers).
@@ -349,6 +369,15 @@ class PropertyConfig:
             periodic_contract_accounts = (
                 {str(k): v for k, v in d['periodic_contract_accounts'].items()}
                 if isinstance(d.get('periodic_contract_accounts'), dict) else None
+            ),
+            # Per-property utility account routing overrides
+            metered_utility_accounts = (
+                [str(a) for a in d['metered_utility_accounts']]
+                if d.get('metered_utility_accounts') else None
+            ),
+            per_invoice_utility_accounts = (
+                [str(a) for a in d['per_invoice_utility_accounts']]
+                if d.get('per_invoice_utility_accounts') else None
             ),
         )
 

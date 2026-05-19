@@ -234,14 +234,15 @@ TENANT_UTILITY_AR_NAME      = 'Accounts Receivable Billback'
 ELEC_EXPENSE_ACCOUNT        = '613110'
 ELEC_EXPENSE_NAME           = 'Utilities - Electricity'
 GAS_EXPENSE_ACCOUNT         = '613210'   # Utilities - Gas (per-vendor daily-rate proration)
-GAS_EXPENSE_ACCOUNT_ALT     = '613120'   # RevLabs actual gas GL account code
 ELEC_TENANT_REIMB_ACCOUNT   = '613115'
 # Metered utility accounts: use per-vendor daily-rate proration (separate line per vendor)
-# Both electricity (613110) and gas (613120/613210) have multiple vendors / meters per billing period.
-_METERED_UTILITY_ACCOUNTS   = {ELEC_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT_ALT}
+# Both electricity (613110) and gas (613210) have multiple vendors / meters per billing period.
+# Properties whose gas GL code differs from 613210 should add their code via
+# metered_utility_accounts / per_invoice_utility_accounts in config.yaml — no code change needed.
+_METERED_UTILITY_ACCOUNTS   = {ELEC_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT}
 # Gas uses per-INVOICE accrual (one line per meter/service, not per vendor).
 # Electricity uses per-VENDOR accrual (all invoices from same vendor combined).
-_PER_INVOICE_UTILITY_ACCOUNTS = {GAS_EXPENSE_ACCOUNT, GAS_EXPENSE_ACCOUNT_ALT}
+_PER_INVOICE_UTILITY_ACCOUNTS = {GAS_EXPENSE_ACCOUNT}
 ELEC_TENANT_REIMB_NAME      = 'Tenant Electric Reimbursement'
 TENANT_UTILITY_ACCOUNTS: dict = {
     '440500': {'label': 'Tenant Electric Recovery',     'budget_key': '440500'},
@@ -935,6 +936,8 @@ def detect_invoice_proration_accruals(
     period: str = '',
     month_end: Optional[date] = None,
     materiality: float = 500.0,
+    metered_utility_accounts: Optional[List[str]] = None,
+    per_invoice_utility_accounts: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Layer 2 — Invoice-period accruals.
@@ -1005,6 +1008,18 @@ def detect_invoice_proration_accruals(
     if month_end is None:
         return candidates   # can't prorate without knowing when the month ends
 
+    # ── Effective utility account sets (module defaults + per-property overrides) ──
+    # Properties can extend the default sets via metered_utility_accounts /
+    # per_invoice_utility_accounts in their config.yaml without touching source code.
+    _eff_metered     = set(_METERED_UTILITY_ACCOUNTS)
+    _eff_per_invoice = set(_PER_INVOICE_UTILITY_ACCOUNTS)
+    if metered_utility_accounts:
+        _eff_metered.update(str(a) for a in metered_utility_accounts)
+    if per_invoice_utility_accounts:
+        _eff_per_invoice.update(str(a) for a in per_invoice_utility_accounts)
+        # Any per-invoice account is also implicitly metered
+        _eff_metered.update(str(a) for a in per_invoice_utility_accounts)
+
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         if not code or code[0] not in ('5', '6', '7', '8'):
@@ -1067,7 +1082,7 @@ def detect_invoice_proration_accruals(
             #   will cost the same as the most recent invoice.
             #   NOTE: Gas (613210) is now in _METERED_UTILITY_ACCOUNTS and uses
             #   per-vendor daily-rate proration, same as electricity (613110).
-            _is_metered_utility = (code in _METERED_UTILITY_ACCOUNTS)  # 613110 elec, 613210 gas
+            _is_metered_utility = (code in _eff_metered)  # 613110 elec, 613210/613120 gas
 
             if _is_metered_utility:
                 # One accrual per vendor, using only their LATEST billing end date.
@@ -1088,7 +1103,7 @@ def detect_invoice_proration_accruals(
                 # Electricity (613110) uses PER-VENDOR grouping — all invoices from the
                 # same vendor (e.g. multiple Eversource line items) combined into one line.
 
-                if code in _PER_INVOICE_UTILITY_ACCOUNTS:
+                if code in _eff_per_invoice:
                     # ── Gas: one accrual per invoice entry at the global latest end date ──
                     # Use latest_end (already computed) — only accrue from the most recent
                     # billing cycle.  If a meter had an older period, it's superseded.
@@ -2015,6 +2030,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           payroll_accounts: Optional[List[str]] = None,
                           insurance_policies: Optional[List[Dict]] = None,
                           periodic_contract_accounts: Optional[dict] = None,
+                          metered_utility_accounts: Optional[List[str]] = None,
+                          per_invoice_utility_accounts: Optional[List[str]] = None,
                           accrual_materiality_floor: float = 500.0,
                           fiscal_year_start_month: int = 1,
                           ) -> List[Dict[str, Any]]:
@@ -3042,7 +3059,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     # ── Layer 2: Invoice-period proration ──
     if gl_data:
         prorations = detect_invoice_proration_accruals(
-            gl_data, period=period, month_end=_month_end
+            gl_data, period=period, month_end=_month_end,
+            metered_utility_accounts=metered_utility_accounts,
+            per_invoice_utility_accounts=per_invoice_utility_accounts,
         )
         _proration_covered: set = set()   # accounts handled by this layer
         for pro in prorations:

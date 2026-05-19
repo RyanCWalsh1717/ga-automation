@@ -159,6 +159,16 @@ kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
 # ── Fiscal year ───────────────────────────────────────────────────────────────
 fiscal_year_start_month: 1     # January
 
+# ── Utility account routing overrides ────────────────────────────────────────
+# RevLabs posts gas expense to 613120 (not the COA-default 613210).
+# Adding 613120 here routes it through the same per-invoice daily-rate proration
+# as electricity — one accrual line per meter/invoice (Tygen, NatGrid, NRG, etc.).
+# No code changes needed to onboard other properties with different gas accounts.
+metered_utility_accounts:
+  - "613120"
+per_invoice_utility_accounts:
+  - "613120"
+
 # ── Insurance policies (prepaid amortization breakdown) ───────────────────────
 # Each policy gets its own JE line: DR expense_account / CR 135110.
 # Both general property insurance and the umbrella policy post to 639110.
