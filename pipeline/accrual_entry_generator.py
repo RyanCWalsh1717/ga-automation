@@ -1759,17 +1759,33 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             if t12_result is not None and hasattr(t12_result, 'prior_month'):
                 dec_actual = abs(t12_result.prior_month(code, 1))  # Dec = prior to Jan
                 if dec_actual >= materiality:
+                    # Same GL-activity gate as Feb+ normal path and Jan Path B:
+                    # if a real K/P/C invoice has already posted this period and
+                    # covers ≥ 25% of the December T12 amount, treat as fully
+                    # covered and skip.  This prevents T12 from firing on top of
+                    # an invoice that is already in the GL.
+                    if _gl_partial_offset >= dec_actual * 0.25:
+                        _gl_handled_codes.add(code)
+                        continue  # real invoice covers ≥ 25% of expected
+                    _t12_accrual_amt = _round(max(0.0, dec_actual - _gl_partial_offset))
+                    if _t12_accrual_amt < 250:
+                        _gl_handled_codes.add(code)
+                        continue
+                    _t12_partial_note = (
+                        f' (partial top-up — ${_gl_partial_offset:,.0f} already in GL)'
+                        if _gl_partial_offset > 0 else ''
+                    )
                     candidates.append({
                         'account_code': code,
                         'account_name': acct.account_name,
-                        'estimated_amount': _round(dec_actual),
+                        'estimated_amount': _t12_accrual_amt,
                         'ytd_prior': dec_actual,
                         'months_prior': 1,
                         'source': 'historical',
                         'description': (
                             f'Accrual {_period_label} — {acct.account_name} '
-                            f'(historical — Dec actual ${dec_actual:,.0f} per T12, '
-                            f'no activity this period)'
+                            f'(historical — Dec actual ${dec_actual:,.0f} per T12'
+                            f'{_t12_partial_note})'
                         ),
                     })
                     _gl_handled_codes.add(code)
