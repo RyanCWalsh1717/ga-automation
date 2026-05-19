@@ -166,25 +166,42 @@ def _parse_pdf_text(lines: List[str]) -> Dict[str, Any]:
     payment_reserves = 0.0
     payment_total = 0.0
 
-    # Interest: line that starts with "Interest" (not "Interest Paid YTD" etc.)
+    # Narrow the search scope to the Payment Information section ONLY.
+    #
+    # Root cause: the Account Activity table (header "Date Desc Total Principal
+    # Interest Escrows...") is rendered by pdfplumber such that later lines can
+    # contain "Interest <amount>" from activity rows (e.g. PMT REC'D interest).
+    # When we scan ALL lines the activity row overwrites the correct Payment Info
+    # value.  In January this is especially deceptive because Interest Paid YTD
+    # == PMT REC'D interest == 409,694.58, but the correct accrual amount is the
+    # upcoming Payment Info interest (403,805.67 = January interest due Feb).
+    #
+    # Fix: restrict search to lines between "PAYMENT INFORMATION FOR" and
+    # "Account Activity".  Falls back to all lines if boundary not found.
+    _pmt_start_idx = None
+    _acct_start_idx = None
+    for _i, _l in enumerate(lines):
+        if _pmt_start_idx is None and re.search(
+                r'PAYMENT INFORMATION FOR', _l, re.IGNORECASE):
+            _pmt_start_idx = _i
+        if _acct_start_idx is None and re.search(
+                r'Account Activity', _l, re.IGNORECASE):
+            _acct_start_idx = _i
+            break   # no need to look further
+
+    _pmt_lines = lines[
+        (_pmt_start_idx or 0): (_acct_start_idx if _acct_start_idx is not None else len(lines))
+    ]
+
     # In the PDF text, the right-side payment column appears on the same line as
     # the left-side balance label. pdfplumber merges them left→right.
-    # e.g. "Interest Paid YTD           1,177,798.13       Interest                  403,448.76"
-    # We want the LAST number on lines that contain "Interest" but handle carefully.
-
-    for line in lines:
-        # Payment Interest: line where "Interest" appears as a payment item.
-        # Pattern: standalone "Interest" followed by spaces and a number,
-        # NOT preceded by "Paid YTD" context. We search for the rightmost
-        # occurrence on lines that have payment amounts.
-        # Strategy: find all occurrences of bare "Interest" + number
+    # e.g. "Interest Paid YTD   409,694.58   Interest   403,805.67"
+    # We want the bare "Interest <amount>" from the Payment Information column.
+    for line in _pmt_lines:
         matches = list(re.finditer(r'\bInterest\b\s+([\d,.-]+)', line))
         if matches:
-            # Filter out "Interest Paid YTD" and "Outstanding Default Int"
-            # Take the last match that is not part of "Interest Paid"
+            # Take the last match that is NOT part of "Interest Paid YTD"
             for mtch in reversed(matches):
-                pre = line[:mtch.start()]
-                # Make sure we are not catching "Interest Paid YTD"
                 if 'Paid' not in line[mtch.start():mtch.end()+20]:
                     payment_interest = _safe_float(mtch.group(1))
                     break
