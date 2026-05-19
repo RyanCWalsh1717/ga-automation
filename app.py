@@ -1176,67 +1176,107 @@ with tab0:
                            f"{_mo_names_t[_fy_end_mo]} {_fy_end_yr}")
 
     if _trend_all and _trend_data:
+        # Filter out records where GL extraction failed (all-zero revenue/expenses/noi).
+        # These were saved before the period_metrics GL-field fix; fee_amount is
+        # populated but the P&L data is absent — hiding them prevents a misleading
+        # management-fee bar floating next to an empty NOI chart.
+        _trend_data_valid  = [
+            r for r in _trend_data
+            if not (r.get('revenue', 0) == 0
+                    and r.get('expenses', 0) == 0
+                    and r.get('noi', 0) == 0)
+        ]
+        _trend_filtered_ct = len(_trend_data) - len(_trend_data_valid)
+
         with st.expander(
-            f"📈 {_fy_label} Trending — {len(_trend_data)} / 12 period(s)",
+            f"📈 {_fy_label} Trending — {len(_trend_data_valid)} / 12 period(s)",
             expanded=False,
         ):
             import pandas as _pd_trend
 
-            _periods = [r.get('period', '') for r in _trend_data]
+            # Clear-metrics button — wipes metrics.jsonl for the active property
+            _clr_met_col, _ = st.columns([1, 3])
+            if _clr_met_col.button(
+                "🗑️ Clear Trending Data", key="clear_trending_btn",
+                help="Remove all saved metrics for this property. "
+                     "Data re-populates automatically after each Pass 2 run.",
+            ):
+                try:
+                    from pathlib import Path as _PPath
+                    _met_path = (_PPath(str(_DATA_DIR))
+                                 / (_active_cfg.property_code or '')
+                                 / 'metrics.jsonl')
+                    if _met_path.exists():
+                        _met_path.unlink()
+                    st.success("Trending data cleared. Re-run Pass 2 to rebuild.", icon="🗑️")
+                    st.rerun()
+                except Exception as _met_err:
+                    st.error(f"Could not clear metrics: {_met_err}")
 
-            # ── NOI chart ────────────────────────────────────────────────
-            st.markdown("##### Net Operating Income")
-            _noi_df = _pd_trend.DataFrame({
-                'Period':   _periods,
-                'Revenue':  [r.get('revenue', 0) for r in _trend_data],
-                'Expenses': [r.get('expenses', 0) for r in _trend_data],
-                'NOI':      [r.get('noi', 0) for r in _trend_data],
-            }).set_index('Period')
-            st.line_chart(_noi_df[['NOI', 'Revenue', 'Expenses']], height=220)
+            if _trend_filtered_ct:
+                st.caption(
+                    f"ℹ️ {_trend_filtered_ct} period(s) hidden — incomplete GL data "
+                    f"(saved before a metrics fix). Re-run Pass 2 for those periods to restore them."
+                )
 
-            # ── Management fee + cash row ────────────────────────────────
-            _tr_col1, _tr_col2 = st.columns(2)
-            with _tr_col1:
-                st.markdown("##### Management Fee")
-                _fee_df = _pd_trend.DataFrame({
-                    'Period': _periods,
-                    'Fee':    [r.get('fee_amount', 0) for r in _trend_data],
+            if not _trend_data_valid:
+                st.info("No complete period data yet. Run Pass 2 to populate trending.", icon="📊")
+            else:
+                _periods = [r.get('period', '') for r in _trend_data_valid]
+
+                # ── NOI chart ────────────────────────────────────────────
+                st.markdown("##### Net Operating Income")
+                _noi_df = _pd_trend.DataFrame({
+                    'Period':   _periods,
+                    'Revenue':  [r.get('revenue', 0) for r in _trend_data_valid],
+                    'Expenses': [r.get('expenses', 0) for r in _trend_data_valid],
+                    'NOI':      [r.get('noi', 0) for r in _trend_data_valid],
                 }).set_index('Period')
-                st.bar_chart(_fee_df, height=180)
+                st.line_chart(_noi_df[['NOI', 'Revenue', 'Expenses']], height=220)
 
-            with _tr_col2:
-                st.markdown("##### Operating Cash Balance")
-                _cash_df = _pd_trend.DataFrame({
-                    'Period':    _periods,
-                    'Operating': [r.get('operating_cash', 0) for r in _trend_data],
-                    'DACA':      [r.get('daca_balance', 0) for r in _trend_data],
-                }).set_index('Period')
-                st.line_chart(_cash_df, height=180)
+                # ── Management fee + cash row ─────────────────────────────
+                _tr_col1, _tr_col2 = st.columns(2)
+                with _tr_col1:
+                    st.markdown("##### Management Fee")
+                    _fee_df = _pd_trend.DataFrame({
+                        'Period': _periods,
+                        'Fee':    [r.get('fee_amount', 0) for r in _trend_data_valid],
+                    }).set_index('Period')
+                    st.bar_chart(_fee_df, height=180)
 
-            # ── QC status summary ────────────────────────────────────────
-            st.markdown("##### QC Status by Period")
-            _qc_rows = []
-            for r in _trend_data:
-                _qc_status = r.get('qc_overall', 'unknown')
-                _qc_icon   = {'pass': '✅', 'warn': '⚠️', 'fail': '❌'}.get(_qc_status, '—')
-                _qc_rows.append({
-                    'Period':   r.get('period', ''),
-                    'Status':   f"{_qc_icon} {_qc_status.title()}",
-                    'Pass':     r.get('qc_pass', 0),
-                    'Warn':     r.get('qc_warn', 0),
-                    'Fail':    r.get('qc_fail', 0),
-                    'NOI':     f"${r.get('noi', 0):,.0f}",
-                    'Fee':     f"${r.get('fee_amount', 0):,.0f}",
-                })
-            st.dataframe(
-                _pd_trend.DataFrame(_qc_rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.caption(
-                f"Showing {_fy_label} only. Metrics saved automatically after each "
-                f"successful Pass 2 run. Resets to a fresh chart when the new fiscal year begins."
-            )
+                with _tr_col2:
+                    st.markdown("##### Operating Cash Balance")
+                    _cash_df = _pd_trend.DataFrame({
+                        'Period':    _periods,
+                        'Operating': [r.get('operating_cash', 0) for r in _trend_data_valid],
+                        'DACA':      [r.get('daca_balance', 0) for r in _trend_data_valid],
+                    }).set_index('Period')
+                    st.line_chart(_cash_df, height=180)
+
+                # ── QC status summary ─────────────────────────────────────
+                st.markdown("##### QC Status by Period")
+                _qc_rows = []
+                for r in _trend_data_valid:
+                    _qc_status = r.get('qc_overall', 'unknown')
+                    _qc_icon   = {'pass': '✅', 'warn': '⚠️', 'fail': '❌'}.get(_qc_status, '—')
+                    _qc_rows.append({
+                        'Period': r.get('period', ''),
+                        'Status': f"{_qc_icon} {_qc_status.title()}",
+                        'Pass':   r.get('qc_pass', 0),
+                        'Warn':   r.get('qc_warn', 0),
+                        'Fail':   r.get('qc_fail', 0),
+                        'NOI':    f"${r.get('noi', 0):,.0f}",
+                        'Fee':    f"${r.get('fee_amount', 0):,.0f}",
+                    })
+                st.dataframe(
+                    _pd_trend.DataFrame(_qc_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(
+                    f"Showing {_fy_label} only. Metrics saved automatically after each "
+                    f"successful Pass 2 run. Resets to a fresh chart when the new fiscal year begins."
+                )
 
     st.divider()
 
