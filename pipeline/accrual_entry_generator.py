@@ -1855,86 +1855,12 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             })
             _gl_handled_codes.add(code)
 
-    # ── Budget-only fallback: accounts with Kardin budget but no GL activity ─────
-    #
-    # Semi-annual / irregular billing accounts (e.g. 613310 Water/Sewer,
-    # 631110 Elevator inspection) have ZERO GL activity between bills.  Because
-    # the main loop above only iterates gl_data.accounts, these accounts are
-    # completely invisible to Layers 1-4 when no bill has posted and no prior
-    # pipeline JE auto-reversal has landed.
-    #
-    # This pass fills that gap: for any expense account in the Kardin/BC budget
-    # that was NOT seen in the GL this period, generate a Kardin annual ÷ 12
-    # candidate (same as January Path B).  The outer generate_accrual_entries
-    # function still applies the _covered / _manual_accounts exclusion set, so
-    # accounts the user has manually handled are silently filtered out.
-    #
-    # Guards:
-    #   - Expense account only
-    #   - Annual budget ≥ $30K  (est. monthly ≥ $2.5K materiality floor)
-    #   - Account was NOT already processed in the GL loop above
-    # Keywords that indicate a total / subtotal / summary row — never accrue these
-    _TOTAL_KEYWORDS = (
-        'total', 'subtotal', 'sub-total', 'net operating', 'net income',
-        'gross profit', 'operating income', 'noi', 'ebitda',
-    )
-
-    # Merge BC budget_by_code and Kardin-only accounts into one iterable.
-    # BC entries come first (already filtered into budget_by_code).
-    # Kardin-only entries (kardin_annual_by_code) fill gaps for accounts absent from BC.
-    _all_budget_codes: Dict[str, Any] = {**budget_by_code}
-    # Add Kardin-only entries as synthetic dicts so the loop below handles them uniformly
-    for _kc, _kv in kardin_annual_by_code.items():
-        if _kc not in _all_budget_codes:
-            _all_budget_codes[_kc] = {'account_code': _kc, 'account_name': _kv['name'],
-                                       'annual': _kv['annual']}
-
-    for _b_code, _b_item in _all_budget_codes.items():
-        if _b_code in _gl_handled_codes:
-            continue   # GL loop already produced a candidate — don't duplicate
-
-        # Must be a valid 6-digit numeric account code — rules out blank codes,
-        # short codes, and codes like "TOTAL" that sneak through budget parsers.
-        if not (_b_code and len(_b_code) == 6 and _b_code.isdigit()):
-            continue
-        if not is_expense_account(_b_code):
-            continue
-
-        if isinstance(_b_item, dict):
-            _b_annual = abs(float(
-                _b_item.get('annual') or _b_item.get('annual_budget')
-                or _b_item.get('ytd_budget') or 0
-            ))
-            _b_name = str(_b_item.get('account_name', '') or _b_code)
-        else:
-            _b_annual = abs(float(
-                getattr(_b_item, 'annual', None)
-                or getattr(_b_item, 'annual_budget', None) or 0
-            ))
-            _b_name = str(getattr(_b_item, 'account_name', '') or _b_code)
-
-        # Skip total / subtotal / summary rows by name
-        if any(kw in _b_name.lower() for kw in _TOTAL_KEYWORDS):
-            continue
-
-        if _b_annual < 1:
-            continue
-        _b_monthly = _round(_b_annual / 12)
-        if _b_monthly < materiality:
-            continue   # below materiality floor
-        candidates.append({
-            'account_code':     _b_code,
-            'account_name':     _b_name,
-            'estimated_amount': _b_monthly,
-            'ytd_prior':        0.0,
-            'months_prior':     months_elapsed,
-            'source':           'historical',
-            'description': (
-                f'Accrual {_period_label} — {_b_name} '
-                f'(budget est. ${_b_monthly:,.0f}/mo, '
-                f'annual budget ${_b_annual:,.0f} ÷ 12; no GL activity this period)'
-            ),
-        })
+    # Budget-only fallback removed (May 2026).
+    # Generating accruals for accounts with no GL activity, based solely on
+    # Kardin/BC budget figures, is accruing to budget — not good practice.
+    # Accounts like water/sewer or elevator that bill semi-annually but have
+    # no current-period GL entry should be handled via the one-off accruals
+    # table (the operator knows when those bills are due).
 
     return candidates
 
