@@ -2885,7 +2885,7 @@ with tab1:
             _add_n = st.session_state[_add_counter_key]
 
             with st.expander("Add entry to Accruals CSV", expanded=False):
-                _ac1, _ac2, _ac3, _ac4, _ac5 = st.columns([1.5, 1.5, 4, 1.8, 1])
+                _ac1, _ac2, _ac3, _ac4, _ac5, _ac6 = st.columns([1.5, 1.5, 4, 1.8, 0.8, 0.8])
                 with _ac1:
                     _add_dr_raw = st.text_input(
                         "DR Account", placeholder="e.g. 637150",
@@ -2907,6 +2907,14 @@ with tab1:
                         key=f"add_amt_{_run_key}_{_add_n}",
                     )
                 with _ac5:
+                    st.write("")   # vertical align
+                    _add_auto_rev = st.checkbox(
+                        "Auto-Rev", value=True,
+                        key=f"add_autorev_{_run_key}_{_add_n}",
+                        help="✅ Checked = auto-reverses next month (ReverseNextMonth = -1). "
+                             "Uncheck for permanent JEs (ReverseNextMonth = 0).",
+                    )
+                with _ac6:
                     st.write("")   # vertical align
                     st.write("")
                     _add_submit = st.button("Add", key=f"add_btn_{_run_key}_{_add_n}",
@@ -2932,30 +2940,33 @@ with tab1:
                         _next_add_num = (len(_prev_adds) // 2) + 1
                         _new_je_id    = f"ADD-{_next_add_num:04d}"
 
+                        _add_rev_flag = -1 if _add_auto_rev else 0
                         _new_je_lines = [
                             {
-                                'je_number':      _new_je_id, 'line': 1, 'date': '',
-                                'account_code':   _dr,
-                                'account_name':   '',
-                                'description':    _desc,
-                                'reference':      'MANUAL-ADD',
-                                'debit':          round(_amt, 2), 'credit': 0,
-                                'vendor':         '[Manual Addition]',
-                                'invoice_number': '',
-                                'source':         'manual_addition',
-                                'confidence':     'high',
+                                'je_number':          _new_je_id, 'line': 1, 'date': '',
+                                'account_code':       _dr,
+                                'account_name':       '',
+                                'description':        _desc,
+                                'reference':          'MANUAL-ADD',
+                                'debit':              round(_amt, 2), 'credit': 0,
+                                'vendor':             '[Manual Addition]',
+                                'invoice_number':     '',
+                                'source':             'manual_addition',
+                                'confidence':         'high',
+                                'reverse_next_month': _add_rev_flag,
                             },
                             {
-                                'je_number':      _new_je_id, 'line': 2, 'date': '',
-                                'account_code':   _cr,
-                                'account_name':   '',
-                                'description':    _desc,
-                                'reference':      'MANUAL-ADD',
-                                'debit':          0, 'credit': round(_amt, 2),
-                                'vendor':         '[Manual Addition]',
-                                'invoice_number': '',
-                                'source':         'manual_addition',
-                                'confidence':     'high',
+                                'je_number':          _new_je_id, 'line': 2, 'date': '',
+                                'account_code':       _cr,
+                                'account_name':       '',
+                                'description':        _desc,
+                                'reference':          'MANUAL-ADD',
+                                'debit':              0, 'credit': round(_amt, 2),
+                                'vendor':             '[Manual Addition]',
+                                'invoice_number':     '',
+                                'source':             'manual_addition',
+                                'confidence':         'high',
+                                'reverse_next_month': _add_rev_flag,
                             },
                         ]
 
