@@ -3293,14 +3293,20 @@ with tab1:
                 icon="⚠️",
             )
 
-        # Auto-merge newly detected accounts into the recode table (idempotent)
+        # Auto-merge newly detected accounts into the recode table (idempotent).
+        # Dedup by CR Account column — more reliable than _ref because st.data_editor
+        # with column_config=None can drop hidden columns from its returned DataFrame,
+        # which would cause _ref-based dedup to fail and trigger an infinite rerun loop.
         if _interco_detected:
             _ic_df_cur = st.session_state.interco_recode_df.copy()
-            _existing_refs = set(_ic_df_cur["_ref"].fillna("").str.strip()) if "_ref" in _ic_df_cur.columns else set()
+            _existing_cr_accts = set()
+            if "Leg" in _ic_df_cur.columns and "Account" in _ic_df_cur.columns:
+                _cr_mask = _ic_df_cur["Leg"].fillna("") == "CR"
+                _existing_cr_accts = set(_ic_df_cur.loc[_cr_mask, "Account"].fillna("").str.strip())
             _new_ic_rows = []
             for _ic in _interco_detected:
                 _ic_code = str(_ic.get('account_code', '')).strip()
-                if _ic_code and _ic_code not in _existing_refs:
+                if _ic_code and _ic_code not in _existing_cr_accts:
                     _ic_amt  = abs(float(_ic.get('net_amount', 0)))
                     _ic_name = str(_ic.get('account_name', ''))
                     _ic_desc = f"Recode {_ic_code} to expense account"
@@ -3309,7 +3315,7 @@ with tab1:
                         "Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
                         "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
                     })
-                    # DR row second — blank Account for user to fill in (6xxxxx or 8xxxxx target)
+                    # DR row second — blank Account for user to fill in target
                     _new_ic_rows.append({
                         "Leg": "DR", "Account": "", "Account Name": "",
                         "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
@@ -3318,7 +3324,8 @@ with tab1:
                 st.session_state.interco_recode_df = pd.concat(
                     [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
                 )
-                st.rerun()   # force fresh render so data_editor picks up the new rows
+                # No st.rerun() here — using a run-count key on the data_editor
+                # means it automatically picks up new rows when pass1_run_count changes
 
         _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
                      if _interco_detected else "")
@@ -3350,7 +3357,7 @@ with tab1:
                     "Description":  st.column_config.TextColumn("Description", width="large"),
                     "_ref":         None,
                 },
-                key="interco_recode_editor",
+                key=f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}",
             )
             st.session_state.interco_recode_df = _ic_recode_edited
 
