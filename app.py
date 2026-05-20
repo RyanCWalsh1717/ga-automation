@@ -2745,69 +2745,6 @@ with tab1:
         st.divider()
         st.markdown(f"## Pass 1 Results — {result.period}  |  {result.property_name}")
 
-        # ── TEMPORARY DEBUG PANEL (remove after diagnosis) ────────────────
-        with st.expander("🔬 Debug — GL Account Summary", expanded=True):
-            # ── Section 1: 7xxx detection result ──────────────────────────
-            _dbg_7xxx = result.summary.get('corp_7xxx_accounts', [])
-            st.markdown("**7xxx accounts in corp_7xxx_accounts (engine output):**")
-            if _dbg_7xxx:
-                for _d7 in _dbg_7xxx:
-                    st.success(f"✅ {_d7.get('account_code')} — {_d7.get('account_name')} — ${abs(_d7.get('net_amount',0)):,.2f}")
-            else:
-                st.error("❌ corp_7xxx_accounts is EMPTY — engine did not detect any 7xxx accounts")
-
-            # ── Section 1b: re-run same detection logic here to verify ────
-            st.markdown("**Same detection logic re-run in app.py (to verify engine.py is current):**")
-            _dbg_gl2 = result.parsed.get('gl')
-            _dbg_rerun = []
-            if _dbg_gl2 and hasattr(_dbg_gl2, 'accounts'):
-                for _dbg_na in _dbg_gl2.accounts:
-                    _dbg_code = str(getattr(_dbg_na, 'account_code', '') or '').strip()
-                    _dbg_nc   = float(getattr(_dbg_na, 'net_change', 0) or 0)
-                    _dbg_eb   = float(getattr(_dbg_na, 'ending_balance', 0) or 0)
-                    _dbg_sig  = _dbg_eb if abs(_dbg_eb) >= 0.01 else _dbg_nc
-                    if abs(_dbg_sig) < 0.01:
-                        continue
-                    if _dbg_code.startswith('7'):
-                        _dbg_rerun.append(f"{_dbg_code} | nc={_dbg_nc} | eb={_dbg_eb} | sig={_dbg_sig}")
-            if _dbg_rerun:
-                for _r in _dbg_rerun:
-                    st.warning(f"⚠️ app.py detects: {_r} — but engine missed it (stale engine.py)")
-            else:
-                st.info("app.py re-run also finds nothing with 7xxx prefix")
-
-            # ── Section 2: Layer 2 / invoice_proration JEs ────────────────
-            st.markdown("**Layer 2 accruals in JE output (source=invoice_proration):**")
-            _dbg_ipr = [l for l in p1.get("all_je_lines", []) if l.get('source') == 'invoice_proration' and (l.get('debit') or 0) > 0]
-            if _dbg_ipr:
-                for _di in _dbg_ipr:
-                    st.success(f"✅ {_di.get('je_number')} — {_di.get('account_code')} {_di.get('account_name')} — ${_di.get('debit',0):,.2f}")
-            else:
-                st.error("❌ No invoice_proration JEs generated — Layer 2 produced nothing")
-
-            # ── Section 3: GL account table ────────────────────────────────
-            _dbg_gl = result.parsed.get('gl')
-            if _dbg_gl and hasattr(_dbg_gl, 'accounts'):
-                _dbg_rows = []
-                for _dbg_a in _dbg_gl.accounts:
-                    _dbg_rows.append({
-                        "Code":      str(_dbg_a.account_code).strip(),
-                        "Name":      str(_dbg_a.account_name or '')[:40],
-                        "Beg Bal":   round(float(getattr(_dbg_a, 'beginning_balance', 0) or 0), 2),
-                        "Net Chg":   round(float(getattr(_dbg_a, 'net_change', 0) or 0), 2),
-                        "End Bal":   round(float(getattr(_dbg_a, 'ending_balance', 0) or 0), 2),
-                        "Txn #":     len(getattr(_dbg_a, 'transactions', [])),
-                    })
-                import pandas as _dbg_pd
-                _dbg_df = _dbg_pd.DataFrame(_dbg_rows)
-                st.caption(f"{len(_dbg_rows)} accounts parsed from GL")
-                _dbg_filter = st.text_input("Filter by account code prefix", key="_dbg_filter")
-                if _dbg_filter:
-                    _dbg_df = _dbg_df[_dbg_df["Code"].str.startswith(_dbg_filter)]
-                st.dataframe(_dbg_df, use_container_width=True, hide_index=True)
-            else:
-                st.warning("GL not parsed or no accounts found")
-        # ── END DEBUG PANEL ───────────────────────────────────────────────
 
         # ── GL Activity Gut-Check ──────────────────────────────────────────
         # Show a compact warning listing accounts where the pipeline detected
@@ -3332,8 +3269,26 @@ with tab1:
         # re-run Generate JEs to include the recode entries in the CSV.
 
         _p1_er_ic = st.session_state.get('pass1_engine_result')
-        _interco_detected = (_p1_er_ic.summary.get('corp_7xxx_accounts', [])
-                             if _p1_er_ic else [])
+        # Detect 7xxx accounts directly from the parsed GL — do NOT rely on
+        # engine.py's corp_7xxx_accounts summary key, which may be stale if
+        # Streamlit Cloud cached the old engine module bytecode between deploys.
+        _interco_detected = []
+        if _p1_er_ic:
+            _ic_gl = _p1_er_ic.parsed.get('gl')
+            if _ic_gl and hasattr(_ic_gl, 'accounts'):
+                for _ic_acct in _ic_gl.accounts:
+                    _ic_code = str(getattr(_ic_acct, 'account_code', '') or '').strip()
+                    _ic_nc   = float(getattr(_ic_acct, 'net_change', 0) or 0)
+                    _ic_eb   = float(getattr(_ic_acct, 'ending_balance', 0) or 0)
+                    _ic_sig  = _ic_eb if abs(_ic_eb) >= 0.01 else _ic_nc
+                    if abs(_ic_sig) < 0.01:
+                        continue
+                    if _ic_code.startswith('7'):
+                        _interco_detected.append({
+                            'account_code': _ic_code,
+                            'account_name': str(getattr(_ic_acct, 'account_name', '') or '').strip(),
+                            'net_amount':   _ic_sig,
+                        })
 
         # ── 5xxxxx company revenue warning ───────────────────────────────────
         _co_rev_detected = (_p1_er_ic.summary.get('co_rev_5xxx_accounts', [])
