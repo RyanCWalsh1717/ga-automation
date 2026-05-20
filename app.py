@@ -2362,6 +2362,30 @@ with tab1:
                         st.warning(str(_w.message), icon="⚠️")
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
+                # ── Temporary diagnostic: cleaning accrual trace ──────────────
+                _DIAG_CODES = {'610140', '610160'}
+                _diag_in_je = {l['account_code'] for l in je_lines if l.get('account_code') in _DIAG_CODES}
+                _diag_in_manual = {r['account_code'] for r in (_manual_accruals_input or []) if r.get('account_code') in _DIAG_CODES}
+                for _dc in sorted(_DIAG_CODES):
+                    _da = next((a for a in (gl_parsed.accounts if gl_parsed and hasattr(gl_parsed, 'accounts') else []) if str(a.account_code).strip() == _dc), None)
+                    if _da is None:
+                        st.info(f"DIAG {_dc}: not found in GL", icon="🔬")
+                        continue
+                    _db  = float(getattr(_da, 'beginning_balance', 0) or 0)
+                    _dtxns = getattr(_da, 'transactions', [])
+                    _dj_cr = sum(abs((t.debit or 0) - (t.credit or 0)) for t in _dtxns if (t.control or '').split('-')[0].upper() == 'J' and (t.credit or 0) > (t.debit or 0))
+                    _dj_dr = sum((t.debit or 0) - (t.credit or 0) for t in _dtxns if (t.control or '').split('-')[0].upper() == 'J' and (t.debit or 0) > (t.credit or 0))
+                    _dnj_dr = sum((t.debit or 0) - (t.credit or 0) for t in _dtxns if (t.control or '').split('-')[0].upper() != 'J' and (t.debit or 0) > (t.credit or 0))
+                    st.info(
+                        f"DIAG {_dc} ({_da.account_name}): "
+                        f"in_je={'YES' if _dc in _diag_in_je else 'NO'} | "
+                        f"in_manual_input={'YES' if _dc in _diag_in_manual else 'NO'} | "
+                        f"beg_bal=${_db:,.2f} | txns={len(_dtxns)} | "
+                        f"j_credits=${_dj_cr:,.2f} | j_debits=${_dj_dr:,.2f} | non_j_debits=${_dnj_dr:,.2f}",
+                        icon="🔬"
+                    )
+                # ── End diagnostic ────────────────────────────────────────────
+
                 # Phase-2 release scan — now that we know which Nexus JEs fired,
                 # determine which newly-added prepaid invoice numbers were suppressed
                 # (expense already in GL, invoice deduplicated).  For those items,
