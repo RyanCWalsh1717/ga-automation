@@ -1373,10 +1373,12 @@ def detect_invoice_proration_accruals(
         if not acct.transactions:
             continue
 
-        # Must have prior-period history
-        beg_bal = getattr(acct, 'beginning_balance', 0) or 0
-        if abs(beg_bal) < 1.0:
-            continue
+        # NOTE: beginning_balance is intentionally NOT checked here.
+        # Yardi GL exports do not include a Balance Forward row for P&L/expense
+        # accounts (6xxx/8xxx), so beginning_balance is always $0 for them.
+        # The presence of non-J debits (actual vendor invoices) in the period
+        # is sufficient signal — the beginning_balance guard permanently
+        # blocked all expense accounts and has been removed.
 
         # Separate J-type (journal entries) from non-J (actual vendor invoices).
         # J credits = auto-reversals (stronger Pattern B signal).
