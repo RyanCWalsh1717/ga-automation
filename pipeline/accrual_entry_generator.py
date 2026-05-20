@@ -1423,15 +1423,11 @@ def detect_invoice_proration_accruals(
         if not j_credit_txns:
             continue
 
-        # One candidate per non-J debit (actual vendor invoice).
-        # J-credits confirmed the prior accrual workflow is active for this account
-        # and that the account has netted close to zero — they are the gate signal
-        # only.  The actual invoice amounts are used for the accrual because they
-        # reflect the true billing rate for this service, which is more accurate
-        # than rolling forward the prior estimate.
-        # Multiple candidates for the same account code are handled correctly by
-        # _proration_covered (build_accrual_entries does not add to _covered
-        # mid-loop, so all lines for this account are emitted).
+        # Combine all non-J debits into a single accrual entry for this account.
+        # Individual invoice amounts are listed in the description so the reviewer
+        # can see the breakdown without the JE table becoming one-row-per-invoice
+        # (e.g. Verizon has one line per phone, snow removal one per storm, etc.).
+        _invoice_lines = []
         for txn in acct.transactions:
             _ctrl = (txn.control or '').split('-')[0].upper()
             if _ctrl == 'J':
@@ -1439,23 +1435,41 @@ def detect_invoice_proration_accruals(
             _txn_amt = (txn.debit or 0) - (txn.credit or 0)
             if _txn_amt < 1.0:
                 continue
-            _vendor = (txn.description or '').split('(')[0].strip()
-            candidates.append({
-                'account_code':   code,
-                'account_name':   acct.account_name,
-                'accrual_amount': _round(_txn_amt),
-                'source':         'invoice_proration',
-                'description': (
-                    f'Accrual {_period_label} — {_vendor} ({acct.account_name}): '
-                    f'invoice ${_txn_amt:,.2f} received; '
-                    f'accruing for current unbilled period '
-                    f'(prior accrual of ${sum(abs((t.debit or 0) - (t.credit or 0)) for t in j_credit_txns):,.2f} reversed)'
-                ),
-                'daily_rate':     0.0,
-                'uncovered_days': 0,
-                'period_days':    0,
-                'invoice_total':  _round(_txn_amt),
-            })
+            _inv_desc = (txn.description or '').strip()
+            _invoice_lines.append((_txn_amt, _inv_desc))
+
+        if not _invoice_lines:
+            continue
+
+        _total_accrual = sum(a for a, _ in _invoice_lines)
+        if _total_accrual < 1.0:
+            continue
+
+        _j_credit_total = sum(abs((t.debit or 0) - (t.credit or 0)) for t in j_credit_txns)
+
+        # Build description: header + itemised invoice list
+        _vendor_header = (_invoice_lines[0][1]).split('(')[0].strip()
+        if len(_invoice_lines) == 1:
+            _detail = f'${_invoice_lines[0][0]:,.2f} — {_invoice_lines[0][1]}'
+        else:
+            _parts = [f'${a:,.2f} {d}' for a, d in _invoice_lines]
+            _detail = ' | '.join(_parts)
+
+        candidates.append({
+            'account_code':   code,
+            'account_name':   acct.account_name,
+            'accrual_amount': _round(_total_accrual),
+            'source':         'invoice_proration',
+            'description': (
+                f'Accrual {_period_label} — {_vendor_header} ({acct.account_name}): '
+                f'prior accrual of ${_j_credit_total:,.2f} reversed; '
+                f'invoices: {_detail}'
+            ),
+            'daily_rate':     0.0,
+            'uncovered_days': 0,
+            'period_days':    0,
+            'invoice_total':  _round(_total_accrual),
+        })
 
     return candidates
 
