@@ -3571,60 +3571,59 @@ with tab1:
                     [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
                 )
 
-        if _interco_detected or not st.session_state.interco_recode_df.empty:
-            _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
-                         if _interco_detected else "")
-            with st.expander(
-                f"🔄 7xxxxx Intercompany Recode  (DR expense → CR 7xxxxx){_ic_badge}",
-                expanded=bool(_interco_detected),
-            ):
-                st.caption(
-                    "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
-                    "Each detected account auto-populates as a **DR / CR pair**: the CR row is pre-filled with the 7xxxxx account; "
-                    "enter the **6xxxxx or 8xxxxx** target expense account on the **DR row**. "
-                    "The pipeline generates **DR [expense account] / CR [7xxx account]** (permanent — no auto-reverse). "
-                    "Edit the Amount on the DR row if you're only recoding a partial amount. "
-                    "**Re-run Generate JEs after filling in target accounts** to include the recode JEs in the CSV."
-                )
+        _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
+                     if _interco_detected else "")
+        with st.expander(
+            f"🔄 7xxxxx Intercompany Recode  (DR expense → CR 7xxxxx){_ic_badge}",
+            expanded=bool(_interco_detected),
+        ):
+            st.caption(
+                "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
+                "Each detected account auto-populates as a **DR / CR pair**: the CR row is pre-filled with the 7xxxxx account; "
+                "enter the **6xxxxx or 8xxxxx** target expense account on the **DR row**. "
+                "The pipeline generates **DR [expense account] / CR [7xxx account]** (permanent — no auto-reverse). "
+                "Edit the Amount on the DR row if you're only recoding a partial amount. "
+                "**Re-run Generate JEs after filling in target accounts** to include the recode JEs in the CSV."
+            )
 
-                _ic_recode_edited = st.data_editor(
-                    st.session_state.interco_recode_df,
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    column_config={
-                        "Leg":          st.column_config.TextColumn("Leg", width="small", disabled=True,
-                                            help="DR = debit (expense account recoding INTO) | CR = credit (7xxxxx being removed)"),
-                        "Account":      st.column_config.TextColumn("Account", width="small",
-                                            help="DR row: enter the 6xxxxx or 8xxxxx target expense account. CR row: pre-filled with the 7xxxxx account (edit if needed)."),
-                        "Account Name": st.column_config.TextColumn("Account Name", width="medium", disabled=True),
-                        "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small",
-                                            help="PTD amount auto-detected from GL. Edit if recoding a partial amount."),
-                        "Description":  st.column_config.TextColumn("Description", width="large"),
-                        "_ref":         None,
-                    },
-                    key="interco_recode_editor",
-                )
-                st.session_state.interco_recode_df = _ic_recode_edited
+            _ic_recode_edited = st.data_editor(
+                st.session_state.interco_recode_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                column_config={
+                    "Leg":          st.column_config.TextColumn("Leg", width="small", disabled=True,
+                                        help="DR = debit (expense account recoding INTO) | CR = credit (7xxxxx being removed)"),
+                    "Account":      st.column_config.TextColumn("Account", width="small",
+                                        help="DR row: enter the 6xxxxx or 8xxxxx target expense account. CR row: pre-filled with the 7xxxxx account (edit if needed)."),
+                    "Account Name": st.column_config.TextColumn("Account Name", width="medium", disabled=True),
+                    "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small",
+                                        help="PTD amount auto-detected from GL. Edit if recoding a partial amount."),
+                    "Description":  st.column_config.TextColumn("Description", width="large"),
+                    "_ref":         None,
+                },
+                key="interco_recode_editor",
+            )
+            st.session_state.interco_recode_df = _ic_recode_edited
 
-                # Active = DR rows that have a non-blank target Account filled in
-                _ic_dr_active = _ic_recode_edited[
-                    (_ic_recode_edited["Leg"].fillna("") == "DR") &
-                    _ic_recode_edited["Account"].fillna("").str.strip().astype(bool) &
-                    (_ic_recode_edited["Amount ($)"].fillna(0).abs() > 0)
-                ]
-                if not _ic_dr_active.empty:
-                    st.success(
-                        f"✅ {len(_ic_dr_active)} recode JE(s) queued — "
-                        f"${_ic_dr_active['Amount ($)'].abs().sum():,.2f} total. "
-                        f"Re-run Generate JEs to include in the CSV.",
-                        icon="✅",
-                    )
-                elif _interco_detected:
-                    st.warning(
-                        "⚠️ 7xxxxx accounts detected — enter the DR expense account on each DR row, "
-                        "then re-run Generate JEs to include recode JEs in the CSV.",
-                        icon="⚠️",
-                    )
+            # Active = DR rows that have a non-blank target Account filled in
+            _ic_dr_active = _ic_recode_edited[
+                (_ic_recode_edited["Leg"].fillna("") == "DR") &
+                _ic_recode_edited["Account"].fillna("").str.strip().astype(bool) &
+                (_ic_recode_edited["Amount ($)"].fillna(0).abs() > 0)
+            ]
+            if not _ic_dr_active.empty:
+                st.success(
+                    f"✅ {len(_ic_dr_active)} recode JE(s) queued — "
+                    f"${_ic_dr_active['Amount ($)'].abs().sum():,.2f} total. "
+                    f"Re-run Generate JEs to include in the CSV.",
+                    icon="✅",
+                )
+            elif _interco_detected:
+                st.warning(
+                    "⚠️ 7xxxxx accounts detected — enter the DR expense account on each DR row, "
+                    "then re-run Generate JEs to include recode JEs in the CSV.",
+                    icon="⚠️",
+                )
 
         st.divider()
 
