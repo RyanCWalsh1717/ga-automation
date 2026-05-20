@@ -2362,12 +2362,6 @@ with tab1:
                         st.warning(str(_w.message), icon="⚠️")
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
-                # ── Temp debug: 610160 line count in je_lines ──
-                _d160 = [(l.get('je_number'), l.get('debit')) for l in je_lines
-                         if l.get('account_code') == '610160' and (l.get('debit') or 0) > 0]
-                st.info(f"DEBUG 610160 DR lines in je_lines: {len(_d160)} → {_d160}", icon="🔬")
-                # ── End temp debug ──
-
                 # Phase-2 release scan — now that we know which Nexus JEs fired,
                 # determine which newly-added prepaid invoice numbers were suppressed
                 # (expense already in GL, invoice deduplicated).  For those items,
