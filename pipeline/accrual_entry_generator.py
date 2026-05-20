@@ -1445,8 +1445,6 @@ def detect_invoice_proration_accruals(
         if _total_accrual < 1.0:
             continue
 
-        _j_credit_total = sum(abs((t.debit or 0) - (t.credit or 0)) for t in j_credit_txns)
-
         # Build description: header + itemised invoice list
         _vendor_header = (_invoice_lines[0][1]).split('(')[0].strip()
         if len(_invoice_lines) == 1:
@@ -1462,8 +1460,7 @@ def detect_invoice_proration_accruals(
             'source':         'invoice_proration',
             'description': (
                 f'Accrual {_period_label} — {_vendor_header} ({acct.account_name}): '
-                f'prior accrual of ${_j_credit_total:,.2f} reversed; '
-                f'invoices: {_detail}'
+                f'{_detail}'
             ),
             'daily_rate':     0.0,
             'uncovered_days': 0,
