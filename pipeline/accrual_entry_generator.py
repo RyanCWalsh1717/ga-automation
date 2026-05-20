@@ -1415,12 +1415,17 @@ def detect_invoice_proration_accruals(
         if invoice_total < 1.0:
             continue
 
-        # Describe the evidence pattern for auditability
-        has_reversals = j_credit_total >= 1.0
-        if has_reversals:
-            _pattern_note = f'prior accruals reversed (${j_credit_total:,.2f}) + invoices received'
-        else:
-            _pattern_note = 'recurring invoices received, current month unbilled'
+        # Require an auto-reversal (J-type credit) to confirm a prior pipeline
+        # accrual existed and was netted out this period.  Without a reversal the
+        # vendor invoice is already fully captured in the GL as a payable — there
+        # is nothing to accrue.  A reversal proves:
+        #   (a) the pipeline accrued this account in the prior month, AND
+        #   (b) that accrual has now been reversed, creating the need for a
+        #       new accrual covering the current month's unbilled balance.
+        if j_credit_total < 1.0:
+            continue
+
+        _pattern_note = f'prior accruals reversed (${j_credit_total:,.2f}) + invoices received'
 
         vendors = list({(txn.description or '').split('(')[0].strip()
                         for txn in acct.transactions
