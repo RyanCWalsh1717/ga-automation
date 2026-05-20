@@ -344,6 +344,8 @@ if "editor_reset_count" not in st.session_state:
     st.session_state.editor_reset_count = 0
 if "je_excluded_jes" not in st.session_state:
     st.session_state.je_excluded_jes = set()
+if "je_amount_overrides" not in st.session_state:
+    st.session_state.je_amount_overrides = {}   # {je_number: adjusted_amount}
 if "prior_period_outstanding" not in st.session_state:
     st.session_state.prior_period_outstanding = 0.0
 
@@ -673,8 +675,9 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.last_completed_step = None
     # Clear preparer name so it re-seeds from new property's team
     st.session_state.prepared_by         = ''
-    # Clear JE exclusions so property A's unchecked JEs don't show in property B
+    # Clear JE exclusions/overrides so property A's edits don't bleed to property B
     st.session_state.je_excluded_jes     = set()
+    st.session_state.je_amount_overrides = {}
     # Clear file-type overrides so assignments from property A don't bleed to B
     st.session_state.bulk_overrides_p1   = {}
     st.session_state.bulk_overrides_p2   = {}
@@ -870,7 +873,8 @@ else:
         st.session_state.upload_key_p1 += 1
         st.session_state.upload_key_p2 += 1
         st.session_state.editor_reset_count = st.session_state.get('editor_reset_count', 0) + 1
-        st.session_state.je_excluded_jes = set()   # clear JE exclusions on full reset
+        st.session_state.je_excluded_jes     = set()   # clear JE exclusions on full reset
+        st.session_state.je_amount_overrides = {}       # clear amount overrides on full reset
         shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
         st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
         import pandas as _pd
@@ -3003,15 +3007,21 @@ with tab1:
             _run_key = st.session_state.get('pass1_run_count', 0)
 
             # ── Summary metrics row ──────────────────────────────────────────
-            _excl_set_disp = st.session_state.get('je_excluded_jes', set())
+            _excl_set_disp  = st.session_state.get('je_excluded_jes', set())
+            _amt_ovr_disp   = st.session_state.get('je_amount_overrides', {})
             _dr_incl = [_l for _l in dr_lines if _l.get('je_number', '') not in _excl_set_disp]
             _src_totals: dict = {}
             for _l in _dr_incl:
-                _s = _l.get('source', 'other')
-                _src_totals[_s] = _src_totals.get(_s, 0) + (_l.get('debit') or 0)
+                _s   = _l.get('source', 'other')
+                _amt = _amt_ovr_disp.get(_l.get('je_number', ''), _l.get('debit') or 0)
+                _src_totals[_s] = _src_totals.get(_s, 0) + _amt
             _total_je_count = len(set(_l.get('je_number', '') for _l in _dr_incl))
-            _total_amount   = sum(_l.get('debit') or 0 for _l in _dr_incl)
+            _total_amount   = sum(
+                _amt_ovr_disp.get(_l.get('je_number', ''), _l.get('debit') or 0)
+                for _l in _dr_incl
+            )
             _excl_je_count  = len(_excl_set_disp)
+            _amt_ovr_count  = len(_amt_ovr_disp)
             _metric_items = [('Included JEs', str(_total_je_count)),
                              ('Included Amount', f"${_total_amount:,.0f}")] + \
                             [(_SOURCE_FILE_LABEL.get(s, s), f"${t:,.0f}")
@@ -3021,21 +3031,30 @@ with tab1:
             for _mi, (_lbl, _val) in enumerate(_metric_items[:_n_cols]):
                 with _metric_cols[_mi]:
                     st.metric(_lbl, _val)
+            _status_notes = []
             if _excl_je_count:
-                st.info(
-                    f"ℹ️ **{_excl_je_count} JE{'s' if _excl_je_count != 1 else ''} excluded** "
-                    f"from the CSV download. Uncheck → re-check to restore, or re-run Pass 1 to reset.",
-                    icon=None,
+                _status_notes.append(
+                    f"**{_excl_je_count} JE{'s' if _excl_je_count != 1 else ''} excluded** — "
+                    "uncheck → re-check to restore"
                 )
+            if _amt_ovr_count:
+                _status_notes.append(
+                    f"**{_amt_ovr_count} amount{'s' if _amt_ovr_count != 1 else ''} overridden** — "
+                    "re-run Pass 1 to reset all edits"
+                )
+            if _status_notes:
+                st.info("ℹ️ " + "  ·  ".join(_status_notes), icon=None)
 
             st.write("")
 
             # ── Description override state — keyed by run so fresh run resets ─
             if st.session_state.get('_je_desc_run') != _run_key:
-                st.session_state.je_desc_overrides = {}
-                st.session_state.je_excluded_jes   = set()   # reset exclusions on new run
+                st.session_state.je_desc_overrides   = {}
+                st.session_state.je_excluded_jes     = set()   # reset exclusions on new run
+                st.session_state.je_amount_overrides = {}       # reset amount edits on new run
                 st.session_state._je_desc_run = _run_key
             _all_desc_edits: dict = {}   # (je_num, acct_code) → edited description
+            _all_amount_edits: dict = {}  # je_number → adjusted debit amount
             _all_excl_je_nums: set = set()  # je_numbers unchecked across all expanders
 
             # ── One expander per CR account ──────────────────────────────────
@@ -3055,22 +3074,26 @@ with tab1:
                 with st.expander(_expander_label, expanded=True):
                     st.caption(f"Credit account: **{_cr_code}** — all entries below post to this account")
 
-                    _excl_set = st.session_state.get('je_excluded_jes', set())
+                    _excl_set    = st.session_state.get('je_excluded_jes', set())
+                    _amt_ovr_set = st.session_state.get('je_amount_overrides', {})
                     _rows = []
                     for _l in _group_lines:
                         _okey = (_l.get('je_number', ''), _l.get('account_code', ''))
+                        _je_num = _l.get('je_number', '')
                         _desc = (st.session_state.je_desc_overrides.get(_okey)
                                  or _clean_je_desc(_l.get('description') or ''))
                         _acct_display = _l.get('account_code', '')
                         if _l.get('account_name'):
                             _acct_display = f"{_acct_display}  {_l['account_name']}"
+                        # Use amount override if present, else original debit
+                        _amt = _amt_ovr_set.get(_je_num, _l.get('debit') or 0)
                         _rows.append({
-                            "Include":     _l.get('je_number', '') not in _excl_set,
-                            "JE #":        _l.get('je_number', ''),
+                            "Include":     _je_num not in _excl_set,
+                            "JE #":        _je_num,
                             "File Source": _SOURCE_FILE_LABEL.get(_l.get('source', ''), _l.get('source', '')),
                             "GL Account":  _acct_display,
                             "Description": _desc,
-                            "Amount":      _l.get('debit') or 0,
+                            "Amount":      _amt,
                         })
 
                     _edited = st.data_editor(
@@ -3086,13 +3109,15 @@ with tab1:
                             "GL Account":  st.column_config.TextColumn(width="medium", disabled=True),
                             "Description": st.column_config.TextColumn(width="large"),   # ← editable
                             "Amount":      st.column_config.NumberColumn(
-                                               format="$%,.2f", width="small", disabled=True),
+                                               format="$%,.2f", width="small", min_value=0,
+                                               help="Edit to override the pipeline's computed amount. "
+                                                    "Both the DR and CR legs update automatically."),
                         },
                         hide_index=True,
                         key=f"je_ed_{_cr_code}_{_run_key}",
                     )
 
-                    # Collect description edits and exclusions
+                    # Collect description edits, amount overrides, and exclusions
                     import pandas as _pd_jed
                     _edit_rows = (_edited.to_dict('records')
                                   if isinstance(_edited, _pd_jed.DataFrame) else list(_edited))
@@ -3104,6 +3129,10 @@ with tab1:
                         )
                         if _edit.get('Description', '') != _orig.get('Description', ''):
                             _all_desc_edits[_k] = _edit['Description']
+                        _new_amt = _edit.get('Amount')
+                        _orig_amt = _orig.get('Amount', 0)
+                        if _new_amt is not None and abs(float(_new_amt) - float(_orig_amt)) > 0.001:
+                            _all_amount_edits[_orig['JE #']] = float(_new_amt)
                         if not _edit.get('Include', True):
                             _all_excl_je_nums.add(_orig['JE #'])
 
@@ -3125,19 +3154,32 @@ with tab1:
                             unsafe_allow_html=True,
                         )
 
-            # ── Apply description edits + exclusions → update CSV ────────────
-            _excl_changed = _all_excl_je_nums != st.session_state.get('je_excluded_jes', set())
-            if _all_desc_edits or _excl_changed:
+            # ── Apply description edits, amount overrides, exclusions → update CSV ──
+            _excl_changed   = _all_excl_je_nums   != st.session_state.get('je_excluded_jes', set())
+            _amt_changed    = _all_amount_edits   != st.session_state.get('je_amount_overrides', {})
+            if _all_desc_edits or _excl_changed or _amt_changed:
                 if _all_desc_edits:
                     st.session_state.je_desc_overrides = _all_desc_edits
                 if _excl_changed:
                     st.session_state.je_excluded_jes = _all_excl_je_nums
-                # Apply description overrides to all_je_lines (kept intact — no lines removed)
+                if _amt_changed:
+                    st.session_state.je_amount_overrides = _all_amount_edits
+                # Apply description and amount overrides to all_je_lines
+                # Amount override updates both the DR leg (debit) and the CR leg (credit)
+                # so the JE remains balanced — both legs carry the same je_number.
                 _updated_lines = []
                 for _l in p1.get("all_je_lines", []):
-                    _k = (_l.get('je_number', ''), _l.get('account_code', ''))
+                    _je_n = _l.get('je_number', '')
+                    _k    = (_je_n, _l.get('account_code', ''))
+                    _l    = dict(_l)   # shallow copy so we don't mutate the original
                     if _k in _all_desc_edits and (_l.get('debit') or 0) > 0:
-                        _l = dict(_l, description=_all_desc_edits[_k])
+                        _l['description'] = _all_desc_edits[_k]
+                    if _je_n in _all_amount_edits:
+                        _new_a = _all_amount_edits[_je_n]
+                        if (_l.get('debit') or 0) > 0:
+                            _l['debit']  = _new_a
+                        elif (_l.get('credit') or 0) > 0:
+                            _l['credit'] = _new_a
                     _updated_lines.append(_l)
                 p1["all_je_lines"] = _updated_lines
                 # CSV export: exclude both DR and CR legs of excluded JE numbers
