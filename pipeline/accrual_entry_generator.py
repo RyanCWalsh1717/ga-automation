@@ -1381,10 +1381,11 @@ def detect_invoice_proration_accruals(
         # blocked all expense accounts and has been removed.
 
         # Separate J-type (journal entries) from non-J (actual vendor invoices).
-        # J credits = auto-reversals (stronger Pattern B signal).
+        # J credits = individual auto-reversal transactions — kept as a list so
+        #   each reversal can generate its own accrual line (like elec/gas breakout).
         # J debits  = prior pipeline JE already in GL → suppress to avoid double-accrual.
         period_debits  = []    # non-J debit amounts — actual vendor invoices
-        j_credit_total = 0.0   # J-type net credits (auto-reversals)
+        j_credit_txns  = []    # individual J-type credit txns (auto-reversals)
         j_debit_total  = 0.0   # J-type net debits (prior pipeline JE posted to GL)
 
         for txn in acct.transactions:
@@ -1394,9 +1395,9 @@ def detect_invoice_proration_accruals(
 
             if is_j:
                 if txn_net < 0:
-                    j_credit_total += abs(txn_net)   # credit J entry → auto-reversal
+                    j_credit_txns.append(txn)    # credit J entry → auto-reversal
                 elif txn_net > 0:
-                    j_debit_total  += txn_net        # debit J entry → pipeline JE in GL
+                    j_debit_total += txn_net      # debit J entry → pipeline JE in GL
                 continue   # J entries never count as vendor invoices
 
             # Non-J debit → actual vendor invoice (any day of the month)
@@ -1415,52 +1416,48 @@ def detect_invoice_proration_accruals(
         if invoice_total < 1.0:
             continue
 
-        # Require an auto-reversal (J-type credit) to confirm a prior pipeline
-        # accrual existed and was netted out this period.  Without a reversal the
-        # vendor invoice is already fully captured in the GL as a payable — there
-        # is nothing to accrue.  A reversal proves:
-        #   (a) the pipeline accrued this account in the prior month, AND
-        #   (b) that accrual has now been reversed, creating the need for a
-        #       new accrual covering the current month's unbilled balance.
-        if j_credit_total < 1.0:
+        # Require at least one auto-reversal (J-type credit).  Without a reversal
+        # the vendor invoice is already fully captured in the GL as a payable —
+        # nothing to accrue.  A reversal proves a prior pipeline accrual existed
+        # and was netted out, creating the need for a new accrual this month.
+        if not j_credit_txns:
             continue
 
-        # Accrual amount = prior period's accrual (j_credit_total), NOT the sum
-        # of current period invoices.  The received invoices are already in the GL;
-        # we are accruing the *estimated unbilled* portion of the current month.
-        # Rolling the prior estimate forward gives:
-        #   P&L impact = −reversal + actual invoices + new accrual
-        #              = −j_credits  + invoice_total  + j_credits
-        #              = invoice_total   (exactly the actual expense for the period)
-        # This also self-corrects prior-period over/under-accruals: if the
-        # prior estimate was too high the excess nets to zero over the cycle.
-        accrual_amount = j_credit_total
+        # Build vendor label from non-J debits (actual invoices carry vendor names;
+        # J-credit descriptions reflect the original reversal JE, not the vendor).
+        _vendors = list({(txn.description or '').split('(')[0].strip()
+                         for txn in acct.transactions
+                         if (txn.debit or 0) > 0 and
+                            (txn.control or '').split('-')[0].upper() != 'J'})
+        _vendor_str = ', '.join(v for v in _vendors if v)[:60]
 
-        _pattern_note = (
-            f'prior accrual reversed (${j_credit_total:,.2f}); '
-            f'rolling forward as estimate for current unbilled period'
-        )
-
-        vendors = list({(txn.description or '').split('(')[0].strip()
-                        for txn in acct.transactions
-                        if (txn.debit or 0) > 0 and
-                           (txn.control or '').split('-')[0].upper() != 'J'})
-        vendor_str = ', '.join(v for v in vendors if v)[:60]
-
-        candidates.append({
-            'account_code':   code,
-            'account_name':   acct.account_name,
-            'accrual_amount': _round(accrual_amount),
-            'source':         'invoice_proration',
-            'description': (
-                f'Accrual {_period_label} — {vendor_str} ({acct.account_name}): '
-                f'{_pattern_note}'
-            ),
-            'daily_rate':     0.0,
-            'uncovered_days': 0,
-            'period_days':    0,
-            'invoice_total':  _round(accrual_amount),
-        })
+        # One candidate per J-credit transaction — mirrors the electricity/gas
+        # breakout so each prior accrual component is visible as its own JE line.
+        # The accrual amount = the individual reversal amount (rolling the prior
+        # estimate forward).  P&L math per line:
+        #   −reversal_i + (share of invoices) + reversal_i = share of invoices ✓
+        # Multiple candidates for the same account code are handled correctly by
+        # _proration_covered (build_accrual_entries does not add to _covered
+        # mid-loop, so all lines for this account are emitted).
+        for _jt in j_credit_txns:
+            _jt_amt = abs((_jt.debit or 0) - (_jt.credit or 0))
+            if _jt_amt < 1.0:
+                continue
+            candidates.append({
+                'account_code':   code,
+                'account_name':   acct.account_name,
+                'accrual_amount': _round(_jt_amt),
+                'source':         'invoice_proration',
+                'description': (
+                    f'Accrual {_period_label} — {_vendor_str} ({acct.account_name}): '
+                    f'prior accrual reversed (${_jt_amt:,.2f}); '
+                    f'rolling forward as estimate for current unbilled period'
+                ),
+                'daily_rate':     0.0,
+                'uncovered_days': 0,
+                'period_days':    0,
+                'invoice_total':  _round(_jt_amt),
+            })
 
     return candidates
 
