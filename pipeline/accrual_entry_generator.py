@@ -1337,19 +1337,28 @@ def detect_invoice_proration_accruals(
 
         continue   # payroll path handled — skip recurring-vendor check
 
-    # ── PASS 2: Recurring month-start vendor accruals ─────────────────────────
-    # Pattern: monthly service billed in arrears at the start of the following
-    # month (e.g., Casella trash on 03/01 covers February service → March
-    # service is unbilled and needs an accrual).
+    # ── PASS 2: Recurring vendor accruals ────────────────────────────────────
+    # Two detection patterns — either one qualifies an account for accrual:
     #
-    # Detection criteria — ALL must be true:
-    #   1. No billing date ranges in any transaction (already handled above)
-    #   2. All current-period transactions posted within the first 5 days of
-    #      the reporting month (strong signal of "prior month billed at open")
-    #   3. Account has prior-period history (beginning_balance > 0) — confirms
-    #      it's a recurring expense, not a one-off
-    #   4. Total debit for the period exceeds materiality threshold
-    #   5. Expense account (6xxx / 5xxx / 7xxx / 8xxx)
+    # Pattern A — "Month-start billing in arrears":
+    #   ALL non-J debit transactions fall within the first 5 days of the period.
+    #   Signal: vendor bills prior-month service at month open.
+    #   Example: Casella 4/1 invoice covers March → April service is unbilled.
+    #
+    # Pattern B — "Auto-reversal + actual invoice" (handles mid-month billing):
+    #   Account has J-type CREDIT transactions (Yardi auto-reversals proving a
+    #   prior-month accrual existed) AND non-J debit transactions (actual paid
+    #   vendor invoices). Invoices may arrive any day of the month.
+    #   Example: trash removal invoiced weekly (days 1, 8, 15, 22) — all_early
+    #   fails on day 8 but J credits confirm prior accruals → still accrue.
+    #
+    # Suppressed if J-type debits >= $1 (a prior pipeline JE already posted).
+    #
+    # Common criteria for both patterns:
+    #   - Expense account (6xxx / 8xxx etc.)
+    #   - Prior-period history (beginning_balance >= $1)
+    #   - At least one non-J debit (actual vendor invoice) >= $1 total
+    #   - Not already handled by an earlier layer
 
     period_month_start = date(month_end.year, month_end.month, 1)
 
@@ -1371,40 +1380,65 @@ def detect_invoice_proration_accruals(
         if abs(beg_bal) < 1.0:
             continue
 
-        # All debits in the period must be posted within the first 5 days
-        period_debits = []
-        all_early = True
+        # Separate J-type (journal entries) from non-J (actual vendor invoices).
+        # J credits = auto-reversals (Pattern B signal).
+        # J debits  = prior pipeline JE already in GL → suppress to avoid double-accrual.
+        period_debits  = []    # non-J debit amounts — actual vendor invoices
+        j_credit_total = 0.0   # J-type net credits (auto-reversals)
+        j_debit_total  = 0.0   # J-type net debits (prior pipeline JE posted to GL)
+        all_early      = True  # Pattern A flag
+
         for txn in acct.transactions:
-            amt = (txn.debit or 0) - (txn.credit or 0)
-            if amt <= 0:
+            ctrl_prefix = (txn.control or '').split('-')[0].upper()
+            is_j   = (ctrl_prefix == 'J')
+            txn_net = (txn.debit or 0) - (txn.credit or 0)
+
+            if is_j:
+                if txn_net < 0:
+                    j_credit_total += abs(txn_net)   # credit J entry → auto-reversal
+                elif txn_net > 0:
+                    j_debit_total  += txn_net        # debit J entry → pipeline JE in GL
+                continue   # J entries never count as vendor invoices
+
+            # Non-J debit → actual vendor invoice
+            if txn_net <= 0:
                 continue
+
             txn_date = txn.date
-            if not isinstance(txn_date, date):
+            if not isinstance(txn_date, date) or txn_date < period_month_start or txn_date > month_end:
                 all_early = False
-                break
-            if txn_date < period_month_start or txn_date > month_end:
-                # Transaction outside the reporting month — not an early-month bill
-                all_early = False
-                break
+                period_debits.append(txn_net)
+                continue
             if txn_date.day > 5:
                 all_early = False
-                break
-            period_debits.append(amt)
+            period_debits.append(txn_net)
 
-        if not all_early or not period_debits:
+        # If a prior pipeline JE already debited this account, skip — don't double-accrue
+        if j_debit_total >= 1.0:
+            continue
+
+        if not period_debits:
             continue
 
         invoice_total = sum(period_debits)
         if invoice_total < 1.0:
-            continue   # filter true rounding noise only; no materiality floor here —
-                       # actual paid invoices are real evidence regardless of dollar size
-                       # (materiality floor belongs in Layer 3 pattern detection, not Layer 2)
+            continue
 
-        # All criteria met — accrual = same amount as the current-period invoices
-        # (current invoices cover prior month; current month is unbilled at same rate)
+        # Pattern A: all invoices early-month OR Pattern B: auto-reversals present
+        has_reversals = j_credit_total >= 1.0
+        if not all_early and not has_reversals:
+            continue
+
+        # Build description that names the pattern for auditability
+        if all_early:
+            _pattern_note = 'prior month billing in arrears'
+        else:
+            _pattern_note = f'prior accruals reversed (${j_credit_total:,.2f}) + invoices received'
+
         vendors = list({(txn.description or '').split('(')[0].strip()
                         for txn in acct.transactions
-                        if (txn.debit or 0) > 0})
+                        if (txn.debit or 0) > 0 and
+                           (txn.control or '').split('-')[0].upper() != 'J'})
         vendor_str = ', '.join(v for v in vendors if v)[:60]
 
         candidates.append({
@@ -1414,9 +1448,8 @@ def detect_invoice_proration_accruals(
             'source':         'invoice_proration',
             'description': (
                 f'Accrual {_period_label} — {vendor_str} ({acct.account_name}): '
-                f'invoiced {period_month_start.strftime("%m/%d/%y")} '
-                f'(prior month billing in arrears, '
-                f'current month unbilled = ${invoice_total:,.2f})'
+                f'{_pattern_note}, '
+                f'current month unbilled = ${invoice_total:,.2f}'
             ),
             'daily_rate':     0.0,
             'uncovered_days': 0,
