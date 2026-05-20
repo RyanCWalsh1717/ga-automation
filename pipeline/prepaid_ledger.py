@@ -627,7 +627,8 @@ def advance_period(active: List[Dict], completed: List[Dict],
 
 # ── Save to Excel ─────────────────────────────────────────────
 
-def save(active: List[Dict], completed: List[Dict], path: str, period: str = '') -> str:
+def save(active: List[Dict], completed: List[Dict], path: str, period: str = '',
+         property_name: str = '') -> str:
     """
     Write the ledger to Excel with three tabs:
       1. '135150 PPD Other' — workpaper-format schedule (matches Pass 2 workpaper layout)
@@ -637,7 +638,7 @@ def save(active: List[Dict], completed: List[Dict], path: str, period: str = '')
     wb = Workbook()
 
     # Workpaper-format tab first — identical layout to build_135150_tab() in Pass 2
-    _write_135150_workpaper_tab(wb, active, period)
+    _write_135150_workpaper_tab(wb, active, period, property_name=property_name)
 
     _write_sheet(wb, 'Active', active, ACTIVE_COLS,
                  title='Prepaid Expense Ledger — Active Items',
@@ -655,7 +656,8 @@ def save(active: List[Dict], completed: List[Dict], path: str, period: str = '')
     return path
 
 
-def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -> None:
+def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
+                                property_name: str = '') -> None:
     """
     Create a workpaper-format '135150 PPD Other' tab as the first sheet.
 
@@ -702,7 +704,7 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str) -
     c.alignment = Alignment(horizontal='left', vertical='center')
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
 
-    prop_line = (f'revlabspm  |  Period: {period}  |  '
+    prop_line = (f'{property_name or "[Property]"}  |  Period: {period}  |  '
                  f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c = ws.cell(row=3, column=FIRST_COL, value=prop_line)
     c.font      = Font(name='Calibri', size=10, italic=True, color='FFFFFF')

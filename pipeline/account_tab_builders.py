@@ -468,7 +468,8 @@ def _build_escrow_tab(wb, account_code: str, account_name: str, tab_color: str,
         _apply(c2, font=_font(bold=is_neg), fill=bg, border=THIN,
                align=Alignment(wrap_text=True))
 
-        c3 = ws.cell(row=next_row, column=4, value=_ENTITY)
+        # C-NEW-2: use property_name from function arg instead of hardcoded _ENTITY
+        c3 = ws.cell(row=next_row, column=4, value=property_name or _ENTITY)
         _apply(c3, font=_font(), fill=bg, border=THIN)
 
         c4 = ws.cell(row=next_row, column=AMT_COL, value=r['amt'])
@@ -816,7 +817,7 @@ def build_213100_tab(wb, period: str, property_name: str,
            align=Alignment(horizontal='left', vertical='center'))
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=AMOUNT_COL)
 
-    prop_line = (f'{property_name or "revlabspm"}  |  Period: {period}  |  '
+    prop_line = (f'{property_name or "[Property]"}  |  Period: {period}  |  '
                  f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c3 = ws.cell(row=3, column=FIRST_COL, value=prop_line)
     _apply(c3, font=_font(italic=True, size=10, color='FFFFFF'),
@@ -977,7 +978,7 @@ def build_135150_tab(wb, period: str, property_name: str,
            align=Alignment(horizontal='left', vertical='center'))
     ws.merge_cells(start_row=2, start_column=FIRST_COL, end_row=2, end_column=LAST_COL)
 
-    prop_line = (f'{property_name or "revlabspm"}  |  Period: {period}  |  '
+    prop_line = (f'{property_name or "[Property]"}  |  Period: {period}  |  '
                  f'Prepared: {datetime.now().strftime("%m/%d/%Y")}')
     c3 = ws.cell(row=3, column=FIRST_COL, value=prop_line)
     _apply(c3, font=_font(italic=True, size=10, color='FFFFFF'),
@@ -2238,10 +2239,19 @@ def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
                      property_config=None, **_):
     """
     Finance Costs roll-forward.
-    Layout: Date | Description | Revlabs | Revlabpm | Total  (cols B–F)
+    Layout: Date | Description | <entity_1> | <entity_2> | Total  (cols B–F)
+    The two entity column headers default to 'Revlabs' / 'Revlabpm' for the
+    RevLabs two-entity structure.  Other properties can override via
+    property_config.gl_accounts['finance_costs_entity_1'] /
+    property_config.gl_accounts['finance_costs_entity_2'].
     Uses _CAPITAL_187100_SEED as bootstrap when no uploaded schedule or prior workpaper.
     """
     _is_revlabs = (getattr(property_config, 'property_code', '') or '').lower() == 'revlabspm'
+    _gl_accts = getattr(property_config, 'gl_accounts', None) or {}
+    # C-1: derive entity column labels from config if provided; default to RevLabs names
+    _ent1_label = _gl_accts.get('finance_costs_entity_1', 'Revlabs')
+    _ent2_label = _gl_accts.get('finance_costs_entity_2', 'Revlabpm')
+
     gl_ending = float(getattr(gl_acct, 'ending_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
@@ -2249,8 +2259,8 @@ def build_187100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     ws = wb.create_sheet(tab_name)
     ws.sheet_properties.tabColor = '375623'
 
-    headers    = ['Date', 'Description', 'Revlabs', 'Revlabpm', 'Total']
-    col_widths = [14,      44,            16,         16,          16]
+    headers    = ['Date', 'Description', _ent1_label, _ent2_label, 'Total']
+    col_widths = [14,      44,            16,           16,          16]
     ncols = len(headers)
     AMOUNT_COL = 6  # column F (Total)
 

@@ -48,6 +48,8 @@ FILE_LABELS = {
     "loan_pass2":            "Berkadia Loan Statements (Pass 2) — due 7th of following month",
     "prior_workpaper":       "Prior Month Workpaper",
     "unknown":               "Unknown — select type",
+    # Pass-2 labels (shown when bulk-uploading into the Pass 2 slot)
+    "bank_rec_pass2":        "Bank Rec (Pass 2)",
 }
 
 # Pass-2 key remapping: classify_file returns the base key; caller passes pass2=True
@@ -58,6 +60,7 @@ _PASS2_REMAP = {
     "trial_balance":    "trial_balance_pass2",
     "t12_statement":    "t12_statement_pass2",
     "loan":             "loan_pass2",
+    "bank_rec":         "bank_rec_pass2",   # B-F9: was missing — showed raw key as label
 }
 
 # Keys that accept multiple files (list of paths, not a single path)
@@ -346,13 +349,23 @@ def _classify_xlsx(file_bytes: bytes, signals: dict = None) -> Tuple[str, float]
         # Generic fallback — some bank rec but no account match
         return "bank_rec", 0.80
 
-    # ── GL: "General Ledger" OR property code ────────────────────────────────
+    # ── GL: "General Ledger" OR property code with GL-specific column signals ──
     if "general ledger" in all_text:
         return "gl", 0.95
-    # Yardi GL header contains the property code in parentheses, e.g. "(revlabspm)"
+    # Yardi GL header contains the property code in parentheses, e.g. "(revlabspm)".
+    # Require at least one GL-specific column signal to avoid misclassifying other
+    # Yardi reports (budget comparison, T12, etc.) that also embed the property code
+    # in their header — the property code alone is not sufficient (B-5).
     _prop_codes = _s.get('property_codes', set())
-    if any(code in all_text for code in _prop_codes):
+    _gl_col_signals = ('debit', 'credit', 'balance', 'control', 'remarks')
+    if any(code in all_text for code in _prop_codes) and any(
+        sig in all_text for sig in _gl_col_signals
+    ):
         return "gl", 0.85
+    # Property code present but no GL column signals — return unknown rather
+    # than silently misclassifying as GL and feeding garbage to the GL parser.
+    if any(code in all_text for code in _prop_codes):
+        return "unknown", 0.40
 
     # ── Prepaid Ledger (content check before Nexus — seed file has Vendor/Invoice cols) ──
     if ("monthly amt" in all_text or "months posted" in all_text

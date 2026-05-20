@@ -1137,7 +1137,7 @@ def detect_invoice_proration_accruals(
                         _v_uncovered = (month_end - _inv_end).days
                         if _v_uncovered <= 0:
                             continue
-                        _vdays = max(1, (_inv_end - _inv_start).days)
+                        _vdays = max(1, (_inv_end - _inv_start).days + 1)  # +1: inclusive end date
                         if _v_uncovered > _vdays * 2.0:
                             continue
                         _vrate    = _inv_amt / _vdays
@@ -1199,7 +1199,7 @@ def detect_invoice_proration_accruals(
                         _v_grp  = [g for g in by_end[_v_latest_end] if g[3] == _vn]
                         _vamt   = sum(g[2] for g in _v_grp)
                         _vstart = min(g[0] for g in _v_grp)
-                        _vdays  = max(1, (_v_latest_end - _vstart).days)
+                        _vdays  = max(1, (_v_latest_end - _vstart).days + 1)  # +1: inclusive end date
 
                         # Sanity cap: don't extrapolate more than 2× the billing period
                         if _v_uncovered > _vdays * 2.0:
@@ -1434,7 +1434,9 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                                 t12_result=None,
                                 fiscal_year_start_month: int = 1,
                                 kardin_records: Optional[List[Dict]] = None,
-                                materiality: float = 2500.0) -> List[Dict[str, Any]]:
+                                materiality: float = 2500.0,
+                                layer3_exclude_accounts: Optional[List[str]] = None,
+                                ) -> List[Dict[str, Any]]:
     """
     Identify recurring expense patterns using Budget Comparison YTD actual data.
 
@@ -1531,12 +1533,21 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
     _gl_seen_codes: set    = set()   # every expense account visited in the GL loop
     _gl_handled_codes: set = set()   # subset that actually produced a candidate
 
+    # Build the Layer 3 exclusion set once (account codes to completely skip)
+    _l3_excl: set = set(str(c).strip() for c in (layer3_exclude_accounts or []))
+
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         # Only expense accounts — uses per-property COA config (defaults to 5/6/7/8xxxxx)
         if not is_expense_account(code):
             continue
         _gl_seen_codes.add(code)
+
+        # Skip accounts explicitly excluded from Layer 3 auto-accrual (e.g. discretionary
+        # or irregular spend that Layer 3 would mis-classify as a recurring contract).
+        if code in _l3_excl:
+            _gl_handled_codes.add(code)  # mark as handled so budget-gap doesn't fire either
+            continue
 
         # Partial-coverage detection: if some (but not enough) invoices have already
         # posted this period, don't suppress entirely — compute the expected monthly
@@ -2039,6 +2050,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           per_invoice_utility_accounts: Optional[List[str]] = None,
                           accrual_materiality_floor: float = 2500.0,
                           fiscal_year_start_month: int = 1,
+                          layer3_exclude_accounts: Optional[List[str]] = None,
                           ) -> List[Dict[str, Any]]:
     """
     Build accrual journal entry lines from four sources (in priority order):
@@ -2174,7 +2186,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     _man_net_change = float(getattr(_mga, 'net_change', 0) or 0)
                     break
 
-        _man_j_cr  = _j_credits(_man_gl_acct)   # prior-month accrual auto-reversal
+        _man_j_cr  = _net_j_credit(_man_gl_acct)  # net prior-month accrual reversal (cancels paired J-entries)
         _man_j_dr  = _j_debits(_man_gl_acct)    # any J-debits already posted this period
         _man_non_j = _man_net_change - (_man_j_dr - _man_j_cr)   # K/P/C-type net
 
@@ -2183,11 +2195,14 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # Account stays in _manual_accounts so Layers 1-4 don't pile on.
             continue
 
-        # Compound: add this month's slice on top of what reversed from last month
-        _compound_amount = _man_j_cr + amount
+        # Compound: add this month's slice on top of the *net* prior-month reversal.
+        # Subtract any partial real-invoice activity (_man_non_j) from the reversal
+        # so we don't double-accrue the portion already covered by a posted invoice.
+        _net_reversal    = max(0.0, _man_j_cr - _man_non_j)   # reversal gap not yet offset
+        _compound_amount = _net_reversal + amount
         _compound_note   = (f' — cumulative ${_compound_amount:,.0f} '
-                            f'(${_man_j_cr:,.0f} prior + ${amount:,.0f}/mo)'
-                            if _man_j_cr > 0 else '')
+                            f'(${_net_reversal:,.0f} prior net + ${amount:,.0f}/mo)'
+                            if _net_reversal > 0 else '')
 
         je_id    = f'MAN-{je_num:04d}'
         je_desc  = desc + _compound_note
@@ -2819,6 +2834,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         if gl_account in _manual_accounts:
             continue
 
+        # Skip if Layer 0b amortization (insurance or RE tax) already claimed this
+        # account — prevents a Nexus invoice for e.g. 641110 (RE tax) from generating
+        # a second JE on top of the TAX-AMORT entry.
+        if gl_account in _amort_accounts:
+            continue
+
         # Intra-batch dedup: Nexus sometimes submits the same invoice twice (resubmit,
         # dual approval workflow). Both would clear the GL dedup check and generate
         # duplicate JEs. Deduplicate within this Nexus batch first.
@@ -3034,7 +3055,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         'account_code': '801110',
                         'account_name': 'Interest Expense',
                         'description': _int_desc, 'reference': _loan_num,
-                        'debit': round(_pi, 2), 'credit': 0.0,
+                        'debit': _round(_pi), 'credit': 0.0,
                         'vendor': 'Berkadia', 'invoice_number': _loan_num,
                         'source': 'berkadia_interest',
                     },
@@ -3043,7 +3064,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         'account_code': '213200',
                         'account_name': 'Accrued Interest Payable',
                         'description': _int_desc, 'reference': _loan_num,
-                        'debit': 0.0, 'credit': round(_pi, 2),
+                        'debit': 0.0, 'credit': _round(_pi),
                         'vendor': 'Berkadia', 'invoice_number': _loan_num,
                         'source': 'berkadia_interest',
                     },
@@ -3184,7 +3205,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                                                     t12_result=t12_result,
                                                     fiscal_year_start_month=fiscal_year_start_month,
                                                     kardin_records=kardin_records,
-                                                    materiality=accrual_materiality_floor)
+                                                    materiality=accrual_materiality_floor,
+                                                    layer3_exclude_accounts=layer3_exclude_accounts)
         for hist in historicals:
             if hist['account_code'] in _covered:
                 _other_claimants.setdefault(hist['account_code'], []).append('historical')
@@ -3869,7 +3891,7 @@ def generate_yardi_je_csv(je_lines: List[Dict], output_path: str,
         je_lines:      List of JE line dicts from build_accrual_entries()
         output_path:   Where to write the .csv file
         period:        Accounting period label (e.g. 'Mar-2026') — used to derive date
-        property_code: Yardi property code (default 'revlabspm')
+        property_code: Yardi property code (default '' — must be passed by caller)
         book:          Unused — kept for signature compatibility (Yardi uses blank)
 
     Returns:
@@ -3983,7 +4005,7 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
         je_lines:      List of JE line dicts from build_accrual_entries()
         output_path:   Where to write the .csv file
         period:        Accounting period label e.g. 'Jan-2026' — used to derive date
-        property_code: Yardi property code (default 'revlabspm')
+        property_code: Yardi property code (default '' — must be passed by caller)
         book:          Unused — kept for signature compatibility
         auto_reverse:  Deprecated — kept for signature compatibility but ignored.
                        BM is now determined per-batch: -1 if the batch contains any
@@ -4012,6 +4034,13 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
         except Exception:
             pass
     if not period_date:
+        import warnings as _warn_etl
+        _warn_etl.warn(
+            f"generate_etl_csv: could not parse period string '{period}' — "
+            f"DATE and POSTMONTH will use today's date, which will post to the wrong "
+            f"accounting period in Yardi. Pass a period in 'Mon-YYYY' format.",
+            UserWarning, stacklevel=2,
+        )
         period_date = datetime.now().strftime('%m/%d/%Y')
 
     # Assign sequential batch numbers per unique JE number

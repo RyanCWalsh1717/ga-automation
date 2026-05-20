@@ -160,6 +160,7 @@ def _build_summary(
     qc_report,
     files_uploaded: Dict[str, str],
     run_ts: str,
+    property_config=None,
 ):
     ws.title = '1 - Summary'
     ws.sheet_properties.tabColor = _GRP_GREEN
@@ -184,7 +185,10 @@ def _build_summary(
     row = _write_kv(ws, row, 'Property',        property_name)
     row = _write_kv(ws, row, 'Close Period',     period)
     row = _write_kv(ws, row, 'Report Generated', run_ts)
-    row = _write_kv(ws, row, 'Pipeline Version', 'GA Automation v2 — GRP / Revolution Labs')
+    # C-9: derive management company from property config; fallback to generic label
+    _mgmt_co = (getattr(property_config, 'management_company', '') or 'GRP')
+    _prop_disp = (getattr(property_config, 'property_display_name', '') or property_name or 'GRP Properties')
+    row = _write_kv(ws, row, 'Pipeline Version', f'GA Automation v2 — {_mgmt_co} / {_prop_disp}')
 
     row += 1
     # Files processed
@@ -273,12 +277,23 @@ def _build_summary(
         row += 1
         row = _write_kv(ws, row, 'Cash Received Basis',
                         _money(fee_result.cash_received))
-        row = _write_kv(ws, row, 'Total Fee (3.00%)',
+        _total_rate = getattr(fee_result, 'total_rate', None)
+        _rate_str   = f' ({_total_rate:.2%})' if _total_rate else ''
+        row = _write_kv(ws, row, f'Total Fee{_rate_str}',
                         _money(getattr(fee_result, 'total_fee', 0)))
-        row = _write_kv(ws, row, 'Less JLL Portion (1.25%)',
-                        _money(getattr(fee_result, 'jll_fee', 0)))
-        row = _write_kv(ws, row, 'GRP Net Fee (1.75%)',
-                        _money(getattr(fee_result, 'grp_fee', 0)))
+        # C-9: Iterate config-driven fee lines when available; fall back to JLL/GRP labels
+        _fee_lines_cfg = getattr(property_config, 'management_fees', None) or []
+        if _fee_lines_cfg:
+            for _fl in _fee_lines_cfg:
+                _fl_label = f'{_fl.name} Fee ({_fl.rate:.2%})'
+                _fl_amt   = _money(getattr(fee_result, 'cash_received', 0) * _fl.rate)
+                row = _write_kv(ws, row, _fl_label, _fl_amt)
+        else:
+            # Legacy RevLabs JLL + GRP fallback
+            row = _write_kv(ws, row, 'Less JLL Portion (1.25%)',
+                            _money(getattr(fee_result, 'jll_fee', 0)))
+            row = _write_kv(ws, row, 'GRP Net Fee (1.75%)',
+                            _money(getattr(fee_result, 'grp_fee', 0)))
         row += 1
 
     # QC summary
@@ -737,7 +752,8 @@ def generate_audit_trail(
 
     ws1 = wb.create_sheet()
     _build_summary(ws1, period, property_name, all_je_lines,
-                   fee_result, qc_report, files_uploaded, run_ts)
+                   fee_result, qc_report, files_uploaded, run_ts,
+                   property_config=property_config)
 
     ws2 = wb.create_sheet()
     _build_je_log(ws2, all_je_lines)

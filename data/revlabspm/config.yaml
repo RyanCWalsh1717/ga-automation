@@ -170,6 +170,13 @@ metered_utility_accounts:
 per_invoice_utility_accounts:
   - "613120"
 
+# ── Layer 3 exclusions ───────────────────────────────────────────────────────
+# Accounts blocked from Layer 3 (historical recurring) auto-accrual.
+# Use for discretionary or irregular spend that Layer 3 would mis-classify as
+# a recurring contract. Layer 2 invoice proration and one-off accruals are unaffected.
+layer3_exclude_accounts:
+  - "637170"   # Admin-Food Service Amenities (discretionary spend, not a standing contract)
+
 # ── Insurance policies (prepaid amortization breakdown) ───────────────────────
 # Each policy gets its own JE line: DR expense_account / CR 135110.
 # Both general property insurance and the umbrella policy post to 639110.

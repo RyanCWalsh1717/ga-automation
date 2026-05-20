@@ -633,7 +633,8 @@ _LOAN_ANALYSIS_ENDING = {
 # Seed tab writers  (called instead of _write_stub when no prior workpaper)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict]):
+def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict],
+                             property_config=None):
     """
     Build a full-history RE Tax Analysis tab from _RET_ANALYSIS_SEED.
     Replaces _write_stub when no prior workpaper is provided.
@@ -670,11 +671,23 @@ def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict]):
     ws.column_dimensions['G'].width = 3
     ws.column_dimensions['H'].width = 18
 
+    # C-8: derive property name and parcel IDs from config; fallback to RevLabs hardcodes
+    _prop_disp  = (getattr(property_config, 'property_display_name', '') or
+                   getattr(property_config, 'property_name', '') or 'Revolution Labs')
+    _prop_addr  = (getattr(property_config, 'property_address', '') or '').strip()
+    _parcel_ids = list(getattr(property_config, 'parcel_ids', None) or [])
+    if _parcel_ids:
+        _parcel_str = '  |  Parcel I.D. ' + ' and '.join(_parcel_ids)
+    else:
+        # RevLabs fallback
+        _parcel_str = '  |  Parcel I.D. 00011619 and R0140050002'
+    _loc_str = (_prop_addr + _parcel_str) if _prop_addr else ('Lexington, MA' + _parcel_str)
+
     # Row 1: title
-    ws.cell(row=1, column=2).value = 'Revolution Labs — Analysis of Real Estate Taxes'
+    ws.cell(row=1, column=2).value = f'{_prop_disp} — Analysis of Real Estate Taxes'
     ws.cell(row=1, column=2).font  = Font(name='Calibri', size=13, bold=True)
     # Row 2: parcel info
-    ws.cell(row=2, column=2).value = 'Lexington, MA  |  Parcel I.D. 00011619 and R0140050002'
+    ws.cell(row=2, column=2).value = _loc_str
     # Row 3: period
     ws.cell(row=3, column=2).value = f'Period: {period}'
 
@@ -1166,6 +1179,7 @@ def build_restricted_cash_tab(
 def build_ret_analysis_tab(
     wb, berkadia_loans, gl_result, period,
     current_prefix, tab_prefix, tb_map=None,
+    property_config=None,
 ):
     """
     RE Tax Analysis: copy prior tab + append the monthly RE tax movements.
@@ -1260,7 +1274,7 @@ def build_ret_analysis_tab(
         _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '135120')
     elif not prior_ws:
         # First-period: write full historical seed data instead of a minimal stub
-        _write_seed_ret_analysis(ws, period, tb_map)
+        _write_seed_ret_analysis(ws, period, tb_map, property_config=property_config)
     ws.sheet_properties.tabColor = '375623'
 
 
@@ -1868,6 +1882,7 @@ def build_all_analysis_tabs(
     tb_map: Optional[dict] = None,
     berkadia_loans: Optional[list] = None,
     prepaid_active: Optional[list] = None,
+    property_config=None,
 ):
     """
     Build all analysis tabs for the current period.
@@ -1894,6 +1909,7 @@ def build_all_analysis_tabs(
     build_ret_analysis_tab(
         wb, berkadia_loans, gl_result, period,
         current_prefix, tab_prefix, tb_map,
+        property_config=property_config,
     )
     build_insurance_analysis_tab(
         wb, prepaid_active, gl_result, period,

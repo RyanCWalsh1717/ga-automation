@@ -55,12 +55,12 @@ ACCOUNT_CONTEXT: Dict[str, str] = {
     ),
     '613210': (
         'Utilities-Gas is a seasonal account: high in Jan–Mar and Nov–Dec, '
-        'low in summer. Kardin has three meter lines: 49789-85790 HVAC (main driver), '
-        '49789-42240 STYGEN, and 49789-20610 EMGEN. State which meter is driving the variance.'
+        'low in summer. State which meter or sub-service is driving the variance '
+        'and reference any weather events or operational changes.'
     ),
     '613310': (
-        'Utilities-Water/Sewer: Newton municipality bills semi-annually. '
-        'Large accrual variances against the flat monthly budget are timing differences. '
+        'Utilities-Water/Sewer: municipal billing varies by utility provider. '
+        'Large accrual variances against the flat monthly budget are typically timing differences. '
         'State the billing period covered by the accrual and confirm '
         'full-year cost is within annual budget.'
     ),
@@ -75,8 +75,7 @@ ACCOUNT_CONTEXT: Dict[str, str] = {
     ),
     '635110': (
         'Snow & Ice Removal: highly weather-dependent. '
-        'Name the vendor (Landscape America if applicable), '
-        'reference specific storm events visible in GL, '
+        'Name the vendor, reference specific storm events visible in GL, '
         'state remaining annual budget and risk of full-year overage.'
     ),
     '637130': (
@@ -430,27 +429,30 @@ DIRECTION CONVENTION (for your internal reasoning — do NOT write these words):
 """
 
 # Back-compat alias — external code that imported _SYSTEM_PROMPT directly still works.
+# C-16: uses generic placeholders; callers should pass real values via _build_system_prompt().
 _SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
-    property_display='Revolution Labs property (1050 Waltham St, Lexington MA)',
-    investor_name='Singerman Real Estate',
+    property_display='the subject property',
+    investor_name='the capital partner',
 )
 
 
 def _build_system_prompt(
-    property_display: str = 'Revolution Labs property (1050 Waltham St, Lexington MA)',
-    investor_name: str = 'Singerman Real Estate',
+    property_display: str = '',
+    investor_name: str = '',
 ) -> str:
     """Build the LLM system prompt with per-property strings injected.
 
     Args:
         property_display:  Human-readable property description, e.g.
-                           'Revolution Labs property (1050 Waltham St, Lexington MA)'
+                           'Revolution Labs (1050 Waltham St, Lexington MA)'.
+                           Leave blank to use generic placeholder.
         investor_name:     Capital partner name shown to the model, e.g.
-                           'Singerman Real Estate Partners'
+                           'Singerman Real Estate Partners'.
+                           Leave blank to use generic placeholder.
     """
     return _SYSTEM_PROMPT_TEMPLATE.format(
-        property_display=property_display or 'Revolution Labs property (1050 Waltham St, Lexington MA)',
-        investor_name=investor_name or 'Singerman Real Estate',
+        property_display=property_display or 'the subject property',
+        investor_name=investor_name or 'the capital partner',
     )
 
 
@@ -766,10 +768,10 @@ def generate_variance_comments_grp(
     gl_parsed,
     kardin_records: List[dict],
     period: str = '',
-    property_name: str = 'Revolution Labs Owner, LLC',
+    property_name: str = '',
     api_key: Optional[str] = None,
     je_adjustments: Optional[Dict[str, float]] = None,
-    investor_name: str = 'Singerman Real Estate',
+    investor_name: str = '',
 ) -> Dict[str, dict]:
     """
     Generate MTD and YTD variance comments for all budget comparison rows
@@ -1111,7 +1113,7 @@ def generate_variance_comments(engine_result, api_key: Optional[str] = None) -> 
     budget_data = engine_result.parsed.get('budget_comparison')
     kardin_data = engine_result.parsed.get('kardin_budget') or []
     period = getattr(engine_result, 'period', '') or ''
-    prop = getattr(engine_result, 'property_name', 'Revolution Labs Owner, LLC') or ''
+    prop = getattr(engine_result, 'property_name', '') or ''
 
     # Normalize budget_data to list of dicts
     budget_rows: List[dict] = []

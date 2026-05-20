@@ -256,7 +256,10 @@ def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
     prepay = max(ar_prepay, scan_prepay)
 
     net = max(0.0, total - prepay)
-    return (net if net > 0 else None), prepay
+    # Return 0.0 (not None) when net==0 — cash was received but fully consumed by
+    # prepayments. Returning None would cause fallthrough to DACA/GL/revenue proxy
+    # and overstate the fee basis.
+    return (net if net > 0 else 0.0), prepay
 
 
 def _cash_from_daca(daca_parsed: dict) -> Optional[float]:
@@ -560,6 +563,18 @@ def build_management_fee_je(
         return lines
 
     # ── Legacy fallback: JLL + GRP from fee_result rates ─────────────────────
+    # C-5: This path fires when property_config is None or has no management_fees
+    # configured.  It uses hardcoded JLL/GRP names — correct for RevLabs but wrong
+    # for any other property.  Add management_fees to the property's config.yaml
+    # to use the config-driven path above.
+    import warnings as _warnings
+    _prop_id = getattr(property_config, 'property_code', None) or '(none)'
+    _warnings.warn(
+        f"Management fee JE for '{_prop_id}' is using the legacy JLL+GRP fallback because "
+        f"'management_fees' is not configured.  Populate the management_fees list in "
+        f"data/{_prop_id}/config.yaml to suppress this warning and use config-driven rates.",
+        stacklevel=3,
+    )
     jll_amt = _round(fee_result.jll_fee)
     grp_amt = _round(fee_result.grp_fee)
 
@@ -681,17 +696,30 @@ def detect_prior_period_catchup(gl_data, mgmt_fee_account: str = _MGMT_FEE_CODE)
         _has_any_rev_signal = any(_is_auto_reversal(t) for t in acct.transactions
                                    if float(t.credit or 0) > 0)
 
+        def _is_non_journal(txn) -> bool:
+            """True for K/P/other-type (real invoice/check entries); False for J-journals."""
+            ctrl = (str(getattr(txn, 'control', '') or '')).upper()
+            # J-prefix = Yardi journal entries (including auto-reversals and reclasses)
+            return not ctrl.startswith('J')
+
         if _has_any_rev_signal:
             # Filtered mode: credits = identified auto-reversals only
             period_credits = sum(
                 float(txn.credit or 0) for txn in acct.transactions
                 if _is_auto_reversal(txn)
             )
+            # Symmetrically filter debits: only real invoice/check postings (non-J).
+            # Excluding J-type debits prevents unrelated reclasses or corrections
+            # from masking a legitimate prior-period catch-up gap.
+            period_debits = sum(
+                float(txn.debit or 0) for txn in acct.transactions
+                if _is_non_journal(txn)
+            )
         else:
-            # Fallback: sum all credits (preserves original behaviour on older exports)
+            # Fallback: sum all credits and debits (preserves original behaviour
+            # on older GL exports with no recognisable auto-reversal signals).
             period_credits = sum(float(txn.credit or 0) for txn in acct.transactions)
-
-        period_debits = sum(float(txn.debit or 0) for txn in acct.transactions)
+            period_debits  = sum(float(txn.debit  or 0) for txn in acct.transactions)
 
         # Net credit = auto-reversal exceeded invoice postings → catch-up gap
         net_credit = period_credits - period_debits
