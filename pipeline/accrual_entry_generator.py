@@ -1395,8 +1395,10 @@ def detect_invoice_proration_accruals(
             continue
 
         invoice_total = sum(period_debits)
-        if invoice_total < materiality:
-            continue
+        if invoice_total < 1.0:
+            continue   # filter true rounding noise only; no materiality floor here —
+                       # actual paid invoices are real evidence regardless of dollar size
+                       # (materiality floor belongs in Layer 3 pattern detection, not Layer 2)
 
         # All criteria met — accrual = same amount as the current-period invoices
         # (current invoices cover prior month; current month is unbilled at same rate)

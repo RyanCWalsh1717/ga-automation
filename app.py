@@ -3304,14 +3304,14 @@ with tab1:
                     _ic_amt  = abs(float(_ic.get('net_amount', 0)))
                     _ic_name = str(_ic.get('account_name', ''))
                     _ic_desc = f"Recode {_ic_code} to expense account"
-                    # DR row — blank Account for user to fill in (6xxxxx or 8xxxxx target)
-                    _new_ic_rows.append({
-                        "Leg": "DR", "Account": "", "Account Name": "",
-                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
-                    })
-                    # CR row — pre-filled with 7xxx account being removed
+                    # CR row first — pre-filled so user can see the account and amount
                     _new_ic_rows.append({
                         "Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
+                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
+                    })
+                    # DR row second — blank Account for user to fill in (6xxxxx or 8xxxxx target)
+                    _new_ic_rows.append({
+                        "Leg": "DR", "Account": "", "Account Name": "",
                         "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
                     })
             if _new_ic_rows:
