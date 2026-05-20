@@ -8,10 +8,10 @@ Runs against the parsed data from the pipeline and produces:
 
 Checks:
   1  TB to Budget Comparison Tie-Out
-  2  Budget Variances ≥ Tier 1 threshold (GRP standards)
+  2  Budget Variances ≥ Tier 1 or Tier 2 threshold (GRP standards)
   3  Trial Balance Self-Balance (debits = credits)
        Note: GL-to-TB account-level tie-out removed — Yardi validates this
-  4  Month-over-Month Swings (>$10,000 or sign change)
+  4  Month-over-Month Swings (≥$2,500, both directions)
   5  BS Workpaper Tie-Out (GL ending vs Workpaper)
   6  Accruals vs Budget (missing accrual detection)
   7  Miscellaneous (mgmt fee, interest expense, insurance/prepaid)
@@ -188,7 +188,7 @@ def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
 
 
 # ══════════════════════════════════════════════════════════════
-# CHECK 2 — Budget Variances (GRP Tier 1 Threshold)
+# CHECK 2 — Budget Variances (GRP Tier 1 + Tier 2 Thresholds)
 # ══════════════════════════════════════════════════════════════
 
 def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
@@ -246,7 +246,7 @@ def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
     t1_count = sum(1 for f in findings if 'T1' in f.note)
 
     if not findings:
-        summary = 'No current-period variances exceed GRP Tier 1 threshold.'
+        summary = 'No current-period variances exceed GRP Tier 1 or Tier 2 threshold ($2,500 / 5%).'
         status = 'PASS'
     else:
         largest = max(findings, key=lambda f: abs(f.difference))
@@ -320,11 +320,12 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
 # ══════════════════════════════════════════════════════════════
 
 def check_4_mom_swings(budget_rows: List[dict],
-                       swing_threshold: float = 10_000.0,
+                       swing_threshold: float = 2_500.0,
                        period_month: int = 0) -> QCResult:
     """
     For P&L accounts, derive prior-month actual = YTD actual - PTD actual.
-    Flag if |PTD actual - prior month actual| > $10,000 or if sign changes.
+    Flag if |PTD actual - prior month actual| >= $2,500 (favorable or unfavorable).
+    Sign changes are always noted in the finding note when present.
 
     January (period_month=1): prior = YTD - PTD = 0 for all P&L accounts
     because YTD == PTD in month 1. Every non-zero account would show a full-value
@@ -362,7 +363,7 @@ def check_4_mom_swings(budget_rows: List[dict],
         abs_swing = abs(swing)
         sign_change = (ptd > 0 and prior < 0) or (ptd < 0 and prior > 0)
 
-        if abs_swing > swing_threshold or (sign_change and abs_swing > 2_500):
+        if abs_swing >= swing_threshold:
             flag = 'FLAG'
             note = (f'Prior month ${prior:,.0f} → Current ${ptd:,.0f} '
                     f'= swing ${swing:+,.0f}')
@@ -392,7 +393,7 @@ def check_4_mom_swings(budget_rows: List[dict],
                    f'${abs(largest.difference):,.0f} swing.')
         status = 'FLAG'
 
-    return QCResult('CHECK_4', 'Month-over-Month Swings (>$10,000)', status, summary, findings)
+    return QCResult('CHECK_4', 'Month-over-Month Swings (≥$2,500)', status, summary, findings)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -627,6 +628,9 @@ def check_7_misc(budget_rows: List[dict],
     7c. Insurance-Property (639110) — verify monthly charge matches expected amortization
     7d. Prepaid accounts (135110 insurance, 135120 RE Tax prepaid, 135150 Prepaid Other) — fwd + DR - CR = ending
     7e. Berkadia insurance escrow — should be $0 for Rev Labs (Berkadia no longer handles insurance)
+    7f. RE Tax Escrow (115200) GL vs Berkadia statement
+    7g. Residual 7xxxxx corporate expense accounts — net_change should be $0 after Pass 1 recode JEs
+    7h. 5xxxxx company revenue accounts — should not appear on property GL at all
     """
     findings: List[QCFinding] = []
     kardin_records = kardin_records or []
@@ -716,7 +720,10 @@ def check_7_misc(budget_rows: List[dict],
         ptd_actual = abs(_safe_float(bc_map[ins_code].get('ptd_actual', 0)))
         if expected_monthly > 0:
             diff = abs(ptd_actual - expected_monthly)
-            flag = 'INFO' if diff < 500 else 'FLAG'
+            # Proportional tolerance: 5% of expected monthly, floor $50 —
+            # matches the mgmt-fee check pattern and scales with policy size.
+            _ins_tolerance = max(50.0, expected_monthly * 0.05)
+            flag = 'INFO' if diff < _ins_tolerance else 'FLAG'
             findings.append(QCFinding(
                 account_code=ins_code,
                 account_name='Insurance-Property',
@@ -726,7 +733,8 @@ def check_7_misc(budget_rows: List[dict],
                 flag=flag,
                 note=(f'Actual: ${ptd_actual:,.2f} | '
                       f'Expected monthly (${annual_budget:,.0f}/12): ${expected_monthly:,.2f}. '
-                      + ('On track.' if diff < 500 else f'Difference ${diff:,.2f} — verify prepaid schedule.')),
+                      + ('On track.' if diff < _ins_tolerance
+                         else f'Difference ${diff:,.2f} — verify prepaid schedule.')),
             ))
 
     # ── 7d: Prepaid accounts math (fwd + DR - CR = ending) ────
@@ -824,10 +832,58 @@ def check_7_misc(budget_rows: List[dict],
                      else f'Difference ${diff:,.2f} — post reconciling JE to 115200.')),
         ))
 
+    # ── 7g: Residual 7xxxxx corporate expense accounts ────────────────────────
+    # 7xxxxx = corporate expenses (non-property). After Pass 1 recode JEs are
+    # posted to Yardi, the net_change on every 7xxxxx account should be zero
+    # (original debit + recode credit = 0).  Any residual means the recode JE
+    # was not posted or a new corporate charge hit the property GL post-close.
+    #
+    # ── 7h: 5xxxxx company revenue on property GL ─────────────────────────────
+    # 5xxxxx = company revenue (entity-level, non-property). Should never appear
+    # on the property GL.
+    if gl_parsed and hasattr(gl_parsed, 'accounts'):
+        for _na_acct in gl_parsed.accounts:
+            _na_code = str(getattr(_na_acct, 'account_code', '') or '').strip()
+            _na_nc   = float(getattr(_na_acct, 'net_change', 0) or 0)
+            if abs(_na_nc) < 0.01:
+                continue
+            _na_name = str(getattr(_na_acct, 'account_name', '') or '').strip() or _na_code
+
+            if _na_code.startswith('7'):
+                findings.append(QCFinding(
+                    account_code=_na_code,
+                    account_name=f'Corporate Expense: {_na_name}',
+                    value_a=_na_nc,
+                    value_b=0.0,
+                    difference=_na_nc,
+                    flag='FLAG',
+                    note=(
+                        f'Corporate expense account {_na_code} has ${abs(_na_nc):,.2f} net PTD '
+                        f'activity in the final GL — recode JE (DR 6/8xxxxx / CR {_na_code}) '
+                        f'may not have been posted, or a new corporate charge appeared post-close.'
+                    ),
+                ))
+
+            elif _na_code.startswith('5'):
+                findings.append(QCFinding(
+                    account_code=_na_code,
+                    account_name=f'Company Revenue: {_na_name}',
+                    value_a=_na_nc,
+                    value_b=0.0,
+                    difference=_na_nc,
+                    flag='FLAG',
+                    note=(
+                        f'Company revenue account {_na_code} has ${abs(_na_nc):,.2f} net PTD '
+                        f'activity on the property GL — 5xxxxx is entity-level revenue and '
+                        f'should not appear here. Review and recode as needed.'
+                    ),
+                ))
+
     flags = [f for f in findings if f.flag == 'FLAG']
     if not flags:
         status = 'PASS'
-        summary = 'Miscellaneous checks passed — management fee, interest, insurance, prepaid math, RE tax escrow.'
+        summary = ('Miscellaneous checks passed — management fee, interest, insurance, '
+                   'prepaid math, RE tax escrow, no residual 7xxxxx or 5xxxxx activity.')
     else:
         status = 'FLAG'
         items = ', '.join(f.account_name for f in flags[:3])
@@ -1179,7 +1235,8 @@ def _write_tab0(wb, report: QCReport):
         ('STEP 3', 'Review tabs 1–7b. Status values: TIES | REVIEW | FLAG | UNDER | OVER | MANUAL REVIEW REQUIRED'),
         ('STEP 4', 'Color legend: Green = TIES/OK | Red = FLAG/REVIEW | Yellow = UNDER/Input required | Blue = Section header'),
         ('KEY THRESHOLDS',
-         'Budget variance flag = ≥$5,000 AND ≥75%, OR ≥$5,000 regardless of %. MoM swing flag = >$10,000 or sign change.'),
+         'Budget variance: Tier 1 = ≥$5,000 OR ≥5% of budget; Tier 2 = $2,500–$4,999 and <5% (both flagged). '
+         'MoM swing flag = ≥$2,500 (favorable or unfavorable).'),
         ('LOAN REFERENCE',
          f'Berkadia: Note A1 + Note B1 + Mezz = total mortgage (TB 231100). '
          f'Interest accrual per Berkadia amort schedule.'),
@@ -1260,8 +1317,8 @@ def _write_tab2(wb, report: QCReport, budget_rows):
     prop = report.property_name or 'Revolution Labs'
     _qwrite_tab_header(ws, 'CHECK 2: Budget Variances', prop, report.period)
     _qwrite_check_header(ws,
-        'CHECK 2: Budget Variances ≥$5,000 or ≥75%',
-        'OVER = Actuals > Budget (unfavorable) | UNDER = Actuals < Budget (favorable)',
+        'CHECK 2: Budget Variances — Tier 1 (≥$5K or ≥5%) and Tier 2 ($2.5K–$5K, <5%)',
+        'OVER = unfavorable vs NOI | UNDER = favorable vs NOI (both directions flagged)',
         8)
 
     headers = ['Line Item', 'Actual', 'Budget', 'Variance ($)', 'Var %', 'Flag', 'Elec Tie Check', 'JLL Comment / Explanation']
@@ -1371,7 +1428,7 @@ def _write_tab4(wb, report: QCReport, budget_rows, period_month: int = 1, t12_re
     prior_src = '12-Month Statement' if has_t12 else 'YTD − PTD (derived)'
     _qwrite_check_header(ws,
         'CHECK 4: Month-over-Month Swings — Prior Month vs Current Month',
-        f'Flag: changes > $10,000 or sign changes | Prior month source: {prior_src}',
+        f'Flag: swings ≥ $2,500 (favorable or unfavorable) | Prior month source: {prior_src}',
         6)
 
     headers = ['Line Item', 'Prior Month', 'Current Month', 'Change ($)', 'Flag', 'Notes']
@@ -1704,7 +1761,7 @@ def _write_tab7(wb, report: QCReport, tb_result, gl_parsed, budget_rows, loan_da
         _data_row(row, '637130 Management Fee accrual',
                   mgmt_finding.value_b,
                   mgmt_finding.value_a,
-                  'TIES' if abs(mgmt_finding.difference) < 500 else 'FLAG',
+                  'TIES' if mgmt_finding.flag == 'INFO' else 'FLAG',
                   mgmt_finding.note)
     else:
         bc_mgmt = bcm.get('637130', {})

@@ -241,15 +241,26 @@ class BankReconDetail:
 
 def _parse_bank_date(date_str: str, period_str: str) -> Optional[date]:
     """Convert bank date string (mm/dd or mm/dd/yyyy) to datetime.date
-    using the year from the GL period string (e.g. 'Feb-2026')."""
+    using the year from the GL period string (e.g. 'Feb-2026').
+
+    Year-crossover logic (mm/dd format only — no explicit year):
+    If the bank date month is strictly greater than the GL period month, the
+    bank transaction is from the prior calendar year.  This covers all
+    quarter-end / quarter-start boundaries (e.g. a Dec check clearing in a
+    Jan close, a Mar check clearing in an Apr close, etc.) rather than only
+    the original Nov/Dec → Jan/Feb special case.
+    """
     if not date_str or not isinstance(date_str, str):
         return None
 
-    # Extract year from period
+    # Extract year and month from period string (e.g. 'Feb-2026')
     year = datetime.now().year
+    period_month = datetime.now().month
     if '-' in period_str:
         try:
-            year = int(period_str.split('-')[1])
+            parts = period_str.split('-')
+            year = int(parts[1])
+            period_month = datetime.strptime(parts[0].strip(), '%b').month
         except (IndexError, ValueError):
             pass
 
@@ -258,8 +269,8 @@ def _parse_bank_date(date_str: str, period_str: str) -> Optional[date]:
         try:
             parsed = datetime.strptime(date_str.strip(), fmt)
             if fmt == '%m/%d':
-                # Handle year-end crossover: Dec bank date with Jan GL period
-                if parsed.month in (11, 12) and period_str.startswith(('Jan', 'Feb')):
+                # Generalised crossover: bank month > GL period month → prior year
+                if parsed.month > period_month:
                     return parsed.replace(year=year - 1).date()
                 return parsed.replace(year=year).date()
             return parsed.date()
@@ -1166,7 +1177,7 @@ def check_debt_service(gl_result, loan_result,
     return result, exceptions
 
 
-def check_budget_variances(is_result, budget_result, threshold_pct=10.0) -> Tuple[list, List[Exception_]]:
+def check_budget_variances(is_result, budget_result, threshold_pct=5.0) -> Tuple[list, List[Exception_]]:
     """
     Compare Income Statement actuals to Budget Comparison and flag
     material variances exceeding the threshold.
@@ -1302,12 +1313,14 @@ def cross_validate_is_to_gl(is_result, gl_result) -> List[Exception_]:
             code = acct.account_code
             if code.startswith('4'):
                 gl_revenue += acct.net_change
-            elif code.startswith(('5', '6', '7', '8')):
+            elif code.startswith(('6', '8')):
                 gl_expense += acct.net_change
 
     if is_net is not None:
-        # IS net income should equal GL credits - debits for P&L accounts
-        gl_net = -(gl_revenue + gl_expense)  # credits are positive in GL
+        # GL net_change = debits − credits, so revenue (credit-heavy) is negative
+        # and expense (debit-heavy) is positive.  Negating their sum converts to
+        # IS sign convention (revenue positive, expense positive, NOI = Rev − Exp).
+        gl_net = -(gl_revenue + gl_expense)
         variance = abs(is_net - gl_net)
         if variance > 1.00:
             exceptions.append(Exception_(
@@ -1423,6 +1436,71 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         except Exception as e:
             result.add_exception("error", "parse", "yardi_gl", f"GL parse failed: {e}")
 
+    # ── Non-property account detection ───────────────────────
+    # COA structure:
+    #   4xxxxx = property revenue | 5xxxxx = company revenue (non-property)
+    #   6xxxxx = property expenses | 7xxxxx = corporate expenses (non-property)
+    #   8xxxxx = property interest expense | 1-3xxxxx = balance sheet
+    #
+    # 7xxxxx (corporate expenses): may appear in the property GL when a corporate
+    # expense is miscoded.  These must be recoded to 6xxxxx/8xxxxx before close.
+    #
+    # 5xxxxx (company revenue): should not appear on the property GL at all.
+    # Flag for manual review — no automated recode table (revenue routing is
+    # handled at the entity level, not the property level).
+
+    _corp_7xxx: list = []     # 7xxxxx — corporate expenses needing recode
+    _co_rev_5xxx: list = []   # 5xxxxx — company revenue appearing on property GL
+
+    if gl is not None and hasattr(gl, 'accounts'):
+        for _na_acct in gl.accounts:
+            _na_code = str(getattr(_na_acct, 'account_code', '') or '').strip()
+            _na_nc   = float(getattr(_na_acct, 'net_change', 0) or 0)
+            _na_name = str(getattr(_na_acct, 'account_name', '') or '').strip()
+            if abs(_na_nc) < 0.01:
+                continue
+
+            if _na_code.startswith('7'):
+                _corp_7xxx.append({
+                    'account_code': _na_code,
+                    'account_name': _na_name,
+                    'net_amount':   _na_nc,
+                })
+                result.add_exception(
+                    severity='warning',
+                    category='corporate_expense',
+                    source='gl_7xxx',
+                    description=(
+                        f"Corporate expense account {_na_code} ({_na_name}) has "
+                        f"${abs(_na_nc):,.2f} PTD activity on the property GL — "
+                        f"must be recoded to a 6xxxxx (property expense) or "
+                        f"8xxxxx (interest) account before close."
+                    ),
+                )
+
+            elif _na_code.startswith('5'):
+                _co_rev_5xxx.append({
+                    'account_code': _na_code,
+                    'account_name': _na_name,
+                    'net_amount':   _na_nc,
+                })
+                result.add_exception(
+                    severity='warning',
+                    category='company_revenue',
+                    source='gl_5xxx',
+                    description=(
+                        f"Company revenue account {_na_code} ({_na_name}) has "
+                        f"${abs(_na_nc):,.2f} PTD activity on the property GL — "
+                        f"5xxxxx is entity-level revenue and should not appear "
+                        f"on the property GL. Review and recode as needed."
+                    ),
+                )
+
+    result.summary['corp_7xxx_accounts']  = _corp_7xxx
+    result.summary['co_rev_5xxx_accounts'] = _co_rev_5xxx
+    # Legacy key kept for any code still reading the old name
+    result.summary['interco_7xxx_accounts'] = _corp_7xxx
+
     is_data = None
     if "income_statement" in files and files["income_statement"]:
         try:
@@ -1531,15 +1609,29 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
     # ── Step 5: Match GL to bank ─────────────────────────────
     # Load property config to read config-driven GL account codes
     _engine_cfg = None
+    _engine_prop_code = (
+        result.parsed['gl'].metadata.property_code
+        if result.parsed.get('gl') else ''
+    ) or ''
     try:
         from property_config import get_config as _get_cfg
-        _engine_cfg = _get_cfg(result.parsed.get('gl') and
-                               result.parsed['gl'].metadata.property_code or '')
+        _engine_cfg = _get_cfg(_engine_prop_code)
     except Exception:
         pass
     _gl_accts      = getattr(_engine_cfg, 'gl_accounts', None) or {}
     _cash_code     = str(_gl_accts.get('cash_operating', '111100')).strip() or '111100'
     _interest_code = str(_gl_accts.get('interest_expense', '801110')).strip() or '801110'
+
+    # Warn when property code is absent or config is unavailable — bank rec will
+    # use hardcoded defaults (111100 / 801110) which may be wrong for some properties.
+    if not _engine_prop_code or _engine_cfg is None:
+        result.add_exception(
+            'warning', 'config', 'engine',
+            f"Property config not loaded (property_code={_engine_prop_code!r}). "
+            f"Bank rec and debt service checks will use hardcoded account defaults "
+            f"(cash=111100, interest=801110). Create data/{_engine_prop_code or '<code>'}/config.yaml "
+            f"or ensure the GL header contains a valid property code."
+        )
 
     if gl and bank_data:
         gl_bank_matches, gl_bank_exc, bank_recon = match_gl_to_bank(

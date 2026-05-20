@@ -342,6 +342,10 @@ if "upload_key_p2" not in st.session_state:
     st.session_state.upload_key_p2 = 0
 if "editor_reset_count" not in st.session_state:
     st.session_state.editor_reset_count = 0
+if "je_excluded_jes" not in st.session_state:
+    st.session_state.je_excluded_jes = set()
+if "prior_period_outstanding" not in st.session_state:
+    st.session_state.prior_period_outstanding = 0.0
 
 # Audit trail & sign-off
 if "prepared_by" not in st.session_state:
@@ -380,6 +384,15 @@ if "pass1_gl_activity_log" not in st.session_state:
     st.session_state['pass1_gl_activity_log'] = []
 if "je_desc_overrides" not in st.session_state:
     st.session_state.je_desc_overrides = {}
+if "interco_recode_df" not in st.session_state:
+    import pandas as _pd_ic_init
+    st.session_state.interco_recode_df = _pd_ic_init.DataFrame({
+        "7xxx Account":   _pd_ic_init.Series([], dtype=str),
+        "Account Name":   _pd_ic_init.Series([], dtype=str),
+        "Net Amount ($)": _pd_ic_init.Series([], dtype=float),
+        "Target Account": _pd_ic_init.Series([], dtype=str),
+        "Description":    _pd_ic_init.Series([], dtype=str),
+    })
 
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
@@ -608,7 +621,6 @@ _stc.html(f"""<!DOCTYPE html>
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
-_prior_period_outstanding_default = 0.0
 
 # ── Property discovery (used by main-page selector + sidebar card) ───────────
 _all_props   = _discover_properties()
@@ -642,6 +654,11 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pass1_engine_result   = None
     st.session_state.pass1_output_files    = {}
     st.session_state['pass1_gl_activity_log'] = []
+    st.session_state.interco_recode_df     = pd.DataFrame({
+        "7xxx Account": pd.Series([], dtype=str), "Account Name": pd.Series([], dtype=str),
+        "Net Amount ($)": pd.Series([], dtype=float),
+        "Target Account": pd.Series([], dtype=str), "Description": pd.Series([], dtype=str),
+    })
     st.session_state.pass2_complete        = False
     st.session_state.pass2_engine_result   = None
     st.session_state.pass2_output_files    = {}
@@ -656,6 +673,8 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.last_completed_step = None
     # Clear preparer name so it re-seeds from new property's team
     st.session_state.prepared_by         = ''
+    # Clear JE exclusions so property A's unchecked JEs don't show in property B
+    st.session_state.je_excluded_jes     = set()
     # Clear file-type overrides so assignments from property A don't bleed to B
     st.session_state.bulk_overrides_p1   = {}
     st.session_state.bulk_overrides_p2   = {}
@@ -665,10 +684,12 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pop('_je_desc_run', None)
     # Clear post-close JE table and sign-off state so Property A data doesn't bleed into B
     st.session_state.signoff_state        = {}
-    st.session_state.post_close_je_df    = _pd.DataFrame({
-        'JE #': [], 'DR Account': [], 'DR Amount': [], 'CR Account': [], 'CR Amount': [],
-        'Description': [],
-    }) if '_pd' in dir() else st.session_state.get('post_close_je_df', {})
+    st.session_state.post_close_je_df    = pd.DataFrame({
+        "JE #": ["PC-001", "PC-001"], "Description": ["", ""],
+        "Account Code": ["", ""],
+        "Debit ($)": [0.0, 0.0], "Credit ($)": [0.0, 0.0],
+        "Line Description": ["", ""],
+    })
     st.session_state.pop('_pcje_latest', None)
     # Increment upload widget keys so Streamlit discards Property A's file buffers
     st.session_state.upload_key_p1 = st.session_state.get('upload_key_p1', 0) + 1
@@ -719,7 +740,21 @@ st.session_state.prepared_by = st.sidebar.text_input(
     help="Stamped on every workpaper tab and the run log.",
 )
 
-prior_period_outstanding = _prior_period_outstanding_default
+with st.sidebar.expander("🏦 Bank Rec Settings", expanded=False):
+    prior_period_outstanding = st.number_input(
+        "Prior-period outstanding checks ($)",
+        min_value=0.0,
+        value=st.session_state.get('prior_period_outstanding', 0.0),
+        step=100.0,
+        format="%.2f",
+        help=(
+            "Total of checks that cleared in a prior period but first appeared "
+            "on this month's bank statement. Entered as a positive dollar amount. "
+            "Used by the bank reconciliation to correctly compute the adjusted GL balance."
+        ),
+        key="prior_period_outstanding_input",
+    )
+    st.session_state['prior_period_outstanding'] = prior_period_outstanding
 
 # ── Report an Issue ───────────────────────────────────────────
 with st.sidebar.expander("🐛 Report an Issue", expanded=False):
@@ -835,6 +870,7 @@ else:
         st.session_state.upload_key_p1 += 1
         st.session_state.upload_key_p2 += 1
         st.session_state.editor_reset_count = st.session_state.get('editor_reset_count', 0) + 1
+        st.session_state.je_excluded_jes = set()   # clear JE exclusions on full reset
         shutil.rmtree(st.session_state.temp_dir, ignore_errors=True)
         st.session_state.temp_dir = tempfile.mkdtemp(prefix="ga_automation_")
         import pandas as _pd
@@ -862,6 +898,11 @@ else:
         st.session_state.bulk_overrides_wp   = {}
         st.session_state['pass1_gl_activity_log'] = []
         st.session_state.je_desc_overrides   = {}
+        st.session_state.interco_recode_df   = _pd.DataFrame({
+            "7xxx Account": _pd.Series([], dtype=str), "Account Name": _pd.Series([], dtype=str),
+            "Net Amount ($)": _pd.Series([], dtype=float),
+            "Target Account": _pd.Series([], dtype=str), "Description": _pd.Series([], dtype=str),
+        })
         # Clear keys missed by prior Reset All logic
         st.session_state.pop('_je_desc_run', None)
         st.session_state.pop('prior_period_label_input', None)
@@ -1721,7 +1762,10 @@ with tab1:
         for _uf in _bulk_p1:
             _raw = bytes(_uf.getbuffer())
             _det_key, _conf, _det_label = _classify_file(_uf.name, _raw, pass2=False, property_config=_active_cfg)
-            _eff_key = st.session_state.bulk_overrides_p1.get(_uf.name, _det_key)
+            # B-6: key by (name, size) so a re-uploaded file with the same name but
+            # different content gets a fresh key and the stale override doesn't survive.
+            _ovr_key = (_uf.name, _uf.size)
+            _eff_key = st.session_state.bulk_overrides_p1.get(_ovr_key, _det_key)
 
             _ic, _fn_col, _tp_col = st.columns([0.5, 5, 5])
             if _eff_key == "unknown":
@@ -1742,7 +1786,7 @@ with tab1:
                     key=f"ovr_p1_{_uf.name}", label_visibility="collapsed",
                 )
                 _eff_key = _P1_SLOT_KEYS[_P1_SLOT_LABELS.index(_sel_label)]
-                st.session_state.bulk_overrides_p1[_uf.name] = _eff_key
+                st.session_state.bulk_overrides_p1[_ovr_key] = _eff_key
             else:
                 _tp_col.caption(_det_label)
 
@@ -1759,10 +1803,11 @@ with tab1:
         if _loan_paths_p1:
             st.session_state.uploaded_files["loan"] = _loan_paths_p1
 
-        _active_names = {_uf.name for _uf in _bulk_p1}
+        # Prune overrides for files no longer in the upload widget (name+size composite key)
+        _active_keys_p1 = {(_uf.name, _uf.size) for _uf in _bulk_p1}
         st.session_state.bulk_overrides_p1 = {
             k: v for k, v in st.session_state.bulk_overrides_p1.items()
-            if k in _active_names
+            if k in _active_keys_p1
         }
 
     # ── Upload status ─────────────────────────────────────────────────────────
@@ -2022,6 +2067,104 @@ with tab1:
                 icon="✅",
             )
 
+    # ── 7xxxxx Intercompany Recode Table ─────────────────────────────────────
+    # 7xxxxx accounts = corporate expenses (non-property).  Any PTD activity
+    # detected in the property GL must be recoded to the correct 6xxxxx (property
+    # expense) or 8xxxxx (interest) account before close.  The pipeline generates:
+    #   DR [Target Account]  / CR [7xxx Account]  (REC-XXXX, no auto-reverse)
+    # Rows are auto-populated from the GL after the first engine run.
+
+    _p1_er_ic = st.session_state.get('pass1_engine_result')
+    _interco_detected = (_p1_er_ic.summary.get('corp_7xxx_accounts', [])
+                         if _p1_er_ic else [])
+
+    # ── 5xxxxx company revenue warning (no recode table — manual review) ──────
+    _co_rev_detected = (_p1_er_ic.summary.get('co_rev_5xxx_accounts', [])
+                        if _p1_er_ic else [])
+    if _co_rev_detected:
+        _co_rev_lines = ', '.join(
+            f"{a['account_code']} ({a['account_name']}) ${abs(a['net_amount']):,.0f}"
+            for a in _co_rev_detected
+        )
+        st.warning(
+            f"⚠️ **5xxxxx Company Revenue on Property GL** — {len(_co_rev_detected)} account(s) detected: "
+            f"{_co_rev_lines}. "
+            f"5xxxxx is entity-level revenue and should not appear on the property GL. "
+            f"Review and recode via the Manual JEs table if needed.",
+            icon="⚠️",
+        )
+
+    # Auto-merge newly detected accounts into the recode table (idempotent)
+    if _interco_detected:
+        _ic_df_cur = st.session_state.interco_recode_df.copy()
+        _existing_7xxx = set(_ic_df_cur["7xxx Account"].fillna("").str.strip())
+        _new_ic_rows = []
+        for _ic in _interco_detected:
+            _ic_code = str(_ic.get('account_code', '')).strip()
+            if _ic_code and _ic_code not in _existing_7xxx:
+                _new_ic_rows.append({
+                    "7xxx Account":   _ic_code,
+                    "Account Name":   str(_ic.get('account_name', '')),
+                    "Net Amount ($)": float(_ic.get('net_amount', 0)),
+                    "Target Account": "",
+                    "Description":    f"Recode {_ic_code} to expense account",
+                })
+        if _new_ic_rows:
+            st.session_state.interco_recode_df = pd.concat(
+                [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
+            )
+
+    _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
+                 if _interco_detected else "")
+    with st.expander(
+        f"🔄 7xxxxx Intercompany Recode  (DR expense → CR 7xxxxx){_ic_badge}",
+        expanded=bool(_interco_detected),
+    ):
+        st.caption(
+            "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
+            "Any PTD activity must be recoded to the correct **6xxxxx** (property expense) or **8xxxxx** (interest) "
+            "account before close. Enter the **Target Account** for each detected row. "
+            "The pipeline generates **DR [Target Account] / CR [7xxx Account]** (permanent — no auto-reverse). "
+            "Rows auto-populate from the GL on the first run; re-run after filling in target accounts."
+        )
+
+        _ic_recode_edited = st.data_editor(
+            st.session_state.interco_recode_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "7xxx Account":   st.column_config.TextColumn("7xxx Account (CR)", width="small",
+                                      help="6-digit 7xxxxx account to recode OUT of (credited in JE)"),
+                "Account Name":   st.column_config.TextColumn("Account Name", width="medium"),
+                "Net Amount ($)": st.column_config.NumberColumn("Net Amount ($)", format="$%,.2f",
+                                      width="small",
+                                      help="Net PTD activity auto-detected from GL. Edit if recoding a partial amount."),
+                "Target Account": st.column_config.TextColumn("Target Expense Account (DR)", width="small",
+                                      help="6-digit 6xxxxx or 8xxxxx expense account to recode INTO"),
+                "Description":    st.column_config.TextColumn("Description", width="large"),
+            },
+            key="interco_recode_editor",
+        )
+        st.session_state.interco_recode_df = _ic_recode_edited
+
+        _ic_active = _ic_recode_edited[
+            _ic_recode_edited["7xxx Account"].fillna("").str.strip().astype(bool) &
+            _ic_recode_edited["Target Account"].fillna("").str.strip().astype(bool) &
+            (_ic_recode_edited["Net Amount ($)"].fillna(0).abs() > 0)
+        ]
+        if not _ic_active.empty:
+            st.success(
+                f"✅ {len(_ic_active)} recode JE(s) queued — "
+                f"${_ic_active['Net Amount ($)'].abs().sum():,.2f} total",
+                icon="✅",
+            )
+        elif _interco_detected:
+            st.warning(
+                "⚠️ 7xxxxx accounts detected in GL — enter a Target Account for each row, "
+                "then re-run to include recode JEs.",
+                icon="⚠️",
+            )
+
     st.divider()
 
     # ── Pass 1 Run Button ─────────────────────────────────────────────────────
@@ -2084,6 +2227,11 @@ with tab1:
             st.session_state['pass1_gl_activity_log'] = []
             st.session_state.bulk_overrides_p1 = {}
             st.session_state.upload_key_p1 += 1
+            st.session_state.interco_recode_df = pd.DataFrame({
+                "7xxx Account": pd.Series([], dtype=str), "Account Name": pd.Series([], dtype=str),
+                "Net Amount ($)": pd.Series([], dtype=float),
+                "Target Account": pd.Series([], dtype=str), "Description": pd.Series([], dtype=str),
+            })
             for _clr in list(st.session_state.uploaded_files.keys()):
                 if _clr not in ("gl_pass2", "budget_comparison_pass2",
                                 "trial_balance_pass2", "loan_pass2",
@@ -2309,6 +2457,7 @@ with tab1:
                         per_invoice_utility_accounts=getattr(_active_cfg, 'per_invoice_utility_accounts', None) or None,
                         accrual_materiality_floor=getattr(_active_cfg, 'accrual_materiality_floor', 500.0),
                         fiscal_year_start_month=getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1,
+                        layer3_exclude_accounts=getattr(_active_cfg, 'layer3_exclude_accounts', None) or None,
                     )
                 # Surface any pipeline UserWarnings (e.g. missing Berkadia RE tax entry) in the UI
                 for _w in _captured_warnings:
@@ -2352,7 +2501,7 @@ with tab1:
                     st.session_state.temp_dir, f"{_pfx_int}_Prepaid_Ledger_Updated.xlsx"
                 )
                 prepaid_ledger.save(ledger_active, ledger_completed, updated_ledger_path,
-                                    period=close_period)
+                                    period=close_period, property_name=_prop_display)
 
                 # Step 4: Management fee (JE included in accruals CSV)
                 status_text.text("Step 4/6: Calculating management fee...")
@@ -2544,6 +2693,62 @@ with tab1:
                         },
                     ])
 
+                # ── 7xxxxx Intercompany Recode JEs ────────────────────────────
+                # Build recode JEs from the interco_recode table.
+                # DR [target 6/8xxxxx expense account] / CR [7xxxxx account]
+                # Permanent (no auto-reverse) — the recode is a permanent
+                # reclassification, not a period accrual.
+                _recode_je_lines = []
+                _recode_tbl = st.session_state.get("interco_recode_df")
+                if _recode_tbl is not None and not _recode_tbl.empty:
+                    _recode_active_rows = _recode_tbl[
+                        _recode_tbl["7xxx Account"].fillna("").str.strip().astype(bool) &
+                        _recode_tbl["Target Account"].fillna("").str.strip().astype(bool) &
+                        (_recode_tbl["Net Amount ($)"].fillna(0).abs() > 0)
+                    ]
+                    _recode_base = _sup_base + _sup_counter
+                    for _ri, (_, _rrow) in enumerate(_recode_active_rows.iterrows()):
+                        _r7_acct   = str(_rrow["7xxx Account"]).strip()
+                        _r7_name   = str(_rrow.get("Account Name", "") or "").strip() or _r7_acct
+                        _r_target  = str(_rrow["Target Account"]).strip()
+                        # Look up target account name from GL or one-off lookup
+                        _r_target_name = (_acct_name_lookup.get(_r_target)
+                                          or _sup_gl_accts.get(_r_target, {})
+                                          and getattr(_sup_gl_accts.get(_r_target), 'account_name', '')
+                                          or _r_target)
+                        _r_amount  = float(_rrow.get("Net Amount ($)") or 0)
+                        _r_desc    = (str(_rrow.get("Description", "") or "").strip()
+                                      or f"Recode {_r7_acct} → {_r_target}")
+                        _r_je_id   = f'REC-{_recode_base + _ri + 1:04d}'
+
+                        if _r_amount > 0:
+                            # 7xxx had net debit → DR expense / CR 7xxx
+                            _dr_acct, _cr_acct = _r_target, _r7_acct
+                            _dr_name, _cr_name = _r_target_name, _r7_name
+                        else:
+                            # 7xxx had net credit (unusual) → DR 7xxx / CR expense
+                            _dr_acct, _cr_acct = _r7_acct, _r_target
+                            _dr_name, _cr_name = _r7_name, _r_target_name
+                        _r_abs = abs(_r_amount)
+                        _recode_je_lines.extend([
+                            {
+                                'je_number': _r_je_id, 'line': 1, 'date': close_period,
+                                'account_code': _dr_acct, 'account_name': _dr_name,
+                                'description': _r_desc, 'reference': 'INTERCO-RECODE',
+                                'debit': _r_abs, 'credit': 0, 'vendor': '',
+                                'invoice_number': '', 'source': 'interco_recode',
+                                'confidence': 'high', 'reverse_next_month': 0,
+                            },
+                            {
+                                'je_number': _r_je_id, 'line': 2, 'date': close_period,
+                                'account_code': _cr_acct, 'account_name': _cr_name,
+                                'description': _r_desc, 'reference': 'INTERCO-RECODE',
+                                'debit': 0, 'credit': _r_abs, 'vendor': '',
+                                'invoice_number': '', 'source': 'interco_recode',
+                                'confidence': 'high', 'reverse_next_month': 0,
+                            },
+                        ])
+
                 # Step 6: Assemble all JEs, apply building splits, export 3 CSVs
                 status_text.text("Step 6/6: Exporting JE CSVs...")
                 progress_bar.progress(88)
@@ -2554,6 +2759,7 @@ with tab1:
                     + fee_je
                     + _catchup_je
                     + _supplement_je_lines
+                    + _recode_je_lines
                 )
 
                 # Apply pro-rata building splits for multi-building properties
@@ -2797,14 +3003,17 @@ with tab1:
             _run_key = st.session_state.get('pass1_run_count', 0)
 
             # ── Summary metrics row ──────────────────────────────────────────
+            _excl_set_disp = st.session_state.get('je_excluded_jes', set())
+            _dr_incl = [_l for _l in dr_lines if _l.get('je_number', '') not in _excl_set_disp]
             _src_totals: dict = {}
-            for _l in dr_lines:
+            for _l in _dr_incl:
                 _s = _l.get('source', 'other')
                 _src_totals[_s] = _src_totals.get(_s, 0) + (_l.get('debit') or 0)
-            _total_je_count = len(set(_l.get('je_number', '') for _l in dr_lines))
-            _total_amount   = sum(_l.get('debit') or 0 for _l in dr_lines)
-            _metric_items = [('Total JEs', str(_total_je_count)),
-                             ('Total Amount', f"${_total_amount:,.0f}")] + \
+            _total_je_count = len(set(_l.get('je_number', '') for _l in _dr_incl))
+            _total_amount   = sum(_l.get('debit') or 0 for _l in _dr_incl)
+            _excl_je_count  = len(_excl_set_disp)
+            _metric_items = [('Included JEs', str(_total_je_count)),
+                             ('Included Amount', f"${_total_amount:,.0f}")] + \
                             [(_SOURCE_FILE_LABEL.get(s, s), f"${t:,.0f}")
                              for s, t in _src_totals.items()]
             _n_cols = min(len(_metric_items), 6)
@@ -2812,14 +3021,22 @@ with tab1:
             for _mi, (_lbl, _val) in enumerate(_metric_items[:_n_cols]):
                 with _metric_cols[_mi]:
                     st.metric(_lbl, _val)
+            if _excl_je_count:
+                st.info(
+                    f"ℹ️ **{_excl_je_count} JE{'s' if _excl_je_count != 1 else ''} excluded** "
+                    f"from the CSV download. Uncheck → re-check to restore, or re-run Pass 1 to reset.",
+                    icon=None,
+                )
 
             st.write("")
 
             # ── Description override state — keyed by run so fresh run resets ─
             if st.session_state.get('_je_desc_run') != _run_key:
                 st.session_state.je_desc_overrides = {}
+                st.session_state.je_excluded_jes   = set()   # reset exclusions on new run
                 st.session_state._je_desc_run = _run_key
             _all_desc_edits: dict = {}   # (je_num, acct_code) → edited description
+            _all_excl_je_nums: set = set()  # je_numbers unchecked across all expanders
 
             # ── One expander per CR account ──────────────────────────────────
             for _cr_code in _sorted_cr_codes:
@@ -2838,6 +3055,7 @@ with tab1:
                 with st.expander(_expander_label, expanded=True):
                     st.caption(f"Credit account: **{_cr_code}** — all entries below post to this account")
 
+                    _excl_set = st.session_state.get('je_excluded_jes', set())
                     _rows = []
                     for _l in _group_lines:
                         _okey = (_l.get('je_number', ''), _l.get('account_code', ''))
@@ -2847,6 +3065,7 @@ with tab1:
                         if _l.get('account_name'):
                             _acct_display = f"{_acct_display}  {_l['account_name']}"
                         _rows.append({
+                            "Include":     _l.get('je_number', '') not in _excl_set,
                             "JE #":        _l.get('je_number', ''),
                             "File Source": _SOURCE_FILE_LABEL.get(_l.get('source', ''), _l.get('source', '')),
                             "GL Account":  _acct_display,
@@ -2859,6 +3078,9 @@ with tab1:
                         num_rows="fixed",
                         use_container_width=True,
                         column_config={
+                            "Include":     st.column_config.CheckboxColumn(
+                                               "Include", width="small",
+                                               help="Uncheck to exclude this JE from the CSV upload. Re-check to restore."),
                             "JE #":        st.column_config.TextColumn(width="small",  disabled=True),
                             "File Source": st.column_config.TextColumn(width="medium", disabled=True),
                             "GL Account":  st.column_config.TextColumn(width="medium", disabled=True),
@@ -2870,7 +3092,7 @@ with tab1:
                         key=f"je_ed_{_cr_code}_{_run_key}",
                     )
 
-                    # Collect description edits
+                    # Collect description edits and exclusions
                     import pandas as _pd_jed
                     _edit_rows = (_edited.to_dict('records')
                                   if isinstance(_edited, _pd_jed.DataFrame) else list(_edited))
@@ -2882,19 +3104,35 @@ with tab1:
                         )
                         if _edit.get('Description', '') != _orig.get('Description', ''):
                             _all_desc_edits[_k] = _edit['Description']
+                        if not _edit.get('Include', True):
+                            _all_excl_je_nums.add(_orig['JE #'])
 
-                    # Subtotal
+                    # Subtotal — only included rows
+                    _group_incl_total = sum(
+                        _r.get('Amount', 0) for _r in _edit_rows if _r.get('Include', True)
+                    )
+                    _group_excl_count = sum(
+                        1 for _r in _edit_rows if not _r.get('Include', True)
+                    )
                     _sub_cols = st.columns([4, 1])
                     with _sub_cols[1]:
+                        _sub_label = f"Subtotal: ${_group_incl_total:,.2f}"
+                        if _group_excl_count:
+                            _sub_label += f" ({_group_excl_count} excluded)"
                         st.markdown(
                             f"<div style='text-align:right;font-weight:bold;padding-top:4px'>"
-                            f"Subtotal: ${_group_total:,.2f}</div>",
+                            f"{_sub_label}</div>",
                             unsafe_allow_html=True,
                         )
 
-            # ── Apply description edits → update CSV ─────────────────────────
-            if _all_desc_edits:
-                st.session_state.je_desc_overrides = _all_desc_edits
+            # ── Apply description edits + exclusions → update CSV ────────────
+            _excl_changed = _all_excl_je_nums != st.session_state.get('je_excluded_jes', set())
+            if _all_desc_edits or _excl_changed:
+                if _all_desc_edits:
+                    st.session_state.je_desc_overrides = _all_desc_edits
+                if _excl_changed:
+                    st.session_state.je_excluded_jes = _all_excl_je_nums
+                # Apply description overrides to all_je_lines (kept intact — no lines removed)
                 _updated_lines = []
                 for _l in p1.get("all_je_lines", []):
                     _k = (_l.get('je_number', ''), _l.get('account_code', ''))
@@ -2902,6 +3140,10 @@ with tab1:
                         _l = dict(_l, description=_all_desc_edits[_k])
                     _updated_lines.append(_l)
                 p1["all_je_lines"] = _updated_lines
+                # CSV export: exclude both DR and CR legs of excluded JE numbers
+                _excl_for_csv = st.session_state.get('je_excluded_jes', set())
+                _csv_lines = [_l for _l in _updated_lines
+                              if _l.get('je_number', '') not in _excl_for_csv]
                 _p1_er = st.session_state.pass1_engine_result
                 _p1_prop = (
                     (_p1_er.parsed.get('gl') and _p1_er.parsed['gl'].metadata.property_code)
@@ -2911,7 +3153,7 @@ with tab1:
                     from accrual_entry_generator import generate_etl_csv as _gen_etl_ed
                     _ed_csv = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_Accruals_JE.csv")
                     _p1_etl_code = (getattr(_active_cfg, 'yardi_etl_code', '') or _p1_prop)[:8]
-                    _gen_etl_ed(_updated_lines, _ed_csv,
+                    _gen_etl_ed(_csv_lines, _ed_csv,
                                 period=result.period, property_code=_p1_etl_code,
                                 auto_reverse=True)
                     p1["accrual_je_csv"] = _ed_csv
@@ -3542,7 +3784,10 @@ with tab2:
             if _det_key2 not in _P2_SLOT_KEYS:
                 _det_key2 = "unknown"
 
-            _eff_key2 = st.session_state.bulk_overrides_p2.get(_uf2.name, _det_key2)
+            # B-6: key by (name, size) so re-uploading the same filename with different
+            # content gets a fresh key and the stale manual override doesn't survive.
+            _ovr_key2 = (_uf2.name, _uf2.size)
+            _eff_key2 = st.session_state.bulk_overrides_p2.get(_ovr_key2, _det_key2)
 
             _ic2, _fn2, _tp2 = st.columns([1, 3, 4])
             if _eff_key2 == "unknown":
@@ -3563,7 +3808,7 @@ with tab2:
                     key=f"ovr_p2_{_uf2.name}", label_visibility="collapsed",
                 )
                 _eff_key2 = _P2_SLOT_KEYS[_P2_SLOT_LABELS.index(_sel_label2)]
-                st.session_state.bulk_overrides_p2[_uf2.name] = _eff_key2
+                st.session_state.bulk_overrides_p2[_ovr_key2] = _eff_key2
             else:
                 _tp2.caption(_det_label2)
 
@@ -3579,6 +3824,13 @@ with tab2:
 
         if _loan_paths_p2:
             st.session_state.uploaded_files["loan_pass2"] = _loan_paths_p2
+
+        # Prune stale overrides for files no longer present (name+size composite key)
+        _active_keys_p2 = {(_uf2.name, _uf2.size) for _uf2 in _bulk_p2}
+        st.session_state.bulk_overrides_p2 = {
+            k: v for k, v in st.session_state.bulk_overrides_p2.items()
+            if k in _active_keys_p2
+        }
 
         # Show fallback notes for optional slots not yet uploaded
         _p2_loaded = set(st.session_state.uploaded_files.keys())
@@ -4066,32 +4318,53 @@ with tab2:
                             _p1_data = st.session_state.get('pass1_output_files', {})
                             _prepaid_active = _p1_data.get('ledger_active', [])
 
-                        bs_workpaper_generator.generate(
-                            gl_result=gl_parsed,
-                            tb_result=tb_result,
-                            output_path=bs_wp_path,
-                            period=close_period,
-                            property_name=engine_result.property_name or _prop_display,
-                            prepaid_ledger_active=_prepaid_active,
-                            bank_rec_data=bank_rec_data,
-                            gl_cash_balance=gl_cash_balance,
-                            daca_bank_data=daca_bank_data,
-                            daca_gl_balance=daca_gl_balance,
-                            prior_workpaper_path=_prior_wp_path,
-                            prior_period=_prior_period,
-                            berkadia_loans=_berkadia_loans,
-                            dev_bank_rec_data=dev_bank_rec_data,
-                            ar_aging_data=_ar_aging_parsed_p2,
-                            capital_schedule_data=_capital_schedule_data,
-                            tb_filepath=_tb_file,
-                            ar_aging_filepath=_ar_aging_file_p2,
-                            ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
-                            bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
-                            daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
-                            dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
-                            prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
-                            property_config=_active_cfg,
+                        # ── Template-based workpaper (preferred) ─────────────
+                        # If a GA_Workpaper_Template.xlsx is committed for this
+                        # property, use the template-based generator which preserves
+                        # all existing Excel formulas (VLOOKUP, DATEDIF, SUM) and
+                        # only updates data rows + date anchors.
+                        # Fall back to the legacy from-scratch generator otherwise.
+                        _wp_template_path = _committed_path(
+                            _selected_code, 'GA_Workpaper_Template.xlsx'
                         )
+                        if _wp_template_path:
+                            bs_workpaper_generator.generate_bs_workpaper_from_template(
+                                gl_result=gl_parsed,
+                                tb_result=tb_result,
+                                output_path=bs_wp_path,
+                                template_path=_wp_template_path,
+                                period=close_period,
+                                property_name=engine_result.property_name or _prop_display,
+                                prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
+                                property_code=_selected_code,
+                            )
+                        else:
+                            bs_workpaper_generator.generate(
+                                gl_result=gl_parsed,
+                                tb_result=tb_result,
+                                output_path=bs_wp_path,
+                                period=close_period,
+                                property_name=engine_result.property_name or _prop_display,
+                                prepaid_ledger_active=_prepaid_active,
+                                bank_rec_data=bank_rec_data,
+                                gl_cash_balance=gl_cash_balance,
+                                daca_bank_data=daca_bank_data,
+                                daca_gl_balance=daca_gl_balance,
+                                prior_workpaper_path=_prior_wp_path,
+                                prior_period=_prior_period,
+                                berkadia_loans=_berkadia_loans,
+                                dev_bank_rec_data=dev_bank_rec_data,
+                                ar_aging_data=_ar_aging_parsed_p2,
+                                capital_schedule_data=_capital_schedule_data,
+                                tb_filepath=_tb_file,
+                                ar_aging_filepath=_ar_aging_file_p2,
+                                ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
+                                bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
+                                daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
+                                dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
+                                prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
+                                property_config=_active_cfg,
+                            )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
                     except Exception as _e:
                         import traceback as _tb

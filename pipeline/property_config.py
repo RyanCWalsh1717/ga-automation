@@ -165,6 +165,17 @@ class PropertyConfig:
     # ── Accrual engine settings ───────────────────────────────────────────────
     accrual_materiality_floor: float = 2500.00
 
+    # Accounts to exclude from Layer 3 (historical recurring) auto-accrual.
+    # Use this for discretionary / irregular accounts that Layer 3 would
+    # mis-classify as recurring contracts (e.g. food service, event spend,
+    # one-off repairs, admin supplies).  Layer 2 invoice proration and the
+    # one-off accruals table are unaffected.
+    # Example in config.yaml:
+    #   layer3_exclude_accounts:
+    #     - "637170"   # Admin-Food Service Amenities (discretionary)
+    #     - "615xxx"   # etc.
+    layer3_exclude_accounts: List[str] = field(default_factory=list)
+
     # ── Property Management System ────────────────────────────────────────────
     # 'yardi' — Yardi Voyager / Commercial (standard pipeline; current default).
     # 'mri'   — MRI Software (different COA and export formats; onboarding coming soon).
@@ -187,7 +198,7 @@ class PropertyConfig:
 
     # ── Chart of Accounts classification (override for non-standard COA) ──────
     coa_revenue_prefixes:    tuple = field(default_factory=lambda: ('4',))
-    coa_expense_prefixes:    tuple = field(default_factory=lambda: ('5', '6', '7', '8'))
+    coa_expense_prefixes:    tuple = field(default_factory=lambda: ('6', '8'))
     coa_bs_asset_prefixes:   tuple = field(default_factory=lambda: ('1',))
     coa_bs_liability_prefixes: tuple = field(default_factory=lambda: ('2',))
     coa_bs_equity_prefixes:  tuple = field(default_factory=lambda: ('3',))
@@ -315,6 +326,7 @@ class PropertyConfig:
 
         return cls(
             property_code         = str(d.get('property_code', '')),
+            yardi_etl_code        = str(d.get('yardi_etl_code', '')),
             property_name         = str(d.get('property_name', '')),
             property_display_name = str(d.get('property_display_name', '')),
             property_address      = str(d.get('property_address', '')),
@@ -333,7 +345,7 @@ class PropertyConfig:
             re_tax_payment_months = list(d.get('re_tax_payment_months') or [1, 4, 7, 10]),
             parcel_ids            = list(d.get('parcel_ids') or []),
             period_signal_threshold   = float(d.get('period_signal_threshold', 100.0)),
-            accrual_materiality_floor = float(d.get('accrual_materiality_floor', 500.0)),
+            accrual_materiality_floor = float(d.get('accrual_materiality_floor', 2500.0)),
             file_prefix_internal    = str(d.get('file_prefix_internal', 'GA')),
             file_prefix_deliverable = str(d.get('file_prefix_deliverable', '')),
             kardin_budget_file      = str(d.get('kardin_budget_file', '')),
@@ -342,7 +354,7 @@ class PropertyConfig:
             active                  = bool(d.get('active', True)),
             payroll_accounts        = list(d.get('payroll_accounts') or ['615110', '637110']),
             coa_revenue_prefixes    = tuple(d['coa_revenue_prefixes'])    if d.get('coa_revenue_prefixes')    else ('4',),
-            coa_expense_prefixes    = tuple(d['coa_expense_prefixes'])    if d.get('coa_expense_prefixes')    else ('5', '6', '7', '8'),
+            coa_expense_prefixes    = tuple(d['coa_expense_prefixes'])    if d.get('coa_expense_prefixes')    else ('6', '8'),
             coa_bs_asset_prefixes   = tuple(d['coa_bs_asset_prefixes'])   if d.get('coa_bs_asset_prefixes')   else ('1',),
             coa_bs_liability_prefixes = tuple(d['coa_bs_liability_prefixes']) if d.get('coa_bs_liability_prefixes') else ('2',),
             coa_bs_equity_prefixes  = tuple(d['coa_bs_equity_prefixes'])  if d.get('coa_bs_equity_prefixes')  else ('3',),
@@ -387,6 +399,10 @@ class PropertyConfig:
                 [str(a) for a in d['per_invoice_utility_accounts']]
                 if d.get('per_invoice_utility_accounts') else None
             ),
+            # Layer 3 exclusions — discretionary / irregular accounts
+            layer3_exclude_accounts = [
+                str(c) for c in (d.get('layer3_exclude_accounts') or [])
+            ],
         )
 
     # ── Computed properties (backward compatibility + convenience) ────────────

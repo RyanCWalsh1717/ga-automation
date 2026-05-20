@@ -300,7 +300,19 @@ TUB entries appear in `GA_Accruals_JE.csv`.
 ## Account Code Conventions
 
 - Account codes are **6-digit strings** with no dashes (e.g., `"111100"`, `"637130"`)
-- P&L accounts: `4xxxxx` (revenue) through `8xxxxx` (expense)
+- COA structure:
+  - `1xxxxx–3xxxxx` = Balance Sheet (assets, liabilities, equity)
+  - `4xxxxx` = Property Revenue
+  - `5xxxxx` = Company Revenue (entity-level, non-property) — should NOT appear on property GL;
+    flagged as a warning if detected; no automated recode (handle via Manual JEs)
+  - `6xxxxx` = Property Expenses
+  - `7xxxxx` = Corporate Expenses (non-property) — may appear on property GL by miscoding;
+    must be recoded to `6xxxxx` or `8xxxxx` before close via the Pass 1 recode table
+    (REC-XXXX JEs: DR expense / CR 7xxxxx, permanent, no auto-reverse).
+    Pass 2 CHECK_7g flags any residual net activity.
+  - `8xxxxx` = Property Interest Expense
+- Pipeline `is_expense_account()` / `coa_expense_prefixes`: `('6', '8')` — property-level only.
+  7xxxxx treated as non-property (recode target) rather than as a property expense.
 - Balance Sheet accounts: `1xxxxx` (assets) through `3xxxxx` (equity/liabilities)
 - Key accounts: `111100` Operating Cash, `115100` DACA, `115200` RE Tax Escrow,
   `115300` Insurance Escrow, `133110` Accounts Receivable Billback (Utility/Elec/Gas),

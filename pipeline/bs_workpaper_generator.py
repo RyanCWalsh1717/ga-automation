@@ -346,12 +346,21 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _gl_entities = list(getattr(gl_result.metadata, 'entities', []) or [])
         _entity_label = (
             getattr(gl_result.metadata, 'property_code', '') or
-            getattr(gl_result.metadata, 'property_name', '') or 'revlabspm'
-        ).strip().lower() or 'revlabspm'
+            getattr(gl_result.metadata, 'property_name', '') or ''
+        ).strip().lower() or ''
 
-    # Apply friendly display names — Yardi codes → workpaper labels
-    _ENTITY_DISPLAY = {'revlabspm': 'Revlabs', 'revla': 'Revla'}
-    _entity_label  = _ENTITY_DISPLAY.get(_entity_label, _entity_label)
+    # C-10: Build entity display-name map from property config when available.
+    # Falls back to a hardcoded RevLabs mapping only for backward compatibility.
+    _ENTITY_DISPLAY: dict = {}
+    _cfg_code = (getattr(property_config, 'property_code', '') or '').lower()
+    _cfg_name = (getattr(property_config, 'property_display_name', '') or
+                 getattr(property_config, 'property_name', '') or '').strip()
+    if _cfg_code and _cfg_name:
+        _ENTITY_DISPLAY[_cfg_code] = _cfg_name
+    else:
+        # RevLabs legacy mapping (for sessions where property_config is unavailable)
+        _ENTITY_DISPLAY.update({'revlabspm': 'Revlabs', 'revla': 'Revla'})
+    _entity_label  = _ENTITY_DISPLAY.get(_entity_label, _entity_label) or property_name or '[Property]'
     _gl_entities   = [_ENTITY_DISPLAY.get(e.lower(), e) for e in _gl_entities]
 
     # Build TB lookup: account_code -> TBAccount
@@ -599,6 +608,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 tb_map=tb_map,
                 berkadia_loans=berkadia_loans or [],
                 prepaid_active=prepaid_ledger_active or [],
+                property_config=property_config,
             )
         except Exception as _atb_exc:
             import traceback
@@ -1389,9 +1399,13 @@ def _read_equity_distributions_tab_detail(ws) -> list:
     Column layout (written by build_331100_tab):
       B = Date string ('M/D/YYYY')
       C = Description
-      D = Revlabs amount
-      E = Revlabpm amount
+      D = Entity-1 amount (key: 'revlabs'   — RevLabs-specific; positional read)
+      E = Entity-2 amount (key: 'revlabspm' — RevLabs-specific; positional read)
       F = Total amount (all numeric)
+
+    C-10: Keys 'revlabs' / 'revlabspm' are internal positional labels for the two
+    entity columns; they reflect the RevLabs two-entity structure and should be
+    made config-driven if this function is extended to other properties.
 
     Skips header rows, totals row, and tie-out rows.
     Returns list of {date_str, desc, revlabs, revlabspm, total} dicts.
@@ -1713,7 +1727,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
         _ent_cols  = {}
         _AMT       = _B + 2                    # single entity amount col
         _LAST_COL  = _AMT
-        _ent_hdrs  = [f'Entity ({entity_label or "revlabspm"})']
+        _ent_hdrs  = [f'Entity ({entity_label or "[Property]"})']
         _ent_widths = [18]
 
     # ── Row 1: Account header ──────────────────────────────────────────────
@@ -3375,3 +3389,414 @@ def generate_workpaper_seed(
     wb.save(buf)
     buf.seek(0)
     return buf.read()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Template-based workpaper generator
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_bs_workpaper_from_template(
+    gl_result,
+    tb_result,
+    output_path: str,
+    template_path: str,
+    period: str = '',
+    property_name: str = '',
+    period_end_date=None,
+    prepared_by: str = 'Ryan Walsh',
+    property_code: str = '',
+) -> str:
+    """
+    Template-based monthly close workpaper generator.
+
+    Copies the property-specific template Excel file (``GA_Workpaper_Template.xlsx``)
+    to *output_path* and then:
+
+    1.  Updates ``Summary Page!C4`` with the period-end date so every DATEDIF
+        formula on the analysis tabs (Insurance, 135150 PPD Other) recalculates.
+    2.  Updates the row-3 header on every applicable tab with the new period
+        label and today's prepared date.
+    3.  Auto-fills current-period GL tabs (213100, 133110, 133100, 211300) by
+        clearing the placeholder data rows and writing the corresponding GL
+        transactions for this month.
+    4.  Appends new GL transactions to cumulative running-ledger tabs (115200,
+        115300, 115600) — existing historical rows are preserved; only net-new
+        transactions (dated after the last row already in the template) are
+        added.
+    5.  Rebuilds the ``Trial Balance`` tab from the parsed ``tb_result`` so
+        all ``VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)`` tie-out formulas resolve.
+
+    Analysis tabs (RE Tax Analysis, Insurance Analysis, Loan Analysis,
+    135150 PPD Other) and static multi-entity ledger tabs (152100 Land,
+    154100 Building, etc.) are left completely intact from the template.
+
+    Args:
+        gl_result:       GLParseResult from parsers.yardi_gl.parse_gl()
+        tb_result:       TBResult from parsers.yardi_trial_balance.parse()
+        output_path:     Where to write the populated .xlsx file
+        template_path:   Path to GA_Workpaper_Template.xlsx
+        period:          Period label e.g. 'Jan-2026'
+        property_name:   Property display name
+        period_end_date: datetime.date for last day of period (derived from
+                         *period* if not supplied)
+        prepared_by:     Name for 'Prepared by:' in row-3 headers
+        property_code:   Yardi property code (e.g. 'revlabspm')
+
+    Returns:
+        output_path
+    """
+    import shutil
+    import calendar as _calendar
+    import re as _re
+    from datetime import date as _date, datetime as _dt
+    from openpyxl import load_workbook as _lw
+    from openpyxl.utils import get_column_letter as _gcl
+
+    # ── 0. Validate & copy template ──────────────────────────────────────────
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(
+            f"Workpaper template not found at {template_path}. "
+            "Upload GA_Workpaper_Template.xlsx via the template-management section."
+        )
+    shutil.copy2(template_path, output_path)
+
+    # ── 1. Open copied file ───────────────────────────────────────────────────
+    wb = _lw(output_path)
+
+    # ── 2. Build GL lookups ───────────────────────────────────────────────────
+    # account_code -> GLAccount
+    gl_map: dict = {}
+    if gl_result and hasattr(gl_result, 'accounts'):
+        for _a in gl_result.accounts:
+            gl_map[str(getattr(_a, 'account_code', '') or '').strip()] = _a
+
+    # journal-control -> (account_code, account_name) for the debit / P&L side
+    # of entries that credit 213100 / 133110 / etc.
+    # We look at all P&L accounts (4–8xxxxx) to find the offsetting leg.
+    _ctrl_to_acct: dict = {}
+    if gl_result and hasattr(gl_result, 'accounts'):
+        for _a in gl_result.accounts:
+            _ac = str(getattr(_a, 'account_code', '') or '').strip()
+            if _ac and _ac[0] in '45678':
+                for _t in (getattr(_a, 'transactions', None) or []):
+                    _ctrl = str(getattr(_t, 'control', '') or '').strip()
+                    if _ctrl and _ctrl not in _ctrl_to_acct:
+                        _ctrl_to_acct[_ctrl] = (_ac, getattr(_a, 'account_name', '') or '')
+
+    # ── 3. Period-end date ────────────────────────────────────────────────────
+    _period_end: _date | None = period_end_date
+    if _period_end is None and period:
+        try:
+            _pm = _dt.strptime(period, '%b-%Y')
+            _last_day = _calendar.monthrange(_pm.year, _pm.month)[1]
+            _period_end = _date(_pm.year, _pm.month, _last_day)
+        except Exception:
+            _period_end = None
+
+    # ── 4. Derived header strings ─────────────────────────────────────────────
+    _today_str = _dt.today().strftime('%m/%d/%Y')
+    _period_str = period or ''
+    _prep_str = prepared_by or 'Ryan Walsh'
+    # Short property label used in row-3 headers
+    _prop_label = 'revlabs'
+    if property_name:
+        _pl = property_name.lower()
+        # Strip entity suffixes (e.g. "revolution labs owner, llc" → "revlabs")
+        for _suffix in (' owner, llc', ' owner,llc', ', llc', ' llc'):
+            _pl = _pl.replace(_suffix, '')
+        _pl = _pl.replace('revolution labs', 'revlabs').strip()
+        if _pl:
+            _prop_label = _pl
+
+    # ── 5. Tab configuration ──────────────────────────────────────────────────
+    # Tabs the pipeline auto-fills with GL transactions:
+    #   account:      GL account code to pull transactions from
+    #   data_start:   first data row in the template
+    #   amount_col:   1-based column index for the Amount / total column
+    #   cumulative:   True = append new rows (running ledger); False = clear & refill
+    #   layout:       column-write strategy
+    #     'simple'    → B=Date  C=Description          D=Amount
+    #     'gl_acct'   → B=Date  C=Description  D=GL Account   E=Amount
+    #     'accr_exp'  → B=Date  C=GL Account   D=Description  E=Vendor  F=Amount
+    _FILL_TABS: dict = {
+        '115200 RET Escrow': {
+            'account': '115200', 'data_start': 7, 'amount_col': 4,
+            'cumulative': True, 'layout': 'simple',
+        },
+        '115300 Insurance Escrow': {
+            'account': '115300', 'data_start': 7, 'amount_col': 4,
+            'cumulative': True, 'layout': 'simple',
+        },
+        '115600 Loan Reserve': {
+            'account': '115600', 'data_start': 7, 'amount_col': 4,
+            'cumulative': True, 'layout': 'simple',
+        },
+        '133100 Accounts Receivable - Ot': {
+            'account': '133100', 'data_start': 6, 'amount_col': 5,
+            'cumulative': False, 'layout': 'gl_acct',
+        },
+        '133110 AR Billback': {
+            'account': '133110', 'data_start': 6, 'amount_col': 5,
+            'cumulative': False, 'layout': 'gl_acct',
+        },
+        '211300 Accounts Payable - Other': {
+            'account': '211300', 'data_start': 6, 'amount_col': 5,
+            'cumulative': False, 'layout': 'gl_acct',
+        },
+        '213100 Accr Exp': {
+            'account': '213100', 'data_start': 6, 'amount_col': 6,
+            'cumulative': False, 'layout': 'accr_exp',
+        },
+    }
+
+    # Tabs that are pasted Yardi exports — pipeline doesn't touch them
+    _PASTED_TABS = {
+        '131100 AR Aging',
+        '221100 Prepaid Rent - Tenant',
+        '211100 Accounts Payable - Contr',
+        '111100 PNC Cash',
+        '111210 Cash - Development - Bof',
+        '115100 DACA',
+    }
+
+    # ── 6. Helper functions ───────────────────────────────────────────────────
+
+    def _find_tieout_row(ws, search_col: int = 2, max_scan: int = 300) -> int | None:
+        """Return the row number containing 'ending balance per gl' in *search_col*."""
+        for r in range(1, min(ws.max_row + 1, max_scan + 1)):
+            v = ws.cell(r, search_col).value
+            if v and isinstance(v, str) and 'ending balance per gl' in v.lower():
+                return r
+        return None
+
+    def _last_nonempty_row(ws, col: int, row_start: int, row_stop: int) -> int:
+        """Return the last row in [row_start, row_stop) that has a value in *col*."""
+        last = row_start - 1
+        for r in range(row_start, row_stop):
+            if ws.cell(r, col).value is not None:
+                last = r
+        return last
+
+    def _update_row3_header(ws) -> None:
+        """Replace the period label and prepared date in the row-3 header cell."""
+        v = ws.cell(3, 2).value
+        if not (v and isinstance(v, str)):
+            return
+        new_v = _re.sub(
+            r'(Period:\s*)[A-Za-z]+-\d{4}',
+            lambda m: m.group(1) + _period_str,
+            v,
+        )
+        new_v = _re.sub(r'\d{2}/\d{2}/\d{4}', _today_str, new_v)
+        ws.cell(3, 2).value = new_v
+
+    def _coerce_date(d):
+        """Return a plain datetime.date from whatever the GL stores."""
+        if d is None:
+            return None
+        if hasattr(d, 'date') and callable(d.date):
+            return d.date()
+        if isinstance(d, _date):
+            return d
+        return None
+
+    def _rewrite_tieout_formulas(ws, tieout_row: int, data_start: int,
+                                  last_written: int, amount_col: int) -> None:
+        """
+        Rewrite the three tieout rows:
+          tieout_row     → =SUM(XN:XM)
+          tieout_row + 1 → =VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)
+          tieout_row + 2 → =XN-XM  (variance)
+        where X is the column letter for *amount_col*.
+        """
+        col_ltr = _gcl(amount_col)
+        ws.cell(tieout_row,     amount_col).value = (
+            f'=SUM({col_ltr}{data_start}:{col_ltr}{last_written})'
+        )
+        ws.cell(tieout_row + 1, amount_col).value = (
+            f"=VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)"
+        )
+        ws.cell(tieout_row + 2, amount_col).value = (
+            f'={col_ltr}{tieout_row}-{col_ltr}{tieout_row + 1}'
+        )
+
+    def _write_txn_row(ws, row: int, txn, layout: str,
+                       amount_col: int) -> None:
+        """Write one GL transaction into the appropriate columns."""
+        txn_date = _coerce_date(getattr(txn, 'date', None))
+        desc = (str(getattr(txn, 'description', '') or '').strip() or
+                str(getattr(txn, 'remarks', '') or '').strip())
+        amt = float(getattr(txn, 'net_amount', 0) or 0)
+        ctrl = str(getattr(txn, 'control', '') or '').strip()
+        offset_code, _ = _ctrl_to_acct.get(ctrl, ('', ''))
+
+        if layout == 'simple':
+            # Date(B)  Description(C)  Amount(D)
+            ws.cell(row, 2).value = txn_date
+            ws.cell(row, 3).value = desc
+            ws.cell(row, amount_col).value = amt
+
+        elif layout == 'gl_acct':
+            # Date(B)  Description(C)  GL Account(D)  Amount(E)
+            ws.cell(row, 2).value = txn_date
+            ws.cell(row, 3).value = desc
+            ws.cell(row, 4).value = offset_code or ''
+            ws.cell(row, amount_col).value = amt
+
+        elif layout == 'accr_exp':
+            # Date(B)  GL Account(C)  Description(D)  Vendor(E)  Amount(F)
+            remarks = str(getattr(txn, 'remarks', '') or '').strip()
+            vendor = remarks if remarks and remarks != desc else desc
+            ws.cell(row, 2).value = txn_date
+            ws.cell(row, 3).value = offset_code or ''
+            ws.cell(row, 4).value = desc
+            ws.cell(row, 5).value = vendor
+            ws.cell(row, amount_col).value = amt
+
+    # ── 7. Summary Page: update period-end date anchor ────────────────────────
+    if 'Summary Page' in wb.sheetnames:
+        _ws_s = wb['Summary Page']
+        if _period_end is not None:
+            _ws_s['C4'] = _period_end
+
+    # ── 8. Process every sheet ────────────────────────────────────────────────
+    for _sn in wb.sheetnames:
+        _ws = wb[_sn]
+
+        # --- Skip pasted-data tabs and the Trial Balance (handled below) ---
+        if _sn in _PASTED_TABS or _sn == 'Summary Page':
+            continue
+        if _sn == 'Trial Balance':
+            continue
+
+        # --- Update row-3 header (period + prepared date) ---
+        _update_row3_header(_ws)
+
+        # --- Auto-fill if this tab has a GL data config ---
+        if _sn not in _FILL_TABS:
+            continue
+
+        _cfg = _FILL_TABS[_sn]
+        _acct_code  = _cfg['account']
+        _data_start = _cfg['data_start']
+        _amt_col    = _cfg['amount_col']
+        _cumulative = _cfg['cumulative']
+        _layout     = _cfg['layout']
+
+        # Locate tieout row
+        _tieout = _find_tieout_row(_ws)
+        if _tieout is None:
+            continue  # template structure unrecognised — skip
+
+        # GL account for this tab
+        _gl_acct = gl_map.get(_acct_code)
+        _all_txns = list(getattr(_gl_acct, 'transactions', None) or []) if _gl_acct else []
+
+        # ── CUMULATIVE tab: append new transactions after existing template rows ──
+        if _cumulative:
+            # Find the last date already in the template (col B) to avoid duplicates
+            _last_row = _last_nonempty_row(_ws, 2, _data_start, _tieout)
+            _last_date: _date | None = None
+            if _last_row >= _data_start:
+                _raw_date = _ws.cell(_last_row, 2).value
+                _last_date = _coerce_date(_raw_date)
+
+            # Only keep transactions strictly newer than the last template date
+            if _last_date:
+                _new_txns = [
+                    t for t in _all_txns
+                    if _coerce_date(getattr(t, 'date', None)) is not None
+                    and _coerce_date(getattr(t, 'date', None)) > _last_date
+                ]
+            else:
+                _new_txns = _all_txns
+
+            if not _new_txns:
+                # Nothing new — just tidy the SUM formula range
+                _eff_last = max(_last_row, _data_start)
+                _rewrite_tieout_formulas(_ws, _tieout, _data_start, _eff_last, _amt_col)
+                continue
+
+            # Write position: directly after last existing row
+            _write_start = _last_row + 1
+
+            # Ensure enough rows exist before _tieout (leave 1 gap row)
+            _rows_avail = _tieout - _write_start - 1
+            if len(_new_txns) > _rows_avail:
+                _to_insert = len(_new_txns) - _rows_avail
+                _ws.insert_rows(_tieout, _to_insert)
+                _tieout += _to_insert
+
+            for _i, _t in enumerate(_new_txns):
+                _write_txn_row(_ws, _write_start + _i, _t, _layout, _amt_col)
+
+            _last_written = _write_start + len(_new_txns) - 1
+
+        # ── CURRENT-PERIOD tab: clear placeholder rows and write fresh GL data ──
+        else:
+            # Clear everything from data_start up to (but not including) tieout row
+            for _r in range(_data_start, _tieout):
+                for _c in range(2, _amt_col + 2):
+                    _ws.cell(_r, _c).value = None
+
+            if not _all_txns:
+                # No GL activity — leave blank; SUM over an empty-but-valid range
+                _rewrite_tieout_formulas(_ws, _tieout, _data_start, _data_start, _amt_col)
+                continue
+
+            # Check whether more rows are needed than the cleared region provides
+            _cleared_rows = _tieout - _data_start  # rows data_start … tieout-1
+            if len(_all_txns) > _cleared_rows:
+                _to_insert = len(_all_txns) - _cleared_rows
+                _ws.insert_rows(_tieout, _to_insert)
+                _tieout += _to_insert
+
+            for _i, _t in enumerate(_all_txns):
+                _write_txn_row(_ws, _data_start + _i, _t, _layout, _amt_col)
+
+            _last_written = _data_start + len(_all_txns) - 1
+
+        # Rewrite tieout, VLOOKUP, and variance formula rows
+        _rewrite_tieout_formulas(_ws, _tieout, _data_start, _last_written, _amt_col)
+
+    # ── 9. Rebuild Trial Balance tab ──────────────────────────────────────────
+    # The per-account tabs use =VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)
+    # where col A = account code and col F = ending balance.
+    # We reconstruct this tab from the parsed TBResult so the formulas resolve.
+    if (tb_result and hasattr(tb_result, 'accounts') and tb_result.accounts
+            and 'Trial Balance' in wb.sheetnames):
+        _ws_tb = wb['Trial Balance']
+        # Unmerge all cells first (merged cells raise AttributeError on value write)
+        for _mg in list(_ws_tb.merged_cells.ranges):
+            _ws_tb.unmerge_cells(str(_mg))
+        # Clear existing content (skip MergedCell slaves — they're now unmerged)
+        for _r in range(1, max(_ws_tb.max_row + 1, 250)):
+            for _c in range(1, 8):
+                try:
+                    _ws_tb.cell(_r, _c).value = None
+                except AttributeError:
+                    pass  # residual merged cell — safely ignorable
+        # Yardi-style header rows
+        _ws_tb.cell(1, 1).value = (
+            f'Property =  {property_code or ""} {property_name or ""}'.strip()
+        )
+        _ws_tb.cell(3, 1).value = f'Period = {_period_str}'
+        _ws_tb.cell(5, 3).value = 'Forward'
+        _ws_tb.cell(5, 6).value = 'Ending'
+        _ws_tb.cell(6, 3).value = 'Balance'
+        _ws_tb.cell(6, 4).value = 'Debit'
+        _ws_tb.cell(6, 5).value = 'Credit'
+        _ws_tb.cell(6, 6).value = 'Balance'
+        # Data rows — account code in col A is the VLOOKUP key
+        for _idx, _ta in enumerate(tb_result.accounts):
+            _r = 7 + _idx
+            _ws_tb.cell(_r, 1).value = str(getattr(_ta, 'account_code', '') or '')
+            _ws_tb.cell(_r, 2).value = getattr(_ta, 'account_name', '') or ''
+            _ws_tb.cell(_r, 3).value = float(getattr(_ta, 'forward_balance', 0) or 0)
+            _ws_tb.cell(_r, 4).value = float(getattr(_ta, 'debit', 0) or 0)
+            _ws_tb.cell(_r, 5).value = float(getattr(_ta, 'credit', 0) or 0)
+            _ws_tb.cell(_r, 6).value = float(getattr(_ta, 'ending_balance', 0) or 0)
+
+    # ── 10. Save ──────────────────────────────────────────────────────────────
+    wb.save(output_path)
+    return output_path
