@@ -1456,15 +1456,21 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         for _na_acct in gl.accounts:
             _na_code = str(getattr(_na_acct, 'account_code', '') or '').strip()
             _na_nc   = float(getattr(_na_acct, 'net_change', 0) or 0)
+            _na_eb   = float(getattr(_na_acct, 'ending_balance', 0) or 0)
             _na_name = str(getattr(_na_acct, 'account_name', '') or '').strip()
-            if abs(_na_nc) < 0.01:
+            # Use ending_balance as the primary signal — an account with auto-reversals
+            # offsetting the period charges shows net_change ≈ 0 but still carries a
+            # real balance that must be recoded (same pattern as the trash-removal fix).
+            # Fall back to net_change if ending_balance is also near zero.
+            _na_signal = _na_eb if abs(_na_eb) >= 0.01 else _na_nc
+            if abs(_na_signal) < 0.01:
                 continue
 
             if _na_code.startswith('7'):
                 _corp_7xxx.append({
                     'account_code': _na_code,
                     'account_name': _na_name,
-                    'net_amount':   _na_nc,
+                    'net_amount':   _na_signal,   # ending balance = full amount to recode
                 })
                 result.add_exception(
                     severity='warning',
@@ -1472,7 +1478,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
                     source='gl_7xxx',
                     description=(
                         f"Corporate expense account {_na_code} ({_na_name}) has "
-                        f"${abs(_na_nc):,.2f} PTD activity on the property GL — "
+                        f"${abs(_na_signal):,.2f} ending balance on the property GL — "
                         f"must be recoded to a 6xxxxx (property expense) or "
                         f"8xxxxx (interest) account before close."
                     ),
@@ -1482,7 +1488,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
                 _co_rev_5xxx.append({
                     'account_code': _na_code,
                     'account_name': _na_name,
-                    'net_amount':   _na_nc,
+                    'net_amount':   _na_signal,
                 })
                 result.add_exception(
                     severity='warning',
@@ -1490,7 +1496,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
                     source='gl_5xxx',
                     description=(
                         f"Company revenue account {_na_code} ({_na_name}) has "
-                        f"${abs(_na_nc):,.2f} PTD activity on the property GL — "
+                        f"${abs(_na_signal):,.2f} on the property GL — "
                         f"5xxxxx is entity-level revenue and should not appear "
                         f"on the property GL. Review and recode as needed."
                     ),
