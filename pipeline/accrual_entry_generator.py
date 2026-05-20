@@ -1423,40 +1423,38 @@ def detect_invoice_proration_accruals(
         if not j_credit_txns:
             continue
 
-        # Build vendor label from non-J debits (actual invoices carry vendor names;
-        # J-credit descriptions reflect the original reversal JE, not the vendor).
-        _vendors = list({(txn.description or '').split('(')[0].strip()
-                         for txn in acct.transactions
-                         if (txn.debit or 0) > 0 and
-                            (txn.control or '').split('-')[0].upper() != 'J'})
-        _vendor_str = ', '.join(v for v in _vendors if v)[:60]
-
-        # One candidate per J-credit transaction — mirrors the electricity/gas
-        # breakout so each prior accrual component is visible as its own JE line.
-        # The accrual amount = the individual reversal amount (rolling the prior
-        # estimate forward).  P&L math per line:
-        #   −reversal_i + (share of invoices) + reversal_i = share of invoices ✓
+        # One candidate per non-J debit (actual vendor invoice).
+        # J-credits confirmed the prior accrual workflow is active for this account
+        # and that the account has netted close to zero — they are the gate signal
+        # only.  The actual invoice amounts are used for the accrual because they
+        # reflect the true billing rate for this service, which is more accurate
+        # than rolling forward the prior estimate.
         # Multiple candidates for the same account code are handled correctly by
         # _proration_covered (build_accrual_entries does not add to _covered
         # mid-loop, so all lines for this account are emitted).
-        for _jt in j_credit_txns:
-            _jt_amt = abs((_jt.debit or 0) - (_jt.credit or 0))
-            if _jt_amt < 1.0:
+        for txn in acct.transactions:
+            _ctrl = (txn.control or '').split('-')[0].upper()
+            if _ctrl == 'J':
                 continue
+            _txn_amt = (txn.debit or 0) - (txn.credit or 0)
+            if _txn_amt < 1.0:
+                continue
+            _vendor = (txn.description or '').split('(')[0].strip()
             candidates.append({
                 'account_code':   code,
                 'account_name':   acct.account_name,
-                'accrual_amount': _round(_jt_amt),
+                'accrual_amount': _round(_txn_amt),
                 'source':         'invoice_proration',
                 'description': (
-                    f'Accrual {_period_label} — {_vendor_str} ({acct.account_name}): '
-                    f'prior accrual reversed (${_jt_amt:,.2f}); '
-                    f'rolling forward as estimate for current unbilled period'
+                    f'Accrual {_period_label} — {_vendor} ({acct.account_name}): '
+                    f'invoice ${_txn_amt:,.2f} received; '
+                    f'accruing for current unbilled period '
+                    f'(prior accrual of ${sum(abs((t.debit or 0) - (t.credit or 0)) for t in j_credit_txns):,.2f} reversed)'
                 ),
                 'daily_rate':     0.0,
                 'uncovered_days': 0,
                 'period_days':    0,
-                'invoice_total':  _round(_jt_amt),
+                'invoice_total':  _round(_txn_amt),
             })
 
     return candidates
