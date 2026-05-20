@@ -3285,6 +3285,112 @@ with tab1:
             st.info("No accrual entries generated. Upload a Nexus file, Budget Comparison, "
                     "or Prepaid Ledger to enable additional accrual detection layers.", icon="ℹ️")
 
+        # ── 7xxxxx Intercompany Recode Table ─────────────────────────────────
+        # Shown after the accruals/missed-entry section because the GL must be
+        # parsed first to detect 7xxxxx accounts.  Fill in the DR account and
+        # re-run Generate JEs to include the recode entries in the CSV.
+
+        _p1_er_ic = st.session_state.get('pass1_engine_result')
+        _interco_detected = (_p1_er_ic.summary.get('corp_7xxx_accounts', [])
+                             if _p1_er_ic else [])
+
+        # ── 5xxxxx company revenue warning ───────────────────────────────────
+        _co_rev_detected = (_p1_er_ic.summary.get('co_rev_5xxx_accounts', [])
+                            if _p1_er_ic else [])
+        if _co_rev_detected:
+            _co_rev_lines = ', '.join(
+                f"{a['account_code']} ({a['account_name']}) ${abs(a['net_amount']):,.0f}"
+                for a in _co_rev_detected
+            )
+            st.warning(
+                f"⚠️ **5xxxxx Company Revenue on Property GL** — {len(_co_rev_detected)} account(s) detected: "
+                f"{_co_rev_lines}. "
+                f"5xxxxx is entity-level revenue and should not appear on the property GL. "
+                f"Review and recode via the Manual JEs table if needed.",
+                icon="⚠️",
+            )
+
+        # Auto-merge newly detected accounts into the recode table (idempotent)
+        if _interco_detected:
+            _ic_df_cur = st.session_state.interco_recode_df.copy()
+            _existing_refs = set(_ic_df_cur["_ref"].fillna("").str.strip()) if "_ref" in _ic_df_cur.columns else set()
+            _new_ic_rows = []
+            for _ic in _interco_detected:
+                _ic_code = str(_ic.get('account_code', '')).strip()
+                if _ic_code and _ic_code not in _existing_refs:
+                    _ic_amt  = abs(float(_ic.get('net_amount', 0)))
+                    _ic_name = str(_ic.get('account_name', ''))
+                    _ic_desc = f"Recode {_ic_code} to expense account"
+                    # DR row — blank Account for user to fill in (6xxxxx or 8xxxxx target)
+                    _new_ic_rows.append({
+                        "Leg": "DR", "Account": "", "Account Name": "",
+                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
+                    })
+                    # CR row — pre-filled with 7xxx account being removed
+                    _new_ic_rows.append({
+                        "Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
+                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
+                    })
+            if _new_ic_rows:
+                st.session_state.interco_recode_df = pd.concat(
+                    [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
+                )
+                st.rerun()   # force fresh render so data_editor picks up the new rows
+
+        _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
+                     if _interco_detected else "")
+        with st.expander(
+            f"🔄 7xxxxx Intercompany Recode  (DR expense → CR 7xxxxx){_ic_badge}",
+            expanded=bool(_interco_detected),
+        ):
+            st.caption(
+                "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
+                "Each detected account auto-populates as a **DR / CR pair**: the CR row is pre-filled with the 7xxxxx account; "
+                "enter the **6xxxxx or 8xxxxx** target expense account on the **DR row**. "
+                "The pipeline generates **DR [expense account] / CR [7xxx account]** (permanent — no auto-reverse). "
+                "Edit the Amount on the DR row if you're only recoding a partial amount. "
+                "**Re-run Generate JEs after filling in target accounts** to include the recode JEs in the CSV."
+            )
+
+            _ic_recode_edited = st.data_editor(
+                st.session_state.interco_recode_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                column_config={
+                    "Leg":          st.column_config.TextColumn("Leg", width="small", disabled=True,
+                                        help="DR = debit (expense account recoding INTO) | CR = credit (7xxxxx being removed)"),
+                    "Account":      st.column_config.TextColumn("Account", width="small",
+                                        help="DR row: enter the 6xxxxx or 8xxxxx target expense account. CR row: pre-filled with the 7xxxxx account (edit if needed)."),
+                    "Account Name": st.column_config.TextColumn("Account Name", width="medium", disabled=True),
+                    "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small",
+                                        help="PTD amount auto-detected from GL. Edit if recoding a partial amount."),
+                    "Description":  st.column_config.TextColumn("Description", width="large"),
+                    "_ref":         None,
+                },
+                key="interco_recode_editor",
+            )
+            st.session_state.interco_recode_df = _ic_recode_edited
+
+            # Active = DR rows that have a non-blank target Account filled in
+            _ic_dr_active = _ic_recode_edited[
+                (_ic_recode_edited["Leg"].fillna("") == "DR") &
+                _ic_recode_edited["Account"].fillna("").str.strip().astype(bool) &
+                (_ic_recode_edited["Amount ($)"].fillna(0).abs() > 0)
+            ]
+            if not _ic_dr_active.empty:
+                st.success(
+                    f"✅ {len(_ic_dr_active)} recode JE(s) queued — "
+                    f"${_ic_dr_active['Amount ($)'].abs().sum():,.2f} total. "
+                    f"Re-run Generate JEs to include in the CSV.",
+                    icon="✅",
+                )
+            elif _interco_detected:
+                st.warning(
+                    "⚠️ 7xxxxx accounts detected — enter the DR expense account on each DR row, "
+                    "then re-run Generate JEs to include recode JEs in the CSV.",
+                    icon="⚠️",
+                )
+
         # ── Prepaid Amortization Panel ─────────────────────────────────────
         amort_lines = p1.get("amort_lines", [])
         if amort_lines:
@@ -3519,112 +3625,6 @@ with tab1:
                         + ', '.join(_rv_parts) + '. Review before close.',
                         icon="⚠️",
                     )
-
-        # ── 7xxxxx Intercompany Recode Table ─────────────────────────────────
-        # Shown here (after results) because the GL must be parsed first to
-        # detect any 7xxxxx accounts.  Fill in the DR account on each row and
-        # re-run Generate JEs to include the recode entries in the CSV.
-
-        _p1_er_ic = st.session_state.get('pass1_engine_result')
-        _interco_detected = (_p1_er_ic.summary.get('corp_7xxx_accounts', [])
-                             if _p1_er_ic else [])
-
-        # ── 5xxxxx company revenue warning ───────────────────────────────────
-        _co_rev_detected = (_p1_er_ic.summary.get('co_rev_5xxx_accounts', [])
-                            if _p1_er_ic else [])
-        if _co_rev_detected:
-            _co_rev_lines = ', '.join(
-                f"{a['account_code']} ({a['account_name']}) ${abs(a['net_amount']):,.0f}"
-                for a in _co_rev_detected
-            )
-            st.warning(
-                f"⚠️ **5xxxxx Company Revenue on Property GL** — {len(_co_rev_detected)} account(s) detected: "
-                f"{_co_rev_lines}. "
-                f"5xxxxx is entity-level revenue and should not appear on the property GL. "
-                f"Review and recode via the Manual JEs table if needed.",
-                icon="⚠️",
-            )
-
-        # Auto-merge newly detected accounts into the recode table (idempotent)
-        if _interco_detected:
-            _ic_df_cur = st.session_state.interco_recode_df.copy()
-            _existing_refs = set(_ic_df_cur["_ref"].fillna("").str.strip()) if "_ref" in _ic_df_cur.columns else set()
-            _new_ic_rows = []
-            for _ic in _interco_detected:
-                _ic_code = str(_ic.get('account_code', '')).strip()
-                if _ic_code and _ic_code not in _existing_refs:
-                    _ic_amt  = abs(float(_ic.get('net_amount', 0)))
-                    _ic_name = str(_ic.get('account_name', ''))
-                    _ic_desc = f"Recode {_ic_code} to expense account"
-                    # DR row — blank Account for user to fill in (6xxxxx or 8xxxxx target)
-                    _new_ic_rows.append({
-                        "Leg": "DR", "Account": "", "Account Name": "",
-                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
-                    })
-                    # CR row — pre-filled with 7xxx account being removed
-                    _new_ic_rows.append({
-                        "Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
-                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
-                    })
-            if _new_ic_rows:
-                st.session_state.interco_recode_df = pd.concat(
-                    [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
-                )
-                st.rerun()   # force fresh render so data_editor picks up the new rows
-
-        _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
-                     if _interco_detected else "")
-        with st.expander(
-            f"🔄 7xxxxx Intercompany Recode  (DR expense → CR 7xxxxx){_ic_badge}",
-            expanded=bool(_interco_detected),
-        ):
-            st.caption(
-                "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
-                "Each detected account auto-populates as a **DR / CR pair**: the CR row is pre-filled with the 7xxxxx account; "
-                "enter the **6xxxxx or 8xxxxx** target expense account on the **DR row**. "
-                "The pipeline generates **DR [expense account] / CR [7xxx account]** (permanent — no auto-reverse). "
-                "Edit the Amount on the DR row if you're only recoding a partial amount. "
-                "**Re-run Generate JEs after filling in target accounts** to include the recode JEs in the CSV."
-            )
-
-            _ic_recode_edited = st.data_editor(
-                st.session_state.interco_recode_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                column_config={
-                    "Leg":          st.column_config.TextColumn("Leg", width="small", disabled=True,
-                                        help="DR = debit (expense account recoding INTO) | CR = credit (7xxxxx being removed)"),
-                    "Account":      st.column_config.TextColumn("Account", width="small",
-                                        help="DR row: enter the 6xxxxx or 8xxxxx target expense account. CR row: pre-filled with the 7xxxxx account (edit if needed)."),
-                    "Account Name": st.column_config.TextColumn("Account Name", width="medium", disabled=True),
-                    "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small",
-                                        help="PTD amount auto-detected from GL. Edit if recoding a partial amount."),
-                    "Description":  st.column_config.TextColumn("Description", width="large"),
-                    "_ref":         None,
-                },
-                key="interco_recode_editor",
-            )
-            st.session_state.interco_recode_df = _ic_recode_edited
-
-            # Active = DR rows that have a non-blank target Account filled in
-            _ic_dr_active = _ic_recode_edited[
-                (_ic_recode_edited["Leg"].fillna("") == "DR") &
-                _ic_recode_edited["Account"].fillna("").str.strip().astype(bool) &
-                (_ic_recode_edited["Amount ($)"].fillna(0).abs() > 0)
-            ]
-            if not _ic_dr_active.empty:
-                st.success(
-                    f"✅ {len(_ic_dr_active)} recode JE(s) queued — "
-                    f"${_ic_dr_active['Amount ($)'].abs().sum():,.2f} total. "
-                    f"Re-run Generate JEs to include in the CSV.",
-                    icon="✅",
-                )
-            elif _interco_detected:
-                st.warning(
-                    "⚠️ 7xxxxx accounts detected — enter the DR expense account on each DR row, "
-                    "then re-run Generate JEs to include recode JEs in the CSV.",
-                    icon="⚠️",
-                )
 
         st.divider()
 
