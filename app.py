@@ -2756,6 +2756,26 @@ with tab1:
             else:
                 st.error("❌ corp_7xxx_accounts is EMPTY — engine did not detect any 7xxx accounts")
 
+            # ── Section 1b: re-run same detection logic here to verify ────
+            st.markdown("**Same detection logic re-run in app.py (to verify engine.py is current):**")
+            _dbg_gl2 = result.parsed.get('gl')
+            _dbg_rerun = []
+            if _dbg_gl2 and hasattr(_dbg_gl2, 'accounts'):
+                for _dbg_na in _dbg_gl2.accounts:
+                    _dbg_code = str(getattr(_dbg_na, 'account_code', '') or '').strip()
+                    _dbg_nc   = float(getattr(_dbg_na, 'net_change', 0) or 0)
+                    _dbg_eb   = float(getattr(_dbg_na, 'ending_balance', 0) or 0)
+                    _dbg_sig  = _dbg_eb if abs(_dbg_eb) >= 0.01 else _dbg_nc
+                    if abs(_dbg_sig) < 0.01:
+                        continue
+                    if _dbg_code.startswith('7'):
+                        _dbg_rerun.append(f"{_dbg_code} | nc={_dbg_nc} | eb={_dbg_eb} | sig={_dbg_sig}")
+            if _dbg_rerun:
+                for _r in _dbg_rerun:
+                    st.warning(f"⚠️ app.py detects: {_r} — but engine missed it (stale engine.py)")
+            else:
+                st.info("app.py re-run also finds nothing with 7xxx prefix")
+
             # ── Section 2: Layer 2 / invoice_proration JEs ────────────────
             st.markdown("**Layer 2 accruals in JE output (source=invoice_proration):**")
             _dbg_ipr = [l for l in p1.get("all_je_lines", []) if l.get('source') == 'invoice_proration' and (l.get('debit') or 0) > 0]
