@@ -2249,6 +2249,10 @@ with tab1:
                         }
                         for _, r in _accruals_tbl_early.iterrows()
                         if str(r.get("Account Code", "") or "").strip()
+                        # Only suppress auto-detection (add to _covered) when the user
+                        # has actually entered an amount. Pre-seeded rows with Amount=$0
+                        # should NOT block Layer 2 from auto-accruing the account.
+                        and float(r.get("Amount ($)", 0) or 0) > 0
                     ]
 
                 # Parse T12 for Pass 1 (improves Layer 3 January historical accrual accuracy)
