@@ -3570,6 +3570,7 @@ with tab1:
                 st.session_state.interco_recode_df = pd.concat(
                     [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
                 )
+                st.rerun()   # force fresh render so data_editor picks up the new rows
 
         _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
                      if _interco_detected else "")
