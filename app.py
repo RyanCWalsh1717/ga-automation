@@ -346,8 +346,6 @@ if "je_excluded_jes" not in st.session_state:
     st.session_state.je_excluded_jes = set()
 if "je_amount_overrides" not in st.session_state:
     st.session_state.je_amount_overrides = {}   # {je_number: adjusted_amount}
-if "prior_period_outstanding" not in st.session_state:
-    st.session_state.prior_period_outstanding = 0.0
 
 # Audit trail & sign-off
 if "prepared_by" not in st.session_state:
@@ -745,21 +743,6 @@ st.session_state.prepared_by = st.sidebar.text_input(
     help="Stamped on every workpaper tab and the run log.",
 )
 
-with st.sidebar.expander("🏦 Bank Rec Settings", expanded=False):
-    prior_period_outstanding = st.number_input(
-        "Prior-period outstanding checks ($)",
-        min_value=0.0,
-        value=st.session_state.get('prior_period_outstanding', 0.0),
-        step=100.0,
-        format="%.2f",
-        help=(
-            "Total of checks that cleared in a prior period but first appeared "
-            "on this month's bank statement. Entered as a positive dollar amount. "
-            "Used by the bank reconciliation to correctly compute the adjusted GL balance."
-        ),
-        key="prior_period_outstanding_input",
-    )
-    st.session_state['prior_period_outstanding'] = prior_period_outstanding
 
 # ── Report an Issue ───────────────────────────────────────────
 with st.sidebar.expander("🐛 Report an Issue", expanded=False):
@@ -2171,7 +2154,7 @@ with tab1:
                 progress_bar.progress(10)
                 engine_result = run_pipeline(
                     files_dict,
-                    prior_period_outstanding=prior_period_outstanding,
+                    prior_period_outstanding=0.0,
                 )
                 st.session_state.pass1_engine_result = engine_result
 
@@ -4139,7 +4122,7 @@ with tab2:
                 progress_bar.progress(10)
                 engine_result = run_pipeline(
                     files_dict,
-                    prior_period_outstanding=prior_period_outstanding,
+                    prior_period_outstanding=0.0,
                 )
                 st.session_state.pass2_engine_result = engine_result
 
