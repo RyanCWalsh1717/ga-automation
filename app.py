@@ -390,9 +390,9 @@ if "interco_recode_df" not in st.session_state:
         "Leg":          _pd_ic_init.Series([], dtype=str),
         "Account":      _pd_ic_init.Series([], dtype=str),
         "Account Name": _pd_ic_init.Series([], dtype=str),
-        "Amount ($)":   _pd_ic_init.Series([], dtype=float),
+        "Credit ($)":   _pd_ic_init.Series([], dtype=float),
+        "Debit ($)":    _pd_ic_init.Series([], dtype=float),
         "Description":  _pd_ic_init.Series([], dtype=str),
-        "_ref":         _pd_ic_init.Series([], dtype=str),
     })
 
 if "post_close_je_df" not in st.session_state:
@@ -658,8 +658,8 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.interco_recode_df     = pd.DataFrame({
         "Leg": pd.Series([], dtype=str), "Account": pd.Series([], dtype=str),
         "Account Name": pd.Series([], dtype=str),
-        "Amount ($)": pd.Series([], dtype=float),
-        "Description": pd.Series([], dtype=str), "_ref": pd.Series([], dtype=str),
+        "Credit ($)": pd.Series([], dtype=float), "Debit ($)": pd.Series([], dtype=float),
+        "Description": pd.Series([], dtype=str),
     })
     st.session_state.pass2_complete        = False
     st.session_state.pass2_engine_result   = None
@@ -890,8 +890,8 @@ else:
         st.session_state.interco_recode_df   = _pd.DataFrame({
             "Leg": _pd.Series([], dtype=str), "Account": _pd.Series([], dtype=str),
             "Account Name": _pd.Series([], dtype=str),
-            "Amount ($)": _pd.Series([], dtype=float),
-            "Description": _pd.Series([], dtype=str), "_ref": _pd.Series([], dtype=str),
+            "Credit ($)": _pd.Series([], dtype=float), "Debit ($)": _pd.Series([], dtype=float),
+            "Description": _pd.Series([], dtype=str),
         })
         # Clear keys missed by prior Reset All logic
         st.session_state.pop('_je_desc_run', None)
@@ -2122,8 +2122,8 @@ with tab1:
             st.session_state.interco_recode_df = pd.DataFrame({
                 "Leg": pd.Series([], dtype=str), "Account": pd.Series([], dtype=str),
                 "Account Name": pd.Series([], dtype=str),
-                "Amount ($)": pd.Series([], dtype=float),
-                "Description": pd.Series([], dtype=str), "_ref": pd.Series([], dtype=str),
+                "Credit ($)": pd.Series([], dtype=float), "Debit ($)": pd.Series([], dtype=float),
+                "Description": pd.Series([], dtype=str),
             })
             for _clr in list(st.session_state.uploaded_files.keys()):
                 if _clr not in ("gl_pass2", "budget_comparison_pass2",
@@ -2587,65 +2587,55 @@ with tab1:
                     ])
 
                 # ── 7xxxxx Intercompany Recode JEs ────────────────────────────
-                # Build recode JEs from the interco_recode table (two-row DR/CR format).
+                # Walks the recode table in order: CR row → DR row pairs.
                 # DR [target 6/8xxxxx expense account] / CR [7xxxxx account]
                 # Permanent (no auto-reverse) — the recode is a permanent reclassification.
                 _recode_je_lines = []
                 _recode_tbl = st.session_state.get("interco_recode_df")
                 if _recode_tbl is not None and not _recode_tbl.empty:
-                    # Find DR rows with a filled-in target account
-                    _recode_dr_rows = _recode_tbl[
-                        (_recode_tbl["Leg"].fillna("") == "DR") &
-                        _recode_tbl["Account"].fillna("").str.strip().astype(bool) &
-                        (_recode_tbl["Amount ($)"].fillna(0).abs() > 0)
-                    ]
                     _recode_base = _sup_base + _sup_counter
-                    for _ri, (_, _dr_row) in enumerate(_recode_dr_rows.iterrows()):
-                        _ref_key  = str(_dr_row.get("_ref", "") or "").strip()
-                        _dr_acct  = str(_dr_row["Account"]).strip()
-                        _r_amount = float(_dr_row.get("Amount ($)") or 0)
-                        _r_desc   = (str(_dr_row.get("Description", "") or "").strip()
-                                     or f"Recode {_ref_key} → {_dr_acct}")
-                        _r_je_id  = f'REC-{_recode_base + _ri + 1:04d}'
-
-                        # Look up DR account name from GL
-                        _dr_name = (_acct_name_lookup.get(_dr_acct)
-                                    or _sup_gl_accts.get(_dr_acct, {})
-                                    and getattr(_sup_gl_accts.get(_dr_acct), 'account_name', '')
-                                    or _dr_acct)
-
-                        # Find matching CR row by _ref key
-                        _cr_rows = _recode_tbl[
-                            (_recode_tbl["Leg"].fillna("") == "CR") &
-                            (_recode_tbl["_ref"].fillna("").str.strip() == _ref_key)
-                        ]
-                        if not _cr_rows.empty:
-                            _cr_row  = _cr_rows.iloc[0]
-                            _cr_acct = str(_cr_row["Account"]).strip() or _ref_key
-                            _cr_name = str(_cr_row.get("Account Name", "") or "").strip() or _cr_acct
-                        else:
-                            _cr_acct = _ref_key
-                            _cr_name = _ref_key
-
-                        _r_abs = abs(_r_amount)
-                        _recode_je_lines.extend([
-                            {
-                                'je_number': _r_je_id, 'line': 1, 'date': close_period,
-                                'account_code': _dr_acct, 'account_name': _dr_name,
-                                'description': _r_desc, 'reference': 'INTERCO-RECODE',
-                                'debit': _r_abs, 'credit': 0, 'vendor': '',
-                                'invoice_number': '', 'source': 'interco_recode',
-                                'confidence': 'high', 'reverse_next_month': 0,
-                            },
-                            {
-                                'je_number': _r_je_id, 'line': 2, 'date': close_period,
-                                'account_code': _cr_acct, 'account_name': _cr_name,
-                                'description': _r_desc, 'reference': 'INTERCO-RECODE',
-                                'debit': 0, 'credit': _r_abs, 'vendor': '',
-                                'invoice_number': '', 'source': 'interco_recode',
-                                'confidence': 'high', 'reverse_next_month': 0,
-                            },
-                        ])
+                    _recode_ri   = 0
+                    _pending_cr  = None   # CR row waiting for its DR partner
+                    for _, _row in _recode_tbl.iterrows():
+                        _row_leg = str(_row.get("Leg", "") or "").strip()
+                        if _row_leg == "CR":
+                            _pending_cr = _row   # store CR; will pair with next DR
+                        elif _row_leg == "DR" and _pending_cr is not None:
+                            _dr_acct = str(_row.get("Account", "") or "").strip()
+                            if not _dr_acct:
+                                _pending_cr = None
+                                continue     # DR account not filled in yet — skip
+                            _cr_acct = str(_pending_cr.get("Account", "") or "").strip()
+                            _cr_name = str(_pending_cr.get("Account Name", "") or "").strip() or _cr_acct
+                            _cr_amt  = float(_pending_cr.get("Credit ($)", 0) or 0)
+                            _dr_amt  = float(_row.get("Debit ($)", 0) or 0) or _cr_amt
+                            _r_desc  = (str(_row.get("Description", "") or "").strip()
+                                        or f"Recode {_cr_acct} → {_dr_acct}")
+                            _r_je_id = f'REC-{_recode_base + _recode_ri + 1:04d}'
+                            _dr_name = (_acct_name_lookup.get(_dr_acct)
+                                        or _sup_gl_accts.get(_dr_acct, {})
+                                        and getattr(_sup_gl_accts.get(_dr_acct), 'account_name', '')
+                                        or _dr_acct)
+                            _recode_je_lines.extend([
+                                {
+                                    'je_number': _r_je_id, 'line': 1, 'date': close_period,
+                                    'account_code': _dr_acct, 'account_name': _dr_name,
+                                    'description': _r_desc, 'reference': 'INTERCO-RECODE',
+                                    'debit': _dr_amt, 'credit': 0, 'vendor': '',
+                                    'invoice_number': '', 'source': 'interco_recode',
+                                    'confidence': 'high', 'reverse_next_month': 0,
+                                },
+                                {
+                                    'je_number': _r_je_id, 'line': 2, 'date': close_period,
+                                    'account_code': _cr_acct, 'account_name': _cr_name,
+                                    'description': _r_desc, 'reference': 'INTERCO-RECODE',
+                                    'debit': 0, 'credit': _cr_amt, 'vendor': '',
+                                    'invoice_number': '', 'source': 'interco_recode',
+                                    'confidence': 'high', 'reverse_next_month': 0,
+                                },
+                            ])
+                            _recode_ri  += 1
+                            _pending_cr  = None   # consumed
 
                 # Step 6: Assemble all JEs, apply building splits, export 3 CSVs
                 status_text.text("Step 6/6: Exporting JE CSVs...")
@@ -3294,9 +3284,8 @@ with tab1:
             )
 
         # Auto-merge newly detected accounts into the recode table (idempotent).
-        # Dedup by CR Account column — more reliable than _ref because st.data_editor
-        # with column_config=None can drop hidden columns from its returned DataFrame,
-        # which would cause _ref-based dedup to fail and trigger an infinite rerun loop.
+        # Dedup by Leg=="CR" + Account — Leg is a visible column so data_editor
+        # never drops it (unlike hidden _ref which caused a reset-on-type rerun loop).
         if _interco_detected:
             _ic_df_cur = st.session_state.interco_recode_df.copy()
             _existing_cr_accts = set()
@@ -3310,22 +3299,20 @@ with tab1:
                     _ic_amt  = abs(float(_ic.get('net_amount', 0)))
                     _ic_name = str(_ic.get('account_name', ''))
                     _ic_desc = f"Recode {_ic_code} to expense account"
-                    # CR row first — pre-filled so user can see the account and amount
+                    # CR row first: pre-filled account + credit amount so user can see what's being reversed
                     _new_ic_rows.append({
                         "Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
-                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
+                        "Credit ($)": _ic_amt, "Debit ($)": 0.0, "Description": _ic_desc,
                     })
-                    # DR row second — blank Account for user to fill in target
+                    # DR row: amount pre-filled, Account blank for user to enter 6xxxxx/8xxxxx target
                     _new_ic_rows.append({
                         "Leg": "DR", "Account": "", "Account Name": "",
-                        "Amount ($)": _ic_amt, "Description": _ic_desc, "_ref": _ic_code,
+                        "Credit ($)": 0.0, "Debit ($)": _ic_amt, "Description": _ic_desc,
                     })
             if _new_ic_rows:
                 st.session_state.interco_recode_df = pd.concat(
                     [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
                 )
-                # No st.rerun() here — using a run-count key on the data_editor
-                # means it automatically picks up new rows when pass1_run_count changes
 
         _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
                      if _interco_detected else "")
@@ -3348,35 +3335,36 @@ with tab1:
                 use_container_width=True,
                 column_config={
                     "Leg":          st.column_config.TextColumn("Leg", width="small", disabled=True,
-                                        help="DR = debit (expense account recoding INTO) | CR = credit (7xxxxx being removed)"),
+                                        help="CR = the 7xxxxx being credited out | DR = the expense account to debit"),
                     "Account":      st.column_config.TextColumn("Account", width="small",
-                                        help="DR row: enter the 6xxxxx or 8xxxxx target expense account. CR row: pre-filled with the 7xxxxx account (edit if needed)."),
+                                        help="CR row: 7xxxxx account (pre-filled). DR row: enter the 6xxxxx or 8xxxxx target expense account."),
                     "Account Name": st.column_config.TextColumn("Account Name", width="medium", disabled=True),
-                    "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f", width="small",
-                                        help="PTD amount auto-detected from GL. Edit if recoding a partial amount."),
+                    "Credit ($)":   st.column_config.NumberColumn("Credit ($)", format="$%,.2f", width="small",
+                                        help="Pre-filled on the CR row from the GL. Edit if recoding a partial amount."),
+                    "Debit ($)":    st.column_config.NumberColumn("Debit ($)", format="$%,.2f", width="small",
+                                        help="Pre-filled on the DR row to match the CR. Edit if recoding a partial amount."),
                     "Description":  st.column_config.TextColumn("Description", width="large"),
-                    "_ref":         None,
                 },
                 key=f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}",
             )
             st.session_state.interco_recode_df = _ic_recode_edited
 
-            # Active = DR rows that have a non-blank target Account filled in
+            # Active = DR rows that have a non-blank target Account and a Debit amount
             _ic_dr_active = _ic_recode_edited[
                 (_ic_recode_edited["Leg"].fillna("") == "DR") &
                 _ic_recode_edited["Account"].fillna("").str.strip().astype(bool) &
-                (_ic_recode_edited["Amount ($)"].fillna(0).abs() > 0)
+                (_ic_recode_edited["Debit ($)"].fillna(0) > 0)
             ]
             if not _ic_dr_active.empty:
                 st.success(
                     f"✅ {len(_ic_dr_active)} recode JE(s) queued — "
-                    f"${_ic_dr_active['Amount ($)'].abs().sum():,.2f} total. "
+                    f"${_ic_dr_active['Debit ($)'].sum():,.2f} total. "
                     f"Re-run Generate JEs to include in the CSV.",
                     icon="✅",
                 )
             elif _interco_detected:
                 st.warning(
-                    "⚠️ 7xxxxx accounts detected — enter the DR expense account on each DR row, "
+                    "⚠️ 7xxxxx accounts detected — enter the 6xxxxx or 8xxxxx target on each DR row, "
                     "then re-run Generate JEs to include recode JEs in the CSV.",
                     icon="⚠️",
                 )
