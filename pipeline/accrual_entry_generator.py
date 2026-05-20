@@ -1425,7 +1425,21 @@ def detect_invoice_proration_accruals(
         if j_credit_total < 1.0:
             continue
 
-        _pattern_note = f'prior accruals reversed (${j_credit_total:,.2f}) + invoices received'
+        # Accrual amount = prior period's accrual (j_credit_total), NOT the sum
+        # of current period invoices.  The received invoices are already in the GL;
+        # we are accruing the *estimated unbilled* portion of the current month.
+        # Rolling the prior estimate forward gives:
+        #   P&L impact = −reversal + actual invoices + new accrual
+        #              = −j_credits  + invoice_total  + j_credits
+        #              = invoice_total   (exactly the actual expense for the period)
+        # This also self-corrects prior-period over/under-accruals: if the
+        # prior estimate was too high the excess nets to zero over the cycle.
+        accrual_amount = j_credit_total
+
+        _pattern_note = (
+            f'prior accrual reversed (${j_credit_total:,.2f}); '
+            f'rolling forward as estimate for current unbilled period'
+        )
 
         vendors = list({(txn.description or '').split('(')[0].strip()
                         for txn in acct.transactions
@@ -1436,17 +1450,16 @@ def detect_invoice_proration_accruals(
         candidates.append({
             'account_code':   code,
             'account_name':   acct.account_name,
-            'accrual_amount': _round(invoice_total),
+            'accrual_amount': _round(accrual_amount),
             'source':         'invoice_proration',
             'description': (
                 f'Accrual {_period_label} — {vendor_str} ({acct.account_name}): '
-                f'{_pattern_note}, '
-                f'current month unbilled = ${invoice_total:,.2f}'
+                f'{_pattern_note}'
             ),
             'daily_rate':     0.0,
             'uncovered_days': 0,
             'period_days':    0,
-            'invoice_total':  _round(invoice_total),
+            'invoice_total':  _round(accrual_amount),
         })
 
     return candidates
