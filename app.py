@@ -2746,7 +2746,26 @@ with tab1:
         st.markdown(f"## Pass 1 Results — {result.period}  |  {result.property_name}")
 
         # ── TEMPORARY DEBUG PANEL (remove after diagnosis) ────────────────
-        with st.expander("🔬 Debug — GL Account Summary", expanded=False):
+        with st.expander("🔬 Debug — GL Account Summary", expanded=True):
+            # ── Section 1: 7xxx detection result ──────────────────────────
+            _dbg_7xxx = result.summary.get('corp_7xxx_accounts', [])
+            st.markdown("**7xxx accounts in corp_7xxx_accounts (engine output):**")
+            if _dbg_7xxx:
+                for _d7 in _dbg_7xxx:
+                    st.success(f"✅ {_d7.get('account_code')} — {_d7.get('account_name')} — ${abs(_d7.get('net_amount',0)):,.2f}")
+            else:
+                st.error("❌ corp_7xxx_accounts is EMPTY — engine did not detect any 7xxx accounts")
+
+            # ── Section 2: Layer 2 / invoice_proration JEs ────────────────
+            st.markdown("**Layer 2 accruals in JE output (source=invoice_proration):**")
+            _dbg_ipr = [l for l in p1.get("all_je_lines", []) if l.get('source') == 'invoice_proration' and (l.get('debit') or 0) > 0]
+            if _dbg_ipr:
+                for _di in _dbg_ipr:
+                    st.success(f"✅ {_di.get('je_number')} — {_di.get('account_code')} {_di.get('account_name')} — ${_di.get('debit',0):,.2f}")
+            else:
+                st.error("❌ No invoice_proration JEs generated — Layer 2 produced nothing")
+
+            # ── Section 3: GL account table ────────────────────────────────
             _dbg_gl = result.parsed.get('gl')
             if _dbg_gl and hasattr(_dbg_gl, 'accounts'):
                 _dbg_rows = []
@@ -2762,11 +2781,10 @@ with tab1:
                 import pandas as _dbg_pd
                 _dbg_df = _dbg_pd.DataFrame(_dbg_rows)
                 st.caption(f"{len(_dbg_rows)} accounts parsed from GL")
-                _dbg_filter = st.text_input("Filter by account code prefix (e.g. '7', '610')", key="_dbg_filter")
+                _dbg_filter = st.text_input("Filter by account code prefix", key="_dbg_filter")
                 if _dbg_filter:
                     _dbg_df = _dbg_df[_dbg_df["Code"].str.startswith(_dbg_filter)]
                 st.dataframe(_dbg_df, use_container_width=True, hide_index=True)
-                st.caption(f"corp_7xxx_accounts: {result.summary.get('corp_7xxx_accounts', [])}")
             else:
                 st.warning("GL not parsed or no accounts found")
         # ── END DEBUG PANEL ───────────────────────────────────────────────
