@@ -2745,6 +2745,32 @@ with tab1:
         st.divider()
         st.markdown(f"## Pass 1 Results — {result.period}  |  {result.property_name}")
 
+        # ── TEMPORARY DEBUG PANEL (remove after diagnosis) ────────────────
+        with st.expander("🔬 Debug — GL Account Summary", expanded=False):
+            _dbg_gl = result.parsed.get('gl')
+            if _dbg_gl and hasattr(_dbg_gl, 'accounts'):
+                _dbg_rows = []
+                for _dbg_a in _dbg_gl.accounts:
+                    _dbg_rows.append({
+                        "Code":      str(_dbg_a.account_code).strip(),
+                        "Name":      str(_dbg_a.account_name or '')[:40],
+                        "Beg Bal":   round(float(getattr(_dbg_a, 'beginning_balance', 0) or 0), 2),
+                        "Net Chg":   round(float(getattr(_dbg_a, 'net_change', 0) or 0), 2),
+                        "End Bal":   round(float(getattr(_dbg_a, 'ending_balance', 0) or 0), 2),
+                        "Txn #":     len(getattr(_dbg_a, 'transactions', [])),
+                    })
+                import pandas as _dbg_pd
+                _dbg_df = _dbg_pd.DataFrame(_dbg_rows)
+                st.caption(f"{len(_dbg_rows)} accounts parsed from GL")
+                _dbg_filter = st.text_input("Filter by account code prefix (e.g. '7', '610')", key="_dbg_filter")
+                if _dbg_filter:
+                    _dbg_df = _dbg_df[_dbg_df["Code"].str.startswith(_dbg_filter)]
+                st.dataframe(_dbg_df, use_container_width=True, hide_index=True)
+                st.caption(f"corp_7xxx_accounts: {result.summary.get('corp_7xxx_accounts', [])}")
+            else:
+                st.warning("GL not parsed or no accounts found")
+        # ── END DEBUG PANEL ───────────────────────────────────────────────
+
         # ── GL Activity Gut-Check ──────────────────────────────────────────
         # Show a compact warning listing accounts where the pipeline detected
         # an existing JE in the GL and suppressed automated accruals.
