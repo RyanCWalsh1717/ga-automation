@@ -2025,7 +2025,7 @@ def detect_payroll_bonus_accrual(
     return results
 
 
-# ── Build JE lines from all sources ─────────────────────────
+# ── Build JE lines from all sources ──────────────────────────────────────────
 
 def build_accrual_entries(nexus_data: list, period: str = '',
                           property_name: str = '',
