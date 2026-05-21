@@ -1258,17 +1258,21 @@ def detect_invoice_proration_accruals(
                 billing_months = max(1, round(period_days / 30.44))
                 monthly_rate   = total_amount / billing_months
 
-                # Compound logic for multi-month billing cycles.
+                # Compound logic: add prior-month auto-reversal (J-credit) to monthly rate
+                # so the accrued liability builds each month until the real invoice arrives.
+                #
                 # Guard: if J-debits >= monthly_rate, a prior pipeline JE is already
                 # in the GL for this account — skip to avoid double-accrual.
                 _p1_j_dr = _j_debits(acct)
-                if billing_months > 1 and _p1_j_dr >= monthly_rate:
+                if _p1_j_dr >= monthly_rate:
                     continue
 
                 # Net J-credit = prior-month auto-reversal signal.
-                # For monthly accounts this is always 0 so compound = monthly_rate.
-                # For multi-month accounts this grows as the pipeline compounds each month.
-                _p1_j_cr = _net_j_credit(acct) if billing_months > 1 else 0.0
+                # Always use it — the billing_months > 1 restriction was incorrectly
+                # preventing compound on accounts (e.g. Water/Sewer) whose invoiced
+                # period happens to parse as 1 month even though the pipeline needs
+                # to compound multiple months of accrual between real invoices.
+                _p1_j_cr = _net_j_credit(acct)
                 accrual_amount = _p1_j_cr + monthly_rate
 
                 _cmpd_note = (
