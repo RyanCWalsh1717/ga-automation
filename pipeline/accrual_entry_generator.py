@@ -2530,44 +2530,45 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _pipeline_reclass = max(0.0, _round(_reimb_total - _existing_reclass))
                 if _pipeline_reclass < 0.01:
                     je_num += 1
-                    continue  # JLL covered it fully — nothing to post
-                _jll_note = (
-                    f' (JLL posted ${_existing_reclass:,.2f}; pipeline posts ${_pipeline_reclass:,.2f} incremental)'
-                    if _existing_reclass >= 0.01 else ''
-                )
-                _cmpd_note = (
-                    f' — total ${_reimb_total:,.2f} '
-                    f'(${_catch_up:,.2f} catch-up + ${_total_elec_billed:,.2f} current)'
-                    if _catch_up > 0 else ''
-                )
-                _elec_je_id = f'TUB-{je_num:04d}'
-                _elec_desc  = (f'Tenant electricity reclassification — '
-                               f'total billed ${_total_elec_billed:,.2f}'
-                               f'{_cmpd_note}{_jll_note} '
-                               f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
-                je_lines.append({
-                    'je_number':      _elec_je_id, 'line': 1, 'date': '',
-                    'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
-                    'account_name':   ELEC_TENANT_REIMB_NAME,
-                    'description':    _elec_desc,
-                    'reference':      'ELEC-REIMB',
-                    'debit':          _pipeline_reclass, 'credit': 0,
-                    'vendor':         '[Tenant Electric Billing]',
-                    'invoice_number': '',
-                    'source':         'tenant_utility_billing', 'confidence': 'high',
-                })
-                je_lines.append({
-                    'je_number':      _elec_je_id, 'line': 2, 'date': '',
-                    'account_code':   ELEC_EXPENSE_ACCOUNT,
-                    'account_name':   ELEC_EXPENSE_NAME,
-                    'description':    _elec_desc,
-                    'reference':      'ELEC-REIMB',
-                    'debit':          0, 'credit': _pipeline_reclass,
-                    'vendor':         '[Tenant Electric Billing]',
-                    'invoice_number': '',
-                    'source':         'tenant_utility_billing', 'confidence': 'high',
-                })
-                je_num += 1
+                    pass  # JLL covered it fully — nothing to post
+                else:
+                    _jll_note = (
+                        f' (JLL posted ${_existing_reclass:,.2f}; pipeline posts ${_pipeline_reclass:,.2f} incremental)'
+                        if _existing_reclass >= 0.01 else ''
+                    )
+                    _cmpd_note = (
+                        f' — total ${_reimb_total:,.2f} '
+                        f'(${_catch_up:,.2f} catch-up + ${_total_elec_billed:,.2f} current)'
+                        if _catch_up > 0 else ''
+                    )
+                    _elec_je_id = f'TUB-{je_num:04d}'
+                    _elec_desc  = (f'Tenant electricity reclassification — '
+                                   f'total billed ${_total_elec_billed:,.2f}'
+                                   f'{_cmpd_note}{_jll_note} '
+                                   f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 1, 'date': '',
+                        'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
+                        'account_name':   ELEC_TENANT_REIMB_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          _pipeline_reclass, 'credit': 0,
+                        'vendor':         '[Tenant Electric Billing]',
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': 'high',
+                    })
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 2, 'date': '',
+                        'account_code':   ELEC_EXPENSE_ACCOUNT,
+                        'account_name':   ELEC_EXPENSE_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          0, 'credit': _pipeline_reclass,
+                        'vendor':         '[Tenant Electric Billing]',
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': 'high',
+                    })
+                    je_num += 1
 
     elif gl_data:
         # ── Mode (b): no sidebar rows — use Receivable Detail if uploaded, else budget ──
