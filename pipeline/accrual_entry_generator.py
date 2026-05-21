@@ -1233,22 +1233,54 @@ def detect_invoice_proration_accruals(
                         })
             else:
                 # All other accounts (water, sewer, HVAC contracts, janitorial, etc.):
-                # combine all vendors and accrue the full last invoice amount (flat monthly rate).
-                group      = by_end[latest_end]
+                # Use the latest invoice to derive a monthly rate, then compound with
+                # any prior-month auto-reversal (J-credit) so the accrued liability
+                # builds correctly for semi-annual / quarterly billing cycles.
+                #
+                # Monthly contracts (billing_months ≈ 1): accrual = monthly_rate (no change).
+                # Multi-month contracts (billing_months > 1, e.g. Water/Sewer billed
+                #   semi-annually): accrual = J-credit reversal + monthly_rate.
+                #   This grows each month until the real invoice arrives and the
+                #   account net is non-zero (suppressed by the non-J-net guard below).
+                group        = by_end[latest_end]
                 total_amount = sum(g[2] for g in group)
                 min_start    = min(g[0] for g in group)
                 period_days  = max(1, (latest_end - min_start).days)
+
+                # Derive billing period in months (round to nearest whole month).
+                billing_months = max(1, round(period_days / 30.44))
+                monthly_rate   = total_amount / billing_months
+
+                # Compound logic for multi-month billing cycles.
+                # Guard: if J-debits >= monthly_rate, a prior pipeline JE is already
+                # in the GL for this account — skip to avoid double-accrual.
+                _p1_j_dr = _j_debits(acct)
+                if billing_months > 1 and _p1_j_dr >= monthly_rate:
+                    continue
+
+                # Net J-credit = prior-month auto-reversal signal.
+                # For monthly accounts this is always 0 so compound = monthly_rate.
+                # For multi-month accounts this grows as the pipeline compounds each month.
+                _p1_j_cr = _net_j_credit(acct) if billing_months > 1 else 0.0
+                accrual_amount = _p1_j_cr + monthly_rate
+
+                _cmpd_note = (
+                    f' — cumulative ${accrual_amount:,.0f} '
+                    f'(${_p1_j_cr:,.0f} prior reversal + ${monthly_rate:,.0f}/mo)'
+                    if _p1_j_cr > 0 else ''
+                )
                 accrual_desc = (
                     f'Accrual {_period_label} — {acct.account_name} '
                     f'(last invoice {min_start.strftime("%m/%d/%y")}'
                     f'-{latest_end.strftime("%m/%d/%y")}, '
-                    f'${total_amount:,.0f})'
+                    f'${total_amount:,.0f} / {billing_months} mo'
+                    f' = ${monthly_rate:,.0f}/mo){_cmpd_note}'
                 )
-                if total_amount >= materiality:
+                if accrual_amount >= materiality:
                     candidates.append({
                         'account_code':   code,
                         'account_name':   acct.account_name,
-                        'accrual_amount': _round(total_amount),
+                        'accrual_amount': _round(accrual_amount),
                         'source':         'invoice_proration',
                         'description':    accrual_desc,
                         'daily_rate':     0.0,
