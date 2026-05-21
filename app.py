@@ -2641,6 +2641,22 @@ with tab1:
                             _recode_ri  += 1
                             _pending_cr  = None   # consumed
 
+                # Debug: show recode table state so user can confirm JEs were built
+                _recode_tbl_rows = len(_recode_tbl) if _recode_tbl is not None else 0
+                _recode_dr_filled = 0
+                if _recode_tbl is not None and not _recode_tbl.empty:
+                    _recode_dr_filled = int((
+                        (_recode_tbl["Leg"].fillna("") == "DR") &
+                        _recode_tbl["Account"].fillna("").str.strip().astype(bool) &
+                        (_recode_tbl["Debit ($)"].fillna(0) > 0)
+                    ).sum())
+                st.info(
+                    f"🔬 RECODE DEBUG — table rows: {_recode_tbl_rows} | "
+                    f"DR rows with filled account: {_recode_dr_filled} | "
+                    f"recode JE lines built: {len(_recode_je_lines)}",
+                    icon="🔍",
+                )
+
                 # Step 6: Assemble all JEs, apply building splits, export 3 CSVs
                 status_text.text("Step 6/6: Exporting JE CSVs...")
                 progress_bar.progress(88)
