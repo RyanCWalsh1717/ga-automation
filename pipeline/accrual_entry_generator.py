@@ -3334,13 +3334,37 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                                                     kardin_records=kardin_records,
                                                     materiality=accrual_materiality_floor,
                                                     layer3_exclude_accounts=layer3_exclude_accounts)
+        # Build a quick lookup so we can fetch GL accounts by code in the loop below.
+        _gl_acct_lookup = {
+            str(a.account_code).strip(): a
+            for a in getattr(gl_data, 'accounts', [])
+        }
+
         for hist in historicals:
             if hist['account_code'] in _covered:
                 _other_claimants.setdefault(hist['account_code'], []).append('historical')
                 continue
 
-            je_id   = f"REC-{je_num:04d}"
-            je_desc = hist['description']
+            # Compound with prior-month J-credits (auto-reversals of pipeline accruals).
+            # Accounts like Water/Sewer (semi-annual billing) land here via Layer 3
+            # because their GL descriptions lack date-range markers, but they still
+            # need cumulative compounding between real invoices.
+            # _net_j_credit returns 0 for accounts whose prior accrual was already
+            # offset by a real invoice, so monthly contracts are unaffected.
+            _hist_gl_acct = _gl_acct_lookup.get(hist['account_code'])
+            _hist_j_cr    = _net_j_credit(_hist_gl_acct)
+            _hist_base    = hist['estimated_amount']
+            _hist_total   = _round(_hist_base + _hist_j_cr)
+
+            if _hist_j_cr > 0:
+                je_desc = (
+                    f"{hist['description']} — cumulative ${_hist_total:,.0f} "
+                    f"(${_hist_j_cr:,.0f} prior reversal + ${_hist_base:,.0f} est.)"
+                )
+            else:
+                je_desc = hist['description']
+
+            je_id = f"REC-{je_num:04d}"
 
             je_lines.append({
                 'je_number':      je_id,
@@ -3350,7 +3374,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'account_name':   hist['account_name'],
                 'description':    je_desc,
                 'reference':      'RECURRING',
-                'debit':          hist['estimated_amount'],
+                'debit':          _hist_total,
                 'credit':         0,
                 'vendor':         '[Historical Recurring]',
                 'invoice_number': '',
@@ -3366,7 +3390,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'description':    je_desc,
                 'reference':      'RECURRING',
                 'debit':          0,
-                'credit':         hist['estimated_amount'],
+                'credit':         _hist_total,
                 'vendor':         '[Historical Recurring]',
                 'invoice_number': '',
                 'source':         'historical',
