@@ -80,6 +80,7 @@ def _build_accruals_seed_df(cfg=None):
             "Account Name":   [r.get('account_name', '') for r in rows] + [''],
             "Vendor":         [r.get('vendor', '') for r in rows] + [''],
             "Amount ($)":     [0.0] * _n,
+            "Prior Accrual ($)": [0.0] * _n,
             "Description":    [''] * _n,
             "Auto-Reverse":   [True] * _n,
             "Split Schedule": [''] * _n,
@@ -90,6 +91,7 @@ def _build_accruals_seed_df(cfg=None):
         "Account Name":   [''],
         "Vendor":         [''],
         "Amount ($)":     [0.0],
+        "Prior Accrual ($)": [0.0],
         "Description":    [''],
         "Auto-Reverse":   [True],
         "Split Schedule": [''],
@@ -1971,6 +1973,8 @@ with tab1:
             st.session_state.manual_accruals_df["Split Schedule"] = ""
         if "Auto-Reverse" not in st.session_state.manual_accruals_df.columns:
             st.session_state.manual_accruals_df["Auto-Reverse"] = True
+        if "Prior Accrual ($)" not in st.session_state.manual_accruals_df.columns:
+            st.session_state.manual_accruals_df["Prior Accrual ($)"] = 0.0
 
         _split_sch_help = (
             "Leave blank to use the property default split schedule. "
@@ -1991,7 +1995,13 @@ with tab1:
                 "Vendor":          st.column_config.TextColumn("Vendor", width="medium"),
                 "Amount ($)":      st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
                                        width="small", min_value=0.0,
-                                       help="Positive amount — debit to expense account"),
+                                       help="Monthly accrual amount — debit to expense account"),
+                "Prior Accrual ($)": st.column_config.NumberColumn("Prior Accrual ($)", format="$%,.2f",
+                                       width="small", min_value=0.0,
+                                       help="For semi-annual / irregular accounts (e.g. Water/Sewer): "
+                                            "enter the cumulative prior-month accrual balance to seed compounding "
+                                            "on the first pipeline run. Leave $0 once prior pipeline auto-reversals "
+                                            "appear in the GL — the pipeline picks them up automatically."),
                 "Description":     st.column_config.TextColumn("Description", width="large",
                                        help="Description for the Yardi JE line"),
                 "Auto-Reverse":    st.column_config.CheckboxColumn("Auto-Rev",
@@ -2245,6 +2255,7 @@ with tab1:
                             # The actual SUP-XXXX JEs (with custom CR account support)
                             # are built separately via _supplement_je_lines below.
                             'amount': 0,
+                            'prior_accrual': float(r.get("Prior Accrual ($)", 0) or 0),
                             'description': str(r.get("Description", "") or "").strip(),
                         }
                         for _, r in _accruals_tbl_early.iterrows()
@@ -2499,6 +2510,7 @@ with tab1:
                             'account_name':    str(_row.get("Account Name", "") or "").strip()
                                                or str(_row["Account Code"]).strip(),
                             'amount':          float(_row["Amount ($)"]),
+                            'prior_accrual':   float(_row.get("Prior Accrual ($)", 0) or 0),
                             'description':     _desc or _vendor or 'one-off accrual',
                             'vendor':          _vendor,
                             'auto_reverse':    _row_auto_rev,
@@ -2551,13 +2563,22 @@ with tab1:
                     # explicitly chose to accrue these items — silently dropping them caused
                     # missed accruals.  If a real invoice is already in the GL the user
                     # can simply leave the Amount at $0 to suppress without generating a JE.
-                    _sga_obj   = _sup_gl_accts.get(_sup_acct_code)
-                    _sga_j_cr  = _sup_j_credits(_sga_obj)
+                    _sga_obj        = _sup_gl_accts.get(_sup_acct_code)
+                    _sga_j_cr       = _sup_j_credits(_sga_obj)
+                    _sup_prior_seed = float(_sup.get('prior_accrual', 0) or 0)
 
-                    _sup_compound   = _sga_j_cr + _sup_monthly
+                    # If no J-credits from a prior pipeline auto-reversal (e.g. first
+                    # pipeline run), fall back to the user-entered Prior Accrual ($) to
+                    # seed compounding. Once pipeline auto-reversals appear in the GL,
+                    # _sga_j_cr will exceed zero and the manual seed is no longer needed.
+                    _sga_effective_j_cr = _sga_j_cr if _sga_j_cr > 0 else _sup_prior_seed
+                    _prior_seed_note    = ' [prior accrual seeded manually]' if (_sga_j_cr == 0 and _sup_prior_seed > 0) else ''
+
+                    _sup_compound   = _sga_effective_j_cr + _sup_monthly
                     _sup_cmpd_note  = (f' — cumulative ${_sup_compound:,.0f} '
-                                       f'(${_sga_j_cr:,.0f} prior reversal + ${_sup_monthly:,.0f}/mo)'
-                                       if _sga_j_cr > 0 else '')
+                                       f'(${_sga_effective_j_cr:,.0f} prior reversal + ${_sup_monthly:,.0f}/mo)'
+                                       f'{_prior_seed_note}'
+                                       if _sga_effective_j_cr > 0 else '')
 
                     _sje_id  = f'SUP-{_sup_base + _sup_counter + 1:04d}'
                     _sup_counter += 1
