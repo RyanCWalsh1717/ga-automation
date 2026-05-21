@@ -241,6 +241,13 @@ class PropertyConfig:
     metered_utility_accounts:    Optional[List[str]] = None
     per_invoice_utility_accounts: Optional[List[str]] = None
 
+    # Accounts in Layer 2 Pass 2 that should emit one accrual JE line per invoice
+    # rather than one combined line.  Use for vendors whose invoices represent
+    # distinct service types (e.g. Casella: compactor / recycling / trash each
+    # get their own row).  All other Pass 2 accounts default to combined mode.
+    # Override in config.yaml as:  per_invoice_accrual_accounts: ['610160']
+    per_invoice_accrual_accounts: Optional[List[str]] = None
+
     # ── QC account lists ──────────────────────────────────────────────────────
     # Per-property overrides for the P&L and BS account lists used in QC checks
     # (Check 1 TB→BC tie-out, Check 2 variances, Check 5 GL vs workpapers).
@@ -398,6 +405,10 @@ class PropertyConfig:
             per_invoice_utility_accounts = (
                 [str(a) for a in d['per_invoice_utility_accounts']]
                 if d.get('per_invoice_utility_accounts') else None
+            ),
+            per_invoice_accrual_accounts = (
+                [str(a) for a in d['per_invoice_accrual_accounts']]
+                if d.get('per_invoice_accrual_accounts') else None
             ),
             # Layer 3 exclusions — discretionary / irregular accounts
             layer3_exclude_accounts = [
