@@ -1645,9 +1645,9 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         _kc = str(_kr.get('account_code', '') or '').strip()
         if not _kc or _kc in budget_by_code:
             continue   # already have BC data for this account — BC takes priority
-        _k_annual = sum(
-            abs(float(_kr.get(f'm{i}', 0) or 0)) for i in range(1, 13)
-        )
+        # Kardin parser stores monthly keys as uppercase M1–M12 and annual as m_total.
+        # Use m_total directly (already summed) to avoid case mismatch.
+        _k_annual = abs(float(_kr.get('m_total', 0) or 0))
         if _k_annual < 1:
             continue
         _k_name = str(_kr.get('description', '') or _kr.get('account_name', '') or _kc).strip()

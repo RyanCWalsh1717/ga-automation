@@ -54,8 +54,6 @@ tenants:
 default_accruals:
   - account_code: "637150"
     account_name: Admin-Tenant Relations
-  - account_code: "637150"
-    account_name: Admin-Tenant Relations
   - account_code: "617110"
     account_name: HVAC Maint-Contract Svc
   - account_code: "619120"

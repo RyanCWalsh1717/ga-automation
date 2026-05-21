@@ -320,7 +320,7 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
 # ══════════════════════════════════════════════════════════════
 
 def check_4_mom_swings(budget_rows: List[dict],
-                       swing_threshold: float = 2_500.0,
+                       swing_threshold: float = 10_000.0,
                        period_month: int = 0) -> QCResult:
     """
     For P&L accounts, derive prior-month actual = YTD actual - PTD actual.
@@ -393,7 +393,7 @@ def check_4_mom_swings(budget_rows: List[dict],
                    f'${abs(largest.difference):,.0f} swing.')
         status = 'FLAG'
 
-    return QCResult('CHECK_4', 'Month-over-Month Swings (≥$2,500)', status, summary, findings)
+    return QCResult('CHECK_4', 'Month-over-Month Swings (≥$10,000)', status, summary, findings)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -636,13 +636,15 @@ def check_7_misc(budget_rows: List[dict],
     kardin_records = kardin_records or []
     tb_map = tb_result.account_map if tb_result else {}
 
-    # ── Derive rates and GL code from property_config if available ─────────────
+    # ── Derive rates, minimums, and GL code from property_config if available ────
+    jll_minimum = 0.0
     if property_config is not None:
         _fees = getattr(property_config, 'management_fees', None) or []
         if _fees:
             # Use first two fee lines as jll / grp (or sum if only one)
-            jll_rate = _fees[0].rate if len(_fees) >= 1 else jll_rate
-            grp_rate = _fees[1].rate if len(_fees) >= 2 else 0.0
+            jll_rate    = _fees[0].rate    if len(_fees) >= 1 else jll_rate
+            jll_minimum = float(getattr(_fees[0], 'minimum', 0) or 0)
+            grp_rate    = _fees[1].rate    if len(_fees) >= 2 else 0.0
         _gl_accts = getattr(property_config, 'gl_accounts', None) or {}
         mgmt_fee_code = str(_gl_accts.get('mgmt_fee_expense', '637130')).strip() or '637130'
     else:
@@ -653,7 +655,8 @@ def check_7_misc(budget_rows: List[dict],
 
     if mgmt_fee_code in bc_map and cash_received is not None and cash_received > 0:
         ptd_actual = abs(_safe_float(bc_map[mgmt_fee_code].get('ptd_actual', 0)))
-        expected_jll = cash_received * jll_rate
+        # Apply JLL minimum — same logic as the JE generator (max of computed vs minimum)
+        expected_jll = max(cash_received * jll_rate, jll_minimum)
         expected_grp = cash_received * grp_rate
         expected_total = expected_jll + expected_grp
         diff = abs(ptd_actual - expected_total)
