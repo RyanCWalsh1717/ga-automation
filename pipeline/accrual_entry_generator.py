@@ -2457,9 +2457,25 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # from the real electricity bill and must NOT suppress the reclassification).
         if _round(_total_elec_billed) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            # Only J-type debits indicate a prior J accrual for this reclass.
-            # C/R/P/K debits in 613115 are not pipeline accruals.
-            _reimb_posted = _j_debits(_reimb_gl) >= 0.01
+            # Suppress only when our OWN ELEC-REIMB entry is already in the GL
+            # (prevents double-posting on a re-run after Yardi import).
+            # JLL manual reclasses (different reference) do NOT suppress — they
+            # reduce what the pipeline posts but don't block it entirely.
+            _reimb_gl_txns = getattr(_reimb_gl, 'transactions', [])
+            _reimb_posted = sum(
+                float(t.debit or 0) for t in _reimb_gl_txns
+                if float(t.debit or 0) > 0
+                and str(getattr(t, 'control',   '') or '').upper().startswith('J')
+                and str(getattr(t, 'reference', '') or '').upper() == 'ELEC-REIMB'
+            ) >= 0.01
+            # Existing non-pipeline J-debits (e.g. JLL manual reclass) —
+            # count toward what has already been reclassed this period.
+            _existing_reclass = _round(sum(
+                float(t.debit or 0) for t in _reimb_gl_txns
+                if float(t.debit or 0) > 0
+                and str(getattr(t, 'control',   '') or '').upper().startswith('J')
+                and str(getattr(t, 'reference', '') or '').upper() != 'ELEC-REIMB'
+            ))
             if not _reimb_posted:
                 # ── Catch-up adjustment so 440500 and 613115 wash to the same net ──
                 #
@@ -2510,15 +2526,24 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     if _440500_j_rev >= 0.01 else 0.0
                 )
                 _reimb_total = _round(_total_elec_billed + _catch_up)
+                # Subtract any reclass JLL already posted so we only post the delta.
+                _pipeline_reclass = max(0.0, _round(_reimb_total - _existing_reclass))
+                if _pipeline_reclass < 0.01:
+                    je_num += 1
+                    continue  # JLL covered it fully — nothing to post
+                _jll_note = (
+                    f' (JLL posted ${_existing_reclass:,.2f}; pipeline posts ${_pipeline_reclass:,.2f} incremental)'
+                    if _existing_reclass >= 0.01 else ''
+                )
                 _cmpd_note = (
-                    f' — cumulative ${_reimb_total:,.2f} '
+                    f' — total ${_reimb_total:,.2f} '
                     f'(${_catch_up:,.2f} catch-up + ${_total_elec_billed:,.2f} current)'
                     if _catch_up > 0 else ''
                 )
                 _elec_je_id = f'TUB-{je_num:04d}'
                 _elec_desc  = (f'Tenant electricity reclassification — '
                                f'total billed ${_total_elec_billed:,.2f}'
-                               f'{_cmpd_note} '
+                               f'{_cmpd_note}{_jll_note} '
                                f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                 je_lines.append({
                     'je_number':      _elec_je_id, 'line': 1, 'date': '',
@@ -2526,7 +2551,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_TENANT_REIMB_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          _reimb_total, 'credit': 0,
+                    'debit':          _pipeline_reclass, 'credit': 0,
                     'vendor':         '[Tenant Electric Billing]',
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': 'high',
@@ -2537,7 +2562,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_EXPENSE_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          0, 'credit': _reimb_total,
+                    'debit':          0, 'credit': _pipeline_reclass,
                     'vendor':         '[Tenant Electric Billing]',
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': 'high',
@@ -2761,8 +2786,21 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # AR JE is generated, but the 613115/613110 reclass is still needed.
         if _round(_mode_b_elec_total) > 0:
             _reimb_gl = _tub_gl.get(ELEC_TENANT_REIMB_ACCOUNT)
-            # Only J-type debits indicate a prior pipeline reclass for 613115.
-            _reimb_b_posted = _j_debits(_reimb_gl) >= 0.01
+            # Suppress only when our own ELEC-REIMB entry is already in the GL.
+            # JLL manual reclasses (different reference) reduce but don't block.
+            _reimb_gl_txns_b = getattr(_reimb_gl, 'transactions', [])
+            _reimb_b_posted = sum(
+                float(t.debit or 0) for t in _reimb_gl_txns_b
+                if float(t.debit or 0) > 0
+                and str(getattr(t, 'control',   '') or '').upper().startswith('J')
+                and str(getattr(t, 'reference', '') or '').upper() == 'ELEC-REIMB'
+            ) >= 0.01
+            _existing_reclass_b = _round(sum(
+                float(t.debit or 0) for t in _reimb_gl_txns_b
+                if float(t.debit or 0) > 0
+                and str(getattr(t, 'control',   '') or '').upper().startswith('J')
+                and str(getattr(t, 'reference', '') or '').upper() != 'ELEC-REIMB'
+            ))
             if not _reimb_b_posted:
                 # Same catch-up logic as Mode (a): reclass absorbs the shortfall
                 # between prior actual billing and prior TUB estimate.
@@ -2789,56 +2827,66 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     if _440500_j_rev_b >= 0.01 else 0.0
                 )
                 _reimb_b_total     = _round(_mode_b_elec_total + _catch_up_b)
-                _elec_je_id  = f'TUB-{je_num:04d}'
-                _src_label   = {
-                    'receivable_detail': 'Receivable Detail',
-                    'gl_activity':       'GL activity — 440500 posted by JLL',
-                    'gl_613115_basis':   'GL activity — 613115 reclass posted by JLL',
-                    'budget':            'budget',
-                }.get(_elec_source, _elec_source)
-                _n_tenants   = len(_elec_by_tenant) if _elec_by_tenant else 1
-                _tenant_note = (
-                    f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail'
-                    else _src_label
-                )
-                _cmpd_b_note = (
-                    f' — cumulative ${_reimb_b_total:,.2f} '
-                    f'(${_catch_up_b:,.2f} catch-up + ${_mode_b_elec_total:,.2f} est.)'
-                    if _catch_up_b > 0 else ''
-                )
-                _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
-                                f'${_mode_b_elec_total:,.2f}'
-                                f'{_cmpd_b_note} '
-                                f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
-                _elec_vendor = {
-                    'receivable_detail': '[Receivable Detail]',
-                    'gl_activity':       '[JLL GL Activity]',
-                    'gl_613115_basis':   '[JLL GL Activity — 613115 basis]',
-                    'budget':            '[Budget Accrual]',
-                }.get(_elec_source, '[Budget Accrual]')
-                je_lines.append({
-                    'je_number':      _elec_je_id, 'line': 1, 'date': '',
-                    'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
-                    'account_name':   ELEC_TENANT_REIMB_NAME,
-                    'description':    _elec_desc,
-                    'reference':      'ELEC-REIMB',
-                    'debit':          _reimb_b_total, 'credit': 0,
-                    'vendor':         _elec_vendor,
-                    'invoice_number': '',
-                    'source':         'tenant_utility_billing', 'confidence': _elec_conf,
-                })
-                je_lines.append({
-                    'je_number':      _elec_je_id, 'line': 2, 'date': '',
-                    'account_code':   ELEC_EXPENSE_ACCOUNT,
-                    'account_name':   ELEC_EXPENSE_NAME,
-                    'description':    _elec_desc,
-                    'reference':      'ELEC-REIMB',
-                    'debit':          0, 'credit': _reimb_b_total,
-                    'vendor':         _elec_vendor,
-                    'invoice_number': '',
-                    'source':         'tenant_utility_billing', 'confidence': _elec_conf,
-                })
-                je_num += 1
+                # Subtract any reclass JLL already posted; post only the delta.
+                _pipeline_reclass_b = max(0.0, _round(_reimb_b_total - _existing_reclass_b))
+                if _pipeline_reclass_b < 0.01:
+                    je_num += 1
+                    pass  # JLL covered it fully; fall through without appending
+                else:
+                    _elec_je_id  = f'TUB-{je_num:04d}'
+                    _src_label   = {
+                        'receivable_detail': 'Receivable Detail',
+                        'gl_activity':       'GL activity — 440500 posted by JLL',
+                        'gl_613115_basis':   'GL activity — 613115 reclass posted by JLL',
+                        'budget':            'budget',
+                    }.get(_elec_source, _elec_source)
+                    _n_tenants   = len(_elec_by_tenant) if _elec_by_tenant else 1
+                    _tenant_note = (
+                        f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail'
+                        else _src_label
+                    )
+                    _cmpd_b_note = (
+                        f' — total ${_reimb_b_total:,.2f} '
+                        f'(${_catch_up_b:,.2f} catch-up + ${_mode_b_elec_total:,.2f} est.)'
+                        if _catch_up_b > 0 else ''
+                    )
+                    _jll_b_note = (
+                        f' (JLL posted ${_existing_reclass_b:,.2f}; pipeline posts ${_pipeline_reclass_b:,.2f} incremental)'
+                        if _existing_reclass_b >= 0.01 else ''
+                    )
+                    _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
+                                    f'${_mode_b_elec_total:,.2f}'
+                                    f'{_cmpd_b_note}{_jll_b_note} '
+                                    f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
+                    _elec_vendor = {
+                        'receivable_detail': '[Receivable Detail]',
+                        'gl_activity':       '[JLL GL Activity]',
+                        'gl_613115_basis':   '[JLL GL Activity — 613115 basis]',
+                        'budget':            '[Budget Accrual]',
+                    }.get(_elec_source, '[Budget Accrual]')
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 1, 'date': '',
+                        'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
+                        'account_name':   ELEC_TENANT_REIMB_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          _pipeline_reclass_b, 'credit': 0,
+                        'vendor':         _elec_vendor,
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': _elec_conf,
+                    })
+                    je_lines.append({
+                        'je_number':      _elec_je_id, 'line': 2, 'date': '',
+                        'account_code':   ELEC_EXPENSE_ACCOUNT,
+                        'account_name':   ELEC_EXPENSE_NAME,
+                        'description':    _elec_desc,
+                        'reference':      'ELEC-REIMB',
+                        'debit':          0, 'credit': _pipeline_reclass_b,
+                        'vendor':         _elec_vendor,
+                        'invoice_number': '',
+                        'source':         'tenant_utility_billing', 'confidence': _elec_conf,
+                    })
+                    je_num += 1
 
         # ── Electricity expense accrual (Mode b) ─────────────────────────────
         # Accrue the FULL building electricity expense (613110) at the budget
