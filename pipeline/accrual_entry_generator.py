@@ -2461,9 +2461,22 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # C/R/P/K debits in 613115 are not pipeline accruals.
             _reimb_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_posted:
+                # Compound with prior-month auto-reversal on 613115.
+                # When billing rates change month-over-month the prior reclass
+                # auto-reversal (J-credit) doesn't exactly offset the new reclass,
+                # leaving a residual.  Adding the net J-credit absorbs it so the
+                # account washes to zero without manual entries.
+                _reimb_prior_jcr = _net_j_credit(_reimb_gl)
+                _reimb_total     = _round(_total_elec_billed + _reimb_prior_jcr)
+                _cmpd_note = (
+                    f' — cumulative ${_reimb_total:,.2f} '
+                    f'(${_reimb_prior_jcr:,.2f} prior reversal + ${_total_elec_billed:,.2f} billed)'
+                    if _reimb_prior_jcr > 0 else ''
+                )
                 _elec_je_id = f'TUB-{je_num:04d}'
                 _elec_desc  = (f'Tenant electricity reclassification — '
-                               f'total billed ${_total_elec_billed:,.2f} '
+                               f'total billed ${_total_elec_billed:,.2f}'
+                               f'{_cmpd_note} '
                                f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                 je_lines.append({
                     'je_number':      _elec_je_id, 'line': 1, 'date': '',
@@ -2471,7 +2484,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_TENANT_REIMB_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          _round(_total_elec_billed), 'credit': 0,
+                    'debit':          _reimb_total, 'credit': 0,
                     'vendor':         '[Tenant Electric Billing]',
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': 'high',
@@ -2482,7 +2495,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_EXPENSE_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          0, 'credit': _round(_total_elec_billed),
+                    'debit':          0, 'credit': _reimb_total,
                     'vendor':         '[Tenant Electric Billing]',
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': 'high',
@@ -2709,6 +2722,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # Only J-type debits indicate a prior pipeline reclass for 613115.
             _reimb_b_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_b_posted:
+                # Compound with prior-month auto-reversal on 613115 (same logic as Mode a).
+                _reimb_b_prior_jcr = _net_j_credit(_reimb_gl)
+                _reimb_b_total     = _round(_mode_b_elec_total + _reimb_b_prior_jcr)
                 _elec_je_id  = f'TUB-{je_num:04d}'
                 _src_label   = {
                     'receivable_detail': 'Receivable Detail',
@@ -2721,8 +2737,14 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail'
                     else _src_label
                 )
+                _cmpd_b_note = (
+                    f' — cumulative ${_reimb_b_total:,.2f} '
+                    f'(${_reimb_b_prior_jcr:,.2f} prior reversal + ${_mode_b_elec_total:,.2f} est.)'
+                    if _reimb_b_prior_jcr > 0 else ''
+                )
                 _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
-                                f'${_mode_b_elec_total:,.2f} '
+                                f'${_mode_b_elec_total:,.2f}'
+                                f'{_cmpd_b_note} '
                                 f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                 _elec_vendor = {
                     'receivable_detail': '[Receivable Detail]',
@@ -2736,7 +2758,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_TENANT_REIMB_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          _round(_mode_b_elec_total), 'credit': 0,
+                    'debit':          _reimb_b_total, 'credit': 0,
                     'vendor':         _elec_vendor,
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': _elec_conf,
@@ -2747,7 +2769,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name':   ELEC_EXPENSE_NAME,
                     'description':    _elec_desc,
                     'reference':      'ELEC-REIMB',
-                    'debit':          0, 'credit': _round(_mode_b_elec_total),
+                    'debit':          0, 'credit': _reimb_b_total,
                     'vendor':         _elec_vendor,
                     'invoice_number': '',
                     'source':         'tenant_utility_billing', 'confidence': _elec_conf,
