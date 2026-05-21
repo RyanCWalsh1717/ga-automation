@@ -2477,57 +2477,20 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 and str(getattr(t, 'reference', '') or '').upper() != 'ELEC-REIMB'
             ))
             if not _reimb_posted:
-                # ── Catch-up adjustment so 440500 and 613115 wash to the same net ──
+                # ── Reclass: DR 613115 / CR 613110 ───────────────────────────────────
                 #
-                # 440500 ends each month holding:
-                #   (A) auto-reversal DR of prior pipeline TUB estimate
-                #   (B) actual billing C-credits from the billing system (often arrives
-                #       in final-close, after the pre-close GL is exported)
-                #   (C) new pipeline TUB CR for the current month
+                # In Mode (a) the pipeline owns 440500 — it posts exactly
+                # _total_elec_billed as new credits this month.  613115 needs to
+                # match 440500, so the reclass is simply:
                 #
-                # If (B) != (A) — i.e. actual ≠ estimate — the difference stays
-                # in 613110 (Utilities Electricity), because the reversal of the
-                # December reclass (DR 613110 / CR 613115) and the new reclass
-                # (DR 613115 / CR 613110) don't perfectly cancel.
+                #   pipeline_reclass = total_elec_billed − existing_JLL_reclass
                 #
-                # Fix: reclass = current TUB + catch-up
-                # where catch-up = max(0, prior_actual_billing − prior_TUB_estimate)
-                #                = max(0, C-credits-on-440500 − J-reversal-on-440500)
-                #
-                # If C-billing is not yet visible in the pre-close GL (posted in
-                # final-close), assume prior_actual ≈ current TUB (rates are stable
-                # month-to-month).  When visible, the actual C-credits are used.
-                _440500_gl_obj = _tub_gl.get('440500')
-                # Auto-reversal J-debits on 440500 = prior month's TUB estimate
-                _440500_j_rev = _round(sum(
-                    float(t.debit or 0)
-                    for t in getattr(_440500_gl_obj, 'transactions', [])
-                    if float(t.debit or 0) > 0
-                    and str(getattr(t, 'control', '') or '').upper().startswith('J')
-                    and (
-                        ':reversal of' in str(t.description or '').lower()
-                        or ':reversal of' in str(getattr(t, 'remarks', '') or '').lower()
-                    )
-                ))
-                # Non-J credits on 440500 = actual billing already posted pre-close
-                _440500_c_cr = _round(sum(
-                    float(t.credit or 0)
-                    for t in getattr(_440500_gl_obj, 'transactions', [])
-                    if float(t.credit or 0) > 0
-                    and not str(getattr(t, 'control', '') or '').upper().startswith('J')
-                ))
-                # Billing basis: use actual C-credits if visible, else approximate
-                # with the current TUB (stable month-to-month assumption)
-                _prior_actual = _440500_c_cr if _440500_c_cr >= 0.01 else _total_elec_billed
-                # Catch-up = shortfall between actual and prior estimate
-                # Only fires when there was a prior TUB (reversal exists)
-                _catch_up = (
-                    max(0.0, _round(_prior_actual - _440500_j_rev))
-                    if _440500_j_rev >= 0.01 else 0.0
-                )
-                _reimb_total = _round(_total_elec_billed + _catch_up)
-                # Subtract any reclass JLL already posted so we only post the delta.
-                _pipeline_reclass = max(0.0, _round(_reimb_total - _existing_reclass))
+                # No catch-up formula: when the pipeline controls the TUB entries,
+                # the GL gap between 440500 and 613115 is already captured in
+                # existing_reclass vs total_elec_billed.  A catch-up term causes
+                # double-counting when 440500 has reversal debits but no current-
+                # period C-credits yet (pre-close timing), inflating the result.
+                _pipeline_reclass = max(0.0, _round(_total_elec_billed - _existing_reclass))
                 if _pipeline_reclass < 0.01:
                     je_num += 1
                     pass  # JLL covered it fully — nothing to post
@@ -2536,15 +2499,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         f' (JLL posted ${_existing_reclass:,.2f}; pipeline posts ${_pipeline_reclass:,.2f} incremental)'
                         if _existing_reclass >= 0.01 else ''
                     )
-                    _cmpd_note = (
-                        f' — total ${_reimb_total:,.2f} '
-                        f'(${_catch_up:,.2f} catch-up + ${_total_elec_billed:,.2f} current)'
-                        if _catch_up > 0 else ''
-                    )
+                    _cmpd_note = ''
                     _elec_je_id = f'TUB-{je_num:04d}'
                     _elec_desc  = (f'Tenant electricity reclassification — '
                                    f'total billed ${_total_elec_billed:,.2f}'
-                                   f'{_cmpd_note}{_jll_note} '
+                                   f'{_jll_note} '
                                    f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                     je_lines.append({
                         'je_number':      _elec_je_id, 'line': 1, 'date': '',
