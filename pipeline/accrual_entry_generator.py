@@ -2461,24 +2461,59 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # C/R/P/K debits in 613115 are not pipeline accruals.
             _reimb_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_posted:
-                # Compute carry-over variance from beginning balances.
-                # 440500 is CR-normal (revenue): a net credit balance is stored as
-                # a negative beginning_balance in Yardi's debit-positive convention.
-                # 613115 is DR-normal (expense): net debit → positive beginning_balance.
-                # If the prior month left 440500 with more net credit than 613115 has
-                # net debit, the difference is a gap that this reclass must absorb.
+                # ── Catch-up adjustment so 440500 and 613115 wash to the same net ──
+                #
+                # 440500 ends each month holding:
+                #   (A) auto-reversal DR of prior pipeline TUB estimate
+                #   (B) actual billing C-credits from the billing system (often arrives
+                #       in final-close, after the pre-close GL is exported)
+                #   (C) new pipeline TUB CR for the current month
+                #
+                # If (B) != (A) — i.e. actual ≠ estimate — the difference stays
+                # in 613110 (Utilities Electricity), because the reversal of the
+                # December reclass (DR 613110 / CR 613115) and the new reclass
+                # (DR 613115 / CR 613110) don't perfectly cancel.
+                #
+                # Fix: reclass = current TUB + catch-up
+                # where catch-up = max(0, prior_actual_billing − prior_TUB_estimate)
+                #                = max(0, C-credits-on-440500 − J-reversal-on-440500)
+                #
+                # If C-billing is not yet visible in the pre-close GL (posted in
+                # final-close), assume prior_actual ≈ current TUB (rates are stable
+                # month-to-month).  When visible, the actual C-credits are used.
                 _440500_gl_obj = _tub_gl.get('440500')
-                _440500_bb = float(getattr(_440500_gl_obj, 'beginning_balance', 0.0) or 0.0)
-                _613115_bb = float(getattr(_reimb_gl,       'beginning_balance', 0.0) or 0.0)
-                # -_440500_bb = prior net credit on 440500 (positive when CR balance)
-                # _613115_bb  = prior net debit on 613115 (positive when DR balance)
-                # variance > 0 means 440500 is "ahead" — 613115 must absorb the gap
-                _prior_variance = max(0.0, _round(-_440500_bb - _613115_bb))
-                _reimb_total     = _round(_total_elec_billed + _prior_variance)
+                # Auto-reversal J-debits on 440500 = prior month's TUB estimate
+                _440500_j_rev = _round(sum(
+                    float(t.debit or 0)
+                    for t in getattr(_440500_gl_obj, 'transactions', [])
+                    if float(t.debit or 0) > 0
+                    and str(getattr(t, 'control', '') or '').upper().startswith('J')
+                    and (
+                        ':reversal of' in str(t.description or '').lower()
+                        or ':reversal of' in str(getattr(t, 'remarks', '') or '').lower()
+                    )
+                ))
+                # Non-J credits on 440500 = actual billing already posted pre-close
+                _440500_c_cr = _round(sum(
+                    float(t.credit or 0)
+                    for t in getattr(_440500_gl_obj, 'transactions', [])
+                    if float(t.credit or 0) > 0
+                    and not str(getattr(t, 'control', '') or '').upper().startswith('J')
+                ))
+                # Billing basis: use actual C-credits if visible, else approximate
+                # with the current TUB (stable month-to-month assumption)
+                _prior_actual = _440500_c_cr if _440500_c_cr >= 0.01 else _total_elec_billed
+                # Catch-up = shortfall between actual and prior estimate
+                # Only fires when there was a prior TUB (reversal exists)
+                _catch_up = (
+                    max(0.0, _round(_prior_actual - _440500_j_rev))
+                    if _440500_j_rev >= 0.01 else 0.0
+                )
+                _reimb_total = _round(_total_elec_billed + _catch_up)
                 _cmpd_note = (
                     f' — cumulative ${_reimb_total:,.2f} '
-                    f'(${_prior_variance:,.2f} prior carry-over + ${_total_elec_billed:,.2f} billed)'
-                    if _prior_variance > 0 else ''
+                    f'(${_catch_up:,.2f} catch-up + ${_total_elec_billed:,.2f} current)'
+                    if _catch_up > 0 else ''
                 )
                 _elec_je_id = f'TUB-{je_num:04d}'
                 _elec_desc  = (f'Tenant electricity reclassification — '
@@ -2729,12 +2764,31 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # Only J-type debits indicate a prior pipeline reclass for 613115.
             _reimb_b_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_b_posted:
-                # Compute carry-over variance from beginning balances (same logic as Mode a).
+                # Same catch-up logic as Mode (a): reclass absorbs the shortfall
+                # between prior actual billing and prior TUB estimate.
                 _440500_gl_obj_b = _tub_gl.get('440500')
-                _440500_bb_b = float(getattr(_440500_gl_obj_b, 'beginning_balance', 0.0) or 0.0)
-                _613115_bb_b = float(getattr(_reimb_gl,         'beginning_balance', 0.0) or 0.0)
-                _prior_variance_b = max(0.0, _round(-_440500_bb_b - _613115_bb_b))
-                _reimb_b_total     = _round(_mode_b_elec_total + _prior_variance_b)
+                _440500_j_rev_b = _round(sum(
+                    float(t.debit or 0)
+                    for t in getattr(_440500_gl_obj_b, 'transactions', [])
+                    if float(t.debit or 0) > 0
+                    and str(getattr(t, 'control', '') or '').upper().startswith('J')
+                    and (
+                        ':reversal of' in str(t.description or '').lower()
+                        or ':reversal of' in str(getattr(t, 'remarks', '') or '').lower()
+                    )
+                ))
+                _440500_c_cr_b = _round(sum(
+                    float(t.credit or 0)
+                    for t in getattr(_440500_gl_obj_b, 'transactions', [])
+                    if float(t.credit or 0) > 0
+                    and not str(getattr(t, 'control', '') or '').upper().startswith('J')
+                ))
+                _prior_actual_b = _440500_c_cr_b if _440500_c_cr_b >= 0.01 else _mode_b_elec_total
+                _catch_up_b = (
+                    max(0.0, _round(_prior_actual_b - _440500_j_rev_b))
+                    if _440500_j_rev_b >= 0.01 else 0.0
+                )
+                _reimb_b_total     = _round(_mode_b_elec_total + _catch_up_b)
                 _elec_je_id  = f'TUB-{je_num:04d}'
                 _src_label   = {
                     'receivable_detail': 'Receivable Detail',
@@ -2749,8 +2803,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 )
                 _cmpd_b_note = (
                     f' — cumulative ${_reimb_b_total:,.2f} '
-                    f'(${_prior_variance_b:,.2f} prior carry-over + ${_mode_b_elec_total:,.2f} est.)'
-                    if _prior_variance_b > 0 else ''
+                    f'(${_catch_up_b:,.2f} catch-up + ${_mode_b_elec_total:,.2f} est.)'
+                    if _catch_up_b > 0 else ''
                 )
                 _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
                                 f'${_mode_b_elec_total:,.2f}'
