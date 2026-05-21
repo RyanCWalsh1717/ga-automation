@@ -2461,35 +2461,24 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # C/R/P/K debits in 613115 are not pipeline accruals.
             _reimb_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_posted:
-                # Compound with prior-month auto-reversal on 613115.
-                # When billing rates change month-over-month the prior reclass
-                # auto-reversal (J-credit) doesn't exactly offset the new reclass,
-                # leaving a residual.  Adding the net J-credit absorbs it so the
-                # account washes to zero without manual entries.
-                _reimb_prior_jcr = _net_j_credit(_reimb_gl)
-                # Fallback: if 613115 shows no J-credits (e.g. prior reclass was
-                # not posted as auto-reversible, or the pre-close GL was exported
-                # before the reversal posted), derive the compound amount from
-                # 440500's auto-reversal J-debits instead.  440500's reversals
-                # represent the unmatched prior-month TUB accrual that 613115
-                # should absorb so the two accounts wash to zero.
-                if _reimb_prior_jcr == 0.0:
-                    _440500_gl_obj = _tub_gl.get('440500')
-                    _reimb_prior_jcr = _round(sum(
-                        float(t.debit or 0)
-                        for t in getattr(_440500_gl_obj, 'transactions', [])
-                        if float(t.debit or 0) > 0
-                        and str(getattr(t, 'control', '') or '').upper().startswith('J')
-                        and (
-                            ':reversal of' in str(t.description or '').lower()
-                            or ':reversal of' in str(getattr(t, 'remarks', '') or '').lower()
-                        )
-                    ))
-                _reimb_total     = _round(_total_elec_billed + _reimb_prior_jcr)
+                # Compute carry-over variance from beginning balances.
+                # 440500 is CR-normal (revenue): a net credit balance is stored as
+                # a negative beginning_balance in Yardi's debit-positive convention.
+                # 613115 is DR-normal (expense): net debit → positive beginning_balance.
+                # If the prior month left 440500 with more net credit than 613115 has
+                # net debit, the difference is a gap that this reclass must absorb.
+                _440500_gl_obj = _tub_gl.get('440500')
+                _440500_bb = float(getattr(_440500_gl_obj, 'beginning_balance', 0.0) or 0.0)
+                _613115_bb = float(getattr(_reimb_gl,       'beginning_balance', 0.0) or 0.0)
+                # -_440500_bb = prior net credit on 440500 (positive when CR balance)
+                # _613115_bb  = prior net debit on 613115 (positive when DR balance)
+                # variance > 0 means 440500 is "ahead" — 613115 must absorb the gap
+                _prior_variance = max(0.0, _round(-_440500_bb - _613115_bb))
+                _reimb_total     = _round(_total_elec_billed + _prior_variance)
                 _cmpd_note = (
                     f' — cumulative ${_reimb_total:,.2f} '
-                    f'(${_reimb_prior_jcr:,.2f} prior reversal + ${_total_elec_billed:,.2f} billed)'
-                    if _reimb_prior_jcr > 0 else ''
+                    f'(${_prior_variance:,.2f} prior carry-over + ${_total_elec_billed:,.2f} billed)'
+                    if _prior_variance > 0 else ''
                 )
                 _elec_je_id = f'TUB-{je_num:04d}'
                 _elec_desc  = (f'Tenant electricity reclassification — '
@@ -2740,23 +2729,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             # Only J-type debits indicate a prior pipeline reclass for 613115.
             _reimb_b_posted = _j_debits(_reimb_gl) >= 0.01
             if not _reimb_b_posted:
-                # Compound with prior-month auto-reversal on 613115 (same logic as Mode a).
-                _reimb_b_prior_jcr = _net_j_credit(_reimb_gl)
-                # Fallback: if 613115 shows no J-credits, use 440500's reversal debits
-                # as the compound seed (same rationale as Mode a fallback above).
-                if _reimb_b_prior_jcr == 0.0:
-                    _440500_gl_obj_b = _tub_gl.get('440500')
-                    _reimb_b_prior_jcr = _round(sum(
-                        float(t.debit or 0)
-                        for t in getattr(_440500_gl_obj_b, 'transactions', [])
-                        if float(t.debit or 0) > 0
-                        and str(getattr(t, 'control', '') or '').upper().startswith('J')
-                        and (
-                            ':reversal of' in str(t.description or '').lower()
-                            or ':reversal of' in str(getattr(t, 'remarks', '') or '').lower()
-                        )
-                    ))
-                _reimb_b_total     = _round(_mode_b_elec_total + _reimb_b_prior_jcr)
+                # Compute carry-over variance from beginning balances (same logic as Mode a).
+                _440500_gl_obj_b = _tub_gl.get('440500')
+                _440500_bb_b = float(getattr(_440500_gl_obj_b, 'beginning_balance', 0.0) or 0.0)
+                _613115_bb_b = float(getattr(_reimb_gl,         'beginning_balance', 0.0) or 0.0)
+                _prior_variance_b = max(0.0, _round(-_440500_bb_b - _613115_bb_b))
+                _reimb_b_total     = _round(_mode_b_elec_total + _prior_variance_b)
                 _elec_je_id  = f'TUB-{je_num:04d}'
                 _src_label   = {
                     'receivable_detail': 'Receivable Detail',
@@ -2771,8 +2749,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 )
                 _cmpd_b_note = (
                     f' — cumulative ${_reimb_b_total:,.2f} '
-                    f'(${_reimb_b_prior_jcr:,.2f} prior reversal + ${_mode_b_elec_total:,.2f} est.)'
-                    if _reimb_b_prior_jcr > 0 else ''
+                    f'(${_prior_variance_b:,.2f} prior carry-over + ${_mode_b_elec_total:,.2f} est.)'
+                    if _prior_variance_b > 0 else ''
                 )
                 _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
                                 f'${_mode_b_elec_total:,.2f}'
