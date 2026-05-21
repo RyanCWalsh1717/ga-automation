@@ -2596,6 +2596,20 @@ with tab1:
                 # Permanent (no auto-reverse) — the recode is a permanent reclassification.
                 _recode_je_lines = []
                 _recode_tbl = st.session_state.get("interco_recode_df")
+                # Merge any in-flight data_editor edits that haven't been committed
+                # to interco_recode_df yet (happens when user types DR account and
+                # immediately clicks Re-run without clicking outside the cell first).
+                _recode_editor_key = f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}"
+                _recode_editor_raw = st.session_state.get(_recode_editor_key)
+                if _recode_tbl is not None and _recode_editor_raw:
+                    _pending_edits = _recode_editor_raw.get("edited_rows", {})
+                    if _pending_edits:
+                        _recode_tbl = _recode_tbl.copy()
+                        for _ridx_s, _cell_edits in _pending_edits.items():
+                            _ridx = int(_ridx_s)
+                            if _ridx < len(_recode_tbl):
+                                for _col, _val in _cell_edits.items():
+                                    _recode_tbl.at[_ridx, _col] = _val
                 if _recode_tbl is not None and not _recode_tbl.empty:
                     _recode_base = _sup_base + _sup_counter
                     _recode_ri   = 0
@@ -2650,9 +2664,11 @@ with tab1:
                         _recode_tbl["Account"].fillna("").str.strip().astype(bool) &
                         (_recode_tbl["Debit ($)"].fillna(0) > 0)
                     ).sum())
+                _pending_edit_count = len(_recode_editor_raw.get("edited_rows", {})) if _recode_editor_raw else 0
                 st.info(
                     f"🔬 RECODE DEBUG — table rows: {_recode_tbl_rows} | "
                     f"DR rows with filled account: {_recode_dr_filled} | "
+                    f"pending editor edits merged: {_pending_edit_count} | "
                     f"recode JE lines built: {len(_recode_je_lines)}",
                     icon="🔍",
                 )
