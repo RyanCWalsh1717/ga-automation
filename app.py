@@ -3369,6 +3369,23 @@ with tab1:
                     [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
                 )
 
+        # Enrich _acct_name_lookup with budget comparison accounts so the recode
+        # DR row Account Name can auto-populate even for 6xxx accounts with no
+        # direct GL activity this period (the target account often has zero GL
+        # hits because all charges were miscoded to 7xxx instead).
+        _p1_er_bc = st.session_state.get('pass1_engine_result')
+        if _p1_er_bc:
+            try:
+                _bc_for_lookup = getattr(_p1_er_bc, 'parsed', {}).get('budget_comparison')
+                if _bc_for_lookup and hasattr(_bc_for_lookup, 'line_items'):
+                    for _bcl in _bc_for_lookup.line_items:
+                        _bcl_code = str(getattr(_bcl, 'account_code', '') or '').strip()
+                        _bcl_name = str(getattr(_bcl, 'account_name', '') or '').strip()
+                        if _bcl_code and _bcl_name and _bcl_code not in _acct_name_lookup:
+                            _acct_name_lookup[_bcl_code] = _bcl_name
+            except Exception:
+                pass
+
         _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
                      if _interco_detected else "")
         with st.expander(
@@ -3379,6 +3396,7 @@ with tab1:
                 "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
                 "Each detected account auto-populates as a **DR / CR pair**: the CR row is pre-filled with the 7xxxxx account; "
                 "enter the **6xxxxx or 8xxxxx** target expense account on the **DR row**. "
+                "The Account Name fills automatically once you tab out of the Account cell. "
                 "The pipeline generates **DR [expense account] / CR [7xxx account]** (permanent — no auto-reverse). "
                 "Edit the Amount on the DR row if you're only recoding a partial amount. "
                 "**Re-run Generate JEs after filling in target accounts** to include the recode JEs in the CSV."
@@ -3403,6 +3421,25 @@ with tab1:
                 key=f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}",
             )
             st.session_state.interco_recode_df = _ic_recode_edited
+
+            # Auto-populate Account Name for DR rows where Account is filled but
+            # Account Name is blank — same pattern as One-Off Accruals table.
+            # Fires on the re-run triggered when the user tabs out of the Account cell.
+            _ic_names_filled = 0
+            _ic_df_with_names = _ic_recode_edited.copy()
+            for _ic_n_idx, _ic_n_row in _ic_df_with_names.iterrows():
+                if str(_ic_n_row.get("Leg", "") or "").strip() != "DR":
+                    continue
+                _ic_n_acct = str(_ic_n_row.get("Account", "") or "").strip()
+                _ic_n_name = str(_ic_n_row.get("Account Name", "") or "").strip()
+                if _ic_n_acct and not _ic_n_name:
+                    _ic_looked_up = _acct_name_lookup.get(_ic_n_acct, "")
+                    if _ic_looked_up:
+                        _ic_df_with_names.at[_ic_n_idx, "Account Name"] = _ic_looked_up
+                        _ic_names_filled += 1
+            if _ic_names_filled:
+                st.session_state.interco_recode_df = _ic_df_with_names
+                st.rerun()
 
             # Active = DR rows that have a non-blank target Account and a Debit amount
             _ic_dr_active = _ic_recode_edited[
