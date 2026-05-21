@@ -1930,27 +1930,20 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
                 # to Path B so the Kardin annual÷12 estimate still fires.
 
             # Path B: annual budget ÷ 12 (no T12 available)
-            # Priority 1: BC annual budget (budget_by_code, built from the BC report).
-            # Priority 2: Kardin annual total (kardin_annual_by_code) — used when the
-            #   account has $0 PTD in January's BC and therefore doesn't appear in
-            #   budget_by_code (e.g. 631110 Elevator when no invoice has posted yet).
-            if code in budget_by_code:
-                bi = budget_by_code[code]
-                if isinstance(bi, dict):
-                    # A-11: Try multiple key names — BC parser may export 'annual_budget'
-                    # or 'ytd_budget' instead of 'annual' depending on export version.
-                    # Silent 0 here suppresses ALL January Layer 3 accruals for the account.
-                    bi_annual = abs(float(
-                        bi.get('annual') or bi.get('annual_budget') or bi.get('ytd_budget') or 0
-                    ))
-                else:
-                    bi_annual = abs(float(
-                        getattr(bi, 'annual', None) or getattr(bi, 'annual_budget', None) or 0
-                    ))
-            elif code in kardin_annual_by_code:
-                bi_annual = kardin_annual_by_code[code]['annual']
-            else:
+            if code not in budget_by_code:
                 continue
+            bi = budget_by_code[code]
+            if isinstance(bi, dict):
+                # A-11: Try multiple key names — BC parser may export 'annual_budget'
+                # or 'ytd_budget' instead of 'annual' depending on export version.
+                # Silent 0 here suppresses ALL January Layer 3 accruals for the account.
+                bi_annual = abs(float(
+                    bi.get('annual') or bi.get('annual_budget') or bi.get('ytd_budget') or 0
+                ))
+            else:
+                bi_annual = abs(float(
+                    getattr(bi, 'annual', None) or getattr(bi, 'annual_budget', None) or 0
+                ))
 
             if bi_annual < 1:
                 continue
