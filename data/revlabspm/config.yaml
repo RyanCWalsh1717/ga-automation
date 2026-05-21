@@ -170,6 +170,15 @@ metered_utility_accounts:
 per_invoice_utility_accounts:
   - "613120"
 
+# ── Layer 2 Pass 2 — individual vs combined accrual mode ─────────────────────
+# Accounts listed here emit one accrual JE line *per invoice* rather than
+# one combined line. Use for vendors whose invoices represent distinct service
+# types that reviewers need to see itemised (e.g. Casella: compactor, recycling,
+# trash each get their own JE row). All other Pass 2 accounts default to combined
+# mode (multiple invoices collapsed into one JE with '|' separated description).
+per_invoice_accrual_accounts:
+  - "610160"   # Cleaning-Trash Removal (Casella — separate lines per service type)
+
 # ── Layer 3 exclusions ───────────────────────────────────────────────────────
 # Accounts blocked from Layer 3 (historical recurring) auto-accrual.
 # Use for discretionary or irregular spend that Layer 3 would mis-classify as

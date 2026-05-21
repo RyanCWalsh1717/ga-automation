@@ -938,6 +938,7 @@ def detect_invoice_proration_accruals(
     materiality: float = 2500.0,
     metered_utility_accounts: Optional[List[str]] = None,
     per_invoice_utility_accounts: Optional[List[str]] = None,
+    per_invoice_accrual_accounts: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Layer 2 — Invoice-period accruals.
@@ -1019,6 +1020,12 @@ def detect_invoice_proration_accruals(
         _eff_per_invoice.update(str(a) for a in per_invoice_utility_accounts)
         # Any per-invoice account is also implicitly metered
         _eff_metered.update(str(a) for a in per_invoice_utility_accounts)
+
+    # Accounts where Pass 2 should emit one candidate *per invoice* rather than
+    # one combined candidate (e.g. Casella — distinct service types per line).
+    _eff_per_invoice_accrual: set = set()
+    if per_invoice_accrual_accounts:
+        _eff_per_invoice_accrual.update(str(a) for a in per_invoice_accrual_accounts)
 
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
@@ -1470,10 +1477,7 @@ def detect_invoice_proration_accruals(
         if len(j_credit_txns) != len(period_debits):
             continue
 
-        # Combine all non-J debits into a single accrual entry for this account.
-        # Individual invoice amounts are listed in the description so the reviewer
-        # can see the breakdown without the JE table becoming one-row-per-invoice
-        # (e.g. Verizon has one line per phone, snow removal one per storm, etc.).
+        # Collect all non-J debits for this account.
         _invoice_lines = []
         for txn in acct.transactions:
             _ctrl = (txn.control or '').split('-')[0].upper()
@@ -1492,28 +1496,52 @@ def detect_invoice_proration_accruals(
         if _total_accrual < 1.0:
             continue
 
-        # Build description: header + itemised invoice list
-        _vendor_header = (_invoice_lines[0][1]).split('(')[0].strip()
-        if len(_invoice_lines) == 1:
-            _detail = f'${_invoice_lines[0][0]:,.2f} — {_invoice_lines[0][1]}'
+        if code in _eff_per_invoice_accrual:
+            # ── Individual mode ──────────────────────────────────────────────
+            # One candidate per invoice line — preserves per-service-type detail
+            # (e.g. Casella: separate lines for compactor, recycling, trash).
+            for _line_amt, _line_desc in _invoice_lines:
+                if _line_amt < 1.0:
+                    continue
+                candidates.append({
+                    'account_code':   code,
+                    'account_name':   acct.account_name,
+                    'accrual_amount': _round(_line_amt),
+                    'source':         'invoice_proration',
+                    'description': (
+                        f'Accrual {_period_label} — {acct.account_name}: '
+                        f'${_line_amt:,.2f} — {_line_desc}'
+                    ),
+                    'daily_rate':     0.0,
+                    'uncovered_days': 0,
+                    'period_days':    0,
+                    'invoice_total':  _round(_line_amt),
+                })
         else:
-            _parts = [f'${a:,.2f} {d}' for a, d in _invoice_lines]
-            _detail = ' | '.join(_parts)
+            # ── Combined mode (default) ──────────────────────────────────────
+            # One candidate with all invoice amounts itemised in the description
+            # (e.g. Verizon: one line per phone collapsed into a single JE row).
+            _vendor_header = (_invoice_lines[0][1]).split('(')[0].strip()
+            if len(_invoice_lines) == 1:
+                _detail = f'${_invoice_lines[0][0]:,.2f} — {_invoice_lines[0][1]}'
+            else:
+                _parts = [f'${a:,.2f} {d}' for a, d in _invoice_lines]
+                _detail = ' | '.join(_parts)
 
-        candidates.append({
-            'account_code':   code,
-            'account_name':   acct.account_name,
-            'accrual_amount': _round(_total_accrual),
-            'source':         'invoice_proration',
-            'description': (
-                f'Accrual {_period_label} — {_vendor_header} ({acct.account_name}): '
-                f'{_detail}'
-            ),
-            'daily_rate':     0.0,
-            'uncovered_days': 0,
-            'period_days':    0,
-            'invoice_total':  _round(_total_accrual),
-        })
+            candidates.append({
+                'account_code':   code,
+                'account_name':   acct.account_name,
+                'accrual_amount': _round(_total_accrual),
+                'source':         'invoice_proration',
+                'description': (
+                    f'Accrual {_period_label} — {_vendor_header} ({acct.account_name}): '
+                    f'{_detail}'
+                ),
+                'daily_rate':     0.0,
+                'uncovered_days': 0,
+                'period_days':    0,
+                'invoice_total':  _round(_total_accrual),
+            })
 
     return candidates
 
@@ -2141,6 +2169,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                           periodic_contract_accounts: Optional[dict] = None,
                           metered_utility_accounts: Optional[List[str]] = None,
                           per_invoice_utility_accounts: Optional[List[str]] = None,
+                          per_invoice_accrual_accounts: Optional[List[str]] = None,
                           accrual_materiality_floor: float = 2500.0,
                           fiscal_year_start_month: int = 1,
                           layer3_exclude_accounts: Optional[List[str]] = None,
@@ -3181,6 +3210,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             gl_data, period=period, month_end=_month_end,
             metered_utility_accounts=metered_utility_accounts,
             per_invoice_utility_accounts=per_invoice_utility_accounts,
+            per_invoice_accrual_accounts=per_invoice_accrual_accounts,
         )
         _proration_covered: set = set()   # accounts handled by this layer
         for pro in prorations:

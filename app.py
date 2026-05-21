@@ -2363,6 +2363,7 @@ with tab1:
                         periodic_contract_accounts=getattr(_active_cfg, 'periodic_contract_accounts', None) or None,
                         metered_utility_accounts=getattr(_active_cfg, 'metered_utility_accounts', None) or None,
                         per_invoice_utility_accounts=getattr(_active_cfg, 'per_invoice_utility_accounts', None) or None,
+                        per_invoice_accrual_accounts=getattr(_active_cfg, 'per_invoice_accrual_accounts', None) or None,
                         accrual_materiality_floor=getattr(_active_cfg, 'accrual_materiality_floor', 500.0),
                         fiscal_year_start_month=getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1,
                         layer3_exclude_accounts=getattr(_active_cfg, 'layer3_exclude_accounts', None) or None,
