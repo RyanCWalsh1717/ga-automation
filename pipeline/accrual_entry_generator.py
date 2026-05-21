@@ -1448,11 +1448,26 @@ def detect_invoice_proration_accruals(
         if invoice_total < 1.0:
             continue
 
-        # Require at least one auto-reversal (J-type credit).  Without a reversal
-        # the vendor invoice is already fully captured in the GL as a payable —
-        # nothing to accrue.  A reversal proves a prior pipeline accrual existed
-        # and was netted out, creating the need for a new accrual this month.
+        # Require J-credits to match P-entries 1-for-1.
+        #
+        # Each J-credit is a Yardi auto-reversal of a prior pipeline accrual —
+        # it proves the pipeline previously accrued that invoice and the real
+        # invoice then arrived and netted out the accrual.  We re-accrue only
+        # for those invoices.
+        #
+        # If P-entries > J-credits: extra P-entries are direct payables already
+        # fully captured in the GL — accruing on top would double-count them.
+        # Example: Admin Tenant Relations has 4 payments but only 1 J-reversal →
+        #   skip entirely; the 3 non-reversed invoices are already in the GL.
+        #
+        # If J-credits > P-entries: atypical; could mean a reversal with no
+        # matching new invoice yet — skip to avoid a phantom accrual.
+        #
+        # Only when counts match (e.g. Casella: 3P = 3J) does every invoice
+        # have a confirmed prior-pipeline pairing → safe to re-accrue.
         if not j_credit_txns:
+            continue
+        if len(j_credit_txns) != len(period_debits):
             continue
 
         # Combine all non-J debits into a single accrual entry for this account.
