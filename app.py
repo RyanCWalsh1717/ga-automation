@@ -1545,7 +1545,7 @@ with tab0:
             _period_lbl  = period_key_to_label(_ck_pkey) if '_ck_pkey' in dir() else period_key_to_label(st.session_state.get('checklist_period_key', current_period_key()))
             _team_members = list(getattr(_active_cfg, 'team_members', None) or
                                  ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
-            _prepared_by  = st.session_state.get('prepared_by', 'Ryan Walsh')
+            _prepared_by  = st.session_state.get('prepared_by', 'GRP')
             _body_text = _ni['body'].format(
                 period=_period_lbl,
                 prop=_prop_display,
@@ -2755,7 +2755,7 @@ with tab1:
                 _ct = st.session_state.close_tracker
                 if 1 not in _ct:
                     _ct[1] = {
-                        "completed_by": st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        "completed_by": st.session_state.get('prepared_by', 'GRP'),
                         "timestamp":    datetime.now().strftime("%m/%d/%Y %H:%M"),
                         "auto":         True,
                     }
@@ -2773,7 +2773,7 @@ with tab1:
                         output_path         = _p1_rl_path,
                         prior_log_path      = _p1_rl_prior,
                         timestamp           = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        prepared_by         = st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        prepared_by         = st.session_state.get('prepared_by', 'GRP'),
                         property_name       = engine_result.property_name or _prop_display,
                         period              = close_period,
                         je_count            = _p1_je_count,
@@ -4664,7 +4664,7 @@ with tab2:
                                 template_path=_wp_template_path,
                                 period=close_period,
                                 property_name=engine_result.property_name or _prop_display,
-                                prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
+                                prepared_by=st.session_state.get("prepared_by", "GRP"),
                                 property_code=_selected_code,
                             )
                             st.caption(
@@ -4696,7 +4696,7 @@ with tab2:
                                 bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
                                 daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
                                 dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
-                                prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
+                                prepared_by=st.session_state.get("prepared_by", "GRP"),
                                 property_config=_active_cfg,
                             )
                         st.session_state.pass2_output_files["bs_workpaper"] = bs_wp_path
@@ -4839,6 +4839,7 @@ with tab2:
                             property_name=engine_result.property_name or _prop_entity,
                             api_key=api_key,
                             investor_name=getattr(_active_cfg, 'investor_name', 'Singerman Real Estate') or 'Singerman Real Estate',
+                            firm_name=getattr(_active_cfg, 'firm_name', '') or 'Greatland Realty Partners (GRP)',
                             # No je_adjustments — GL is the final source of truth
                         )
                         _fallback_reasons = {
@@ -4992,7 +4993,7 @@ with tab2:
                 # ── Auto-detect Close Tracker Steps 5 & 6 ────────────────────
                 _ct = st.session_state.close_tracker
                 _p2_ts = datetime.now().strftime("%m/%d/%Y %H:%M")
-                _p2_by = st.session_state.get('prepared_by', 'Ryan Walsh')
+                _p2_by = st.session_state.get('prepared_by', 'GRP')
                 _ck_changed = False
                 if 5 not in _ct:
                     _ct[5] = {"completed_by": _p2_by, "timestamp": _p2_ts, "auto": True}
@@ -5022,7 +5023,7 @@ with tab2:
                         output_path            = _rl_path,
                         prior_log_path         = _rl_prior,
                         timestamp              = datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        prepared_by            = st.session_state.get('prepared_by', 'Ryan Walsh'),
+                        prepared_by            = st.session_state.get('prepared_by', 'GRP'),
                         property_name          = engine_result.property_name or _prop_display,
                         period                 = close_period,
                         files_generated        = _rl_files,

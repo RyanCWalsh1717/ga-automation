@@ -2537,8 +2537,12 @@ def build_331100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     next_row = _write_tab_header(ws, '331100', 'Distributions - Partner A',
                                  period, property_name, ncols=5)
     next_row += 1
+    # C-1: entity labels from config; fallback to generic names for new properties
+    _cfg_gl_331 = getattr(property_config, 'gl_accounts', None) or {} if property_config else {}
+    _ent1_331 = _cfg_gl_331.get('finance_costs_entity_1', 'Entity A')
+    _ent2_331 = _cfg_gl_331.get('finance_costs_entity_2', 'Entity B')
     next_row = _write_col_headers(ws, next_row,
-                                  ['Date', 'Description', 'Revlabs', 'Revlabpm', 'Total'],
+                                  ['Date', 'Description', _ent1_331, _ent2_331, 'Total'],
                                   [14, 46, 18, 18, 18])
 
     # ── Determine historical rows ─────────────────────────────────────────────
@@ -2654,8 +2658,12 @@ def build_381100_tab(wb, period, property_name, gl_acct=None, tb_entry=None,
     next_row = _write_tab_header(ws, '381100', 'Retained Earnings - Control',
                                  period, property_name, ncols=4)
     next_row += 1
+    # C-1: entity labels from config; fallback to generic names for new properties
+    _cfg_gl_381 = getattr(property_config, 'gl_accounts', None) or {} if property_config else {}
+    _ent1_381 = _cfg_gl_381.get('finance_costs_entity_2', 'Entity B')   # note: reversed order vs 331100
+    _ent2_381 = _cfg_gl_381.get('finance_costs_entity_1', 'Entity A')
     next_row = _write_col_headers(ws, next_row,
-                                  ['Description', 'Revlabpm', 'Revlabs', 'Total'],
+                                  ['Description', _ent1_381, _ent2_381, 'Total'],
                                   [40, 18, 18, 18])
 
     # ── Entity split: prior workpaper → seed fallback (RevLabs only) ─────────

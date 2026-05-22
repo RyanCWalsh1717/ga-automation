@@ -383,9 +383,9 @@ def build_gl_context(gl_parsed, account_code: str) -> dict:
 # call time via _build_system_prompt().  The module-level constant is kept as the
 # canonical template; do NOT reference it directly in API calls.
 _SYSTEM_PROMPT_TEMPLATE = """\
-You are a CRE finance analyst at Greatland Realty Partners (GRP) writing monthly \
+You are a CRE finance analyst at {firm_name} writing monthly \
 variance commentary for the {property_display} property. \
-The audience is GRP management and the institutional investor {investor_name}.
+The audience is {firm_name} management and the institutional investor {investor_name}.
 
 COMMENTARY STANDARDS — follow exactly:
 
@@ -433,12 +433,14 @@ DIRECTION CONVENTION (for your internal reasoning — do NOT write these words):
 _SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
     property_display='the subject property',
     investor_name='the capital partner',
+    firm_name='the property manager',
 )
 
 
 def _build_system_prompt(
     property_display: str = '',
     investor_name: str = '',
+    firm_name: str = '',
 ) -> str:
     """Build the LLM system prompt with per-property strings injected.
 
@@ -449,10 +451,14 @@ def _build_system_prompt(
         investor_name:     Capital partner name shown to the model, e.g.
                            'Singerman Real Estate Partners'.
                            Leave blank to use generic placeholder.
+        firm_name:         Property management firm name, e.g.
+                           'Greatland Realty Partners (GRP)'.  C-12: was
+                           hardcoded in the template string — now a variable.
     """
     return _SYSTEM_PROMPT_TEMPLATE.format(
         property_display=property_display or 'the subject property',
         investor_name=investor_name or 'the capital partner',
+        firm_name=firm_name or 'the property manager',
     )
 
 
@@ -772,6 +778,7 @@ def generate_variance_comments_grp(
     api_key: Optional[str] = None,
     je_adjustments: Optional[Dict[str, float]] = None,
     investor_name: str = '',
+    firm_name: str = '',   # C-12: property management firm for LLM system prompt
 ) -> Dict[str, dict]:
     """
     Generate MTD and YTD variance comments for all budget comparison rows
@@ -898,6 +905,7 @@ def generate_variance_comments_grp(
         comments_map, api_fallback_reason = _call_api(
             accounts_data, period, property_name, api_key,
             investor_name=investor_name,
+            firm_name=firm_name,
         )
     else:
         comments_map = _generate_data_driven(accounts_data, period)
@@ -930,6 +938,7 @@ def _call_api(
     property_name: str,
     api_key: str,
     investor_name: str = 'Singerman Real Estate',
+    firm_name: str = '',
 ) -> Tuple[Dict[str, dict], Optional[str]]:
     """
     Call Claude API and parse JSON response.
@@ -957,6 +966,7 @@ def _call_api(
         _system = _build_system_prompt(
             property_display=_prop_display,
             investor_name=investor_name,
+            firm_name=firm_name,  # C-12: was hardcoded in template
         )
 
         message = client.messages.create(

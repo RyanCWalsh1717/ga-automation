@@ -609,6 +609,7 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
                 berkadia_loans=berkadia_loans or [],
                 prepaid_active=prepaid_ledger_active or [],
                 property_config=property_config,
+                property_name=property_name or '',
             )
         except Exception as _atb_exc:
             import traceback
@@ -776,7 +777,7 @@ def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
 
     c = ws.cell(row=row, column=_B,
                 value=f'Period: {period}  |  '
-                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  '
+                      f'Prepared by: {prepared_by or "GRP"}  |  '
                       f'{datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, size=11, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
@@ -1740,7 +1741,7 @@ def _write_account_tab(wb, gl_acct, tb_acct, period, property_name,
     row += 1
 
     # ── Row 2: Property / period sub-header ──────────────────────────────
-    _preparer = prepared_by or 'Ryan Walsh'
+    _preparer = prepared_by or 'GRP'   # C-18: no personal name default
     c = ws.cell(row=row, column=_B,
                 value=f'{property_name or "Revolution Labs"}  |  '
                       f'Period: {period}  |  '
@@ -2142,7 +2143,7 @@ def _write_accrual_schedule_tab(wb, gl_acct, tb_acct, period, property_name,
     c = ws.cell(row=row, column=_B,
                 value=(f'Period: {period}  |  '
                        f'{property_name or "Revolution Labs"}  |  '
-                       f'Prepared by: {prepared_by or "Ryan Walsh"}  |  '
+                       f'Prepared by: {prepared_by or "GRP"}  |  '
                        f'{datetime.now().strftime("%m/%d/%Y")}'))
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
@@ -2374,7 +2375,7 @@ def _write_stub_tab(wb, tb_acct, period: str, property_name: str,
 
     c = ws.cell(row=row, column=_B,
                 value=f'{property_name or "Revolution Labs"}  |  '
-                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  '
+                      f'Prepared by: {prepared_by or "GRP"}  |  '
                       f'{datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(MED_BLUE)
@@ -2867,7 +2868,7 @@ def _write_bank_rec_tab(wb, bank_rec_data: dict, gl_acct_balance: float,
 
     c = ws.cell(row=row, column=_B,
                 value=f'Account: {account_label}  |  Period: {period}  |  '
-                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  {datetime.now().strftime("%m/%d/%Y")}')
+                      f'Prepared by: {prepared_by or "GRP"}  |  {datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(COLOR_BANK_REC)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
@@ -3051,7 +3052,7 @@ def _write_daca_bank_rec_tab(wb, daca_bank_data: dict, gl_daca_balance: float,
     c = ws.cell(row=row, column=_B,
                 value=f'Account: KeyBank DACA (x{acct_num.lstrip("x")})  |  '
                       f'Period: {period_str}  |  GL Account: 115100  |  '
-                      f'Prepared by: {prepared_by or "Ryan Walsh"}  |  {datetime.now().strftime("%m/%d/%Y")}')
+                      f'Prepared by: {prepared_by or "GRP"}  |  {datetime.now().strftime("%m/%d/%Y")}')
     c.font = _font(italic=True, color='FFFFFF')
     c.fill = _fill(COLOR_DACA)
     ws.merge_cells(start_row=row, start_column=_B, end_row=row, end_column=_B + 5)
@@ -3403,7 +3404,7 @@ def generate_bs_workpaper_from_template(
     period: str = '',
     property_name: str = '',
     period_end_date=None,
-    prepared_by: str = 'Ryan Walsh',
+    prepared_by: str = '',   # C-18: no personal name default
     property_code: str = '',
 ) -> str:
     """
@@ -3496,7 +3497,7 @@ def generate_bs_workpaper_from_template(
     # ── 4. Derived header strings ─────────────────────────────────────────────
     _today_str = _dt.today().strftime('%m/%d/%Y')
     _period_str = period or ''
-    _prep_str = prepared_by or 'Ryan Walsh'
+    _prep_str = prepared_by or 'GRP'   # C-18: no personal name default
     # Short property label used in row-3 headers
     _prop_label = 'revlabs'
     if property_name:

@@ -679,9 +679,8 @@ def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict],
     if _parcel_ids:
         _parcel_str = '  |  Parcel I.D. ' + ' and '.join(_parcel_ids)
     else:
-        # RevLabs fallback
-        _parcel_str = '  |  Parcel I.D. 00011619 and R0140050002'
-    _loc_str = (_prop_addr + _parcel_str) if _prop_addr else ('Lexington, MA' + _parcel_str)
+        _parcel_str = ''  # C-4: no generic fallback — omit parcel IDs when not configured
+    _loc_str = (_prop_addr + _parcel_str) if (_prop_addr or _parcel_str) else ''
 
     # Row 1: title
     ws.cell(row=1, column=2).value = f'{_prop_disp} — Analysis of Real Estate Taxes'
@@ -789,7 +788,8 @@ def _write_seed_ret_analysis(ws, period: str, tb_map: Optional[dict],
     ws.freeze_panes = 'B6'
 
 
-def _write_seed_loan_analysis(ws, period: str, tb_map: Optional[dict]):
+def _write_seed_loan_analysis(ws, period: str, tb_map: Optional[dict],
+                              property_name: str = ''):
     """
     Build a full-history Loan Analysis tab from _LOAN_ANALYSIS_SEED.
     Replaces _write_stub when no prior workpaper is provided.
@@ -830,8 +830,8 @@ def _write_seed_loan_analysis(ws, period: str, tb_map: Optional[dict]):
     ws.column_dimensions['J'].width = 3
     ws.column_dimensions['K'].width = 18
 
-    # Title block
-    ws.cell(row=1, column=1).value = 'Revolution Labs'
+    # Title block  (C-NF-1: use property_name, not hardcoded 'Revolution Labs')
+    ws.cell(row=1, column=1).value = property_name or 'Property'
     ws.cell(row=1, column=1).font  = Font(name='Calibri', size=13, bold=True)
     ws.cell(row=2, column=1).value = 'Accrued Interest Payable (213200)'
     ws.cell(row=3, column=1).value = f'Period: {period}'
@@ -1273,8 +1273,12 @@ def build_ret_analysis_tab(
         ip = _find_insertion_point(ws, 6)
         _insert_rows_and_write(ws, ip, new_rows, 6, period, tb_map, '135120')
     elif not prior_ws:
-        # First-period: write full historical seed data instead of a minimal stub
-        _write_seed_ret_analysis(ws, period, tb_map, property_config=property_config)
+        # C-NF-6: gate seed data — _RET_ANALYSIS_SEED is Rev Labs-specific
+        _prop_code_ret = (getattr(property_config, 'property_code', '') or '').lower()
+        if _prop_code_ret == 'revlabspm':
+            _write_seed_ret_analysis(ws, period, tb_map, property_config=property_config)
+        else:
+            _write_stub(ws, period, '135120 / 641110', 'RE Tax Analysis', property_config)
     ws.sheet_properties.tabColor = '375623'
 
 
@@ -1311,7 +1315,8 @@ def _write_stub_insurance(ws, prepaid_active: list, period: str, tb_map: Optiona
     start_lbl   = f'As of {period_dt.strftime("%m/01/%Y")}' if period_dt else 'Starting Balance'
 
     # ── Header rows ───────────────────────────────────────────────────────────
-    ws.cell(row=1, column=2).value = 'Revolution Labs — Insurance Analysis'
+    _ins_title = f'{property_name} — Insurance Analysis' if property_name else 'Insurance Analysis'
+    ws.cell(row=1, column=2).value = _ins_title  # C-NF-2: was hardcoded 'Revolution Labs'
     ws.cell(row=2, column=2).value = f'Period: {period}'
     ws.cell(row=3, column=2).value = 'A/C 639110 / 639120  Insurance Expense  |  A/C 135110  Prepaid Insurance'
 
@@ -1476,6 +1481,7 @@ def _stub_center_wrap():
 def build_insurance_analysis_tab(
     wb, prepaid_active, gl_result, period,
     current_prefix, tab_prefix, tb_map=None,
+    property_name: str = '',
 ):
     """
     Insurance Analysis: copy prior tab, then find which column corresponds to
@@ -1665,6 +1671,7 @@ def build_insurance_analysis_tab(
 def build_loan_analysis_tab(
     wb, berkadia_loans, gl_result, period,
     current_prefix, tab_prefix, tb_map=None,
+    property_config=None, property_name: str = '',
 ):
     """
     Loan Analysis: copy prior tab + append current-period interest cycle rows.
@@ -1737,8 +1744,12 @@ def build_loan_analysis_tab(
         ip = _find_insertion_point(ws, 9)   # col I = 9
         _insert_rows_and_write(ws, ip, new_rows, 9, period, tb_map, '213200')
     elif not prior_ws:
-        # First-period: write full historical seed data instead of a minimal stub
-        _write_seed_loan_analysis(ws, period, tb_map)
+        # C-NF-6: gate seed data — _LOAN_ANALYSIS_SEED is Rev Labs-specific
+        _prop_code_loan = (getattr(property_config, 'property_code', '') or '').lower()
+        if _prop_code_loan == 'revlabspm':
+            _write_seed_loan_analysis(ws, period, tb_map, property_name=property_name)
+        else:
+            _write_stub(ws, period, '213200 / 801110', 'Loan Analysis', property_config)
     ws.sheet_properties.tabColor = '375623'
 
 
@@ -1883,6 +1894,7 @@ def build_all_analysis_tabs(
     berkadia_loans: Optional[list] = None,
     prepaid_active: Optional[list] = None,
     property_config=None,
+    property_name: str = '',
 ):
     """
     Build all analysis tabs for the current period.
@@ -1914,8 +1926,10 @@ def build_all_analysis_tabs(
     build_insurance_analysis_tab(
         wb, prepaid_active, gl_result, period,
         current_prefix, tab_prefix, tb_map,
+        property_name=property_name,
     )
     build_loan_analysis_tab(
         wb, berkadia_loans, gl_result, period,
         current_prefix, tab_prefix, tb_map,
+        property_config=property_config, property_name=property_name,
     )

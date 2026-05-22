@@ -153,7 +153,8 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
                        payment_check: dict = None,
                        jll_rate: float = _JLL_RATE,
                        jll_minimum: float = _JLL_MIN,
-                       total_rate: float = _TOTAL_RATE) -> None:
+                       total_rate: float = _TOTAL_RATE,
+                       bill_to: str = '') -> None:  # C-NF-4
     """
     Reportlab fallback — closely matches the template layout.
     Used when neither win32com nor LibreOffice is available.
@@ -177,10 +178,10 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
     GRP_A1   = _check.get('address_line1', 'One Federal Street, 28th Floor')
     GRP_A2   = _check.get('address_line2', 'Boston, MA 02110')
     GRP_WEB  = 'www.greatlandpartners.com'
-    GRP_ATTN = _check.get('attention', 'Lauren Sullivan')
-    ACH_BANK    = _ach.get('bank_name', 'Bank of America')
-    ACH_ACCT    = _ach.get('account_number', '466007913255')
-    ACH_ROUTING = _ach.get('routing_number', '026009593')
+    GRP_ATTN = _check.get('attention', '')              # C-NF-5: no personal name fallback
+    ACH_BANK    = _ach.get('bank_name', '')
+    ACH_ACCT    = _ach.get('account_number', '')         # C-NF-5: no real account in source
+    ACH_ROUTING = _ach.get('routing_number', '')
     ACH_ADDR    = _ach.get('bank_address', '1 Federal St, Boston, MA 02110')
 
     year, month = _parse_period(period)
@@ -234,7 +235,7 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
 
     # ── Bill To (left side, same rows as Meta) ────────────────────────────────
     c.setFont('Times-Bold',  10); c.drawString(L, _y(112), 'BILL TO:')
-    c.setFont('Times-Roman', 10); c.drawString(L, _y(126), 'Revolution Labs Owner, LLC')
+    c.setFont('Times-Roman', 10); c.drawString(L, _y(126), bill_to)  # C-NF-4: from config
 
     # ── Divider above table ───────────────────────────────────────────────────
     c.setStrokeColor(BLACK); c.setLineWidth(0.75)
@@ -353,6 +354,15 @@ def generate_invoice(
     )
     cfg_ach   = (getattr(property_config, 'payment_ach', None)   or {}) if property_config else {}
     cfg_check = (getattr(property_config, 'payment_check', None) or {}) if property_config else {}
+    # C-NF-4: bill_to from config — entity_name, display_name, or leave blank
+    cfg_bill_to = ''
+    if property_config:
+        cfg_bill_to = (
+            getattr(property_config, 'entity_name', '')
+            or getattr(property_config, 'property_display_name', '')
+            or getattr(property_config, 'property_name', '')
+            or ''
+        )
 
     # Pull fee rates from config so the invoice matches what was actually agreed.
     # Falls back to the module-level defaults (JLL 1.25%, total 3.00%, min $5,000)
@@ -390,7 +400,7 @@ def generate_invoice(
                            invoice_prefix=cfg_prefix,
                            payment_ach=cfg_ach, payment_check=cfg_check,
                            jll_rate=cfg_jll_rate, jll_minimum=cfg_jll_min,
-                           total_rate=cfg_total_rate)
+                           total_rate=cfg_total_rate, bill_to=cfg_bill_to)
         with open(pdf_path, 'rb') as fh:
             return fh.read()
 
@@ -414,7 +424,7 @@ def generate_invoice(
                            invoice_prefix=cfg_prefix,
                            payment_ach=cfg_ach, payment_check=cfg_check,
                            jll_rate=cfg_jll_rate, jll_minimum=cfg_jll_min,
-                           total_rate=cfg_total_rate)
+                           total_rate=cfg_total_rate, bill_to=cfg_bill_to)
 
     try:
         os.remove(xlsx_path)
