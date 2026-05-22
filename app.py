@@ -4127,6 +4127,169 @@ with tab2:
             "prior workpaper or current-period Capital Schedule is uploaded."
         )
 
+    # ── Manual Prepaid Add Form ───────────────────────────────────────────────
+    # Allows adding prepaid items directly in Pass 2 without re-uploading the ledger.
+    # Items are appended to _prepaid_active before the workpaper is generated.
+    _EXCLUDED_PREPAID_GL = {'639110', '639120', '641110'}  # Insurance + RE Tax (handled separately)
+
+    if 'pass2_manual_prepaids' not in st.session_state:
+        st.session_state.pass2_manual_prepaids = []
+
+    with st.expander("➕ Manually add prepaid items (optional)", expanded=False):
+        st.caption(
+            "Add items that are not in the uploaded prepaid ledger — e.g. new contracts "
+            "signed mid-month. Each item is appended to the active ledger for this run only. "
+            "GL accounts 639110 (Insurance), 639120 (Insurance), and 641110 (RE Tax) are "
+            "excluded — those are managed by the prepaid insurance and RE-tax modules."
+        )
+
+        # Show existing manual items with remove buttons
+        if st.session_state.pass2_manual_prepaids:
+            st.markdown("**Items added this session:**")
+            _remove_idx = None
+            for _mi, _mitem in enumerate(st.session_state.pass2_manual_prepaids):
+                _mc1, _mc2 = st.columns([8, 1])
+                _mc1.markdown(
+                    f"**{_mitem['vendor']}** — {_mitem['gl_account_number']} "
+                    f"| ${_mitem['monthly_amount']:,.2f}/mo × {_mitem['total_months']} mo "
+                    f"| Start: {_mitem['service_start']} "
+                    f"| Amortized: {_mitem['months_amortized']}"
+                )
+                if _mc2.button("✕", key=f"remove_manual_prepaid_{_mi}", help="Remove this item"):
+                    _remove_idx = _mi
+            if _remove_idx is not None:
+                st.session_state.pass2_manual_prepaids.pop(_remove_idx)
+                st.rerun()
+            st.divider()
+
+        with st.form("manual_prepaid_form_p2", clear_on_submit=True):
+            st.markdown("**Add new prepaid item**")
+
+            _fp_c1, _fp_c2 = st.columns(2)
+            _fp_vendor = _fp_c1.text_input("Vendor *", placeholder="e.g. Acme Insurance Co.")
+            _fp_invoice_number = _fp_c2.text_input("Invoice # (optional)", placeholder="e.g. INV-2026-001")
+
+            _fp_c3, _fp_c4 = st.columns(2)
+            _fp_gl_number = _fp_c3.text_input(
+                "GL Account # *", placeholder="e.g. 635110",
+                help="6-digit GL account code. 639110, 639120, 641110 are excluded.",
+            )
+            _fp_gl_label = _fp_c4.text_input(
+                "GL Account Name", placeholder="e.g. Repairs & Maintenance",
+                help="Human-readable account label (optional).",
+            )
+
+            _fp_desc = st.text_input(
+                "Description *", placeholder="e.g. Annual maintenance contract — Jan–Dec 2026",
+            )
+
+            _fp_c5, _fp_c6, _fp_c7 = st.columns(3)
+            _fp_start = _fp_c5.date_input("Service Start *", value=None)
+            _fp_end = _fp_c6.date_input("Service End *", value=None)
+            _fp_monthly = _fp_c7.number_input(
+                "Monthly Amount ($) *", min_value=0.01, value=None,
+                format="%.2f",
+                help="Amount to release per month (mid-month starts are prorated automatically).",
+            )
+
+            _fp_c8, _fp_c9 = st.columns(2)
+            _fp_amortized = _fp_c8.number_input(
+                "Months Already Amortized",
+                min_value=0, value=0, step=1,
+                help="Enter 0 for a brand-new item. Enter N if N months have already been released.",
+            )
+            _fp_c9.markdown("")  # spacer
+
+            _fp_submitted = st.form_submit_button("Add to Ledger", use_container_width=True)
+
+        if _fp_submitted:
+            # --- Validation ---
+            _fp_errors = []
+            if not _fp_vendor.strip():
+                _fp_errors.append("Vendor is required.")
+            if not _fp_desc.strip():
+                _fp_errors.append("Description is required.")
+            if not _fp_gl_number.strip():
+                _fp_errors.append("GL Account # is required.")
+            elif not _fp_gl_number.strip().isdigit():
+                _fp_errors.append("GL Account # must be numeric (e.g. 635110).")
+            elif _fp_gl_number.strip() in _EXCLUDED_PREPAID_GL:
+                _fp_errors.append(
+                    f"GL account {_fp_gl_number.strip()} is managed by a separate module "
+                    "(insurance / RE tax). Use the One-Off Accruals table instead."
+                )
+            if _fp_monthly is None or _fp_monthly <= 0:
+                _fp_errors.append("Monthly Amount must be greater than $0.")
+            if _fp_start is None:
+                _fp_errors.append("Service Start date is required.")
+            if _fp_end is None:
+                _fp_errors.append("Service End date is required.")
+            if _fp_start and _fp_end and _fp_end <= _fp_start:
+                _fp_errors.append("Service End must be after Service Start.")
+
+            if _fp_errors:
+                for _fe in _fp_errors:
+                    st.error(_fe)
+            else:
+                from datetime import date as _date_cls
+                from dateutil.relativedelta import relativedelta as _rdelta
+                import calendar as _cal
+
+                # Compute derived fields
+                _fp_start_d = _fp_start if isinstance(_fp_start, _date_cls) else _fp_start
+                _fp_end_d   = _fp_end   if isinstance(_fp_end, _date_cls)   else _fp_end
+
+                # Total months: inclusive count (same as prepaid_ledger._count_months)
+                _fp_rd = _rdelta(_fp_end_d, _fp_start_d)
+                _fp_total_months = _fp_rd.years * 12 + _fp_rd.months + 1
+
+                _fp_total_amount    = round(_fp_monthly * _fp_total_months, 2)
+                _fp_remaining       = max(0, _fp_total_months - _fp_amortized)
+                _fp_daily_rate      = round(_fp_monthly / _cal.monthrange(_fp_start_d.year, _fp_start_d.month)[1], 4)
+
+                # first_added_period = current close period (YYYY-MM)
+                # Try Pass 2 engine result → Pass 1 engine result → today
+                import datetime as _dt_mod
+                _close_period_str = ''
+                _p2r_for_period = st.session_state.get('pass2_engine_result')
+                if _p2r_for_period and getattr(_p2r_for_period, 'period', None):
+                    _close_period_str = _p2r_for_period.period
+                if not _close_period_str:
+                    _p1r_for_period = st.session_state.get('pass1_engine_result')
+                    if _p1r_for_period and getattr(_p1r_for_period, 'period', None):
+                        _close_period_str = _p1r_for_period.period
+                if not _close_period_str:
+                    _close_period_str = _dt_mod.date.today().strftime('%Y-%m')
+
+                _new_prepaid_item = {
+                    'vendor':             _fp_vendor.strip(),
+                    'invoice_number':     _fp_invoice_number.strip(),
+                    'invoice_date':       None,
+                    'description':        _fp_desc.strip(),
+                    'gl_account_number':  _fp_gl_number.strip(),
+                    'gl_account':         (
+                        f"{_fp_gl_label.strip()} ({_fp_gl_number.strip()})"
+                        if _fp_gl_label.strip()
+                        else _fp_gl_number.strip()
+                    ),
+                    'total_amount':       _fp_total_amount,
+                    'monthly_amount':     round(_fp_monthly, 2),
+                    'service_start':      _fp_start_d,
+                    'service_end':        _fp_end_d,
+                    'total_months':       _fp_total_months,
+                    'months_amortized':   _fp_amortized,
+                    'remaining_months':   _fp_remaining,
+                    'first_added_period': _close_period_str,
+                    'daily_rate':         _fp_daily_rate,
+                }
+                st.session_state.pass2_manual_prepaids.append(_new_prepaid_item)
+                st.success(
+                    f"✅ Added: **{_fp_vendor.strip()}** — "
+                    f"${_fp_monthly:,.2f}/mo × {_fp_total_months} months "
+                    f"(GL {_fp_gl_number.strip()})"
+                )
+                st.rerun()
+
     # Pass 2 requires either a dedicated post-close GL or at minimum the sidebar GL
     _p2_gl_ready = (
         "gl_pass2" in st.session_state.uploaded_files
@@ -4450,6 +4613,15 @@ with tab2:
                             # Fall back to same-session Pass 1 data (already post-advance)
                             _p1_data = st.session_state.get('pass1_output_files', {})
                             _prepaid_active = _p1_data.get('ledger_active', [])
+
+                        # ── Merge manually-added prepaid items ────────────────
+                        _manual_prepaids = st.session_state.get('pass2_manual_prepaids', [])
+                        if _manual_prepaids:
+                            _prepaid_active = list(_prepaid_active) + _manual_prepaids
+                            st.caption(
+                                f"↳ Prepaid ledger: {len(_prepaid_active) - len(_manual_prepaids)} "
+                                f"loaded + {len(_manual_prepaids)} manually added"
+                            )
 
                         # ── Template-based workpaper (preferred) ─────────────
                         # If a GA_Workpaper_Template.xlsx is committed for this
