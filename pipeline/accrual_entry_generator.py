@@ -466,9 +466,9 @@ def detect_insurance_amortization(
     # "Umbrella Policy"), with monthly amounts in m1–m12.  We generate one JE
     # line per Kardin row so both policies get their own description and amount.
     _MMAP_INS = {
-        'jan': 'm1', 'feb': 'm2', 'mar': 'm3', 'apr': 'm4',
-        'may': 'm5', 'jun': 'm6', 'jul': 'm7', 'aug': 'm8',
-        'sep': 'm9', 'oct': 'm10', 'nov': 'm11', 'dec': 'm12',
+        'jan': 'M1', 'feb': 'M2', 'mar': 'M3', 'apr': 'M4',
+        'may': 'M5', 'jun': 'M6', 'jul': 'M7', 'aug': 'M8',
+        'sep': 'M9', 'oct': 'M10', 'nov': 'M11', 'dec': 'M12',
     }
     _period_col = next(
         (col for abbr, col in _MMAP_INS.items() if abbr in (period or '').lower()),

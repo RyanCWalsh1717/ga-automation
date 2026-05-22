@@ -667,6 +667,7 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pass2_engine_result   = None
     st.session_state.pass2_output_files    = {}
     st.session_state.uploaded_files        = {}
+    st.session_state.pass2_manual_prepaids = []   # B-F1: prevent cross-property bleed
     # Reset checklist so the new property's data is loaded
     st.session_state.checklist_loaded    = False
     st.session_state.close_tracker       = {}
@@ -855,6 +856,7 @@ else:
         st.session_state.bulk_overrides_p1 = {}
         st.session_state.bulk_overrides_p2 = {}
         st.session_state.bulk_overrides_wp = {}
+        st.session_state.pass2_manual_prepaids = []   # B-F1: prevent cross-property bleed
         st.session_state.signoff_state = {}
         st.session_state.close_tracker = {}
         st.session_state.upload_key_p1 += 1
@@ -4321,6 +4323,7 @@ with tab2:
                 st.session_state.pass2_complete = False
                 st.session_state.pass2_engine_result = None
                 st.session_state.pass2_output_files = {}
+                st.session_state.pass2_manual_prepaids = []   # B-F1: prevent cross-property bleed
                 st.session_state.signoff_state = {}
                 import pandas as _pd_r2
                 st.session_state.post_close_je_df = _pd_r2.DataFrame({
