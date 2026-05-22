@@ -125,6 +125,7 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
 
     records = []
     current_vendor = None
+    _skipped_rows: list = []   # rows that failed to parse — surfaced in validation
 
     # Find header row (typically row 3)
     header_row_idx = None
@@ -198,9 +199,19 @@ def parse(filepath: str) -> List[Dict[str, Any]]:
                     'prepaid_months': _count_months(svc_start, svc_end) if is_prepaid else 1,
                 }
                 records.append(record)
-            except Exception:
-                # Skip rows with parsing errors
+            except Exception as _e:
+                _skipped_rows.append({'row': row_idx, 'error': str(_e), 'data': str(row)[:120]})
                 continue
+
+    if _skipped_rows:
+        import warnings as _w
+        _w.warn(
+            f'nexus_accrual: {len(_skipped_rows)} row(s) skipped due to parse errors. '
+            f'First: row {_skipped_rows[0]["row"]} — {_skipped_rows[0]["error"]}. '
+            f'Check the Nexus export for malformed rows; skipped rows will NOT be accrued.',
+            UserWarning,
+            stacklevel=2,
+        )
 
     return records
 

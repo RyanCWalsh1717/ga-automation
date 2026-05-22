@@ -739,8 +739,8 @@ def _build_recon_from_yardi_rec(
         # Trust the Yardi-computed values
         adjusted_bank = float(yardi_reconciled)
         recon_diff    = float(yardi_recon_diff)
-        if yardi_outstanding is not None and total_outstanding == 0:
-            total_outstanding = float(yardi_outstanding)
+        if yardi_outstanding is not None:
+            total_outstanding = float(yardi_outstanding)  # Yardi is authoritative
     else:
         # Fall back to re-derived matching (no Yardi pre-computed values)
         adjusted_bank = bank_end - total_outstanding
@@ -1662,7 +1662,9 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         result.exceptions.extend(bv_exc)
 
     # ── Step 8: Build summary ────────────────────────────────
-    result.summary = {
+    # Use update() — not assignment — so keys set in earlier steps
+    # (corp_7xxx_accounts, co_rev_5xxx_accounts, etc.) are preserved.
+    result.summary.update({
         "files_processed": sum(1 for v in files.values() if v),
         "parsers_succeeded": len(result.parsed),
         "gl_accounts": gl.validation.get("accounts_parsed", 0) if gl else 0,
@@ -1674,6 +1676,6 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
         "exceptions_error": result.error_count,
         "exceptions_warning": result.warning_count,
         "status": result.status,
-    }
+    })
 
     return result

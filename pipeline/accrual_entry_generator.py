@@ -636,6 +636,7 @@ def detect_retax_amortization(
     beg_135120 = 0.0   # Prepaid RE Taxes beginning balance (for release auto-detect)
     txns_641110: list = []  # individual GLTransaction objects for 641110
     txns_115200: list = []  # individual GLTransaction objects for 115200
+    txns_135120: list = []  # individual GLTransaction objects for 135120
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
         if code == _RETAX_EXPENSE_ACCT:
@@ -647,6 +648,18 @@ def detect_retax_amortization(
         elif code == _RETAX_PREPAID_ACCT:
             net_135120 = float(getattr(acct, 'net_change', 0) or 0)
             beg_135120 = float(getattr(acct, 'beginning_balance', 0) or 0)
+            txns_135120 = list(getattr(acct, 'transactions', None) or [])
+
+    # Non-J (K/P/C) net for suppression guards — J-type entries are pipeline
+    # auto-reversals and should not trigger the "already posted" guard.
+    def _kpc_net(txns: list) -> float:
+        return sum(
+            float(t.debit or 0) - float(t.credit or 0)
+            for t in txns
+            if not str(getattr(t, 'control', '') or '').upper().startswith('J')
+        )
+    kpc_net_135120 = _kpc_net(txns_135120)
+    kpc_net_641110 = _kpc_net(txns_641110)
 
     # ── Auto-detect quarterly bill from GL if not user-provided ──────────────
     bill        = re_tax_bill_amount
@@ -739,8 +752,8 @@ def detect_retax_amortization(
 
     if period_month in _payment_months:
         # ── Payment month: defer 2/3 → DR 135120 / CR 641110 ────────────────
-        if net_135120 > 100.0:
-            return None   # deferral already posted in Yardi — suppress
+        if kpc_net_135120 > 100.0:
+            return None   # non-J deferral already posted in Yardi — suppress
 
         deferred     = _round(bill * 2.0 / 3.0)
         source_note  = f' ({auto_source})' if auto_source else ''
@@ -763,8 +776,8 @@ def detect_retax_amortization(
         }
     else:
         # ── Release month: release 1/3 → DR 641110 / CR 135120 ──────────────
-        if net_641110 > 100.0:
-            return None   # release already posted in Yardi — suppress
+        if kpc_net_641110 > 100.0:
+            return None   # non-J release already posted in Yardi — suppress
 
         release      = _round(bill / 3.0)
         source_note  = f' ({auto_source})' if auto_source else ''

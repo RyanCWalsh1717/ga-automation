@@ -802,7 +802,7 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
 
     L = get_column_letter(LAST_COL)
 
-    c_lbl = ws.cell(row=next_row, column=FIRST_COL, value='Ending Balance per GL')
+    c_lbl = ws.cell(row=next_row, column=FIRST_COL, value='Total Remaining Schedule')
     c_lbl.font      = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
     c_lbl.fill      = PatternFill(start_color=DARK_BLUE, end_color=DARK_BLUE, fill_type='solid')
     c_lbl.border    = THIN
