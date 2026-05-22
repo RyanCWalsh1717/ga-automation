@@ -1229,7 +1229,12 @@ def check_budget_variances(is_result, budget_result, threshold_pct=5.0) -> Tuple
             except ValueError:
                 var_pct = 0
 
-        if abs(var_pct) >= threshold_pct and abs(variance) >= 2500:
+        # A-NEW-4: zero-budget accounts with material actual activity were never
+        # flagged because var_pct is forced to 0 when ptd_budget == 0.
+        # Flag them separately using the absolute materiality threshold only.
+        _zero_budget_flag = (ptd_budget == 0 and abs(ptd_actual) >= 2500)
+
+        if (_zero_budget_flag or (abs(var_pct) >= threshold_pct and abs(variance) >= 2500)):
             variances.append({
                 "account_code": code,
                 "account_name": name,

@@ -691,7 +691,9 @@ def check_7_misc(budget_rows: List[dict],
         ))
 
     # ── 7b: Interest Expense ───────────────────────────────────
-    interest_code = '801110'
+    # C-13: read from config so it works for any property; fall back to 801110
+    _gl_accts_qc = getattr(property_config, 'gl_accounts', None) or {} if property_config else {}
+    interest_code = _gl_accts_qc.get('interest_expense', '801110')
     if interest_code in bc_map:
         ptd_actual = abs(_safe_float(bc_map[interest_code].get('ptd_actual', 0)))
         if ptd_actual < 1.0:

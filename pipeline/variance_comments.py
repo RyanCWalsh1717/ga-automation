@@ -40,7 +40,7 @@ MONTH_MAP = {
     'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
 }
 
-# ── Account-specific behavioral context (Rev Labs) ───────────
+# ── Account-specific behavioral context ──────────────────────
 ACCOUNT_CONTEXT: Dict[str, str] = {
     '440100': (
         'Recovery-Operating Expense is a CAM billback to tenants. '
@@ -99,7 +99,7 @@ ACCOUNT_CONTEXT: Dict[str, str] = {
         'for Finance rather than treating as a favorable variance.'
     ),
     '801110': (
-        'Interest Expense: compare actual mortgage payment to the GRP amortization '
+        'Interest Expense: compare actual mortgage payment to the loan amortization '
         'schedule budget. If a scheduled step-down does not match the actual payment, '
         'flag for Finance to reconcile the amortization schedule.'
     ),

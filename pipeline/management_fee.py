@@ -35,51 +35,11 @@ The result is consumed by:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Optional
 
 from accounting_utils import _round
-
-
-# ── Period formatting ──────────────────────────────────────────────────────────
-
-_MONTH_ABBR = {
-    'jan': 'January', 'feb': 'February', 'mar': 'March',
-    'apr': 'April',   'may': 'May',       'jun': 'June',
-    'jul': 'July',    'aug': 'August',    'sep': 'September',
-    'oct': 'October', 'nov': 'November',  'dec': 'December',
-}
-
-
-def _fmt_period(period: str) -> str:
-    """
-    Format an accounting period string as 'Month YYYY' for use in descriptions.
-
-    Accepts:
-      'Apr-2026'  → 'April 2026'
-      '04/2026'   → 'April 2026'
-      'April 2026' → 'April 2026' (pass-through)
-
-    Falls back to the raw string if the format is unrecognised.
-    """
-    if not period:
-        return period
-    # 'Apr-2026' or 'Apr 2026'
-    m = re.match(r'([A-Za-z]{3,})[- ](\d{4})', period.strip())
-    if m:
-        month_key = m.group(1)[:3].lower()
-        year = m.group(2)
-        return f"{_MONTH_ABBR.get(month_key, m.group(1).capitalize())} {year}"
-    # '04/2026' or '04-2026'
-    m = re.match(r'(\d{1,2})[/\-](\d{4})', period.strip())
-    if m:
-        month_num = int(m.group(1))
-        year = m.group(2)
-        month_names = list(_MONTH_ABBR.values())
-        if 1 <= month_num <= 12:
-            return f"{month_names[month_num - 1]} {year}"
-    return period
+from accrual_entry_generator import _fmt_period  # C-9: single definition; no circular dep
 
 
 # ── Account codes (defaults — overridden by PropertyConfig when provided) ──────

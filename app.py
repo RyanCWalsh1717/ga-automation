@@ -701,6 +701,7 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     # Increment upload widget keys so Streamlit discards Property A's file buffers
     st.session_state.upload_key_p1 = st.session_state.get('upload_key_p1', 0) + 1
     st.session_state.upload_key_p2 = st.session_state.get('upload_key_p2', 0) + 1
+    st.session_state.tub_key       = st.session_state.get('tub_key', 0) + 1   # B-13: re-render TUB at $0 on property switch
     # Clear the prior period label so workpaper carry-forward uses the correct month
     st.session_state.pop('prior_period_label_input', None)
 
@@ -4838,7 +4839,7 @@ with tab2:
                             period=close_period,
                             property_name=engine_result.property_name or _prop_entity,
                             api_key=api_key,
-                            investor_name=getattr(_active_cfg, 'investor_name', 'Singerman Real Estate') or 'Singerman Real Estate',
+                            investor_name=getattr(_active_cfg, 'investor_name', '') or '',  # C-NF-9: no hardcoded Singerman default
                             firm_name=getattr(_active_cfg, 'firm_name', '') or 'Greatland Realty Partners (GRP)',
                             # No je_adjustments — GL is the final source of truth
                         )
@@ -4922,6 +4923,7 @@ with tab2:
                 st.session_state.pass2_output_files["dev_bank_rec_data"] = dev_bank_rec_data
 
                 # Audit Trail — comprehensive pass-1+pass-2 record for auditors
+                _at_qc = None   # B-F5: init before try so except/finally can reference it safely
                 try:
                     _at_path = os.path.join(
                         st.session_state.temp_dir,

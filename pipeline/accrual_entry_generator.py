@@ -2018,11 +2018,11 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
         # Try BC YTD actual first; fall back to GL beginning balance
         ytd_prior = ytd_actual_by_code.get(code, 0.0)
         use_gl_fallback = False
-        if ytd_prior < 100:
+        if ytd_prior < 1.0:   # A-7: was 100 — use 1.0 (any non-trivial data) since $5K floor handles materiality
             ytd_prior = abs(acct.beginning_balance)
             use_gl_fallback = True
 
-        if ytd_prior < 100:
+        if ytd_prior < 1.0:
             continue
 
         # Cross-reference against budget: zero budget everywhere = likely discontinued

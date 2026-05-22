@@ -46,7 +46,6 @@ FILE_LABELS = {
     "trial_balance_pass2":   "Final Trial Balance (Pass 2)",
     "t12_statement_pass2":   "Post-Close T12 (Pass 2)",
     "loan_pass2":            "Berkadia Loan Statements (Pass 2) — due 7th of following month",
-    "prior_workpaper":       "Prior Month Workpaper",
     "unknown":               "Unknown — select type",
     # Pass-2 labels (shown when bulk-uploading into the Pass 2 slot)
     "bank_rec_pass2":        "Bank Rec (Pass 2)",
