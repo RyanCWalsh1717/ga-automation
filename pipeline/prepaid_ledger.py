@@ -555,6 +555,11 @@ def get_current_amortization(active: List[Dict], close_period: str,
                 new_anchor = close_date - relativedelta(months=1)
                 item['first_added_period'] = _date_to_period(new_anchor)
                 item['months_amortized']   = 1
+                # Feb+ months anchor from service_start, not first_added_period.
+                # Update service_start to new_anchor so the sequence chains correctly:
+                #   Jan: months_done=1, anchor=new_anchor     → amort = close_period ✓
+                #   Feb: months_done=2, anchor=service_start  → amort = close_period+1 ✓
+                item['service_start']      = new_anchor
                 anchor      = new_anchor
                 months_done = 1
             else:

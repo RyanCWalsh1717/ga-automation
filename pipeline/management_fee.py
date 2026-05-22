@@ -394,11 +394,22 @@ def calculate(
     """
     budget_rows = budget_rows or []
 
-    # Resolve rates: explicit args > property_config > module-level defaults
-    if jll_rate is None:
-        jll_rate = property_config.management_fee_jll_rate if property_config else JLL_RATE
-    if grp_rate is None:
-        grp_rate = property_config.management_fee_grp_rate if property_config else GRP_RATE
+    # Resolve rates: explicit args > property_config.management_fees list > module-level defaults
+    # management_fees is a list of fee objects with .rate attribute (from config.yaml).
+    # property_config.management_fee_jll_rate does NOT exist — must read from the list.
+    if jll_rate is None or grp_rate is None:
+        _cfg_fees = getattr(property_config, 'management_fees', None) or [] if property_config else []
+        if _cfg_fees:
+            if jll_rate is None:
+                jll_rate = float(getattr(_cfg_fees[0], 'rate', JLL_RATE) or JLL_RATE)
+            if grp_rate is None:
+                _f2 = _cfg_fees[1] if len(_cfg_fees) >= 2 else None
+                grp_rate = float(getattr(_f2, 'rate', GRP_RATE) or GRP_RATE) if _f2 else GRP_RATE
+        else:
+            if jll_rate is None:
+                jll_rate = JLL_RATE
+            if grp_rate is None:
+                grp_rate = GRP_RATE
 
     # Resolve key GL accounts from config when available
     _cash_acct = (
