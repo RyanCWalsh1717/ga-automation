@@ -1471,7 +1471,7 @@ def detect_invoice_proration_accruals(
 
         for txn in acct.transactions:
             ctrl_prefix = (txn.control or '').split('-')[0].upper()
-            is_j    = (ctrl_prefix == 'J')
+            is_j    = (txn.control or '').upper().startswith('J')   # A-9: catches J/AJ/RJ codes
             txn_net = (txn.debit or 0) - (txn.credit or 0)
 
             if is_j:
@@ -1522,8 +1522,7 @@ def detect_invoice_proration_accruals(
         # Collect all non-J debits for this account.
         _invoice_lines = []
         for txn in acct.transactions:
-            _ctrl = (txn.control or '').split('-')[0].upper()
-            if _ctrl == 'J':
+            if (txn.control or '').upper().startswith('J'):   # A-9: catches J/AJ/RJ codes
                 continue
             _txn_amt = (txn.debit or 0) - (txn.credit or 0)
             if _txn_amt < 1.0:
@@ -3418,7 +3417,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
             _j_txns = [
                 _t for _t in getattr(_gl_acct, 'transactions', [])
-                if (_t.control or '').split('-')[0].upper() == 'J'
+                if (_t.control or '').upper().startswith('J')   # A-9: catches J/AJ/RJ codes
                 and abs(_t.debit - _t.credit) >= 0.01
             ]
             if not _j_txns:

@@ -4010,13 +4010,6 @@ with tab2:
         if _p2_file_count > 0:
             st.caption(f"**{_p2_file_count} file(s) uploaded**")
 
-        # Clean up overrides for files no longer in uploader
-        _active2 = {_uf2.name for _uf2 in _bulk_p2}
-        st.session_state.bulk_overrides_p2 = {
-            k: v for k, v in st.session_state.bulk_overrides_p2.items()
-            if k in _active2
-        }
-
     st.text_input(
         "Prior period label",
         placeholder="e.g. Mar-2026  (leave blank to auto-detect)",
@@ -4085,7 +4078,8 @@ with tab2:
                 _raw_wp = bytes(_ufwp.getbuffer())
                 # These are custom Yardi reports — auto-detection is unreliable;
                 # always show the type selectbox for explicit user assignment.
-                _eff_key_wp = st.session_state.bulk_overrides_wp.get(_ufwp.name, "unknown")
+                _ovr_key_wp = (_ufwp.name, _ufwp.size)  # B-F4: composite key prevents stale classifications
+                _eff_key_wp = st.session_state.bulk_overrides_wp.get(_ovr_key_wp, "unknown")
 
                 _ic_wp, _fn_wp, _tp_wp = st.columns([1, 3, 4])
                 _ic_wp.markdown("✅" if _eff_key_wp != "unknown" else "⚠️")
@@ -4100,10 +4094,10 @@ with tab2:
                 )
                 _sel_label_wp = _tp_wp.selectbox(
                     "type", _WP_SLOT_LABELS, index=_cur_idx_wp,
-                    key=f"ovr_wp_{_ufwp.name}", label_visibility="collapsed",
+                    key=f"ovr_wp_{_ufwp.name}_{_ufwp.size}", label_visibility="collapsed",
                 )
                 _eff_key_wp = _WP_SLOT_KEYS[_WP_SLOT_LABELS.index(_sel_label_wp)]
-                st.session_state.bulk_overrides_wp[_ufwp.name] = _eff_key_wp
+                st.session_state.bulk_overrides_wp[_ovr_key_wp] = _eff_key_wp
 
                 if _eff_key_wp != "unknown":
                     _wp_path = os.path.join(st.session_state.temp_dir, f"wp_{_ufwp.name}")
@@ -4135,8 +4129,8 @@ with tab2:
             if _wp_count > 0:
                 st.caption(f"**{_wp_count} file(s) assigned**")
 
-            # Clean up overrides for files no longer in uploader
-            _active_wp = {_ufwp.name for _ufwp in _bulk_wp}
+            # Clean up overrides for files no longer in uploader (composite key)
+            _active_wp = {(_ufwp.name, _ufwp.size) for _ufwp in _bulk_wp}
             st.session_state.bulk_overrides_wp = {
                 k: v for k, v in st.session_state.bulk_overrides_wp.items()
                 if k in _active_wp
@@ -4583,7 +4577,7 @@ with tab2:
                         except Exception:
                             pass
 
-                if gl_parsed:
+                if gl_parsed and getattr(gl_parsed, 'accounts', None):
                     # tb_result is optional — generator writes "No TB data" in the TB tab
                     # when None; never block the whole workpaper just because TB is absent.
                     if not tb_result:
@@ -4657,6 +4651,12 @@ with tab2:
                             _selected_code, 'GA_Workpaper_Template.xlsx'
                         )
                         if _wp_template_path:
+                            # B-F6: template path only populates GL transaction tabs and TB.
+                            # Bank rec, DACA, Berkadia loans, AR aging, capital schedule, and
+                            # prepaid ledger data are NOT passed — those tabs come from the
+                            # template's own formulas and static data. If any of those tabs
+                            # appear blank after generation, upload the source files and use
+                            # the standard (non-template) generator instead.
                             bs_workpaper_generator.generate_bs_workpaper_from_template(
                                 gl_result=gl_parsed,
                                 tb_result=tb_result,
@@ -4666,6 +4666,11 @@ with tab2:
                                 property_name=engine_result.property_name or _prop_display,
                                 prepared_by=st.session_state.get("prepared_by", "Ryan Walsh"),
                                 property_code=_selected_code,
+                            )
+                            st.caption(
+                                "↳ Workpaper: generated from template — bank rec, DACA, loans, "
+                                "AR aging, and capital tabs are sourced from the template's own "
+                                "formulas, not auto-populated. Verify those tabs after download."
                             )
                         else:
                             bs_workpaper_generator.generate(
@@ -4699,6 +4704,13 @@ with tab2:
                         import traceback as _tb
                         st.warning(f"Workpaper generation skipped: {_e}")
                         st.code(_tb.format_exc(), language="text")
+                elif gl_parsed:
+                    # GL object exists but has no accounts — file was readable but empty
+                    st.warning(
+                        "Workpaper skipped — GL file parsed but contains no account data. "
+                        "Verify the uploaded GL is a valid Yardi export with at least one account row.",
+                        icon="⚠️",
+                    )
                 else:
                     st.warning("Workpaper skipped — no GL parsed. Upload a GL in Pass 2.", icon="⚠️")
 
