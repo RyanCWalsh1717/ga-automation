@@ -668,6 +668,7 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pass2_output_files    = {}
     st.session_state.uploaded_files        = {}
     st.session_state.pass2_manual_prepaids = []   # B-F1: prevent cross-property bleed
+    st.session_state.prior_period_outstanding = 0.0  # B-1: reset on property switch
     # Reset checklist so the new property's data is loaded
     st.session_state.checklist_loaded    = False
     st.session_state.close_tracker       = {}
@@ -744,6 +745,26 @@ st.session_state.prepared_by = st.sidebar.text_input(
     "Prepared by",
     value=st.session_state.prepared_by,
     help="Stamped on every workpaper tab and the run log.",
+)
+
+# ── Bank Rec — Prior Period Outstanding ──────────────────────
+# Outstanding checks/ACH from the prior month that are still clearing.
+# Enters the reconciliation as a reduction to the book balance so the
+# rec ties without a manual adjusting item.
+if 'prior_period_outstanding' not in st.session_state:
+    st.session_state.prior_period_outstanding = 0.0
+
+st.session_state.prior_period_outstanding = st.sidebar.number_input(
+    "Prior period outstanding ($)",
+    min_value=0.0,
+    value=float(st.session_state.prior_period_outstanding),
+    step=100.0,
+    format="%.2f",
+    help=(
+        "Total of checks/ACH issued in a prior month that have not yet cleared the bank. "
+        "Enter as a positive number — treated as a reduction to the GL book balance in "
+        "the bank reconciliation."
+    ),
 )
 
 
@@ -2166,7 +2187,7 @@ with tab1:
                 progress_bar.progress(10)
                 engine_result = run_pipeline(
                     files_dict,
-                    prior_period_outstanding=0.0,
+                    prior_period_outstanding=float(st.session_state.get('prior_period_outstanding', 0.0)),
                 )
                 st.session_state.pass1_engine_result = engine_result
 
@@ -4379,7 +4400,7 @@ with tab2:
                 progress_bar.progress(10)
                 engine_result = run_pipeline(
                     files_dict,
-                    prior_period_outstanding=0.0,
+                    prior_period_outstanding=float(st.session_state.get('prior_period_outstanding', 0.0)),
                 )
                 st.session_state.pass2_engine_result = engine_result
 

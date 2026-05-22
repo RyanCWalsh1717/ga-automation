@@ -641,10 +641,12 @@ def check_7_misc(budget_rows: List[dict],
     if property_config is not None:
         _fees = getattr(property_config, 'management_fees', None) or []
         if _fees:
-            # Use first two fee lines as jll / grp (or sum if only one)
-            jll_rate    = _fees[0].rate    if len(_fees) >= 1 else jll_rate
+            # Sum all configured fee lines so single-PM configs don't produce a false FLAG.
+            # For Rev Labs (JLL + GRP), this is equivalent to the previous index approach.
+            # For a single-PM property, grp_rate stays 0 and total is just that one rate.
+            jll_rate    = _fees[0].rate if len(_fees) >= 1 else jll_rate
             jll_minimum = float(getattr(_fees[0], 'minimum', 0) or 0)
-            grp_rate    = _fees[1].rate    if len(_fees) >= 2 else 0.0
+            grp_rate    = sum(float(getattr(f, 'rate', 0) or 0) for f in _fees[1:])
         _gl_accts = getattr(property_config, 'gl_accounts', None) or {}
         mgmt_fee_code = str(_gl_accts.get('mgmt_fee_expense', '637130')).strip() or '637130'
     else:

@@ -435,6 +435,7 @@ def detect_insurance_amortization(
 
     # ── Mode A: Config-driven — one line per named policy ─────────────────────
     if insurance_policies:
+        _remaining_balance = prepaid_balance  # track remaining as we allocate each policy
         for pol in insurance_policies:
             code    = str(pol.get('expense_account', '639110')).strip()
             name    = str(pol.get('name', '') or code)
@@ -443,19 +444,26 @@ def detect_insurance_amortization(
                 continue
             if code in already_posted:
                 continue  # JLL already posted it this period
+            if _remaining_balance <= 0.01:
+                break  # prepaid balance fully consumed
+
+            # A-NEW-2: cap at remaining balance so 135110 cannot go negative
+            amount = min(_round(monthly), _round(_remaining_balance))
+            _remaining_balance -= amount
 
             results.append({
                 'account_code':   code,
                 'account_name':   'Insurance',
-                'amount':         _round(monthly),
+                'amount':         amount,
                 'credit_account': _PREPAID_INSURANCE_ACCT,
                 'credit_name':    'Prepaid Insurance',
                 'source':         'prepaid_amortization',
                 'confidence':     'high',
                 'description': (
                     f'Accrual {_period_label} — {name} '
-                    f'(insurance prepaid amortization ${monthly:,.2f}/mo, '
-                    f'prepaid balance ${prepaid_balance:,.2f})'
+                    f'(insurance prepaid amortization ${monthly:,.2f}/mo'
+                    + (f', capped at remaining balance ${prepaid_balance:,.2f}' if amount < _round(monthly) else '')
+                    + f', prepaid balance ${prepaid_balance:,.2f})'
                 ),
             })
         return results
@@ -479,6 +487,7 @@ def detect_insurance_amortization(
         if str(r.get('account_code', '') or '').strip() in _INSURANCE_EXPENSE_ACCTS
     ]
     if _kardin_ins_rows and _period_col:
+        _remaining_balance = prepaid_balance  # track remaining as we allocate each policy
         for row in _kardin_ins_rows:
             code = str(row.get('account_code', '') or '').strip()
             if code in already_posted:
@@ -487,48 +496,64 @@ def detect_insurance_amortization(
             monthly = abs(float(row.get(_period_col, 0) or 0))
             if monthly < 1.0:
                 continue
+            if _remaining_balance <= 0.01:
+                break  # prepaid balance fully consumed
+
+            # A-NEW-2: cap at remaining balance so 135110 cannot go negative
+            amount = min(_round(monthly), _round(_remaining_balance))
+            _remaining_balance -= amount
+
             results.append({
                 'account_code':   code,
                 'account_name':   'Insurance',
-                'amount':         _round(monthly),
+                'amount':         amount,
                 'credit_account': _PREPAID_INSURANCE_ACCT,
                 'credit_name':    'Prepaid Insurance',
                 'source':         'prepaid_amortization',
                 'confidence':     'high',
                 'description': (
                     f'Accrual {_period_label} — {name} '
-                    f'(insurance prepaid amortization ${monthly:,.2f}/mo, '
-                    f'prepaid balance ${prepaid_balance:,.2f})'
+                    f'(insurance prepaid amortization ${monthly:,.2f}/mo'
+                    + (f', capped at remaining balance ${prepaid_balance:,.2f}' if amount < _round(monthly) else '')
+                    + f', prepaid balance ${prepaid_balance:,.2f})'
                 ),
             })
         return results
 
     # ── Mode C: BC-driven fallback — one combined line per expense account code ─
     budget_rows = budget_data if isinstance(budget_data, list) else []
+    _remaining_balance = prepaid_balance  # track remaining as we allocate each account
     for row in budget_rows:
         code = str(row.get('account_code', '') or '').strip()
         if code not in _INSURANCE_EXPENSE_ACCTS:
             continue
         if code in already_posted:
             continue  # JLL already posted it this period
+        if _remaining_balance <= 0.01:
+            break  # prepaid balance fully consumed
 
         name       = str(row.get('account_name', '') or code)
         monthly    = abs(float(row.get('ptd_budget', 0) or 0))
         if monthly < 1.0:
             continue
 
+        # A-NEW-2: cap at remaining balance so 135110 cannot go negative
+        amount = min(_round(monthly), _round(_remaining_balance))
+        _remaining_balance -= amount
+
         results.append({
             'account_code':   code,
             'account_name':   name,
-            'amount':         _round(monthly),
+            'amount':         amount,
             'credit_account': _PREPAID_INSURANCE_ACCT,
             'credit_name':    'Prepaid Insurance',
             'source':         'prepaid_amortization',
             'confidence':     'high',
             'description': (
                 f'Accrual {_period_label} — {name} '
-                f'(insurance prepaid amortization ${monthly:,.2f}/mo, '
-                f'prepaid balance ${prepaid_balance:,.2f})'
+                f'(insurance prepaid amortization ${monthly:,.2f}/mo'
+                + (f', capped at remaining balance ${prepaid_balance:,.2f}' if amount < _round(monthly) else '')
+                + f', prepaid balance ${prepaid_balance:,.2f})'
             ),
         })
 
