@@ -147,9 +147,9 @@ def _calc_daily_rate(total_amount: float, service_start: date, service_end: date
     """
     Daily rate for a mid-month service period.
 
-    Convention (matches standard CRE practice):
-      First month: days = days_in_month − start_day
-        e.g. Oct 20 → 31 − 20 = 11 days
+    Convention (matches standard CRE practice — inclusive of start/end day):
+      First month: days = days_in_month − start_day + 1
+        e.g. Oct 20 → 31 − 20 + 1 = 12 days
       Last month:  days = end_day
         e.g. Oct 19 → 19 days
       Middle months: full calendar days in that month
@@ -166,10 +166,15 @@ def _calc_daily_rate(total_amount: float, service_start: date, service_end: date
 
 def _count_service_days(service_start: date, service_end: date) -> int:
     """
-    Count total service days using partial-month convention:
-      first month: days_in_month − start_day
-      last month:  end_day
+    Count total service days using inclusive partial-month convention:
+      first month: days_in_month − start_day + 1  (inclusive of start day)
+        e.g. Oct 20 → 31 − 20 + 1 = 12 days
+      last month:  end_day  (inclusive of end day)
+        e.g. Oct 19 → 19 days
       middle months: full days_in_month
+
+    Matches the standard-mode convention in _month_amount() — both count
+    the start day as a day of service.
     """
     if service_start is None or service_end is None:
         return 0
@@ -179,10 +184,10 @@ def _count_service_days(service_start: date, service_end: date) -> int:
     while cur <= end_month:
         _, days_in_month = monthrange(cur.year, cur.month)
         if cur.year == service_start.year and cur.month == service_start.month:
-            # First month — partial
-            total += days_in_month - service_start.day
+            # First month — inclusive of start day
+            total += days_in_month - service_start.day + 1
         elif cur.year == service_end.year and cur.month == service_end.month:
-            # Last month — partial
+            # Last month — inclusive of end day
             total += service_end.day
         else:
             total += days_in_month
@@ -197,14 +202,15 @@ def _month_amount(item: dict, amort_date: date) -> float:
     Standard mode (daily_rate == 0):
       All months use monthly_amount EXCEPT the first and last service months
       when the service period starts or ends mid-month.  Those are prorated
-      as a fraction of monthly_amount:
-        first month: monthly_amount × (days_in_month − start_day) / days_in_month
+      as a fraction of monthly_amount (inclusive of start/end day):
+        first month: monthly_amount × (days_in_month − start_day + 1) / days_in_month
+          e.g. Oct 20 → 12/31 of monthly_amount
         last month:  monthly_amount × end_day / days_in_month
         middle months: monthly_amount (full)
 
     Day-rate mode (daily_rate > 0, legacy):
-      Each month = daily_rate × days in that calendar month, using partial-day
-      counts for the first and last service months.
+      Each month = daily_rate × days in that calendar month, inclusive of start/end day.
+      Same convention as standard mode and _count_service_days().
     """
     monthly_amount = float(item.get('monthly_amount', 0) or 0)
     daily_rate     = float(item.get('daily_rate') or 0)
@@ -213,10 +219,11 @@ def _month_amount(item: dict, amort_date: date) -> float:
     _, days_in_month = monthrange(amort_date.year, amort_date.month)
 
     if daily_rate > 0:
-        # Legacy day-rate mode — kept for backward compatibility
+        # Legacy day-rate mode — kept for backward compatibility.
+        # Inclusive convention: start day and end day both count as service days.
         if service_start and amort_date.year == service_start.year \
                 and amort_date.month == service_start.month:
-            days = days_in_month - service_start.day
+            days = days_in_month - service_start.day + 1
         elif service_end and amort_date.year == service_end.year \
                 and amort_date.month == service_end.month:
             days = service_end.day
