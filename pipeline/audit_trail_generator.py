@@ -709,6 +709,216 @@ def _build_qc_checks(ws, qc_report):
         row += 1
 
 
+# ── Tab 6: Yardi ETL CSV (exact import rows) ─────────────────────────────────
+
+def _build_yardi_csv_tab(ws, all_je_lines: List[dict], period: str, property_code: str):
+    """
+    Reconstruct the exact rows that were written to GA_Accruals_JE.csv and
+    display them as a readable Excel grid.
+
+    Shows only the 12 populated ETL columns (TRANNUM, DATE, PROPERTY, ACCOUNT,
+    POSTMONTH, BOOKNUM, AMOUNT, REMARK, REF, DESC, DISPLAYTYPE, ReverseNextMonth)
+    plus three [AUDITOR REF] columns not sent to Yardi: JE #, Source Layer, Account Name.
+
+    The 53 blank ETL columns are omitted for readability — the header row notes this.
+    """
+    import re as _re
+    from calendar import monthrange as _monthrange
+
+    ws.title = '6 - Yardi ETL CSV'
+    ws.sheet_properties.tabColor = '37474F'   # dark slate
+
+    _COL_W = {
+        'A': 10, 'B': 13, 'C': 12, 'D': 10, 'E': 13,
+        'F': 9,  'G': 14, 'H': 44, 'I': 20, 'J': 44,
+        'K': 30, 'L': 7,  'M': 14, 'N': 20, 'O': 30,
+    }
+    for col, w in _COL_W.items():
+        ws.column_dimensions[col].width = w
+
+    # ── Banner ───────────────────────────────────────────────────────────────
+    ws.merge_cells('A1:O1')
+    c = ws.cell(row=1, column=1,
+                value='YARDI ETL IMPORT — GA_Accruals_JE.csv  (exact rows submitted to Yardi)')
+    c.font      = _font(bold=True, size=12, color=_WHITE)
+    c.fill      = _fill('37474F')
+    c.alignment = _align('center')
+    ws.row_dimensions[1].height = 20
+
+    # ── Row 2: note about blank columns ──────────────────────────────────────
+    ws.merge_cells('A2:O2')
+    note = ws.cell(row=2, column=1,
+                   value=(
+                       'ETL format is 65 columns; 53 are always blank and omitted here. '
+                       'Columns A–L = exact Yardi ETL fields. '
+                       'Columns M–O = [AUDITOR REF] cross-reference only — not sent to Yardi. '
+                       'AMOUNT: positive = Debit, negative = Credit.'
+                   ))
+    note.font      = _font(size=9, italic=True, color='616161')
+    note.alignment = _align('left', wrap=True)
+    ws.row_dimensions[2].height = 24
+
+    # ── Row 3: Simulated ETL Row 1 "FinJournals" identifier ──────────────────
+    ws.merge_cells('A3:O3')
+    fi = ws.cell(row=3, column=1,
+                 value='← ETL Row 1 FinJournals record-type identifier (col A = "FinJournals", cols B–BM blank)')
+    fi.font      = _font(size=9, italic=True, color='9E9E9E')
+    fi.fill      = _fill(_GREY_LITE)
+    fi.alignment = _align('left')
+
+    # ── Row 4: Column headers ─────────────────────────────────────────────────
+    _ETL_COL_HEADERS = [
+        'TRANNUM',    'DATE',     'PROPERTY', 'ACCOUNT',
+        'POSTMONTH',  'BOOKNUM',  'AMOUNT',   'REMARK',
+        'REF',        'DESC',     'DISPLAYTYPE', 'ReverseNextMonth',
+    ]
+    _AUD_HEADERS = ['[AUD] JE #', '[AUD] Source Layer', '[AUD] Account Name']
+    all_headers  = _ETL_COL_HEADERS + _AUD_HEADERS
+
+    _ETL_FILL    = '37474F'   # dark slate — ETL columns
+    _AUD_FILL    = '4527A0'   # deep purple — auditor columns
+
+    for col, h in enumerate(_ETL_COL_HEADERS, 1):
+        c = ws.cell(row=4, column=col, value=h)
+        c.font      = _font(bold=True, size=9, color=_WHITE)
+        c.fill      = _fill(_ETL_FILL)
+        c.alignment = _align('center')
+        c.border    = _border()
+    for col, h in enumerate(_AUD_HEADERS, len(_ETL_COL_HEADERS) + 1):
+        c = ws.cell(row=4, column=col, value=h)
+        c.font      = _font(bold=True, size=9, color=_WHITE)
+        c.fill      = _fill(_AUD_FILL)
+        c.alignment = _align('center')
+        c.border    = _border()
+
+    _freeze(ws, row=5)
+
+    # ── Derive period end date (mirrors generate_etl_csv logic) ──────────────
+    period_date = ''
+    for _pfmt in ('%b-%Y', '%B-%Y', '%b %Y', '%B %Y', '%m-%Y', '%m/%Y'):
+        try:
+            from datetime import datetime as _dt, date as _date
+            _parsed = _dt.strptime(period.strip(), _pfmt)
+            _last   = _monthrange(_parsed.year, _parsed.month)[1]
+            period_date = _date(_parsed.year, _parsed.month, _last).strftime('%m/%d/%Y')
+            break
+        except Exception:
+            pass
+
+    # ── Build batch map (same deterministic logic as generate_etl_csv) ────────
+    batch_map: dict = {}
+    batch_counter = 1
+    for line in all_je_lines:
+        jn = line.get('je_number', '')
+        if jn not in batch_map:
+            batch_map[jn] = batch_counter
+            batch_counter += 1
+
+    # ── Pre-scan: which batches auto-reverse (touch 213100)? ─────────────────
+    _batches_213100 = {
+        line.get('je_number', '')
+        for line in all_je_lines
+        if str(line.get('account_code', '') or '').strip() == '213100'
+    }
+
+    # ── Data rows ────────────────────────────────────────────────────────────
+    row = 5
+    alt = False
+    for line in all_je_lines:
+        je_num  = line.get('je_number', '')
+        batch   = batch_map.get(je_num, 1)
+        desc    = str(line.get('description', '') or '')[:60]
+        gl_acct = str(line.get('account_code', '') or '')
+        ref     = str(line.get('reference', '') or je_num)
+        debit   = line.get('debit', 0) or 0
+        credit  = line.get('credit', 0) or 0
+        amount  = round(debit - credit, 2)
+        bm_batch = -1 if je_num in _batches_213100 else 0
+        bm       = line.get('reverse_next_month', bm_batch)
+
+        # Source-based row shading (reuse _SOURCE_META palette for the auditor cols)
+        src = line.get('source', '')
+        _, src_fill_h = _SOURCE_META.get(src, ('Other', _GREY_LITE))
+        etl_bg = _GREY_LITE if alt else _WHITE
+        alt    = not alt
+
+        etl_vals = [
+            batch,                              # TRANNUM
+            period_date,                        # DATE
+            property_code,                      # PROPERTY
+            gl_acct,                            # ACCOUNT
+            period_date,                        # POSTMONTH
+            1,                                  # BOOKNUM
+            amount,                             # AMOUNT
+            desc,                               # REMARK
+            ref,                                # REF
+            desc,                               # DESC
+            'Standard Journal Display Type',    # DISPLAYTYPE
+            bm,                                 # ReverseNextMonth
+        ]
+        aud_vals = [
+            je_num,                                          # [AUD] JE #
+            _SOURCE_META.get(src, (src, ''))[0],             # [AUD] Source Layer
+            str(line.get('account_name', '') or ''),         # [AUD] Account Name
+        ]
+
+        for col, val in enumerate(etl_vals, 1):
+            c = ws.cell(row=row, column=col, value=val)
+            c.fill      = _fill(etl_bg)
+            c.font      = _font(size=9)
+            c.alignment = _align('right' if col in (1, 6, 7, 12) else 'left')
+            c.border    = _border()
+            if col == 7 and isinstance(val, (int, float)):   # AMOUNT
+                c.number_format = '#,##0.00;(#,##0.00)'
+
+        for col, val in enumerate(aud_vals, len(etl_vals) + 1):
+            c = ws.cell(row=row, column=col, value=val)
+            c.fill      = _fill(src_fill_h)   # source-layer color for auditor cols
+            c.font      = _font(size=9)
+            c.alignment = _align('left')
+            c.border    = _border()
+
+        row += 1
+
+    # ── Totals row ────────────────────────────────────────────────────────────
+    total_dr = sum(line.get('debit', 0) or 0 for line in all_je_lines)
+    total_cr = sum(line.get('credit', 0) or 0 for line in all_je_lines)
+    for col in range(1, len(all_headers) + 1):
+        c = ws.cell(row=row, column=col)
+        c.fill   = _fill(_GREY_MED)
+        c.border = _border()
+        if col == 1:
+            c.value     = 'TOTALS'
+            c.font      = _font(bold=True, size=9)
+            c.alignment = _align('right')
+        elif col == 7:   # AMOUNT col — show net (should be 0 for balanced JEs)
+            net = round(total_dr - total_cr, 2)
+            c.value         = net
+            c.font          = _font(bold=True, size=9,
+                                    color='B71C1C' if net != 0 else '2E7D32')
+            c.number_format = '#,##0.00;(#,##0.00)'
+            c.alignment     = _align('right')
+        elif col == 13:  # [AUD] JE # col — show row count
+            c.value     = f'{len(all_je_lines)} rows'
+            c.font      = _font(bold=True, size=9, color='616161')
+            c.alignment = _align('left')
+        elif col == 14:  # [AUD] Source col — show DR / CR totals
+            c.value     = f'DR ${total_dr:,.2f}  |  CR ${total_cr:,.2f}'
+            c.font      = _font(bold=True, size=9, color='616161')
+            c.alignment = _align('left')
+
+    row += 2
+    # ── Legend ────────────────────────────────────────────────────────────────
+    ws.merge_cells(
+        start_row=row, start_column=1, end_row=row, end_column=len(all_headers)
+    )
+    leg = ws.cell(row=row, column=1,
+                  value='[AUD] column shading matches source layer from Tab 2 - JE Log: '
+                        + '   '.join(f'■ {lbl}' for lbl, _ in _SOURCE_META.values()))
+    leg.font      = _font(size=8, italic=True, color='616161')
+    leg.alignment = _align('left')
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def generate_audit_trail(
@@ -721,6 +931,7 @@ def generate_audit_trail(
     prior_accrual_check: Optional[List[dict]] = None,
     files_uploaded: Optional[Dict[str, Any]] = None,
     property_config=None,
+    property_code: str = '',
 ) -> str:
     """
     Generate the GA Pipeline Audit Trail workbook.
@@ -734,9 +945,10 @@ def generate_audit_trail(
         qc_report:           QCReport from qc_engine.py (or None).
         prior_accrual_check: Output of check_prior_accrual_vs_actual() (or None).
         files_uploaded:      Dict {key: path} of uploaded files for inventory tab.
-        property_config:     Optional PropertyConfig — when provided, per-property
-                             values (invoice prefix, entity names) override the
-                             RevLabs defaults hardcoded in earlier versions (C-9).
+        property_config:     Optional PropertyConfig — per-property values override
+                             generic defaults (invoice prefix, entity names).
+        property_code:       Yardi property code — used to reproduce the exact ETL
+                             PROPERTY column value in Tab 6 (Yardi ETL CSV).
 
     Returns:
         output_path (for chaining).
@@ -744,6 +956,11 @@ def generate_audit_trail(
     all_je_lines        = all_je_lines        or []
     prior_accrual_check = prior_accrual_check or []
     files_uploaded      = files_uploaded      or {}
+
+    # Resolve property_code from config if not explicitly passed
+    if not property_code and property_config:
+        property_code = (getattr(property_config, 'yardi_etl_code', '')
+                         or getattr(property_config, 'property_code', '') or '')
 
     run_ts = datetime.now().strftime('%Y-%m-%d  %H:%M')
 
@@ -766,6 +983,9 @@ def generate_audit_trail(
 
     ws5 = wb.create_sheet()
     _build_qc_checks(ws5, qc_report)
+
+    ws6 = wb.create_sheet()
+    _build_yardi_csv_tab(ws6, all_je_lines, period, property_code)
 
     wb.save(output_path)
     return output_path

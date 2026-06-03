@@ -4949,6 +4949,8 @@ with tab2:
                         prior_accrual_check = _at_prior,
                         files_uploaded      = st.session_state.uploaded_files,
                         property_config     = _active_cfg,
+                        property_code       = (getattr(_active_cfg, 'yardi_etl_code', '') or
+                                               getattr(_active_cfg, 'property_code', '') or ''),
                     )
                     st.session_state.pass2_output_files["audit_trail"] = _at_path
                 except Exception as _ate:
