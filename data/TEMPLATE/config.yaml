@@ -1,0 +1,306 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# GRP Pipeline — New Property Configuration Template
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# HOW TO USE THIS FILE
+# ─────────────────────
+# 1. Copy this file to  data/[yardi_property_code]/config.yaml
+# 2. Fill in every REQUIRED field (marked ← REQUIRED)
+# 3. Edit OPTIONAL fields that differ from the defaults shown
+# 4. Delete fields you don't need — the pipeline uses the defaults shown
+# 5. Commit to GitHub → Streamlit redeploys in ~2 minutes
+#
+# For a real example, see:  data/revlabspm/config.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── IDENTITY ──────────────────────────────────────────────────────────────────
+
+property_code:          CHANGE_ME         # ← REQUIRED. Yardi short code, e.g. lexlabspm
+                                          #   Must match the folder name exactly.
+property_name:          ''                # ← REQUIRED. Legal entity, e.g. 'Lex Labs Owner, LLC'
+property_display_name:  ''                # Short UI name, e.g. 'Lex Labs'. Falls back to property_name.
+property_address:       ''                # Street address for workpaper headers
+property_type:          ''                # e.g. 'Life Science', 'Office', 'Industrial', 'Mixed-Use'
+property_size_sf:                         # Square footage (integer). Leave blank if unknown.
+
+yardi_etl_code:         ''                # Yardi ETL FinJournals PROPERTY field (max 8 chars).
+                                          # Leave blank to use property_code (truncated to 8).
+
+
+# ── OWNERSHIP / BRANDING ──────────────────────────────────────────────────────
+
+investor_name:          ''                # Capital partner name, e.g. 'Blackstone Real Estate'
+management_company:     'Greatland Realty Partners'
+management_code:        'GRP'
+invoice_prefix:         ''                # Invoice number prefix, e.g. 'LexLabsPM'
+firm_name:              'Greatland Realty Partners (GRP)'
+
+
+# ── TEAM MEMBERS ──────────────────────────────────────────────────────────────
+# Names shown in the reviewer selector, close tracker, and sign-off sheet.
+# Add anyone who touches this property's monthly close.
+
+team_members:
+  - Ryan Walsh
+  - Natasha Parker
+  - Lauren Sullivan
+
+
+# ── MANAGEMENT FEE STRUCTURE ─────────────────────────────────────────────────
+# One entry per fee line. For a single-PM structure, include only one entry.
+# For a split (e.g. JLL + GRP), include two entries.
+# rate: decimal (0.0175 = 1.75%)
+
+management_fees:
+  - name:        JLL
+    rate:        0.0125          # 1.25%
+    minimum:     5000.00         # Dollar minimum (0 = no minimum)
+    dr_account:  '637130'        # Expense account
+    cr_account:  '213100'        # Accrued liabilities
+    ref_prefix:  MGMT-FEE-JLL
+
+  - name:        GRP
+    rate:        0.0175          # 1.75%
+    minimum:     0.00
+    dr_account:  '637130'
+    cr_account:  '213100'
+    ref_prefix:  MGMT-FEE-GRP
+
+
+# ── KEY GL ACCOUNTS ───────────────────────────────────────────────────────────
+# Override only the accounts that differ from standard pipeline defaults.
+# Defaults (shown commented out) match the standard Yardi Commercial COA.
+
+gl_accounts:
+  # operating_cash:    '111100'
+  # daca:              '115100'
+  # retax_escrow:      '115200'
+  # insurance_escrow:  '115300'
+  # ar_billback:       '133110'
+  # prepaid_insurance: '135110'
+  # prepaid_retax:     '135120'
+  # accrued_expenses:  '213100'
+  # accrued_interest:  '213200'
+  # interest_expense:  '801110'   # C-13: read by QC Check 7b
+
+
+# ── BANK ACCOUNTS ─────────────────────────────────────────────────────────────
+# One entry per bank account. Slug key (e.g. pnc_operating) is for internal use.
+# bank_name must match how the bank appears in the PDF statement header.
+
+bank_accounts:
+  pnc_operating:
+    label:        PNC Operating
+    bank_name:    PNC Bank
+    last4:        'x0000'         # Replace with actual last 4
+    gl_account:   '111100'
+
+  keybank_daca:
+    label:        KeyBank DACA
+    bank_name:    KeyBank
+    last4:        'x0000'         # Replace with actual last 4
+    gl_account:   '115100'
+
+  # bofa_development:               # Uncomment if property has a development account
+  #   label:        BofA Development
+  #   bank_name:    Bank of America
+  #   last4:        'x0000'
+  #   gl_account:   '111210'
+
+
+# ── INVOICE / PAYMENT INSTRUCTIONS ───────────────────────────────────────────
+# Appears on the management fee invoice PDF.
+
+payment_ach:
+  bank_name:       ''             # e.g. 'JP Morgan Chase'
+  routing_number:  ''
+  account_number:  ''
+  account_type:    Checking
+
+payment_check:
+  payable_to:      ''             # e.g. 'Greatland Realty Partners LLC'
+  attention:       ''
+  address:         ''
+
+
+# ── RE TAX SETTINGS ───────────────────────────────────────────────────────────
+# Months when the quarterly (or semi-annual) tax bill arrives.
+# Standard quarterly: [1, 4, 7, 10]  (Jan/Apr/Jul/Oct)
+# Semi-annual:        [2, 8]
+# Monthly billing:    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+re_tax_payment_months: [1, 4, 7, 10]
+
+
+# ── INSURANCE POLICIES (PREPAID AMORTIZATION) ────────────────────────────────
+# One entry per policy. The pipeline generates one JE line per policy.
+# expense_account: GL debit account (639110 = Property, 639120 = GL/Umbrella)
+# monthly_amount:  Fixed monthly amortization amount in dollars.
+#
+# Leave empty ([]) to use budget-driven detection (single combined line per account).
+
+insurance_policies:
+  - name:            Property Insurance
+    expense_account: '639110'
+    monthly_amount:  0.00       # ← Fill in actual monthly amount
+
+  - name:            General Liability
+    expense_account: '639120'
+    monthly_amount:  0.00       # ← Fill in actual monthly amount
+
+  # - name:          Umbrella
+  #   expense_account: '639110'
+  #   monthly_amount:  0.00
+
+
+# ── ACCRUAL ENGINE SETTINGS ───────────────────────────────────────────────────
+
+# Layer 3 (historical) materiality floor. Accounts with < this average are skipped.
+# Default: 2500.00 (pipeline applies $5K floor via CLAUDE.md convention)
+accrual_materiality_floor: 5000.00
+
+# RE tax billing months already set above.
+fiscal_year_start_month: 1       # 1 = January (standard calendar year)
+
+# Accounts excluded from Layer 3 auto-accrual (discretionary / irregular spend).
+# Add any account that should NOT be auto-accrued based on historical average.
+layer3_exclude_accounts:
+  - '637170'   # Admin-Food Service Amenities (discretionary)
+  # - '6xxxxx' # add more as needed
+
+
+# ── PERIODIC CONTRACT ACCOUNTS ────────────────────────────────────────────────
+# Accounts treated as periodic (quarterly / semi-annual) service contracts.
+# Layer 2 uses full prior-invoice amount (not daily-rate proration) for these.
+# Remove accounts not applicable to this property. Add property-specific ones.
+
+periodic_contract_accounts:
+  '617110': {label: 'HVAC Contract',        billing_cycle: quarterly}
+  '619120': {label: 'PPM Water Treatment',  billing_cycle: monthly}
+  '627230': {label: 'Fire / Life Safety',   billing_cycle: monthly}
+  # '635110': {label: 'Snow & Ice',         billing_cycle: monthly}
+
+
+# ── PAYROLL / BONUS ACCOUNTS ──────────────────────────────────────────────────
+# GL accounts that Layer 4 (bonus accrual) should monitor.
+# Defaults match the standard Yardi COA for most properties.
+
+payroll_accounts:
+  - '615110'   # RM-Pay/Wages
+  - '637110'   # Admin-Pay/Wages
+
+
+# ── UTILITY ACCOUNT ROUTING ───────────────────────────────────────────────────
+# Only override if this property uses non-standard account codes for utilities.
+# Standard codes (613110 electricity, 613210 gas) are always included.
+# Add here ONLY if the property uses additional/different codes.
+
+# metered_utility_accounts:
+#   - '613120'   # example: gas posted to a non-standard account
+
+# per_invoice_utility_accounts:
+#   - '613120'   # subset of above: one JE line per invoice (vs. per-vendor grouping)
+
+# per_invoice_accrual_accounts:
+#   - '610160'   # e.g. Casella — multiple invoices per month, distinct service types
+
+
+# ── QC VARIANCE THRESHOLDS ────────────────────────────────────────────────────
+# Override firm-wide defaults when this property's budget scale warrants it.
+# Omit this section entirely to use the standard GRP thresholds.
+#
+# Standard GRP thresholds (no need to set if using defaults):
+#   tier1_abs: 5000.0    Tier 1 dollar floor
+#   tier1_pct: 0.05      Tier 1 percentage floor (5%)
+#   tier2_min: 2500.0    Tier 2 / Tier 3 boundary
+#   mom_swing: 10000.0   Month-over-month swing flag
+
+# qc_thresholds:
+#   tier1_abs: 5000.0
+#   tier1_pct: 0.05
+#   tier2_min: 2500.0
+#   mom_swing: 10000.0
+
+
+# ── AI VARIANCE COMMENTARY CONTEXT ───────────────────────────────────────────
+# Per-property behavioral hints injected into the Claude AI prompt.
+# These override or supplement the global account notes in variance_comments.py.
+# Key = 6-digit GL account code. Value = plain-English hint for the AI.
+# Leave empty ({}) to use only the global defaults.
+
+ai_account_context:
+  # '613110': >
+  #   Electricity is sub-metered per tenant; large MoM swings are expected
+  #   during summer cooling season. Cross-check 613115 billback and 440500 revenue.
+  # '635110': >
+  #   Snow removal is contracted at a fixed Oct–Apr monthly rate.
+  #   Zero activity May–Sep is expected — do not flag as favorable.
+  # '617110': >
+  #   HVAC contract billed quarterly (Q2 spring / Q4 fall).
+  #   Favorable MTD variance in non-billing months is normal and expected.
+
+
+# ── DEFAULT ONE-OFF ACCRUALS (PASS 1 SEED TABLE) ─────────────────────────────
+# Pre-seeded rows in the Pass 1 One-Off Accruals table.
+# amount: 0 = shown but not submitted unless the user fills it in.
+# Remove accounts not applicable. Add property-specific recurring items.
+
+default_accruals:
+  - account_code: '637150'
+    account_name: Admin-Tenant Relations
+    vendor: ''
+
+  - account_code: '617110'
+    account_name: HVAC Contract Services
+    vendor: ''
+
+  - account_code: '619120'
+    account_name: PPM Water Treatment
+    vendor: ''
+
+  - account_code: '627230'
+    account_name: Fire Life Safety
+    vendor: ''
+
+  - account_code: '635110'
+    account_name: Snow & Ice Removal
+    vendor: ''
+
+
+# ── TENANTS (UTILITY BILLBACK) ────────────────────────────────────────────────
+# Tenants who receive electric/gas billback entries (DR 133110 / CR 440500/440700).
+# key: short slug, no spaces (used for widget keys — must be unique)
+# name: display name shown in the TUB table and on JE descriptions
+
+tenants:
+  # - key:  tenant_a
+  #   name: Tenant A
+  # - key:  tenant_b
+  #   name: Tenant B
+
+
+# ── PARCEL IDENTIFIERS ────────────────────────────────────────────────────────
+# Used in RE Tax workpaper headers. Leave empty if not applicable.
+
+parcel_ids: []
+  # - '00000000'
+
+
+# ── OUTPUT FILE PREFIXES ──────────────────────────────────────────────────────
+
+file_prefix_internal:    GA        # Internal filenames: GA_Accruals_JE.csv, etc.
+file_prefix_deliverable: ''        # Deliverable prefix: e.g. 'LexLabs' → LexLabs_Jan2026_Workpapers.xlsx
+
+
+# ── REFERENCE FILES ───────────────────────────────────────────────────────────
+# Committed Kardin budget file for this property.
+# Store at: data/[property_code]/GA_Kardin_Budget_FY2026.xlsx
+
+kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
+
+
+# ── SYSTEM ────────────────────────────────────────────────────────────────────
+
+property_system: yardi    # 'yardi' (standard) or 'mri' (coming soon)
+active: true              # Set to false to hide from property selector without deleting

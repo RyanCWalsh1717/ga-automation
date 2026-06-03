@@ -126,14 +126,24 @@ _SKIP_NAMES = {
 # 1. TIER CLASSIFICATION
 # ══════════════════════════════════════════════════════════════
 
-def classify_tier(actual: float, budget: float) -> Tuple[str, float, float]:
+def classify_tier(
+    actual: float,
+    budget: float,
+    tier1_abs: float = TIER1_ABS,
+    tier1_pct: float = TIER1_PCT,
+    tier2_min: float = TIER2_MIN,
+) -> Tuple[str, float, float]:
     """
-    Apply GRP 3-tier threshold logic with explicit first-match precedence.
+    Apply 3-tier threshold logic with explicit first-match precedence.
 
     Rules (evaluated in order — first match wins, no overlap):
-      Tier 3  abs_var < $2,500
-      Tier 1  abs_var ≥ $5,000  OR  |pct_var| ≥ 5 %
-      Tier 2  $2,500 ≤ abs_var < $5,000  AND  |pct_var| < 5 %
+      Tier 3  abs_var < tier2_min
+      Tier 1  abs_var ≥ tier1_abs  OR  |pct_var| ≥ tier1_pct
+      Tier 2  tier2_min ≤ abs_var < tier1_abs  AND  |pct_var| < tier1_pct
+
+    Thresholds default to the firm-wide constants (TIER1_ABS=$5K, TIER1_PCT=5%,
+    TIER2_MIN=$2.5K) but can be overridden per-property via config.yaml
+    qc_thresholds.  All existing call sites work unchanged (defaults preserved).
 
     A $3,000 variance at 10% → Tier 1 (pct condition fires first).
     A $3,000 variance at 3%  → Tier 2 (dollar in range, pct below threshold).
@@ -148,21 +158,21 @@ def classify_tier(actual: float, budget: float) -> Tuple[str, float, float]:
     abs_pct = abs(pct_var)
 
     # ── Step 1: below floor → Tier 3 (no action) ──
-    if abs_var_dollar < TIER2_MIN:
+    if abs_var_dollar < tier2_min:
         return 'tier_3', abs_var, pct_var
 
     # ── Step 2: Tier 1 — large dollar OR significant pct ──
     # Zero-budget accounts: pct_var is forced to 0 (undefined), so the pct
     # condition never fires. Treat any material zero-budget variance as Tier 1
     # because ANY spend against a $0 budget is 100% unexpected.
-    if abs_var_dollar >= TIER1_ABS or abs_pct >= (TIER1_PCT * 100):
+    if abs_var_dollar >= tier1_abs or abs_pct >= (tier1_pct * 100):
         return 'tier_1', abs_var, pct_var
-    if (budget == 0 or budget is None) and abs_var_dollar >= TIER2_MIN:
+    if (budget == 0 or budget is None) and abs_var_dollar >= tier2_min:
         # Zero-budget, sub-Tier-1 dollar amount → still Tier 1 (100% overage)
         return 'tier_1', abs_var, pct_var
 
     # ── Step 3: Tier 2 — mid-range dollar AND sub-threshold pct ──
-    # Reached only when: $2,500 ≤ abs < $5,000 AND pct < 5% AND budget ≠ 0
+    # Reached only when: tier2_min ≤ abs < tier1_abs AND pct < tier1_pct AND budget ≠ 0
     return 'tier_2', abs_var, pct_var
 
 
@@ -462,7 +472,12 @@ def _build_system_prompt(
     )
 
 
-def _build_api_prompt(accounts_data: List[dict], period: str, property_name: str) -> str:
+def _build_api_prompt(
+    accounts_data: List[dict],
+    period: str,
+    property_name: str,
+    property_ai_context: Optional[Dict[str, str]] = None,
+) -> str:
     """Build the user-turn prompt with all variance data for the API call."""
     lines = [
         f"Property: {property_name}",
@@ -521,8 +536,9 @@ def _build_api_prompt(accounts_data: List[dict], period: str, property_name: str
         if kardin.get('seasonality_note'):
             lines.append(f"Seasonality: {kardin['seasonality_note']}")
 
-        # Account-specific behavioral context
-        behavior = ACCOUNT_CONTEXT.get(code)
+        # Account-specific behavioral context — property overrides merged over globals
+        _eff_ctx = {**ACCOUNT_CONTEXT, **(property_ai_context or {})}
+        behavior = _eff_ctx.get(code)
         if behavior:
             lines.append(f"Known behavior: {behavior}")
 
@@ -779,6 +795,7 @@ def generate_variance_comments_grp(
     je_adjustments: Optional[Dict[str, float]] = None,
     investor_name: str = '',
     firm_name: str = '',   # C-12: property management firm for LLM system prompt
+    ai_account_context: Optional[Dict[str, str]] = None,  # per-property behavioral hints
 ) -> Dict[str, dict]:
     """
     Generate MTD and YTD variance comments for all budget comparison rows
@@ -906,6 +923,7 @@ def generate_variance_comments_grp(
             accounts_data, period, property_name, api_key,
             investor_name=investor_name,
             firm_name=firm_name,
+            property_ai_context=ai_account_context,
         )
     else:
         comments_map = _generate_data_driven(accounts_data, period)
@@ -939,6 +957,7 @@ def _call_api(
     api_key: str,
     investor_name: str = 'Singerman Real Estate',
     firm_name: str = '',
+    property_ai_context: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, dict], Optional[str]]:
     """
     Call Claude API and parse JSON response.
@@ -957,7 +976,8 @@ def _call_api(
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
-        prompt = _build_api_prompt(accounts_data, period, property_name)
+        prompt = _build_api_prompt(accounts_data, period, property_name,
+                                   property_ai_context=property_ai_context)
 
         # C-NEW-2: build prompt dynamically so property name and investor name are
         # correct for any property — not hardcoded to RevLabs/Singerman.

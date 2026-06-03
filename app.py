@@ -4841,6 +4841,7 @@ with tab2:
                             api_key=api_key,
                             investor_name=getattr(_active_cfg, 'investor_name', '') or '',  # C-NF-9: no hardcoded Singerman default
                             firm_name=getattr(_active_cfg, 'firm_name', '') or 'Greatland Realty Partners (GRP)',
+                            ai_account_context=getattr(_active_cfg, 'ai_account_context', None) or None,
                             # No je_adjustments — GL is the final source of truth
                         )
                         _fallback_reasons = {

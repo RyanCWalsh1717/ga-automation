@@ -257,6 +257,37 @@ class PropertyConfig:
     qc_pl_accounts: Optional[list] = None
     qc_bs_accounts: Optional[list] = None
 
+    # ── QC variance thresholds ────────────────────────────────────────────────
+    # Override the firm-wide defaults when a property's budget scale makes the
+    # standard $5K / 5% thresholds too sensitive or not sensitive enough.
+    # Omit (or leave empty {}) to use the module-level constants in
+    # variance_comments.py (TIER1_ABS=$5K, TIER1_PCT=5%, TIER2_MIN=$2.5K,
+    # mom_swing=$10K).
+    #
+    # config.yaml example:
+    #   qc_thresholds:
+    #     tier1_abs: 5000.0    # Tier 1 absolute dollar floor
+    #     tier1_pct: 0.05      # Tier 1 percentage floor (5%)
+    #     tier2_min: 2500.0    # Tier 2 / Tier 3 boundary ($2,500)
+    #     mom_swing: 10000.0   # MoM swing flag threshold ($10,000)
+    qc_thresholds: Dict[str, float] = field(default_factory=dict)
+
+    # ── AI variance commentary context ───────────────────────────────────────
+    # Per-property account behavioral notes merged into the Claude prompt when
+    # generating variance commentary.  Same key format as the global
+    # ACCOUNT_CONTEXT dict in variance_comments.py: GL account code → string.
+    # Property-specific entries override global defaults for the same account.
+    #
+    # config.yaml example:
+    #   ai_account_context:
+    #     '613110': >
+    #       Electricity is sub-metered per tenant; large MoM swings are normal
+    #       during summer cooling season. Cross-check 613115 and 440500.
+    #     '635110': >
+    #       Snow removal is contracted at a fixed Oct–Apr rate. Zero activity
+    #       May–Sep is expected and should not be flagged as favorable.
+    ai_account_context: Dict[str, str] = field(default_factory=dict)
+
     # ── Insurance policies (prepaid amortization) ─────────────────────────────
     # When populated, detect_insurance_amortization() generates ONE JE line per
     # policy instead of a single combined line from the budget PTD figure.
@@ -392,6 +423,16 @@ class PropertyConfig:
             property_system         = str(d.get('property_system', 'yardi')).lower(),
             qc_pl_accounts          = d.get('qc_pl_accounts') or None,
             qc_bs_accounts          = d.get('qc_bs_accounts') or None,
+            # QC thresholds — empty dict = use module-level defaults
+            qc_thresholds = {
+                str(k): float(v)
+                for k, v in (d.get('qc_thresholds') or {}).items()
+            },
+            # Per-property AI account context (merged with global ACCOUNT_CONTEXT)
+            ai_account_context = {
+                str(k): str(v)
+                for k, v in (d.get('ai_account_context') or {}).items()
+            },
             # C-2: per-property periodic contract accounts (dict of {code: {label, billing_cycle}})
             periodic_contract_accounts = (
                 {str(k): v for k, v in d['periodic_contract_accounts'].items()}

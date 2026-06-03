@@ -191,10 +191,17 @@ def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
 # CHECK 2 — Budget Variances (GRP Tier 1 + Tier 2 Thresholds)
 # ══════════════════════════════════════════════════════════════
 
-def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
+def check_2_budget_variances(
+    budget_rows: List[dict],
+    tier1_abs: float = TIER1_ABS,
+    tier1_pct: float = TIER1_PCT,
+    tier2_min: float = TIER2_MIN,
+) -> QCResult:
     """
-    Flag all accounts that meet GRP Tier 1 or Tier 2 variance thresholds.
+    Flag all accounts that meet Tier 1 or Tier 2 variance thresholds.
     Separates OVER and UNDER for clarity.
+    Thresholds default to module constants but can be overridden per-property
+    via config.yaml qc_thresholds — run_qc() reads and passes them automatically.
     """
     findings: List[QCFinding] = []
 
@@ -211,7 +218,10 @@ def check_2_budget_variances(budget_rows: List[dict]) -> QCResult:
         ptd_actual = _safe_float(row.get('ptd_actual', 0))
         ptd_budget = _safe_float(row.get('ptd_budget', 0))
 
-        tier, var_dollar, var_pct = classify_tier(ptd_actual, ptd_budget)
+        tier, var_dollar, var_pct = classify_tier(ptd_actual, ptd_budget,
+                                                  tier1_abs=tier1_abs,
+                                                  tier1_pct=tier1_pct,
+                                                  tier2_min=tier2_min)
         if tier == 'tier_3':
             continue
 
@@ -950,11 +960,19 @@ def run_qc(
         getattr(property_config, 'qc_bs_accounts', None) or None
     ) if property_config else None
 
+    # Read per-property QC thresholds from config; fall back to module defaults
+    _qc_thr = getattr(property_config, 'qc_thresholds', {}) or {}
+    _t1_abs  = float(_qc_thr.get('tier1_abs', TIER1_ABS))
+    _t1_pct  = float(_qc_thr.get('tier1_pct', TIER1_PCT))
+    _t2_min  = float(_qc_thr.get('tier2_min', TIER2_MIN))
+    _mom_sw  = float(_qc_thr.get('mom_swing', 10_000.0))
+
     checks = [
         check_1_tb_to_budget(tb_result, budget_rows),
-        check_2_budget_variances(budget_rows),
+        check_2_budget_variances(budget_rows,
+                                 tier1_abs=_t1_abs, tier1_pct=_t1_pct, tier2_min=_t2_min),
         check_3_tb_balance_and_gl(tb_result, gl_parsed),
-        check_4_mom_swings(budget_rows, period_month=period_month),
+        check_4_mom_swings(budget_rows, swing_threshold=_mom_sw, period_month=period_month),
         check_5_gl_vs_workpapers(gl_parsed, tb_result),
         check_6_accruals_vs_budget(budget_rows, kardin_records, accrual_entries, period_month),
         check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received,
