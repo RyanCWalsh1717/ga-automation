@@ -722,7 +722,6 @@ def _build_yardi_csv_tab(ws, all_je_lines: List[dict], period: str, property_cod
 
     The 53 blank ETL columns are omitted for readability — the header row notes this.
     """
-    import re as _re
     from calendar import monthrange as _monthrange
 
     ws.title = '6 - Yardi ETL CSV'

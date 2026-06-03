@@ -423,10 +423,13 @@ class PropertyConfig:
             property_system         = str(d.get('property_system', 'yardi')).lower(),
             qc_pl_accounts          = d.get('qc_pl_accounts') or None,
             qc_bs_accounts          = d.get('qc_bs_accounts') or None,
-            # QC thresholds — empty dict = use module-level defaults
+            # QC thresholds — empty dict = use module-level defaults.
+            # Guard float() — a bad YAML value (null, string, nested dict) would
+            # otherwise crash _from_dict entirely, silently loading the wrong config.
             qc_thresholds = {
                 str(k): float(v)
                 for k, v in (d.get('qc_thresholds') or {}).items()
+                if v is not None and str(v).replace('.', '', 1).lstrip('-').isdigit()
             },
             # Per-property AI account context (merged with global ACCOUNT_CONTEXT)
             ai_account_context = {

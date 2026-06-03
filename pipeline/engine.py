@@ -1244,11 +1244,17 @@ def check_budget_variances(is_result, budget_result, threshold_pct=5.0) -> Tuple
                 "variance_pct": round(var_pct, 1),
             })
 
-            if abs(var_pct) >= 25:
+            # A-NEW-4: zero-budget accounts have var_pct==0 so the pct guard never fires.
+            # Use the zero_budget_flag directly so unbudgeted spend reaches the exception report.
+            if _zero_budget_flag or abs(var_pct) >= 25:
                 exceptions.append(Exception_(
                     severity="warning", category="variance",
                     source="budget_comparison",
-                    description=f"Material variance: {name} ({code}) — {var_pct:+.1f}% (${variance:+,.2f})",
+                    description=(
+                        f"Unbudgeted activity: {name} ({code}) — ${ptd_actual:+,.2f} actual, $0 budget"
+                        if _zero_budget_flag else
+                        f"Material variance: {name} ({code}) — {var_pct:+.1f}% (${variance:+,.2f})"
+                    ),
                     details={"account_code": code, "actual": ptd_actual, "budget": ptd_budget},
                 ))
 

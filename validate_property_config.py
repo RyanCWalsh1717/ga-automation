@@ -190,8 +190,7 @@ def _check_management_fees(f: Findings, d: Dict):
             f.error(sec, f'{name}: rate must be > 0 (got {rate})')
         elif rate > 0.10:
             f.warn(sec, f'{name}: rate {rate:.2%} seems unusually high (> 10%) — double check')
-        else:
-            total_rate += rate
+        total_rate += rate   # accumulate regardless of warning so total is always correct
 
         minimum = fl.get('minimum', 0)
         try:
@@ -384,6 +383,7 @@ def _check_qc_thresholds(f: Findings, d: Dict):
         f.error(sec, f'qc_thresholds: non-numeric value — {e}')
         return
 
+    _thr_errors_before = len(f.errors())
     if t2m >= t1a:
         f.error(sec, f'qc_thresholds: tier2_min (${t2m:,.0f}) must be < tier1_abs (${t1a:,.0f})')
     if t1p > 1.0:
@@ -391,7 +391,7 @@ def _check_qc_thresholds(f: Findings, d: Dict):
     if any(v < 0 for v in [t1a, t1p, t2m, mom]):
         f.error(sec, 'qc_thresholds: all values must be >= 0')
 
-    if not f.errors():
+    if len(f.errors()) == _thr_errors_before:   # no NEW errors in this section
         f.ok(sec, f'Tier 1: ≥${t1a:,.0f} or ≥{t1p:.0%} | Tier 2: ${t2m:,.0f}–${t1a:,.0f} | MoM swing: ${mom:,.0f}')
 
 

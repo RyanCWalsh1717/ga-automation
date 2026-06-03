@@ -462,7 +462,7 @@ def detect_insurance_amortization(
                 'description': (
                     f'Accrual {_period_label} — {name} '
                     f'(insurance prepaid amortization ${monthly:,.2f}/mo'
-                    + (f', capped at remaining balance ${prepaid_balance:,.2f}' if amount < _round(monthly) else '')
+                    + (f', capped at remaining balance ${_remaining_balance + amount:,.2f}' if amount < _round(monthly) else '')
                     + f', prepaid balance ${prepaid_balance:,.2f})'
                 ),
             })
@@ -514,7 +514,7 @@ def detect_insurance_amortization(
                 'description': (
                     f'Accrual {_period_label} — {name} '
                     f'(insurance prepaid amortization ${monthly:,.2f}/mo'
-                    + (f', capped at remaining balance ${prepaid_balance:,.2f}' if amount < _round(monthly) else '')
+                    + (f', capped at remaining balance ${_remaining_balance + amount:,.2f}' if amount < _round(monthly) else '')
                     + f', prepaid balance ${prepaid_balance:,.2f})'
                 ),
             })
@@ -552,7 +552,7 @@ def detect_insurance_amortization(
             'description': (
                 f'Accrual {_period_label} — {name} '
                 f'(insurance prepaid amortization ${monthly:,.2f}/mo'
-                + (f', capped at remaining balance ${prepaid_balance:,.2f}' if amount < _round(monthly) else '')
+                + (f', capped at remaining balance ${_remaining_balance + amount:,.2f}' if amount < _round(monthly) else '')
                 + f', prepaid balance ${prepaid_balance:,.2f})'
             ),
         })
@@ -1470,7 +1470,6 @@ def detect_invoice_proration_accruals(
         j_debit_total  = 0.0   # J-type net debits (prior pipeline JE posted to GL)
 
         for txn in acct.transactions:
-            ctrl_prefix = (txn.control or '').split('-')[0].upper()
             is_j    = (txn.control or '').upper().startswith('J')   # A-9: catches J/AJ/RJ codes
             txn_net = (txn.debit or 0) - (txn.credit or 0)
 

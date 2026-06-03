@@ -536,9 +536,8 @@ def _build_api_prompt(
         if kardin.get('seasonality_note'):
             lines.append(f"Seasonality: {kardin['seasonality_note']}")
 
-        # Account-specific behavioral context — property overrides merged over globals
-        _eff_ctx = {**ACCOUNT_CONTEXT, **(property_ai_context or {})}
-        behavior = _eff_ctx.get(code)
+        # Account-specific behavioral context — pre-merged dict passed in from caller
+        behavior = (property_ai_context or ACCOUNT_CONTEXT).get(code)
         if behavior:
             lines.append(f"Known behavior: {behavior}")
 
@@ -796,6 +795,7 @@ def generate_variance_comments_grp(
     investor_name: str = '',
     firm_name: str = '',   # C-12: property management firm for LLM system prompt
     ai_account_context: Optional[Dict[str, str]] = None,  # per-property behavioral hints
+    qc_thresholds: Optional[Dict[str, float]] = None,     # per-property tier thresholds
 ) -> Dict[str, dict]:
     """
     Generate MTD and YTD variance comments for all budget comparison rows
@@ -847,6 +847,15 @@ def generate_variance_comments_grp(
                 period_month = num
                 break
 
+    # ── Resolve per-property thresholds (default to firm-wide constants) ────────
+    _thr = qc_thresholds or {}
+    _t1a = float(_thr.get('tier1_abs', TIER1_ABS))
+    _t1p = float(_thr.get('tier1_pct', TIER1_PCT))
+    _t2m = float(_thr.get('tier2_min', TIER2_MIN))
+
+    # Pre-compute merged account context once — property overrides global defaults.
+    _eff_account_ctx: Dict[str, str] = {**ACCOUNT_CONTEXT, **(ai_account_context or {})}
+
     # ── Pass 1: classify tiers and build enrichment context ──
     accounts_data: List[dict] = []
     all_results: Dict[str, dict] = {}
@@ -873,8 +882,10 @@ def generate_variance_comments_grp(
             mtd_actual += _delta
             ytd_actual += _delta   # current-period JEs affect MTD and YTD equally
 
-        mtd_tier, mtd_var, mtd_pct = classify_tier(mtd_actual, mtd_budget)
-        ytd_tier, ytd_var, ytd_pct = classify_tier(ytd_actual, ytd_budget)
+        mtd_tier, mtd_var, mtd_pct = classify_tier(mtd_actual, mtd_budget,
+                                                   tier1_abs=_t1a, tier1_pct=_t1p, tier2_min=_t2m)
+        ytd_tier, ytd_var, ytd_pct = classify_tier(ytd_actual, ytd_budget,
+                                                   tier1_abs=_t1a, tier1_pct=_t1p, tier2_min=_t2m)
 
         # Only process accounts where at least one period is Tier 1 or Tier 2
         if mtd_tier == 'tier_3' and ytd_tier == 'tier_3':
@@ -923,7 +934,7 @@ def generate_variance_comments_grp(
             accounts_data, period, property_name, api_key,
             investor_name=investor_name,
             firm_name=firm_name,
-            property_ai_context=ai_account_context,
+            property_ai_context=_eff_account_ctx,   # pre-merged: property overrides global
         )
     else:
         comments_map = _generate_data_driven(accounts_data, period)

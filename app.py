@@ -4842,6 +4842,7 @@ with tab2:
                             investor_name=getattr(_active_cfg, 'investor_name', '') or '',  # C-NF-9: no hardcoded Singerman default
                             firm_name=getattr(_active_cfg, 'firm_name', '') or 'Greatland Realty Partners (GRP)',
                             ai_account_context=getattr(_active_cfg, 'ai_account_context', None) or None,
+                            qc_thresholds=getattr(_active_cfg, 'qc_thresholds', None) or None,
                             # No je_adjustments — GL is the final source of truth
                         )
                         _fallback_reasons = {
@@ -5020,7 +5021,7 @@ with tab2:
                         st.session_state.pass1_output_files.get("run_log")
                         or st.session_state.uploaded_files.get("run_log")
                     )
-                    _rl_qc    = _at_qc if '_at_qc' in dir() else None
+                    _rl_qc    = _at_qc   # always defined — initialized at line 4927 (B-F5)
                     _rl_pass  = sum(1 for c in (_rl_qc.checks if _rl_qc else []) if c.status == 'PASS')
                     _rl_fail  = sum(1 for c in (_rl_qc.checks if _rl_qc else []) if c.status in ('FLAG', 'FAIL'))
                     _rl_files = [k for k, v in st.session_state.pass2_output_files.items() if v]
