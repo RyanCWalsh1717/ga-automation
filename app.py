@@ -2735,6 +2735,15 @@ with tab1:
                 # Persist Pass 1 outputs
                 p1 = st.session_state.pass1_output_files
                 p1["all_je_lines"]          = all_je_lines
+                # Serialize to JSON so Pass 2 can reload it in a fresh browser session
+                try:
+                    import json as _json
+                    _je_cache_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_JE_Cache.json")
+                    with open(_je_cache_path, 'w') as _jcf:
+                        _json.dump(all_je_lines, _jcf)
+                    p1["je_lines_cache"] = _je_cache_path
+                except Exception:
+                    p1["je_lines_cache"] = None
                 p1["accrual_je_csv"]        = _accrual_csv_path
                 p1["fee_result"]            = fee_result
                 p1["rd_prepayment_amount"]  = getattr(fee_result, 'prepayment_excluded', 0.0)
@@ -3733,6 +3742,7 @@ with tab1:
         p1_zip_files = {
             f"{_pfx_del}_{period_label}_Accruals_JE.csv":      p1.get("accrual_je_csv"),
             f"{_pfx_del}_{period_label}_Prepaid_Ledger.xlsx":  p1.get("prepaid_ledger_updated"),
+            f"{_pfx_del}_{period_label}_JE_Cache.json":        p1.get("je_lines_cache"),
         }
         p1_zip_files = {k: v for k, v in p1_zip_files.items() if v and os.path.exists(v)}
         if p1_zip_files:
@@ -3772,7 +3782,10 @@ with tab1:
         st.info(
             "📌 **Next step:** Upload the JE CSVs to Yardi and run the final close. "
             "Then switch to the **Pass 2 — Generate Reports** tab to produce the "
-            "BS workpaper, QC checklist, and variance comments.",
+            "BS workpaper, QC checklist, and variance comments.\n\n"
+            "💾 **If you plan to run Pass 2 in a new browser session**, save the "
+            "**JE Cache (.json)** from the zip above — upload it in the Pass 2 upload "
+            "section to enable full audit trail detail and JE posting verification.",
             icon="➡️",
         )
 
@@ -4033,6 +4046,22 @@ with tab2:
         with open(_rl_save, "wb") as _f:
             _f.write(_rl_upload.read())
         st.session_state.uploaded_files["run_log"] = _rl_save
+
+    _jec_upload = st.file_uploader(
+        "Pass 1 JE Cache (optional)",
+        type=["json"],
+        key=f"je_cache_upload_{st.session_state.upload_key_p2}",
+        help=(
+            "Upload the JE_Cache.json from this month's Pass 1 package. "
+            "Required only when Pass 2 is running in a different browser session from Pass 1 — "
+            "enables full audit trail detail (Tab 2 & Tab 6) and JE posting verification."
+        ),
+    )
+    if _jec_upload:
+        _jec_save = os.path.join(st.session_state.temp_dir, "je_lines_cache.json")
+        with open(_jec_save, "wb") as _f:
+            _f.write(_jec_upload.read())
+        st.session_state.uploaded_files["je_lines_cache"] = _jec_save
 
     # ── Additional workpaper source files (raw Yardi reports per account) ──────
     # These replace the generated GL transaction tabs for the named accounts with
@@ -4931,9 +4960,18 @@ with tab2:
                         st.session_state.temp_dir,
                         f"{_pfx_int}_Audit_Trail_{close_period.replace('-', '')}.xlsx",
                     )
-                    # Pull Pass 1 JE lines from session state if available
+                    # Pull Pass 1 JE lines — session state first, uploaded cache as fallback
                     _p1_out = st.session_state.get('pass1_output_files', {})
                     _at_je_lines = _p1_out.get('all_je_lines') or []
+                    if not _at_je_lines:
+                        _jec_path = st.session_state.uploaded_files.get('je_lines_cache')
+                        if _jec_path and os.path.exists(_jec_path):
+                            try:
+                                import json as _json
+                                with open(_jec_path) as _jcf:
+                                    _at_je_lines = _json.load(_jcf)
+                            except Exception:
+                                pass
                     _at_fee      = fee_result   # Pass 2 fee verification result
                     _at_qc       = st.session_state.pass2_output_files.get('qc_report')
 
@@ -4966,8 +5004,7 @@ with tab2:
                 progress_bar.progress(98)
                 try:
                     from je_verifier import verify_je_posting, write_je_verification_tab
-                    _p1_out_v = st.session_state.get('pass1_output_files', {})
-                    _p1_je_lines_v = _p1_out_v.get('all_je_lines') or []
+                    _p1_je_lines_v = _at_je_lines   # already resolved above (session + cache fallback)
                     _gl_for_v = engine_result.parsed.get('gl') if engine_result.parsed else None
 
                     if _p1_je_lines_v and _gl_for_v:
@@ -4988,8 +5025,9 @@ with tab2:
                         st.session_state.pass2_output_files['je_verification'] = None
                         if not _p1_je_lines_v:
                             st.info(
-                                "JE Verification skipped — Pass 1 JE data not found in this session. "
-                                "Run Pass 1 and Pass 2 in the same session to enable verification.",
+                                "JE Verification skipped — Pass 1 JE data not found. "
+                                "Upload the **JE Cache (.json)** from the Pass 1 download package "
+                                "in the Pass 2 upload section above to enable verification.",
                                 icon="ℹ️",
                             )
                 except Exception as _jve:
