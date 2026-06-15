@@ -33,6 +33,8 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from version import get_version
+
 from openpyxl import Workbook
 from openpyxl.styles import (
     Alignment, Border, Font, PatternFill, Side,
@@ -188,7 +190,8 @@ def _build_summary(
     # C-9: derive management company from property config; fallback to generic label
     _mgmt_co = (getattr(property_config, 'management_company', '') or 'GRP')
     _prop_disp = (getattr(property_config, 'property_display_name', '') or property_name or 'GRP Properties')
-    row = _write_kv(ws, row, 'Pipeline Version', f'GA Automation v2 — {_mgmt_co} / {_prop_disp}')
+    row = _write_kv(ws, row, 'Pipeline Version', get_version())
+    row = _write_kv(ws, row, 'Management Entity', f'{_mgmt_co} / {_prop_disp}')
 
     row += 1
     # Files processed

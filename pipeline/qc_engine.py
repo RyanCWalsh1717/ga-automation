@@ -28,6 +28,14 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+
+def _get_qc_version() -> str:
+    try:
+        from version import get_version
+        return get_version()
+    except Exception:
+        return 'GA Automation v2'
+
 import threading
 
 from variance_comments import classify_tier, TIER1_ABS, TIER1_PCT, TIER2_MIN
@@ -1265,7 +1273,7 @@ def _write_tab0(wb, report: QCReport):
         ('LOAN REFERENCE',
          f'Berkadia: Note A1 + Note B1 + Mezz = total mortgage (TB 231100). '
          f'Interest accrual per Berkadia amort schedule.'),
-        ('RUN INFO', f'Period: {report.period}  |  Run: {report.run_at}'),
+        ('RUN INFO', f'Period: {report.period}  |  Run: {report.run_at}  |  Version: {_get_qc_version()}'),
     ]
     for i, (step, text) in enumerate(steps, 2):
         c = ws.cell(row=i, column=1, value=step)
