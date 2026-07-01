@@ -561,6 +561,8 @@ def _scan_all_properties(data_dir: str) -> List[Dict[str, Any]]:
     for entry in sorted(os.scandir(data_dir), key=lambda e: e.name):
         if not entry.is_dir():
             continue
+        if entry.name.upper() == 'TEMPLATE':
+            continue   # onboarding scaffold, not a real property — never selectable
         cfg_path = os.path.join(entry.path, 'config.yaml')
         if not os.path.exists(cfg_path):
             continue
