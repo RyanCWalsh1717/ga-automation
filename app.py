@@ -4636,6 +4636,25 @@ with tab2:
                         # GL is final — no je_adjustments needed. The GL already reflects
                         # all posted JEs from Pass 1, so the workpaper ties clean.
                         _prior_wp_path = st.session_state.uploaded_files.get("prior_workpaper")
+                        # Warn (rather than silently starting fresh) if this property has
+                        # completed prior closes but no prior workpaper was uploaded this
+                        # run — otherwise the rolling multi-month file quietly resets with
+                        # no indication anything was skipped.
+                        if not _prior_wp_path:
+                            try:
+                                from period_metrics import load_metrics as _load_metrics_wp
+                                _prior_periods_wp = _load_metrics_wp(str(_DATA_DIR), _selected_code)
+                            except Exception:
+                                _prior_periods_wp = []
+                            if _prior_periods_wp:
+                                st.warning(
+                                    f"⚠️ No Prior Month Workpaper uploaded — this property has "
+                                    f"{len(_prior_periods_wp)} prior close(s) on record, but the "
+                                    f"workpaper will start fresh this month instead of continuing "
+                                    f"the rolling file. Upload last month's GA_Workpapers.xlsx as "
+                                    f"the 'Prior Month Workpaper' if that wasn't intentional.",
+                                    icon="⚠️",
+                                )
                         # Prior period label: user override → auto-infer from close_period
                         _user_label = st.session_state.get("prior_period_label_input", "").strip()
                         _prior_period = _user_label if _user_label else None
