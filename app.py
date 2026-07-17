@@ -2170,7 +2170,7 @@ with tab1:
             st.rerun()
 
     # ── Pass 1 Processing ─────────────────────────────────────────────────────
-    if pass1_button:
+    if pass1_button or st.session_state.pop('_trigger_pass1_rerun', False):
         with st.spinner("Building accrual entries..."):
             try:
                 files_dict = {key: st.session_state.uploaded_files.get(key)
@@ -3498,6 +3498,17 @@ with tab1:
                     icon="⚠️",
                 )
 
+        st.divider()
+        if st.button(
+            "🔁 Re-run Pass 1",
+            key="pass1_rerun_btn_bottom",
+            use_container_width=True,
+            help="Re-run Pass 1 with your recode and One-Off Accrual table edits included — "
+                 "same action as the Re-run Pass 1 button above.",
+        ):
+            st.session_state['_trigger_pass1_rerun'] = True
+            st.rerun()
+
         # ── Prepaid Amortization Panel ─────────────────────────────────────
         amort_lines = p1.get("amort_lines", [])
         if amort_lines:
@@ -4681,12 +4692,12 @@ with tab2:
                             _selected_code, 'GA_Workpaper_Template.xlsx'
                         )
                         if _wp_template_path:
-                            # B-F6: template path only populates GL transaction tabs and TB.
-                            # Bank rec, DACA, Berkadia loans, AR aging, capital schedule, and
-                            # prepaid ledger data are NOT passed — those tabs come from the
-                            # template's own formulas and static data. If any of those tabs
-                            # appear blank after generation, upload the source files and use
-                            # the standard (non-template) generator instead.
+                            # Template path preserves existing Excel formulas (VLOOKUP,
+                            # DATEDIF, SUM) and only updates data rows + date anchors.
+                            # Raw-report tabs (PNC Cash, DACA, AR Aging, Prepaid Rent, AP,
+                            # BofA Dev) are regenerated each period from whatever source is
+                            # currently uploaded — falling back to a computed builder, then
+                            # the generic GL register, if no fresh file is available.
                             bs_workpaper_generator.generate_bs_workpaper_from_template(
                                 gl_result=gl_parsed,
                                 tb_result=tb_result,
@@ -4696,6 +4707,14 @@ with tab2:
                                 property_name=engine_result.property_name or _prop_display,
                                 prepared_by=st.session_state.get("prepared_by", "GRP"),
                                 property_code=_selected_code,
+                                ar_aging_data=_ar_aging_parsed_p2,
+                                ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
+                                bank_rec_data=bank_rec_data,
+                                bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
+                                daca_bank_data=daca_bank_data,
+                                daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
+                                dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
+                                property_config=_active_cfg,
                             )
                             st.caption(
                                 "↳ Workpaper: generated from template — bank rec, DACA, loans, "
@@ -5538,6 +5557,37 @@ with tab2:
                 mime="application/zip",
                 use_container_width=True,
                 help="Workpapers, QC Workbook, Exception Report, Annotated BC",
+            )
+
+        # ── Carry-Forward Package — the 2 files needed to start next month ────
+        _p1_out_cf = st.session_state.get('pass1_output_files', {}) or {}
+        _cf_ledger_path = _p1_out_cf.get('prepaid_ledger_updated')
+        _cf_workpaper_path = p2.get('bs_workpaper')
+        _cf_files = {
+            f"{_pfx_del}_{period_label}_Prepaid_Ledger_UPLOAD_NEXT_CLOSE.xlsx": _cf_ledger_path,
+            f"{_pfx_del}_{period_label}_Workpaper_UPLOAD_NEXT_CLOSE.xlsx":      _cf_workpaper_path,
+        }
+        _cf_files = {k: v for k, v in _cf_files.items() if v and os.path.exists(v)}
+        if _cf_files:
+            _cf_zip_buf = io.BytesIO()
+            with zipfile.ZipFile(_cf_zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for fname, fpath in _cf_files.items():
+                    zf.write(fpath, fname)
+            _cf_zip_buf.seek(0)
+            st.download_button(
+                label=f"➡️ Download Carry-Forward Package for Next Month ({len(_cf_files)} files)",
+                data=_cf_zip_buf,
+                file_name=f"{_pfx_del}_{period_label}_CarryForward_{datetime.now().strftime('%Y%m%d')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                help="Save this. Next month: upload the Prepaid Ledger as the prior-month ledger "
+                     "in Pass 1, and the Workpaper as the prior workpaper in Pass 2.",
+            )
+        elif not _cf_ledger_path:
+            st.caption(
+                "ℹ️ Carry-Forward Package unavailable — Pass 1 wasn't run in this session, "
+                "so the updated Prepaid Ledger isn't available to bundle. "
+                "Download it separately from the Pass 1 tab if you still have that session open."
             )
 
         st.divider()

@@ -3406,6 +3406,14 @@ def generate_bs_workpaper_from_template(
     period_end_date=None,
     prepared_by: str = '',   # C-18: no personal name default
     property_code: str = '',
+    ar_aging_data=None,
+    ap_aging_filepath: str = '',
+    bank_rec_data=None,
+    bank_rec_xlsx_filepath: str = '',
+    daca_bank_data=None,
+    daca_bank_rec_xlsx_filepath: str = '',
+    dev_bank_rec_xlsx_filepath: str = '',
+    property_config=None,
 ) -> str:
     """
     Template-based monthly close workpaper generator.
@@ -3426,6 +3434,14 @@ def generate_bs_workpaper_from_template(
         added.
     5.  Rebuilds the ``Trial Balance`` tab from the parsed ``tb_result`` so
         all ``VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)`` tie-out formulas resolve.
+    6.  Regenerates the 6 raw-report tabs (111100 PNC Cash, 115100 DACA,
+        131100 AR Aging, 221100 Prepaid Rent, 211100 AP, 111210 BofA Dev)
+        from whatever source is available this period: a freshly uploaded raw
+        file if provided, else the same computed builder used by the standard
+        (non-template) generator, else — for the 2 accounts with neither a
+        raw file nor a builder — the generic GL transaction register. If none
+        of those is available, the existing tab is left untouched rather than
+        deleted, so a temporarily-missing upload doesn't blank out the tab.
 
     Analysis tabs (RE Tax Analysis, Insurance Analysis, Loan Analysis,
     135150 PPD Other) and static multi-entity ledger tabs (152100 Land,
@@ -3550,14 +3566,51 @@ def generate_bs_workpaper_from_template(
         },
     }
 
-    # Tabs that are pasted Yardi exports — pipeline doesn't touch them
-    _PASTED_TABS = {
-        '131100 AR Aging',
-        '221100 Prepaid Rent - Tenant',
-        '211100 Accounts Payable - Contr',
-        '111100 PNC Cash',
-        '111210 Cash - Development - Bof',
-        '115100 DACA',
+    # Raw-report tabs — regenerated every period from whatever source is
+    # currently available, rather than staying frozen at template-creation
+    # content (previously called _PASTED_TABS and never touched at all).
+    #   raw_filepath        : if set and the file exists, copy it verbatim
+    #                         (None means "never raw-copy this account" —
+    #                         used for 131100/221100, which share one AR
+    #                         Aging source and must go through the builder
+    #                         so the prepayment/non-prepayment split applies)
+    #   builder_key         : CUSTOM_BUILDERS key to fall back to (or use
+    #                         exclusively, when raw_filepath is None)
+    #   builder_creates_name: the tab name the builder itself hardcodes —
+    #                         renamed back to match the template's tab name
+    #                         when it differs
+    #   builder_kwargs      : extra kwargs passed to the builder call
+    _REGEN_TABS: dict = {
+        '111100 PNC Cash': {
+            'account': '111100', 'raw_filepath': bank_rec_xlsx_filepath,
+            'builder_key': '111100', 'builder_creates_name': '111100 PNC Cash',
+            'builder_kwargs': {'bank_rec_data': bank_rec_data, 'property_config': property_config},
+        },
+        '115100 DACA': {
+            'account': '115100', 'raw_filepath': daca_bank_rec_xlsx_filepath,
+            'builder_key': '115100', 'builder_creates_name': '115100 DACA',
+            'builder_kwargs': {'daca_data': daca_bank_data},
+        },
+        '131100 AR Aging': {
+            'account': '131100', 'raw_filepath': None,
+            'builder_key': '131100', 'builder_creates_name': '131100 AR Aging',
+            'builder_kwargs': {'ar_aging_data': ar_aging_data},
+        },
+        '221100 Prepaid Rent - Tenant': {
+            'account': '221100', 'raw_filepath': None,
+            'builder_key': '221100', 'builder_creates_name': '221100 Prepaid Rent',
+            'builder_kwargs': {'ar_aging_data': ar_aging_data},
+        },
+        '211100 Accounts Payable - Contr': {
+            'account': '211100', 'raw_filepath': ap_aging_filepath,
+            'builder_key': None, 'builder_creates_name': None,
+            'builder_kwargs': {},
+        },
+        '111210 Cash - Development - Bof': {
+            'account': '111210', 'raw_filepath': dev_bank_rec_xlsx_filepath,
+            'builder_key': None, 'builder_creates_name': None,
+            'builder_kwargs': {},
+        },
     }
 
     # ── 6. Helper functions ───────────────────────────────────────────────────
@@ -3660,12 +3713,74 @@ def generate_bs_workpaper_from_template(
         if _period_end is not None:
             _ws_s['C4'] = _period_end
 
+    # ── 7b. Regenerate raw-report tabs from currently available data ─────────
+    _tb_map: dict = {}
+    if tb_result and hasattr(tb_result, 'accounts'):
+        for _ta in tb_result.accounts:
+            _tb_map[str(getattr(_ta, 'account_code', '') or '').strip()] = _ta
+
+    for _sn, _rc in _REGEN_TABS.items():
+        if _sn not in wb.sheetnames:
+            continue
+        _acct_code  = _rc['account']
+        _raw_fp     = _rc.get('raw_filepath')
+        _builder    = _CUSTOM_BUILDERS.get(_rc['builder_key']) if _rc.get('builder_key') else None
+        _gl_acct_r  = gl_map.get(_acct_code)
+        _tb_entry_r = _tb_map.get(_acct_code)
+        _orig_idx   = wb.sheetnames.index(_sn)
+        _final_name = None
+
+        try:
+            if _raw_fp and os.path.exists(_raw_fp):
+                del wb[_sn]
+                _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
+                _final_name = _sn if _sn in wb.sheetnames else None
+
+            elif _builder:
+                del wb[_sn]
+                _builder(
+                    wb, period=_period_str, property_name=property_name,
+                    gl_acct=_gl_acct_r, tb_entry=_tb_entry_r,
+                    **_rc.get('builder_kwargs', {}),
+                )
+                _created_name = _rc['builder_creates_name']
+                if _created_name in wb.sheetnames and _created_name != _sn:
+                    wb[_created_name].title = _sn
+                _final_name = _sn if _sn in wb.sheetnames else None
+
+            elif _gl_acct_r:
+                del wb[_sn]
+                _write_account_tab(
+                    wb, _gl_acct_r, _tb_entry_r, period, property_name,
+                    je_adjustments=None, tab_prefix='', history_rows=[],
+                    prepared_by=prepared_by,
+                )
+                # _write_account_tab names the sheet from gl_acct.account_name —
+                # force it back to the template's original tab name.
+                _built_name = _safe_sheet_name(f'{_acct_code} {_gl_acct_r.account_name}')
+                if _built_name in wb.sheetnames and _built_name != _sn:
+                    wb[_built_name].title = _sn
+                _final_name = _sn if _sn in wb.sheetnames else None
+
+            else:
+                # No fresh file, no builder, no GL activity this period for
+                # this account — leave the existing tab untouched rather than
+                # deleting it with nothing to replace it.
+                continue
+
+            if _final_name:
+                _cur_idx = wb.sheetnames.index(_final_name)
+                if _cur_idx != _orig_idx:
+                    wb.move_sheet(_final_name, offset=(_orig_idx - _cur_idx))
+        except Exception as _rgex:
+            print(f'[bs_workpaper_generator] Tab regeneration failed for {_sn}: {_rgex}')
+
     # ── 8. Process every sheet ────────────────────────────────────────────────
     for _sn in wb.sheetnames:
         _ws = wb[_sn]
 
-        # --- Skip pasted-data tabs and the Trial Balance (handled below) ---
-        if _sn in _PASTED_TABS or _sn == 'Summary Page':
+        # --- Skip regenerated tabs (handled above) and the Trial Balance ---
+        if _sn in _REGEN_TABS or _sn == 'Summary Page':
             continue
         if _sn == 'Trial Balance':
             continue
