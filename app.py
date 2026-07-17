@@ -752,21 +752,13 @@ st.session_state.prepared_by = st.sidebar.text_input(
 # Outstanding checks/ACH from the prior month that are still clearing.
 # Enters the reconciliation as a reduction to the book balance so the
 # rec ties without a manual adjusting item.
+#
+# UI control hidden — confusing for most users, and only relevant for the
+# PNC fallback reconciliation path (Yardi's own Bank Rec PDF, the preferred
+# source, already reports outstanding checks directly). Defaults to 0.0;
+# no manual override is exposed.
 if 'prior_period_outstanding' not in st.session_state:
     st.session_state.prior_period_outstanding = 0.0
-
-st.session_state.prior_period_outstanding = st.sidebar.number_input(
-    "Prior period outstanding ($)",
-    min_value=0.0,
-    value=float(st.session_state.prior_period_outstanding),
-    step=100.0,
-    format="%.2f",
-    help=(
-        "Total of checks/ACH issued in a prior month that have not yet cleared the bank. "
-        "Enter as a positive number — treated as a reduction to the GL book balance in "
-        "the bank reconciliation."
-    ),
-)
 
 
 # ── Report an Issue ───────────────────────────────────────────
