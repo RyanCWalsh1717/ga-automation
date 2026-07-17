@@ -754,6 +754,114 @@ def _copy_raw_tb_sheet(source_path: str, dest_wb, tab_name: str = 'Trial Balance
         return False
 
 
+def _write_ar_aging_raw_style_tab(wb, tab_name: str, ar_aging_data, is_prepayment_filter: bool,
+                                    property_code: str = '', property_name: str = '',
+                                    period: str = ''):
+    """
+    Recreate Yardi's native 'Aging Detail' export layout — same column
+    headers, tenant grouping, and subtotal/grand-total structure — filtered
+    to only rows where is_prepayment == is_prepayment_filter.
+
+    131100 AR Aging and 221100 Prepaid Rent both source from the same
+    uploaded AR Aging Detail file (Yardi's own export mixes both categories
+    in one report). This writes each tab as a genuine subset of that raw
+    file's rows rather than a reformatted/computed table, so both tabs still
+    look like a raw Yardi export, but never show the same transactions.
+
+    Subtotals are recomputed per tenant over the filtered subset only, so a
+    tenant with both prepayment and non-prepayment charges (rare, but does
+    occur) shows correctly split across both tabs.
+    """
+    from itertools import groupby
+    from openpyxl.utils import get_column_letter as _gcl2
+
+    ws = wb.create_sheet(tab_name[:31])
+    ws.sheet_properties.tabColor = 'BF8F00'
+
+    headers_main = ['Property', 'Customer', 'Lease', 'Status', 'Tran#', 'Charge',
+                     'Date', 'Month', 'Current', '0-30', '31-60', '61-90', 'Over', 'Pre-', 'Total']
+    headers_sub  = [None, None, None, None, None, 'Code', None, None,
+                     'Owed', 'Owed', 'Owed', 'Owed', '90 Owed', 'payments', 'Owed']
+    col_widths   = [10, 24, 22, 9, 10, 8, 11, 8, 12, 12, 12, 12, 12, 13, 13]
+
+    for _i, _w in enumerate(col_widths, 1):
+        ws.column_dimensions[_gcl2(_i)].width = _w
+
+    bold = _font(bold=True)
+
+    ws.cell(1, 1, 'Aging Detail').font = bold
+    _as_of  = getattr(ar_aging_data, 'as_of_date', '') or ''
+    _yperiod = getattr(ar_aging_data, 'period', '') or period
+    ws.cell(2, 1,
+            f'Property: {property_code}    Status: Current, Past, Future    '
+            f'Age As Of: {_as_of}  Post To: {_yperiod}')
+
+    for _c, _h in enumerate(headers_main, 1):
+        ws.cell(3, _c, _h).font = bold
+    for _c, _h in enumerate(headers_sub, 1):
+        if _h:
+            ws.cell(4, _c, _h).font = bold
+
+    ws.cell(5, 1, f'{property_name} ({property_code})').font = bold
+
+    detail_rows = list(getattr(ar_aging_data, 'detail_rows', None) or [])
+    r = 6
+    grand = [0.0] * 7   # current, 0-30, 31-60, 61-90, over90, prepayments, total
+
+    # Group by tenant preserving the source file's original order (tenants
+    # are already listed contiguously in Yardi's export) — do NOT re-sort.
+    for tenant, _group_iter in groupby(detail_rows, key=lambda x: x.tenant_name):
+        group = [g for g in _group_iter if bool(getattr(g, 'is_prepayment', False)) == is_prepayment_filter]
+        if not group:
+            continue   # this tenant has no rows matching this tab's filter
+
+        ws.cell(r, 2, tenant)
+        r += 1
+
+        sub = [0.0] * 7
+        for dr in group:
+            ws.cell(r, 1, dr.property_code)
+            ws.cell(r, 3, dr.tenant_name)
+            ws.cell(r, 4, dr.status)
+            ws.cell(r, 5, dr.tran_number)
+            ws.cell(r, 6, dr.charge_code)
+            if dr.date is not None:
+                ws.cell(r, 7, dr.date).number_format = 'mm/dd/yyyy'
+            ws.cell(r, 8, dr.month)
+            _vals = [dr.current_owed, dr.owed_0_30, dr.owed_31_60, dr.owed_61_90,
+                      dr.owed_over_90, dr.prepayments, dr.total_owed]
+            for _i, _v in enumerate(_vals):
+                _cell = ws.cell(r, 9 + _i, _v or 0)
+                _cell.number_format = '#,##0.00'
+                sub[_i] += (_v or 0)
+            r += 1
+
+        ws.cell(r, 3, tenant).font = bold
+        for _i, _v in enumerate(sub):
+            _cell = ws.cell(r, 9 + _i, _v)
+            _cell.number_format = '#,##0.00'
+            _cell.font = bold
+            grand[_i] += _v
+        r += 2   # subtotal row + blank separator, matching Yardi's layout
+
+    # Property total row
+    ws.cell(r, 1, property_code).font = bold
+    for _i, _v in enumerate(grand):
+        _cell = ws.cell(r, 9 + _i, _v)
+        _cell.number_format = '#,##0.00'
+        _cell.font = bold
+    r += 2
+
+    # Grand Total row
+    ws.cell(r, 1, 'Grand Total').font = bold
+    for _i, _v in enumerate(grand):
+        _cell = ws.cell(r, 9 + _i, _v)
+        _cell.number_format = '#,##0.00'
+        _cell.font = bold
+
+    return ws
+
+
 # ── Summary tab ───────────────────────────────────────────────
 
 def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
@@ -3592,14 +3700,10 @@ def generate_bs_workpaper_from_template(
             'builder_kwargs': {'daca_data': daca_bank_data},
         },
         '131100 AR Aging': {
-            'account': '131100', 'raw_filepath': None,
-            'builder_key': '131100', 'builder_creates_name': '131100 AR Aging',
-            'builder_kwargs': {'ar_aging_data': ar_aging_data},
+            'account': '131100', 'ar_aging_filter': False,
         },
         '221100 Prepaid Rent - Tenant': {
-            'account': '221100', 'raw_filepath': None,
-            'builder_key': '221100', 'builder_creates_name': '221100 Prepaid Rent',
-            'builder_kwargs': {'ar_aging_data': ar_aging_data},
+            'account': '221100', 'ar_aging_filter': True,
         },
         '211100 Accounts Payable - Contr': {
             'account': '211100', 'raw_filepath': ap_aging_filepath,
@@ -3723,50 +3827,67 @@ def generate_bs_workpaper_from_template(
         if _sn not in wb.sheetnames:
             continue
         _acct_code  = _rc['account']
-        _raw_fp     = _rc.get('raw_filepath')
-        _builder    = _CUSTOM_BUILDERS.get(_rc['builder_key']) if _rc.get('builder_key') else None
-        _gl_acct_r  = gl_map.get(_acct_code)
-        _tb_entry_r = _tb_map.get(_acct_code)
         _orig_idx   = wb.sheetnames.index(_sn)
         _final_name = None
 
         try:
-            if _raw_fp and os.path.exists(_raw_fp):
-                del wb[_sn]
-                _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
-                _final_name = _sn if _sn in wb.sheetnames else None
-
-            elif _builder:
-                del wb[_sn]
-                _builder(
-                    wb, period=_period_str, property_name=property_name,
-                    gl_acct=_gl_acct_r, tb_entry=_tb_entry_r,
-                    **_rc.get('builder_kwargs', {}),
-                )
-                _created_name = _rc['builder_creates_name']
-                if _created_name in wb.sheetnames and _created_name != _sn:
-                    wb[_created_name].title = _sn
-                _final_name = _sn if _sn in wb.sheetnames else None
-
-            elif _gl_acct_r:
-                del wb[_sn]
-                _write_account_tab(
-                    wb, _gl_acct_r, _tb_entry_r, period, property_name,
-                    je_adjustments=None, tab_prefix='', history_rows=[],
-                    prepared_by=prepared_by,
-                )
-                # _write_account_tab names the sheet from gl_acct.account_name —
-                # force it back to the template's original tab name.
-                _built_name = _safe_sheet_name(f'{_acct_code} {_gl_acct_r.account_name}')
-                if _built_name in wb.sheetnames and _built_name != _sn:
-                    wb[_built_name].title = _sn
-                _final_name = _sn if _sn in wb.sheetnames else None
+            if 'ar_aging_filter' in _rc:
+                # 131100 AR Aging / 221100 Prepaid Rent — both share one raw
+                # AR Aging Detail source; split by row so neither shows the
+                # other's data, preserving Yardi's raw column layout/grouping.
+                if ar_aging_data is not None and getattr(ar_aging_data, 'detail_rows', None):
+                    del wb[_sn]
+                    _write_ar_aging_raw_style_tab(
+                        wb, _sn, ar_aging_data, _rc['ar_aging_filter'],
+                        property_code=property_code, property_name=property_name,
+                        period=_period_str,
+                    )
+                    _final_name = _sn if _sn in wb.sheetnames else None
+                else:
+                    continue   # no AR Aging file uploaded this period — leave as-is
 
             else:
-                # No fresh file, no builder, no GL activity this period for
-                # this account — leave the existing tab untouched rather than
-                # deleting it with nothing to replace it.
-                continue
+                _raw_fp     = _rc.get('raw_filepath')
+                _builder    = _CUSTOM_BUILDERS.get(_rc['builder_key']) if _rc.get('builder_key') else None
+                _gl_acct_r  = gl_map.get(_acct_code)
+                _tb_entry_r = _tb_map.get(_acct_code)
+
+                if _raw_fp and os.path.exists(_raw_fp):
+                    del wb[_sn]
+                    _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
+                    _final_name = _sn if _sn in wb.sheetnames else None
+
+                elif _builder:
+                    del wb[_sn]
+                    _builder(
+                        wb, period=_period_str, property_name=property_name,
+                        gl_acct=_gl_acct_r, tb_entry=_tb_entry_r,
+                        **_rc.get('builder_kwargs', {}),
+                    )
+                    _created_name = _rc['builder_creates_name']
+                    if _created_name in wb.sheetnames and _created_name != _sn:
+                        wb[_created_name].title = _sn
+                    _final_name = _sn if _sn in wb.sheetnames else None
+
+                elif _gl_acct_r:
+                    del wb[_sn]
+                    _write_account_tab(
+                        wb, _gl_acct_r, _tb_entry_r, period, property_name,
+                        je_adjustments=None, tab_prefix='', history_rows=[],
+                        prepared_by=prepared_by,
+                    )
+                    # _write_account_tab names the sheet from gl_acct.account_name —
+                    # force it back to the template's original tab name.
+                    _built_name = _safe_sheet_name(f'{_acct_code} {_gl_acct_r.account_name}')
+                    if _built_name in wb.sheetnames and _built_name != _sn:
+                        wb[_built_name].title = _sn
+                    _final_name = _sn if _sn in wb.sheetnames else None
+
+                else:
+                    # No fresh file, no builder, no GL activity this period for
+                    # this account — leave the existing tab untouched rather than
+                    # deleting it with nothing to replace it.
+                    continue
 
             if _final_name:
                 _cur_idx = wb.sheetnames.index(_final_name)
