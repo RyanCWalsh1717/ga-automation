@@ -581,7 +581,6 @@ class _OutstandingCheckItem:
 def _build_recon_from_yardi_rec(
     gl_result,
     bank_result: dict,
-    prior_period_outstanding: float = 0.0,
     cash_account_code: str = '111100',
 ) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
     """
@@ -598,8 +597,8 @@ def _build_recon_from_yardi_rec(
       4. Unmatched GL checks = outstanding (GRP's derived list)
       5. PNC checks not in current-period GL = prior-period clears (info only)
       6. Amount mismatches = flagged as errors for GRP to resolve
-      7. Remaining reconciling difference = prior-period outstanding not yet
-         entered; GRP enters that amount via the app sidebar to close the rec
+      7. Remaining reconciling difference is flagged as a warning for GRP to
+         review manually against the bank statement
 
     Someone at GRP reviews the workpaper output and signs off.
     No dependency on any pre-computed reconciliation from any prior processor.
@@ -690,13 +689,7 @@ def _build_recon_from_yardi_rec(
         if pnc_ck['check_number'] not in gl_checks:
             prior_clears.append(pnc_ck)
 
-    # ── Step 4: Add prior-period outstanding amount to the rec ────────────────
-    # Prior-period checks that are still outstanding (issued before this GL
-    # period and not yet cleared) aren't visible in the current-period GL.
-    # GRP enters this amount via the app sidebar if the rec doesn't close.
-    # It appears as a synthetic outstanding item on the workpaper.
-    total_current_outstanding = sum(c['amount'] for c in outstanding)
-    total_outstanding = total_current_outstanding + prior_period_outstanding
+    total_outstanding = sum(c['amount'] for c in outstanding)
 
     # ── Step 5: Convert outstanding list to workpaper-compatible objects ──────
     outstanding_items: List[_OutstandingCheckItem] = []
@@ -714,16 +707,6 @@ def _build_recon_from_yardi_rec(
             description = ck['payee'],
             reference   = ck['check_number'],
             credit      = ck['amount'],
-        ))
-
-    # Add prior-period outstanding as a single line item if entered
-    if prior_period_outstanding > 0:
-        outstanding_items.append(_OutstandingCheckItem(
-            date_obj    = None,
-            control     = 'PRIOR',
-            description = 'Prior-period outstanding checks (GRP confirmed)',
-            reference   = 'PRIOR',
-            credit      = prior_period_outstanding,
         ))
 
     # ── Step 6: Reconciliation math ───────────────────────────────────────────
@@ -796,7 +779,8 @@ def _build_recon_from_yardi_rec(
         # Positive: GL > bank → unlikely; could be undeposited receipts or data error
         if recon_diff < 0:
             hint = (
-                f'  Enter ${abs(recon_diff):,.2f} as "Prior Period Outstanding" in the sidebar to close.'
+                f'  Likely ${abs(recon_diff):,.2f} of prior-period checks still outstanding — '
+                f'review against the bank statement and confirm.'
             )
         else:
             hint = (
@@ -843,9 +827,7 @@ def _build_recon_from_yardi_rec(
         amount_a=total_outstanding, amount_b=0,
         matched=True, variance=0,
         description=(
-            f'{len(outstanding_items)} item(s) totaling ${total_outstanding:,.2f} '
-            f'({len(outstanding)} current-period GL + '
-            f'${prior_period_outstanding:,.2f} prior-period)'
+            f'{len(outstanding_items)} item(s) totaling ${total_outstanding:,.2f}'
         ),
     ))
 
@@ -868,7 +850,6 @@ def _build_recon_from_yardi_rec(
 def match_gl_to_bank(
     gl_result,
     bank_result,
-    prior_period_outstanding: float = 0.0,
     cash_account_code: str = '111100',
 ) -> Tuple[List[MatchResult], List[Exception_], Optional[BankReconDetail]]:
     """
@@ -878,11 +859,6 @@ def match_gl_to_bank(
     GRP performs the full reconciliation by matching the raw PNC bank statement
     (embedded in pages 4-5) against the Yardi GL detail (pages 6-9).
     No pre-computed reconciliation from any prior processor is used.
-
-    prior_period_outstanding: dollar amount of outstanding checks from prior
-    periods that are not in the current-period GL.  GRP enters this via the
-    app sidebar if there is a reconciling difference after the current-period
-    match.  Once entered, the rec closes and GRP signs off.
 
     For raw bank statements (PNC, BofA, KeyBank without the Yardi wrapper),
     3-pass check matching is used as before.
@@ -900,7 +876,6 @@ def match_gl_to_bank(
     if isinstance(bank_result, dict) and bank_result.get('bank_type') == 'YardiBankRec':
         return _build_recon_from_yardi_rec(
             gl_result, bank_result,
-            prior_period_outstanding=prior_period_outstanding,
             cash_account_code=cash_account_code,
         )
 
@@ -1345,7 +1320,7 @@ def cross_validate_is_to_gl(is_result, gl_result) -> List[Exception_]:
 
 # ── Main orchestrator ────────────────────────────────────────
 
-def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineResult:
+def run_pipeline(files: dict) -> EngineResult:
     """
     Run the full pipeline against a set of input files.
 
@@ -1652,8 +1627,7 @@ def run_pipeline(files: dict, prior_period_outstanding: float = 0.0) -> EngineRe
 
     if gl and bank_data:
         gl_bank_matches, gl_bank_exc, bank_recon = match_gl_to_bank(
-            gl, bank_data, prior_period_outstanding=prior_period_outstanding,
-            cash_account_code=_cash_code,
+            gl, bank_data, cash_account_code=_cash_code,
         )
         result.gl_bank_matches = gl_bank_matches
         result.bank_recon_detail = bank_recon

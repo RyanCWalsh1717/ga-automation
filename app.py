@@ -668,7 +668,6 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
     st.session_state.pass2_output_files    = {}
     st.session_state.uploaded_files        = {}
     st.session_state.pass2_manual_prepaids = []   # B-F1: prevent cross-property bleed
-    st.session_state.prior_period_outstanding = 0.0  # B-1: reset on property switch
     # Reset checklist so the new property's data is loaded
     st.session_state.checklist_loaded    = False
     st.session_state.close_tracker       = {}
@@ -747,19 +746,6 @@ st.session_state.prepared_by = st.sidebar.text_input(
     value=st.session_state.prepared_by,
     help="Stamped on every workpaper tab and the run log.",
 )
-
-# ── Bank Rec — Prior Period Outstanding ──────────────────────
-# Outstanding checks/ACH from the prior month that are still clearing.
-# Enters the reconciliation as a reduction to the book balance so the
-# rec ties without a manual adjusting item.
-#
-# UI control hidden — confusing for most users, and only relevant for the
-# PNC fallback reconciliation path (Yardi's own Bank Rec PDF, the preferred
-# source, already reports outstanding checks directly). Defaults to 0.0;
-# no manual override is exposed.
-if 'prior_period_outstanding' not in st.session_state:
-    st.session_state.prior_period_outstanding = 0.0
-
 
 # ── Report an Issue ───────────────────────────────────────────
 with st.sidebar.expander("🐛 Report an Issue", expanded=False):
@@ -2178,10 +2164,7 @@ with tab1:
                 # Step 1: Parse files (pre-close GL)
                 status_text.text("Step 1/6: Parsing files...")
                 progress_bar.progress(10)
-                engine_result = run_pipeline(
-                    files_dict,
-                    prior_period_outstanding=float(st.session_state.get('prior_period_outstanding', 0.0)),
-                )
+                engine_result = run_pipeline(files_dict)
                 st.session_state.pass1_engine_result = engine_result
 
                 gl_parsed  = engine_result.parsed.get('gl')
@@ -4425,10 +4408,7 @@ with tab2:
                 # Step 1: Parse final (post-close) GL
                 status_text.text("Step 1/6: Parsing final GL...")
                 progress_bar.progress(10)
-                engine_result = run_pipeline(
-                    files_dict,
-                    prior_period_outstanding=float(st.session_state.get('prior_period_outstanding', 0.0)),
-                )
+                engine_result = run_pipeline(files_dict)
                 st.session_state.pass2_engine_result = engine_result
 
                 gl_parsed    = engine_result.parsed.get('gl')
