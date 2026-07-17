@@ -1334,7 +1334,7 @@ with tab0:
     with _ck_col_name:
         _team_names = (_active_cfg.team_members
                        if _active_cfg.team_members
-                       else ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+                       else ['[Property Accountant]', '[Accounting Manager]', '[CFO]'])
         _cur_name   = st.session_state.get('prepared_by', _team_names[0])
         _name_idx   = _team_names.index(_cur_name) if _cur_name in _team_names else 0
         _chosen_name = st.selectbox(
@@ -1510,14 +1510,16 @@ with tab0:
             },
             7: {
                 'emoji': '📦', 'color': '#2D6F50', 'bg': '#E8F5E9',
-                'headline': 'Action needed: Release final package to Lauren',
+                'headline': 'Action needed: Release final package to CFO',
                 'body': ('{period} QC review is complete for {prop}. '
-                         'The final package is ready for Lauren Sullivan. '
+                         'The final package is ready for the CFO. '
                          'Upload the deliverables and mark Step 9 complete.'),
                 'draft': True,
-                'draft_label': '📋 Suggested message for Lauren:',
+                'draft_label': '📋 Suggested message for the CFO:',
+                # team_members convention: [Property Accountant, Accounting Manager, CFO] —
+                # CFO is the 3rd entry by position, not matched by name.
                 'draft_fn': lambda period, prop, team, user: (
-                    f"Hi {next((m.split()[0] for m in team if 'lauren' in m.lower()), 'Lauren')},\n\n"
+                    f"Hi {(team[2].split()[0] if len(team) > 2 and team[2] else 'there')},\n\n"
                     f"The {period} monthly close package for {prop} is ready for your review. "
                     f"All QC checks have passed and the workpapers have been signed off.\n\n"
                     f"Please let us know if you have any questions.\n\n"
@@ -1536,7 +1538,7 @@ with tab0:
         if _ni:
             _period_lbl  = period_key_to_label(_ck_pkey) if '_ck_pkey' in dir() else period_key_to_label(st.session_state.get('checklist_period_key', current_period_key()))
             _team_members = list(getattr(_active_cfg, 'team_members', None) or
-                                 ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+                                 ['[Property Accountant]', '[Accounting Manager]', '[CFO]'])
             _prepared_by  = st.session_state.get('prepared_by', 'GRP')
             _body_text = _ni['body'].format(
                 period=_period_lbl,
@@ -5785,7 +5787,7 @@ with tab2:
 
         _SIGNOFF_REVIEWERS = (_active_cfg.team_members
                               if _active_cfg.team_members
-                              else ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"])
+                              else ["[Property Accountant]", "[Accounting Manager]", "[CFO]"])
 
         for _so_idx, _so_item in enumerate(_SIGNOFF_ITEMS):
             _so_existing = st.session_state.signoff_state.get(_so_idx)
@@ -6050,9 +6052,9 @@ with tab3:
     st.info(
         "**Roles referenced throughout:** the **Property Accountant** runs Pass 1 and Pass 2 "
         "(this may be GRP staff or an outsourced team member). The **Accounting Manager** "
-        "(Natasha Parker) reviews outputs before release. The **CFO** (Lauren Sullivan) is the "
-        "final reviewer — sees the package only after the Property Accountant and Accounting "
-        "Manager have both signed off.",
+        "reviews outputs before release. The **CFO** is the final reviewer — sees the package "
+        "only after the Property Accountant and Accounting Manager have both signed off. "
+        "Actual names for each role are configured per property in the Properties tab.",
         icon="👥",
     )
 
@@ -6677,7 +6679,7 @@ with tab4:
             "Team members (one per line)",
             value=_default_members,
             height=120,
-            placeholder="Ryan Walsh\nNatasha Parker\nLauren Sullivan\nNew Hire Name",
+            placeholder="Jane Smith (Property Accountant)\nJohn Doe (Accounting Manager)\nAlex Lee (CFO)",
             label_visibility="collapsed",
         )
 

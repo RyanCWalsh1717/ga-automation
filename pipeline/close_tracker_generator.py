@@ -64,8 +64,8 @@ CLOSE_TRACKER_STEPS: List[Tuple[int, str, str]] = [
     (4, 'Final Files Re-Exported from Yardi',       'manual'),
     (5, 'Pass 2 Files Uploaded',                    'auto'),
     (6, 'Reports Generated (Pass 2)',               'auto'),
-    (7, 'QC Review Complete (Ryan / Natasha)',      'auto'),
-    (8, 'Final Package Released to Lauren',         'manual'),
+    (7, 'QC Review Complete (Property Accountant / Accounting Manager)', 'auto'),
+    (8, 'Final Package Released to CFO',             'manual'),
 ]
 
 

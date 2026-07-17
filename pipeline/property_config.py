@@ -102,7 +102,10 @@ class PropertyConfig:
     # ── Team members ──────────────────────────────────────────────────────────
     # Names that appear in the dashboard name selector, close tracker reviewer
     # dropdowns, and sign-off sheet. Add anyone who touches this property's close.
-    team_members: List[str] = field(default_factory=lambda: ['Ryan Walsh', 'Natasha Parker', 'Lauren Sullivan'])
+    # No default names — each property must configure its own real reviewers;
+    # UI fallbacks show generic role placeholders (e.g. '[Property Accountant]')
+    # rather than any specific person's name when this list is empty.
+    team_members: List[str] = field(default_factory=list)
 
     # ── Tenant Utility Billing tenants ────────────────────────────────────────
     # List of dicts: {'key': str, 'name': str}

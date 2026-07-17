@@ -14,7 +14,7 @@ State format
   "period":        "2026-05",
   "property_code": "revlabspm",
   "steps": {
-    "0": {"completed_by": "Ryan Walsh", "timestamp": "05/08/2026 14:14",
+    "0": {"completed_by": "Jane Smith", "timestamp": "05/08/2026 14:14",
           "auto": false},
     ...
   },
@@ -22,7 +22,7 @@ State format
     {
       "id":           "custom_0",
       "label":        "Confirm Berkadia loan pay-off",
-      "created_by":   "Ryan Walsh",
+      "created_by":   "Jane Smith",
       "created_at":   "05/08/2026 14:00",
       "completed":    false,
       "completed_by": null,

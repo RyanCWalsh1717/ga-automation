@@ -42,9 +42,9 @@ firm_name:              'Greatland Realty Partners (GRP)'
 # Add anyone who touches this property's monthly close.
 
 team_members:
-  - Ryan Walsh
-  - Natasha Parker
-  - Lauren Sullivan
+  - CHANGE_ME   # Property Accountant name
+  - CHANGE_ME   # Accounting Manager name
+  - CHANGE_ME   # CFO name
 
 
 # ── MANAGEMENT FEE STRUCTURE ─────────────────────────────────────────────────

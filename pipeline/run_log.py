@@ -63,8 +63,8 @@ def append_run_log_pass1(
         output_path:            Destination path for the updated CSV.
         prior_log_path:         Optional path to prior-period GA_Run_Log.csv.
         timestamp:              ISO-style string: 'YYYY-MM-DD HH:MM:SS'.
-        prepared_by:            Name of the preparer (e.g. 'Ryan Walsh').
-        property_name:          Property display name (e.g. 'Revolution Labs').
+        prepared_by:            Name of the preparer.
+        property_name:          Property display name.
         period:                 Close period string (e.g. 'Jan-2026').
         je_count:               Number of journal entries processed.
         je_total_dollars:       Sum of absolute JE amounts (gross activity).
@@ -78,8 +78,8 @@ def append_run_log_pass1(
     new_row = {
         'timestamp':              timestamp,
         'pass_number':            '1',
-        'prepared_by':            prepared_by or 'Ryan Walsh',
-        'property':               property_name or 'Revolution Labs',
+        'prepared_by':            prepared_by or 'GRP',
+        'property':               property_name or 'Unknown Property',
         'period':                 period,
         'files_generated':        '',
         'qc_checks_passed':       '',
@@ -120,8 +120,8 @@ def append_run_log(
         output_path:            Destination path for the updated CSV.
         prior_log_path:         Optional path to prior-period GA_Run_Log.csv.
         timestamp:              ISO-style string: 'YYYY-MM-DD HH:MM:SS'.
-        prepared_by:            Name of the preparer (e.g. 'Ryan Walsh').
-        property_name:          Property display name (e.g. 'Revolution Labs').
+        prepared_by:            Name of the preparer.
+        property_name:          Property display name.
         period:                 Close period string (e.g. 'Jan-2026').
         files_generated:        List of output file names included in the ZIP.
         qc_checks_passed:       Number of QC checks that passed.
@@ -136,8 +136,8 @@ def append_run_log(
     new_row = {
         'timestamp':              timestamp,
         'pass_number':            '2',
-        'prepared_by':            prepared_by or 'Ryan Walsh',
-        'property':               property_name or 'Revolution Labs',
+        'prepared_by':            prepared_by or 'GRP',
+        'property':               property_name or 'Unknown Property',
         'period':                 period,
         'files_generated':        '; '.join(files_generated),
         'qc_checks_passed':       str(qc_checks_passed),
