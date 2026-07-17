@@ -6033,11 +6033,20 @@ with tab2:
 # TAB 3 — HOW TO USE
 # ──────────────────────────────────────────────────────────────
 with tab3:
-    st.markdown("## 📖 Pipeline User Guide")
+    st.markdown("## 📖 Monthly Close Operating Guide")
     st.markdown(
-        "This guide walks through every step of the monthly close — what files to pull from "
-        "Yardi, what the pipeline produces, what gets posted to Yardi, and what the final "
-        "deliverables look like. No prior knowledge of the pipeline required."
+        "This is the full runbook for operating the pipeline — written for anyone running a "
+        "close, whether GRP staff or an outsourced accounting team member, with no prior "
+        "context assumed. It covers every step, every file, every output, and what to do "
+        "when something needs review."
+    )
+    st.info(
+        "**Roles referenced throughout:** the **Property Accountant** runs Pass 1 and Pass 2 "
+        "(this may be GRP staff or an outsourced team member). The **Accounting Manager** "
+        "(Natasha Parker) reviews outputs before release. The **CFO** (Lauren Sullivan) is the "
+        "final reviewer — sees the package only after the Property Accountant and Accounting "
+        "Manager have both signed off.",
+        icon="👥",
     )
 
     # ── Quick-reference flow ──────────────────────────────────────────────────
@@ -6048,17 +6057,26 @@ with tab3:
 |------|-----|--------|
 | 1 | Property Accountant | Export pre-close files from Yardi & pull bank statements |
 | 2 | Property Accountant | Upload all Pass 1 files → click **Generate JEs** |
-| 3 | Property Accountant | Review outputs, download 2 JE CSVs + Prepaid Ledger |
-| 4 | Property Accountant | Import both CSVs into Yardi → run the final close |
+| 3 | Property Accountant | Review the JE list, adjust/exclude as needed → download JE CSVs |
+| 4 | Property Accountant | Import CSVs into Yardi → run the final close |
 | 5 | Property Accountant | Re-export final GL, TB, BC, Bank Rec, Loan Statements from Yardi |
-| 6 | Property Accountant | Upload Pass 2 files → click **Generate Reports** |
-| 7 | Property Accountant | Review all outputs before sending to Accounting Manager |
-| 8 | Accounting Manager | Reviews Workpapers, QC Workbook, and Annotated BC |
+| 6 | Property Accountant | Upload Pass 2 files (+ raw report overrides) → click **Generate Reports** |
+| 7 | Property Accountant | Review QC results and JE posting verification |
+| 8 | Property Accountant | Complete Close Tracker steps + sign off on the checklist |
+| 9 | Accounting Manager | Reviews Workpapers, QC Workbook, Audit Trail, and Annotated BC → signs off |
+| 10 | CFO | Final review of the released package |
 """)
+    st.markdown(
+        "> **Start here every month:** the **Dashboard** tab (leftmost tab) shows the close "
+        "checklist for the current period and, once a few months of history exist, trending "
+        "charts (NOI, revenue, expenses, cash) across periods. Check it first to see where "
+        "this property's close currently stands."
+    )
 
     # ── PASS 1 ────────────────────────────────────────────────────────────────
     st.markdown("---")
-    with st.expander("📥  Step 1 — Pass 1: What to Upload", expanded=True):
+    st.markdown("## Pass 1 — Pre-Close")
+    with st.expander("📥  Step 1 — What to Upload", expanded=True):
         st.markdown(
             "Upload all files into the **Pass 1 upload zone** at the top of the Pass 1 tab. "
             "The pipeline auto-detects each file type — if it guesses wrong, use the "
@@ -6068,13 +6086,13 @@ with tab3:
         st.markdown("""
 | File | Where to get it in Yardi | Notes |
 |------|--------------------------|-------|
-| **Yardi GL Detail** | Reports → General Ledger → by Property, Period = current month, Book = Accrual | Most important file — drives all accrual logic |
+| **Yardi GL Detail** | Reports → General Ledger → by Property, Period = current month, Book = Accrual | Most important file — drives all accrual logic. **The only required file.** |
 | **Yardi Trial Balance** | Reports → Trial Balance → same period & book | Used for GL ↔ TB tie-out |
 | **Yardi Budget Comparison** | Reports → Budget Comparison → PTD + YTD columns, same period | Drives historical pattern accruals and variance commentary |
-| **12-Month Income Statement** | Reports → 12-Month Statement → trailing 12 months | Used for historical recurring accruals |
+| **12-Month Income Statement** | Reports → 12-Month Statement → trailing 12 months | Used for historical recurring accruals and month-over-month swing detection |
 | **Nexus Invoice Detail** | Nexus AP → Export open invoices → .xls format | Open invoices not yet in the GL |
 | **Kardin Budget** | Kardin → Export → qryExportData format | Annual budget; used for payroll bonus accruals |
-| **Yardi Receivable Detail** | Reports → Receivable Detail → current period | Used to calculate management fee on cash received |
+| **Yardi Receivable Detail / Summary** | Reports → Receivable Detail or Summary → current period | Used to calculate management fee on cash received |
 | **Yardi AR Detail Aging** | Reports → AR Aging Detail → current period | Used alongside Receivable Detail to exclude prepayments from the fee basis |
 """)
         st.markdown("#### Bank Statements")
@@ -6090,7 +6108,7 @@ with tab3:
         st.markdown(f"""
 | File | Where to get it | Notes |
 |------|-----------------|-------|
-| **Prior Month Prepaid Ledger** | Downloaded from last month's Pass 1 run | First month (January): use the seed file `{_pfx_int}_Prepaid_Ledger_Seed_Dec2025.xlsx` |
+| **Prior Month Prepaid Ledger** | Downloaded from last month's Pass 1 run (part of the Carry-Forward Package) | First close for a property: use the seed ledger built for that property's go-live date |
 """)
         st.markdown(
             "> **Tip:** You don't need every file every month. The pipeline runs on whatever is "
@@ -6098,44 +6116,64 @@ with tab3:
         )
 
     # ── One-Off Accruals ──────────────────────────────────────────────────────
-    with st.expander("✏️  Step 1b — Fill in the One-Off Accruals Table"):
+    with st.expander("✏️  Step 2 — Fill in the One-Off Accruals Table"):
         st.markdown("""
 The **One-Off Accruals** table (Pass 1 tab) is for items the pipeline can't detect automatically —
-typically small recurring contracts where no invoice arrives until after close.
+typically small recurring contracts where no invoice arrives until after close. Which rows are
+pre-seeded and their typical amounts are property-specific (configured per property) — review
+and adjust every month before generating JEs.
 
-The table comes **pre-populated** with common monthly items. Review and adjust amounts each month:
+Each row creates a **DR expense / CR 213100 Accrued Expenses** journal entry (labeled `SUP-XXXX`)
+that auto-reverses next period. A row entered at **$0** acts as an exclusion flag rather than a JE —
+use this to tell the pipeline "don't auto-accrue this account this month" without deleting the row.
+""")
 
-| Pre-seeded item | Account | Typical amount |
-|-----------------|---------|---------------|
-| Tenant Relations (misc.) | 637150 | ~$1,700 |
-| HVAC Quarterly Maintenance | 617110 | ~$8,375 (Q months) |
-| PPM Pit Maintenance | 619120 | ~$3,400 |
-| Fire Life Safety | 627230 | ~$1,000 |
-| Snow & Ice Removal | 635110 | Seasonal — update from quote |
-| Durkin Supply | 610140 | ~$300 |
-| Casella Extra Pickup | 610160 | ~$670 |
-| BlueTriton Water Delivery | 637230 | ~$200 |
-| Water/Sewer (if no Nexus) | 613310 | Budget amount |
+    # ── JE Review & editing ────────────────────────────────────────────────────
+    with st.expander("🧾  Step 3 — Review the Generated JEs"):
+        st.markdown("""
+After clicking **Generate JEs**, the results page shows every JE grouped into expandable
+sections by **credit account** — e.g. all JEs crediting 213100 Accrued Expenses in one section.
+Each JE line has:
 
-Each row creates a **DR expense / CR 213100 Accrued Expenses** journal entry that auto-reverses next period.
+- **Include** checkbox — uncheck to exclude a JE from the CSV without deleting it; re-check to
+  restore it. This updates the downloadable CSV live, no re-run needed.
+- **Description** — editable inline; edits apply immediately.
+- **Amount** — editable inline; both the DR and CR leg update together so the JE stays balanced.
+
+**7xxxxx Intercompany Recode** — if the GL has any corporate-expense (7xxxxx) activity miscoded
+onto the property, a recode table appears automatically. Enter the correct 6xxxxx or 8xxxxx
+target account on each DR row, then click **Re-run Pass 1** (a second copy of this button sits
+directly below the recode table, so you don't need to scroll back to the top) to include the
+recode JEs in the CSV.
+
+**Add a Missed Entry** — for a JE the pipeline didn't generate at all (not a recode, not
+covered by One-Off Accruals). Enter the DR/CR accounts, description, and amount, and it's
+appended to the CSV immediately. These entries survive a **Re-run Pass 1** click — they are not
+regenerated by the pipeline, so re-running only adds to them, never discards them.
+
+> **Re-running Pass 1 after any edit** (table changes, recode entries, new uploads) always
+> reflects the current state of everything on the page at the moment you click — you should
+> never need to click Re-run more than once for an edit to take effect.
 """)
 
     # ── Pass 1 Outputs ────────────────────────────────────────────────────────
-    with st.expander("📄  Step 2 — What Pass 1 Produces"):
+    with st.expander("📄  Step 4 — What Pass 1 Produces"):
         st.markdown(f"""
-After clicking **Generate JEs**, two files are available to download:
+After clicking **Generate JEs**, download either the full zip package or individual files:
 
 | File | Contents | What to do with it |
 |------|----------|--------------------|
-| **{_pfx_int}_Accruals_JE.csv** | All accrual entries: Nexus invoices, utility proration, service accruals, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings | **Import into Yardi** as a journal batch |
-| **{_pfx_int}_Prepaid_Ledger.xlsx** | Updated prepaid amortization schedule with this month's releases applied | **Save** — upload as the prior-month ledger next month |
+| **{_pfx_int}_Accruals_JE.csv** | All accrual entries: Nexus invoices, utility proration, service accruals, historical recurring, management fee, contract supplements, payroll bonus accruals, tenant utility billings, recode entries | **Import into Yardi** as a journal batch |
+| **{_pfx_int}_Prepaid_Ledger.xlsx** | Updated prepaid amortization schedule with this month's releases applied | **Save** — part of next month's Carry-Forward Package (see Step 4b) |
+| **{_pfx_int}_JE_Cache.json** | Every JE line generated this run, in a compact format | **Save if you plan to run Pass 2 in a different browser session** — upload it in Pass 2 to enable the full Audit Trail and JE posting verification (see Step 8) |
 
-> The pipeline also shows a **summary table** of every entry generated, grouped by layer
-> (Layer 1 Nexus, Layer 2 Proration, Layer 3 Historical, Layer 4 Bonus, etc.) so you can review before posting.
+> The results page also shows a **summary table** of every entry generated, grouped by layer
+> (Layer 1 Nexus, Layer 2 Proration, Layer 3 Historical, Layer 4 Bonus, etc.) so you can review
+> before posting.
 """)
 
     # ── Yardi Upload Step ─────────────────────────────────────────────────────
-    with st.expander("⬆️  Step 3 — Post to Yardi & Run the Close"):
+    with st.expander("⬆️  Step 5 — Post to Yardi & Run the Close"):
         st.markdown(f"""
 **In Yardi, before running the final close:**
 
@@ -6155,7 +6193,8 @@ This is standard accrual accounting — no manual reversal needed.
 
     # ── Pass 2 ────────────────────────────────────────────────────────────────
     st.markdown("---")
-    with st.expander("📥  Step 4 — Pass 2: What to Re-Upload", expanded=True):
+    st.markdown("## Pass 2 — Post-Close")
+    with st.expander("📥  Step 6 — What to Re-Upload", expanded=True):
         st.markdown(
             "After the close runs in Yardi, re-export the **final versions** of these files. "
             "They reflect all journal entries that were posted (including the ones from Pass 1). "
@@ -6175,20 +6214,78 @@ This is standard accrual accounting — no manual reversal needed.
 > re-exported — the pipeline reuses them automatically from Pass 1.
 """)
 
+    # ── Workpaper Raw Report Overrides ─────────────────────────────────────────
+    with st.expander("🗂️  Step 6b — Workpaper Raw Report Overrides"):
+        st.markdown("""
+Six workpaper tabs are sourced from raw Yardi/bank reports rather than computed from the GL:
+**111100 PNC Cash, 115100 DACA, 131100 AR Aging, 221100 Prepaid Rent, 211100 AP,** and
+**111210 BofA Development**. Upload the corresponding raw file each period in the
+**"Workpaper raw report overrides"** section (Pass 2 tab) so these tabs refresh with current
+data instead of staying frozen:
+
+| Upload slot | Populates |
+|-------------|-----------|
+| AR Aging Detail — 133100 AR Control | 131100 AR Aging **and** 221100 Prepaid Rent (one Yardi report covers both — same file, both tabs) |
+| AP Aging Detail — 211300 AP Control | 211100 Accounts Payable |
+| Bank Rec Excel — 111100 PNC Operating | 111100 PNC Cash |
+| Bank Rec Excel — 115100 DACA | 115100 DACA |
+
+> **If a file isn't uploaded for one of these tabs**, that tab shows an explicit
+> **"No data uploaded this period"** message instead of silently reusing last month's data —
+> upload the missing file and re-run if you see this.
+""")
+
     # ── Pass 2 Outputs ────────────────────────────────────────────────────────
-    with st.expander("📊  Step 5 — What Pass 2 Produces"):
+    with st.expander("📊  Step 7 — What Pass 2 Produces"):
         st.markdown(f"""
-After clicking **Generate Reports**, four files are available to download:
+After clicking **Generate Reports**, download the full package or individual files:
 
 | File | Contents | Audience |
 |------|----------|----------|
 | **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Accountant / Accounting Manager |
-| **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist: TB↔BC tie, budget variances, workpaper tie, MoM swings, BS tie-out, accrual coverage, misc checks | Property Accountant |
+| **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist — see Step 8 below | Property Accountant |
 | **{_pfx_int}_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Accountant |
 | **{_pfx_int}_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Property Accountant / Accounting Manager |
+| **{_pfx_int}_Audit_Trail.xlsx** | Every JE's math, the exact Yardi ETL import rows, management fee calculation detail, and QC results in one file — the record an auditor would review | Accounting Manager / Auditor |
+| **{_pfx_int}_Signoff_Record.xlsx** | Who reviewed and approved each section of the close package, and when | Accounting Manager / CFO |
+| **{_pfx_int}_Close_Tracker.xlsx** | The 9-step close lifecycle record, from JLL handoff through CFO release | Accounting Manager |
+| **{_pfx_int}_Run_Log.csv** | Running history of every close run for this property (timestamp, JE counts, QC results) — not financial detail, just a log | Internal reference |
+| Management Fee Invoice (PDF) | JLL/GRP management fee invoice for this period | Accounting Manager |
 
-> **Before sending to Accounting Manager:** The Property Accountant should review all four files and clear any
-> open Errors in the Exception Report. Warnings should be reviewed but may be acceptable.
+> **Before sending to Accounting Manager:** clear any open Errors in the Exception Report.
+> Warnings should be reviewed but may be acceptable.
+""")
+
+    # ── QC Results ─────────────────────────────────────────────────────────────
+    with st.expander("✅  Step 8 — Reviewing QC Results"):
+        st.markdown("""
+The QC Workbook runs 7 checks automatically:
+
+| Check | What it verifies |
+|-------|-------------------|
+| 1. TB → BC Tie-out | Trial Balance and Budget Comparison actuals agree |
+| 2. Budget Variances | Tier 1 (≥$5K or 5%) and Tier 2 ($2.5K–$5K) flags against budget |
+| 3. Trial Balance Self-Balance | TB debits = credits |
+| 4. Month-over-Month Swings | Any account swinging more than the configured threshold vs. last month |
+| 5. BS Workpaper Tie-out | Workpaper ending balances agree with GL and TB |
+| 6. Accruals vs. Budget Coverage | Whether accrual detection covered everything the budget implies should be accrued |
+| 7. Miscellaneous | Insurance, management fee, and other property-specific checks |
+
+Each check shows **PASS**, **FLAG**, or **FAIL**. FLAG/FAIL items need review before the package
+is released — check the corresponding row's detail for what to investigate.
+
+**JE Posting Verification** (its own tab inside the QC Workbook) compares every Pass 1 JE against
+the final GL to confirm it actually posted:
+
+| Status | Meaning |
+|--------|---------|
+| VERIFIED | All DR/CR lines found in the GL with matching amounts |
+| AMOUNT_MISMATCH | Lines found, but at least one amount differs by more than $0.02 |
+| PARTIAL | Only some lines of the JE were found |
+| MISSING | No lines found — the JE did not post |
+
+This only runs if the Pass 1 JE data is available — either the same browser session as Pass 1,
+or the JE Cache uploaded (see Step 4).
 """)
 
     # ── Post-Close Adjustments ────────────────────────────────────────────────
@@ -6205,6 +6302,28 @@ true-ups, corrections), use the **Post-Close Adjustments** table in the Pass 2 t
 Post-close JEs are **not** auto-reversing — they are permanent adjustments.
 """)
 
+    # ── Close Tracker & Sign-off ────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📋  Close Tracker & Sign-off"):
+        st.markdown("""
+The **Dashboard** tab tracks the full close lifecycle in 9 steps, from JLL's initial bank rec
+through the CFO's final release:
+
+`0` JLL Completes Bank Rec & Payments · `1` Pass 1 Files Uploaded & JEs Generated ·
+`2` JEs Uploaded to Yardi · `3` Final Close Run in Yardi · `4` Final Files Re-Exported from Yardi ·
+`5` Pass 2 Files Uploaded · `6` Reports Generated · `7` QC Review Complete (Property Accountant /
+Accounting Manager) · `8` Final Package Released to CFO
+
+Steps 1, 5, and 6 auto-complete when you run Pass 1 / upload Pass 2 files / generate reports.
+The rest require clicking **Mark Complete** on the Dashboard as each step actually happens.
+
+**Sign-off checklist** (Pass 2 tab, near the bottom) tracks who reviewed each specific
+deliverable — Bank Rec (Operating and DACA), Management Fee Invoice, GL vs TB Workpaper,
+Variance Commentary, the QC Checklist, Equity Tabs, and the Exception Report. Each item is
+signed by name with a timestamp; click **Export Sign-off Sheet** once everything is checked
+off to produce the permanent record.
+""")
+
     # ── Final Deliverables ────────────────────────────────────────────────────
     st.markdown("---")
     with st.expander("📬  Final Deliverables — What Goes Where"):
@@ -6214,6 +6333,7 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
 |------|--------|
 | Workpapers (GL ↔ TB tie-out) | `{_pfx_int}_Workpapers.xlsx` from Pass 2 |
 | Annotated Budget Comparison | `{_pfx_int}_BC_Internal.xlsx` from Pass 2 |
+| Audit Trail | `{_pfx_int}_Audit_Trail.xlsx` from Pass 2 |
 | Singerman 8-Tab Monthly Report | Downloaded directly from Yardi |
 
 #### To Singerman (Capital Partner)
@@ -6226,7 +6346,27 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
 |------|---------|
 | `{_pfx_int}_QC_Workbook.xlsx` | GRP internal QC sign-off |
 | `{_pfx_int}_Exceptions_Report.xlsx` | Audit trail of all flagged items |
-| `{_pfx_int}_Prepaid_Ledger.xlsx` | Carry forward — upload next month as the prior-month ledger |
+| `{_pfx_int}_Signoff_Record.xlsx` | Reviewer sign-off record |
+| `{_pfx_int}_Close_Tracker.xlsx` | Close lifecycle record |
+| `{_pfx_int}_Run_Log.csv` | Historical run log |
+""")
+
+    # ── Monthly Carry-Forward Checklist ────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("➡️  Monthly Carry-Forward — What to Save for Next Month", expanded=True):
+        st.markdown(f"""
+At the end of Pass 2, download the **Carry-Forward Package** — a small zip with exactly the
+2 files the *next* close needs:
+
+| File | Where it goes next month |
+|------|---------------------------|
+| **{_pfx_int}_Prepaid_Ledger_UPLOAD_NEXT_CLOSE.xlsx** | Upload as the **Prior Month Prepaid Ledger** in Pass 1 |
+| **{_pfx_int}_Workpaper_UPLOAD_NEXT_CLOSE.xlsx** | Upload as the **Prior Month Workpaper** in Pass 2 |
+
+This is the single most important handoff between closes — losing either file means the prepaid
+schedule or the rolling workpaper history has to be rebuilt manually. If the workpaper isn't
+uploaded next month and this property has prior closes on record, the app will warn you rather
+than silently starting the workpaper over.
 """)
 
     # ── Troubleshooting ───────────────────────────────────────────────────────
@@ -6234,15 +6374,23 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
     with st.expander("🛠️  Common Issues & Tips"):
         st.markdown(f"""
 **File uploaded but not recognized**
-→ Use the dropdown next to the filename in the Pass 1 upload zone to manually select the file type.
+→ Use the dropdown next to the filename in the upload zone to manually select the file type.
 
 **Management fee shows $0**
 → The pipeline couldn't find cash received. Check that the DACA statement or Receivable Detail
 was uploaded. If both are missing, the fee will be $0 and will need a manual One-Off entry.
 
 **Workpaper doesn't include prior months**
-→ Upload the prior month's `{_pfx_int}_Workpapers.xlsx` in the Pass 2 upload zone. The pipeline appends
-the new period's sheets to the existing file. Leave blank for January (first run of the year).
+→ Upload the prior month's `{_pfx_int}_Workpapers.xlsx` in the Pass 2 upload zone (see the
+Carry-Forward section above). Leave blank only for a property's genuinely first close.
+
+**A raw-report workpaper tab (PNC Cash, DACA, AR Aging, Prepaid Rent, AP, BofA Dev) shows
+"No data uploaded this period"**
+→ Upload the matching file in "Workpaper raw report overrides" (Step 6b) and re-run.
+
+**JE Verification / Audit Trail JE detail is missing in Pass 2**
+→ Pass 1 wasn't run in this session. Upload the JE Cache JSON from Pass 1's download package
+(see Step 4).
 
 **RE Tax — what to enter each month**
 → Enter the quarterly bill amount every month (all 3 months in each cycle use the same number).
@@ -6252,8 +6400,8 @@ Leave $0 only if the RE Tax JE has already been posted manually in Yardi.
 
 **Accrual entry says "REVIEW REQUIRED"**
 → This is a low-confidence entry — the account has a budget but no GL history this year.
-Review whether the expense was actually incurred before posting. Delete the row in the
-summary table if it should not be posted.
+Review whether the expense was actually incurred before posting. Uncheck the Include box in
+the JE review list if it should not be posted.
 
 **Reset button**
 → Use **Reset All** (sidebar) to clear all uploads and start fresh. Use **Reset Pass 2**
@@ -6261,7 +6409,11 @@ summary table if it should not be posted.
 """)
 
     st.markdown("---")
-    st.caption("Pipeline built by GRP · Version: May 2026")
+    try:
+        from version import get_version as _get_guide_version
+        st.caption(f"Pipeline built by GRP · {_get_guide_version()}")
+    except Exception:
+        st.caption("Pipeline built by GRP")
 
 
 # ──────────────────────────────────────────────────────────────
