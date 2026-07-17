@@ -4707,19 +4707,17 @@ with tab2:
                                 property_name=engine_result.property_name or _prop_display,
                                 prepared_by=st.session_state.get("prepared_by", "GRP"),
                                 property_code=_selected_code,
-                                ar_aging_data=_ar_aging_parsed_p2,
+                                ar_aging_filepath=_ar_aging_file_p2,
                                 ap_aging_filepath=st.session_state.uploaded_files.get("ap_aging"),
-                                bank_rec_data=bank_rec_data,
                                 bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
-                                daca_bank_data=daca_bank_data,
                                 daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
                                 dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
-                                property_config=_active_cfg,
                             )
                             st.caption(
-                                "↳ Workpaper: generated from template — bank rec, DACA, loans, "
-                                "AR aging, and capital tabs are sourced from the template's own "
-                                "formulas, not auto-populated. Verify those tabs after download."
+                                "↳ Workpaper: generated from template — PNC Cash, DACA, AR Aging, "
+                                "Prepaid Rent, AP, and BofA Dev tabs are refreshed each period from "
+                                "whatever raw file is uploaded in the Workpaper raw report overrides "
+                                "section; a tab shows a placeholder if its file wasn't uploaded this period."
                             )
                         else:
                             bs_workpaper_generator.generate(

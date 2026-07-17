@@ -754,114 +754,6 @@ def _copy_raw_tb_sheet(source_path: str, dest_wb, tab_name: str = 'Trial Balance
         return False
 
 
-def _write_ar_aging_raw_style_tab(wb, tab_name: str, ar_aging_data, is_prepayment_filter: bool,
-                                    property_code: str = '', property_name: str = '',
-                                    period: str = ''):
-    """
-    Recreate Yardi's native 'Aging Detail' export layout — same column
-    headers, tenant grouping, and subtotal/grand-total structure — filtered
-    to only rows where is_prepayment == is_prepayment_filter.
-
-    131100 AR Aging and 221100 Prepaid Rent both source from the same
-    uploaded AR Aging Detail file (Yardi's own export mixes both categories
-    in one report). This writes each tab as a genuine subset of that raw
-    file's rows rather than a reformatted/computed table, so both tabs still
-    look like a raw Yardi export, but never show the same transactions.
-
-    Subtotals are recomputed per tenant over the filtered subset only, so a
-    tenant with both prepayment and non-prepayment charges (rare, but does
-    occur) shows correctly split across both tabs.
-    """
-    from itertools import groupby
-    from openpyxl.utils import get_column_letter as _gcl2
-
-    ws = wb.create_sheet(tab_name[:31])
-    ws.sheet_properties.tabColor = 'BF8F00'
-
-    headers_main = ['Property', 'Customer', 'Lease', 'Status', 'Tran#', 'Charge',
-                     'Date', 'Month', 'Current', '0-30', '31-60', '61-90', 'Over', 'Pre-', 'Total']
-    headers_sub  = [None, None, None, None, None, 'Code', None, None,
-                     'Owed', 'Owed', 'Owed', 'Owed', '90 Owed', 'payments', 'Owed']
-    col_widths   = [10, 24, 22, 9, 10, 8, 11, 8, 12, 12, 12, 12, 12, 13, 13]
-
-    for _i, _w in enumerate(col_widths, 1):
-        ws.column_dimensions[_gcl2(_i)].width = _w
-
-    bold = _font(bold=True)
-
-    ws.cell(1, 1, 'Aging Detail').font = bold
-    _as_of  = getattr(ar_aging_data, 'as_of_date', '') or ''
-    _yperiod = getattr(ar_aging_data, 'period', '') or period
-    ws.cell(2, 1,
-            f'Property: {property_code}    Status: Current, Past, Future    '
-            f'Age As Of: {_as_of}  Post To: {_yperiod}')
-
-    for _c, _h in enumerate(headers_main, 1):
-        ws.cell(3, _c, _h).font = bold
-    for _c, _h in enumerate(headers_sub, 1):
-        if _h:
-            ws.cell(4, _c, _h).font = bold
-
-    ws.cell(5, 1, f'{property_name} ({property_code})').font = bold
-
-    detail_rows = list(getattr(ar_aging_data, 'detail_rows', None) or [])
-    r = 6
-    grand = [0.0] * 7   # current, 0-30, 31-60, 61-90, over90, prepayments, total
-
-    # Group by tenant preserving the source file's original order (tenants
-    # are already listed contiguously in Yardi's export) — do NOT re-sort.
-    for tenant, _group_iter in groupby(detail_rows, key=lambda x: x.tenant_name):
-        group = [g for g in _group_iter if bool(getattr(g, 'is_prepayment', False)) == is_prepayment_filter]
-        if not group:
-            continue   # this tenant has no rows matching this tab's filter
-
-        ws.cell(r, 2, tenant)
-        r += 1
-
-        sub = [0.0] * 7
-        for dr in group:
-            ws.cell(r, 1, dr.property_code)
-            ws.cell(r, 3, dr.tenant_name)
-            ws.cell(r, 4, dr.status)
-            ws.cell(r, 5, dr.tran_number)
-            ws.cell(r, 6, dr.charge_code)
-            if dr.date is not None:
-                ws.cell(r, 7, dr.date).number_format = 'mm/dd/yyyy'
-            ws.cell(r, 8, dr.month)
-            _vals = [dr.current_owed, dr.owed_0_30, dr.owed_31_60, dr.owed_61_90,
-                      dr.owed_over_90, dr.prepayments, dr.total_owed]
-            for _i, _v in enumerate(_vals):
-                _cell = ws.cell(r, 9 + _i, _v or 0)
-                _cell.number_format = '#,##0.00'
-                sub[_i] += (_v or 0)
-            r += 1
-
-        ws.cell(r, 3, tenant).font = bold
-        for _i, _v in enumerate(sub):
-            _cell = ws.cell(r, 9 + _i, _v)
-            _cell.number_format = '#,##0.00'
-            _cell.font = bold
-            grand[_i] += _v
-        r += 2   # subtotal row + blank separator, matching Yardi's layout
-
-    # Property total row
-    ws.cell(r, 1, property_code).font = bold
-    for _i, _v in enumerate(grand):
-        _cell = ws.cell(r, 9 + _i, _v)
-        _cell.number_format = '#,##0.00'
-        _cell.font = bold
-    r += 2
-
-    # Grand Total row
-    ws.cell(r, 1, 'Grand Total').font = bold
-    for _i, _v in enumerate(grand):
-        _cell = ws.cell(r, 9 + _i, _v)
-        _cell.number_format = '#,##0.00'
-        _cell.font = bold
-
-    return ws
-
-
 def _write_no_data_placeholder_tab(wb, tab_name: str, missing_label: str, account_code: str = ''):
     """
     Shown when no raw file is available to regenerate a raw-report tab this
@@ -3534,14 +3426,11 @@ def generate_bs_workpaper_from_template(
     period_end_date=None,
     prepared_by: str = '',   # C-18: no personal name default
     property_code: str = '',
-    ar_aging_data=None,
+    ar_aging_filepath: str = '',
     ap_aging_filepath: str = '',
-    bank_rec_data=None,
     bank_rec_xlsx_filepath: str = '',
-    daca_bank_data=None,
     daca_bank_rec_xlsx_filepath: str = '',
     dev_bank_rec_xlsx_filepath: str = '',
-    property_config=None,
 ) -> str:
     """
     Template-based monthly close workpaper generator.
@@ -3564,12 +3453,12 @@ def generate_bs_workpaper_from_template(
         all ``VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)`` tie-out formulas resolve.
     6.  Regenerates the 6 raw-report tabs (111100 PNC Cash, 115100 DACA,
         131100 AR Aging, 221100 Prepaid Rent, 211100 AP, 111210 BofA Dev)
-        from whatever source is available this period: a freshly uploaded raw
-        file if provided, else the same computed builder used by the standard
-        (non-template) generator, else — for the 2 accounts with neither a
-        raw file nor a builder — the generic GL transaction register. If none
-        of those is available, the existing tab is left untouched rather than
-        deleted, so a temporarily-missing upload doesn't blank out the tab.
+        every period from whatever raw file is currently uploaded — a plain
+        byte-for-byte copy, same as Yardi exported it. 131100 and 221100
+        both copy the same AR Aging Detail file (it's one Yardi report
+        covering both categories — not split). If no file is uploaded for
+        an account this period, the tab shows an explicit "no data uploaded"
+        placeholder instead of stale content from a prior period.
 
     Analysis tabs (RE Tax Analysis, Insurance Analysis, Loan Analysis,
     135150 PPD Other) and static multi-entity ledger tabs (152100 Land,
@@ -3701,11 +3590,11 @@ def generate_bs_workpaper_from_template(
     # an explicit "no file uploaded" placeholder rather than silently
     # carrying forward stale content from a prior period — that ambiguity
     # was the entire reason this regeneration logic was built.
-    #   raw_filepath  : path to the raw file for this period, if uploaded
-    #                   (None for 131100/221100 — see ar_aging_filter below)
-    #   ar_aging_filter: 131100/221100 both source from one AR Aging Detail
-    #                   file (Yardi's own export mixes both categories) —
-    #                   split by row via is_prepayment instead of raw-copying
+    #   raw_filepath  : path to the raw file for this period, if uploaded.
+    #                   131100 and 221100 both point at the same AR Aging
+    #                   Detail file — Yardi's own export mixes both
+    #                   categories in one report, so both tabs get an
+    #                   identical copy rather than a split.
     #   missing_label : human-readable name of the file to upload, shown in
     #                   the placeholder when nothing is available
     _REGEN_TABS: dict = {
@@ -3718,11 +3607,11 @@ def generate_bs_workpaper_from_template(
             'missing_label': 'DACA Bank Reconciliation Excel',
         },
         '131100 AR Aging': {
-            'account': '131100', 'ar_aging_filter': False,
+            'account': '131100', 'raw_filepath': ar_aging_filepath,
             'missing_label': 'AR Aging Detail report',
         },
         '221100 Prepaid Rent - Tenant': {
-            'account': '221100', 'ar_aging_filter': True,
+            'account': '221100', 'raw_filepath': ar_aging_filepath,
             'missing_label': 'AR Aging Detail report',
         },
         '211100 Accounts Payable - Contr': {
@@ -3846,25 +3735,11 @@ def generate_bs_workpaper_from_template(
         try:
             del wb[_sn]
 
-            if 'ar_aging_filter' in _rc:
-                # 131100 AR Aging / 221100 Prepaid Rent — both share one raw
-                # AR Aging Detail source; split by row so neither shows the
-                # other's data, preserving Yardi's raw column layout/grouping.
-                if ar_aging_data is not None and getattr(ar_aging_data, 'detail_rows', None):
-                    _write_ar_aging_raw_style_tab(
-                        wb, _sn, ar_aging_data, _rc['ar_aging_filter'],
-                        property_code=property_code, property_name=property_name,
-                        period=_period_str,
-                    )
-                else:
-                    _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
-
+            _raw_fp = _rc.get('raw_filepath')
+            if _raw_fp and os.path.exists(_raw_fp):
+                _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
             else:
-                _raw_fp = _rc.get('raw_filepath')
-                if _raw_fp and os.path.exists(_raw_fp):
-                    _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
-                else:
-                    _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
+                _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
 
             if _sn in wb.sheetnames:
                 _cur_idx = wb.sheetnames.index(_sn)
