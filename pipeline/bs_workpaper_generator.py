@@ -862,6 +862,26 @@ def _write_ar_aging_raw_style_tab(wb, tab_name: str, ar_aging_data, is_prepaymen
     return ws
 
 
+def _write_no_data_placeholder_tab(wb, tab_name: str, missing_label: str, account_code: str = ''):
+    """
+    Shown when no raw file is available to regenerate a raw-report tab this
+    period. Makes the gap explicit and actionable instead of silently
+    carrying forward stale content from a prior period.
+    """
+    ws = wb.create_sheet(tab_name[:31])
+    ws.sheet_properties.tabColor = 'FFC000'
+    ws.column_dimensions['B'].width = 95
+
+    ws.cell(2, 2, f'{account_code}  —  No data uploaded this period').font = _font(bold=True, size=12)
+    ws.cell(4, 2,
+            f'No {missing_label} was uploaded for this close period, '
+            f'so this tab could not be regenerated.')
+    ws.cell(6, 2,
+            f'Upload the {missing_label} in the "Workpaper raw report overrides" '
+            f'section of Pass 2 and re-run to populate this tab.')
+    return ws
+
+
 # ── Summary tab ───────────────────────────────────────────────
 
 def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
@@ -3677,43 +3697,41 @@ def generate_bs_workpaper_from_template(
     # Raw-report tabs — regenerated every period from whatever source is
     # currently available, rather than staying frozen at template-creation
     # content (previously called _PASTED_TABS and never touched at all).
-    #   raw_filepath        : if set and the file exists, copy it verbatim
-    #                         (None means "never raw-copy this account" —
-    #                         used for 131100/221100, which share one AR
-    #                         Aging source and must go through the builder
-    #                         so the prepayment/non-prepayment split applies)
-    #   builder_key         : CUSTOM_BUILDERS key to fall back to (or use
-    #                         exclusively, when raw_filepath is None)
-    #   builder_creates_name: the tab name the builder itself hardcodes —
-    #                         renamed back to match the template's tab name
-    #                         when it differs
-    #   builder_kwargs      : extra kwargs passed to the builder call
+    # If no raw file is available for an account this period, the tab shows
+    # an explicit "no file uploaded" placeholder rather than silently
+    # carrying forward stale content from a prior period — that ambiguity
+    # was the entire reason this regeneration logic was built.
+    #   raw_filepath  : path to the raw file for this period, if uploaded
+    #                   (None for 131100/221100 — see ar_aging_filter below)
+    #   ar_aging_filter: 131100/221100 both source from one AR Aging Detail
+    #                   file (Yardi's own export mixes both categories) —
+    #                   split by row via is_prepayment instead of raw-copying
+    #   missing_label : human-readable name of the file to upload, shown in
+    #                   the placeholder when nothing is available
     _REGEN_TABS: dict = {
         '111100 PNC Cash': {
             'account': '111100', 'raw_filepath': bank_rec_xlsx_filepath,
-            'builder_key': '111100', 'builder_creates_name': '111100 PNC Cash',
-            'builder_kwargs': {'bank_rec_data': bank_rec_data, 'property_config': property_config},
+            'missing_label': 'Bank Reconciliation Excel (PNC Operating)',
         },
         '115100 DACA': {
             'account': '115100', 'raw_filepath': daca_bank_rec_xlsx_filepath,
-            'builder_key': '115100', 'builder_creates_name': '115100 DACA',
-            'builder_kwargs': {'daca_data': daca_bank_data},
+            'missing_label': 'DACA Bank Reconciliation Excel',
         },
         '131100 AR Aging': {
             'account': '131100', 'ar_aging_filter': False,
+            'missing_label': 'AR Aging Detail report',
         },
         '221100 Prepaid Rent - Tenant': {
             'account': '221100', 'ar_aging_filter': True,
+            'missing_label': 'AR Aging Detail report',
         },
         '211100 Accounts Payable - Contr': {
             'account': '211100', 'raw_filepath': ap_aging_filepath,
-            'builder_key': None, 'builder_creates_name': None,
-            'builder_kwargs': {},
+            'missing_label': 'AP Aging Detail report',
         },
         '111210 Cash - Development - Bof': {
             'account': '111210', 'raw_filepath': dev_bank_rec_xlsx_filepath,
-            'builder_key': None, 'builder_creates_name': None,
-            'builder_kwargs': {},
+            'missing_label': 'Development Bank Statement (BofA)',
         },
     }
 
@@ -3818,81 +3836,40 @@ def generate_bs_workpaper_from_template(
             _ws_s['C4'] = _period_end
 
     # ── 7b. Regenerate raw-report tabs from currently available data ─────────
-    _tb_map: dict = {}
-    if tb_result and hasattr(tb_result, 'accounts'):
-        for _ta in tb_result.accounts:
-            _tb_map[str(getattr(_ta, 'account_code', '') or '').strip()] = _ta
-
     for _sn, _rc in _REGEN_TABS.items():
         if _sn not in wb.sheetnames:
             continue
-        _acct_code  = _rc['account']
-        _orig_idx   = wb.sheetnames.index(_sn)
-        _final_name = None
+        _acct_code   = _rc['account']
+        _orig_idx    = wb.sheetnames.index(_sn)
+        _missing_lbl = _rc.get('missing_label', 'source file')
 
         try:
+            del wb[_sn]
+
             if 'ar_aging_filter' in _rc:
                 # 131100 AR Aging / 221100 Prepaid Rent — both share one raw
                 # AR Aging Detail source; split by row so neither shows the
                 # other's data, preserving Yardi's raw column layout/grouping.
                 if ar_aging_data is not None and getattr(ar_aging_data, 'detail_rows', None):
-                    del wb[_sn]
                     _write_ar_aging_raw_style_tab(
                         wb, _sn, ar_aging_data, _rc['ar_aging_filter'],
                         property_code=property_code, property_name=property_name,
                         period=_period_str,
                     )
-                    _final_name = _sn if _sn in wb.sheetnames else None
                 else:
-                    continue   # no AR Aging file uploaded this period — leave as-is
+                    _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
 
             else:
-                _raw_fp     = _rc.get('raw_filepath')
-                _builder    = _CUSTOM_BUILDERS.get(_rc['builder_key']) if _rc.get('builder_key') else None
-                _gl_acct_r  = gl_map.get(_acct_code)
-                _tb_entry_r = _tb_map.get(_acct_code)
-
+                _raw_fp = _rc.get('raw_filepath')
                 if _raw_fp and os.path.exists(_raw_fp):
-                    del wb[_sn]
                     _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
-                    _final_name = _sn if _sn in wb.sheetnames else None
-
-                elif _builder:
-                    del wb[_sn]
-                    _builder(
-                        wb, period=_period_str, property_name=property_name,
-                        gl_acct=_gl_acct_r, tb_entry=_tb_entry_r,
-                        **_rc.get('builder_kwargs', {}),
-                    )
-                    _created_name = _rc['builder_creates_name']
-                    if _created_name in wb.sheetnames and _created_name != _sn:
-                        wb[_created_name].title = _sn
-                    _final_name = _sn if _sn in wb.sheetnames else None
-
-                elif _gl_acct_r:
-                    del wb[_sn]
-                    _write_account_tab(
-                        wb, _gl_acct_r, _tb_entry_r, period, property_name,
-                        je_adjustments=None, tab_prefix='', history_rows=[],
-                        prepared_by=prepared_by,
-                    )
-                    # _write_account_tab names the sheet from gl_acct.account_name —
-                    # force it back to the template's original tab name.
-                    _built_name = _safe_sheet_name(f'{_acct_code} {_gl_acct_r.account_name}')
-                    if _built_name in wb.sheetnames and _built_name != _sn:
-                        wb[_built_name].title = _sn
-                    _final_name = _sn if _sn in wb.sheetnames else None
-
                 else:
-                    # No fresh file, no builder, no GL activity this period for
-                    # this account — leave the existing tab untouched rather than
-                    # deleting it with nothing to replace it.
-                    continue
+                    _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
 
-            if _final_name:
-                _cur_idx = wb.sheetnames.index(_final_name)
+            if _sn in wb.sheetnames:
+                _cur_idx = wb.sheetnames.index(_sn)
                 if _cur_idx != _orig_idx:
-                    wb.move_sheet(_final_name, offset=(_orig_idx - _cur_idx))
+                    wb.move_sheet(_sn, offset=(_orig_idx - _cur_idx))
         except Exception as _rgex:
             print(f'[bs_workpaper_generator] Tab regeneration failed for {_sn}: {_rgex}')
 
