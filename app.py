@@ -55,6 +55,19 @@ from audit_trail_generator import generate_audit_trail
 # ── Data directory + property discovery ──────────────────────────────────────
 _DATA_DIR = Path(__file__).parent / "data"
 
+# Sign-off checklist items — shared between the Pass 2 sign-off UI and the
+# Audit Trail's Close & Signoff tab so both always reference the same list.
+_SIGNOFF_ITEMS = [
+    "Bank Reconciliation — Operating",
+    "Bank Reconciliation — DACA",
+    "Management Fee Invoice",
+    "GL vs TB Workpaper Tie-out",
+    "Variance Commentary",
+    "QC Checklist (7-point)",
+    "Equity Tabs (311100 / 331100 / 381100)",
+    "Exception Report",
+]
+
 def _month_abbr(month_num: int) -> str:
     """Return 3-letter month abbreviation from a month number (1=Jan … 12=Dec)."""
     return ['Jan','Feb','Mar','Apr','May','Jun',
@@ -5031,6 +5044,10 @@ with tab2:
                         property_config     = _active_cfg,
                         property_code       = (getattr(_active_cfg, 'yardi_etl_code', '') or
                                                getattr(_active_cfg, 'property_code', '') or ''),
+                        bank_recon_detail   = engine_result.bank_recon_detail,
+                        close_tracker       = st.session_state.get('close_tracker', {}),
+                        signoff_state       = st.session_state.get('signoff_state', {}),
+                        signoff_items       = _SIGNOFF_ITEMS,
                     )
                     st.session_state.pass2_output_files["audit_trail"] = _at_path
                 except Exception as _ate:
@@ -5766,16 +5783,6 @@ with tab2:
             "before downloading the full package — it will be included automatically."
         )
 
-        _SIGNOFF_ITEMS = [
-            "Bank Reconciliation — Operating",
-            "Bank Reconciliation — DACA",
-            "Management Fee Invoice",
-            "GL vs TB Workpaper Tie-out",
-            "Variance Commentary",
-            "QC Checklist (7-point)",
-            "Equity Tabs (311100 / 331100 / 381100)",
-            "Exception Report",
-        ]
         _SIGNOFF_REVIEWERS = (_active_cfg.team_members
                               if _active_cfg.team_members
                               else ["Ryan Walsh", "Natasha Parker", "Lauren Sullivan"])

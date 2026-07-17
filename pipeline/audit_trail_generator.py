@@ -6,11 +6,19 @@ during a monthly close cycle.  Intended audience: auditors, Lauren (CFO review),
 and GRP principals who want a complete, traceable record of automated entries.
 
 Workbook tabs:
-  1. Summary        — Pipeline run metadata, file inventory, totals, QC status
-  2. JE Log         — Every journal entry generated in Pass 1 (one row per JE pair)
-  3. Management Fee — Fee calculation detail with basis, rates, invoice reference
-  4. Accrual Check  — Prior-month accruals vs actuals received (Item 6 reconciliation)
-  5. QC Checks      — All QC check results with findings detail
+  1.  Summary           — Pipeline run metadata, file inventory, totals, QC status
+  2.  JE Log            — Every journal entry generated in Pass 1 (one row per JE pair)
+  3.  Management Fee    — Fee calculation detail with basis, rates, invoice reference
+  4.  Accrual Check     — Prior-month accruals vs actuals received (Item 6 reconciliation)
+  5.  QC Checks         — All QC check results with findings detail
+  6.  Yardi ETL CSV     — Exact rows submitted to Yardi, with auditor cross-reference columns
+  7.  Methodology       — Standing accounting methodology (materiality floors, amortization
+                         conventions, bonus derivation) so an auditor can confirm consistency
+                         without reading the codebase
+  8.  Cutoff Review     — JE lines dated outside the close period, flagged for manual review
+  9.  Reconciling Aging — Outstanding bank-rec items aged as of period end; flags 60+ days
+  10. Close & Signoff   — Close tracker completion status and sign-off record, cross-referenced
+                         into the audit trail itself
 
 Usage:
     from audit_trail_generator import generate_audit_trail
@@ -34,6 +42,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from version import get_version
+
+try:
+    from close_tracker_generator import CLOSE_TRACKER_STEPS
+except ImportError:
+    CLOSE_TRACKER_STEPS = []
 
 from openpyxl import Workbook
 from openpyxl.styles import (
@@ -921,6 +934,347 @@ def _build_yardi_csv_tab(ws, all_je_lines: List[dict], period: str, property_cod
     leg.alignment = _align('left')
 
 
+def _period_bounds(period: str):
+    """Return (start_date, end_date) for a period string like 'Mar-2026', or (None, None)."""
+    from calendar import monthrange as _monthrange
+    from datetime import date as _date
+    for _pfmt in ('%b-%Y', '%B-%Y', '%b %Y', '%B %Y', '%m-%Y', '%m/%Y'):
+        try:
+            _parsed = datetime.strptime(period.strip(), _pfmt)
+            _last = _monthrange(_parsed.year, _parsed.month)[1]
+            return _date(_parsed.year, _parsed.month, 1), _date(_parsed.year, _parsed.month, _last)
+        except Exception:
+            continue
+    return None, None
+
+
+# ── Tab 7: Methodology Reference ──────────────────────────────────────────────
+
+def _build_methodology(ws, property_config=None):
+    """
+    Plain-language reference for the standing accounting methodology behind
+    the pipeline's estimates and judgment areas — materiality floors,
+    amortization conventions, bonus derivation — so an auditor can confirm
+    consistency without reading the codebase.
+    """
+    ws.title = '7 - Methodology'
+    ws.sheet_properties.tabColor = '5D4037'
+
+    ws.column_dimensions['A'].width = 34
+    ws.column_dimensions['B'].width = 70
+
+    ws.merge_cells('A1:B1')
+    c = ws.cell(row=1, column=1, value='ACCOUNTING METHODOLOGY REFERENCE')
+    c.font      = _font(bold=True, size=12, color=_WHITE)
+    c.fill      = _fill('5D4037')
+    c.alignment = _align('center')
+    ws.row_dimensions[1].height = 20
+
+    row = 3
+    note = ws.cell(row=row, column=1,
+        value=('Standing rules applied consistently every period — not re-derived or '
+               'adjusted case-by-case. Per-property overrides are noted where applicable.'))
+    ws.merge_cells(f'A{row}:B{row}')
+    note.font = _font(size=9, italic=True, color='616161')
+    note.alignment = _align('left', wrap=True)
+    ws.row_dimensions[row].height = 24
+    row += 2
+
+    _qc_thr = getattr(property_config, 'qc_thresholds', None) or {}
+    _t1_abs = _qc_thr.get('tier1_abs', 5000.0)
+    _t1_pct = _qc_thr.get('tier1_pct', 0.05)
+    _t2_min = _qc_thr.get('tier2_min', 2500.0)
+    _mom_sw = _qc_thr.get('mom_swing', 10000.0)
+
+    _write_section_header(ws, row, 'ACCRUAL DETECTION (4 LAYERS)', 2)
+    row += 1
+    row = _write_kv(ws, row, 'Layer 1 — Nexus Open Invoices',
+                    'Any open invoice in the Nexus AP export not yet posted to the GL is accrued in full.')
+    row = _write_kv(ws, row, 'Layer 2 — Invoice Proration',
+                    'Utilities: daily rate x uncovered days. All other recurring services: full prior invoice amount.')
+    row = _write_kv(ws, row, 'Layer 3 — Historical Recurring',
+                    'Budget Comparison YTD actual / months elapsed. January uses annual budget / 12 as a fallback. '
+                    f'Materiality floor: $5,000 — accounts below this are not auto-accrued.')
+    row = _write_kv(ws, row, 'Layer 4 — Payroll Bonus',
+                    'User-entered annual amount / 12, or Kardin-derived if not entered. Suppressed in the month the '
+                    'bonus is actually paid (GL activity already reflects it).')
+    row += 1
+
+    _write_section_header(ws, row, 'MATERIALITY / VARIANCE THRESHOLDS', 2)
+    row += 1
+    row = _write_kv(ws, row, 'Tier 1 Variance Flag', f'>= ${_t1_abs:,.0f} OR >= {_t1_pct:.0%} of budget')
+    row = _write_kv(ws, row, 'Tier 2 Variance Flag', f'${_t2_min:,.0f} - ${_t1_abs:,.0f} and >= 5% of budget')
+    row = _write_kv(ws, row, 'Month-over-Month Swing Flag', f'>= ${_mom_sw:,.0f}, either direction')
+    row += 1
+
+    _write_section_header(ws, row, 'PREPAID / AMORTIZATION CONVENTIONS', 2)
+    row += 1
+    row = _write_kv(ws, row, 'Endpoint Proration',
+                    'First and last month of service prorated by actual days active in that month. '
+                    'All middle months amortize the full monthly amount.')
+    row = _write_kv(ws, row, 'RE Tax Quarterly Cycle',
+                    'Payment month: defer 2/3 of the quarterly bill to prepaid. Each of the next 2 months '
+                    'releases 1/3. Applied identically every quarter, no case-by-case adjustment.')
+    row = _write_kv(ws, row, 'Insurance Amortization',
+                    'Config-driven (named policies) where available; falls back to Kardin-derived or '
+                    'Budget-Comparison-derived monthly amounts if no policy config exists for this property.')
+    row += 1
+
+    _write_section_header(ws, row, 'MANAGEMENT FEE', 2)
+    row += 1
+    _fee_lines_cfg = getattr(property_config, 'management_fees', None) or []
+    if _fee_lines_cfg:
+        for _fl in _fee_lines_cfg:
+            row = _write_kv(ws, row, f'{_fl.name} Rate', f'{_fl.rate:.2%} of cash received')
+    else:
+        row = _write_kv(ws, row, 'Fee Rate', '3.00% of cash received (1.25% + 1.75% split)')
+    row = _write_kv(ws, row, 'Cash Received Basis Priority',
+                    'Receivable Summary > Receivable Detail + AR Aging > Receivable Detail only > '
+                    'DACA additions > GL 111100 debits > Revenue proxy (first available wins)')
+
+
+# ── Tab 8: Cutoff Review ──────────────────────────────────────────────────────
+
+def _build_cutoff_review(ws, all_je_lines: List[dict], period: str):
+    """
+    Lists any JE line whose own date falls outside the close period's date
+    range — a manual cutoff review aid, not an automated pass/fail. Accrual
+    JEs are conventionally dated at period end; a line dated outside the
+    period is worth a second look, not necessarily an error (e.g. a Nexus
+    invoice's original date may legitimately predate the period).
+    """
+    ws.title = '8 - Cutoff Review'
+    ws.sheet_properties.tabColor = 'AD1457'
+
+    ws.column_dimensions['A'].width = 13
+    ws.column_dimensions['B'].width = 13
+    ws.column_dimensions['C'].width = 34
+    ws.column_dimensions['D'].width = 44
+    ws.column_dimensions['E'].width = 14
+    ws.column_dimensions['F'].width = 16
+
+    ws.merge_cells('A1:F1')
+    c = ws.cell(row=1, column=1, value='CUTOFF REVIEW — JE LINES DATED OUTSIDE THE CLOSE PERIOD')
+    c.font      = _font(bold=True, size=12, color=_WHITE)
+    c.fill      = _fill('AD1457')
+    c.alignment = _align('center')
+    ws.row_dimensions[1].height = 20
+
+    row = 3
+    note = ws.cell(row=row, column=1,
+        value=('Every JE line with a date field is checked against this period\'s date range. '
+               'A line outside the range is not automatically wrong — review each one to confirm '
+               'the expense/revenue is assigned to the correct period.'))
+    ws.merge_cells(f'A{row}:F{row}')
+    note.font = _font(size=9, italic=True, color='616161')
+    note.alignment = _align('left', wrap=True)
+    ws.row_dimensions[row].height = 28
+    row += 2
+
+    period_start, period_end = _period_bounds(period)
+    if period_start is None:
+        ws.cell(row=row, column=1,
+                value='Could not parse close period — cutoff check skipped.').font = _font(italic=True, color='9E9E9E')
+        return
+
+    from datetime import datetime as _dt, date as _date
+
+    def _coerce(d):
+        if d is None:
+            return None
+        if isinstance(d, _dt):
+            return d.date()
+        if isinstance(d, _date):
+            return d
+        if isinstance(d, str) and d.strip():
+            for fmt in ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d'):
+                try:
+                    return _dt.strptime(d.strip(), fmt).date()
+                except ValueError:
+                    continue
+        return None
+
+    flagged = []
+    for l in all_je_lines:
+        d = _coerce(l.get('date'))
+        if d is not None and not (period_start <= d <= period_end):
+            flagged.append((l, d))
+
+    if not flagged:
+        ws.cell(row=row, column=1,
+                value=f'All dated JE lines fall within {period_start:%m/%d/%Y} – {period_end:%m/%d/%Y}. '
+                      'No cutoff review items.').font = _font(color='2E7D32', bold=True)
+        return
+
+    headers = ['JE #', 'Date', 'Account', 'Description', 'Amount', 'Source']
+    _write_header_row(ws, row, headers, fill_hex='AD1457', font_size=9)
+    row += 1
+    for l, d in sorted(flagged, key=lambda x: x[1]):
+        src_lbl = _SOURCE_META.get(l.get('source', ''), (l.get('source', ''), ''))[0]
+        amt = float(l.get('debit') or l.get('credit') or 0)
+        vals = [
+            l.get('je_number', ''), d.strftime('%m/%d/%Y'),
+            f"{l.get('account_code', '')}  {l.get('account_name', '')}".strip(),
+            str(l.get('description', '') or ''), amt, src_lbl,
+        ]
+        for col, val in enumerate(vals, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.fill = _fill(_AMBER_LITE)
+            cell.font = _font(size=9)
+            cell.alignment = _align('right' if col == 5 else 'left')
+            if col == 5:
+                cell.number_format = '#,##0.00'
+        row += 1
+
+
+# ── Tab 9: Reconciling Item Aging ──────────────────────────────────────────────
+
+def _build_reconciling_aging(ws, bank_recon_detail, period: str):
+    """
+    Ages each outstanding bank-rec item as of period end (days since the
+    check/item date). Flags anything outstanding 60+ days — the classic
+    auditor question of whether reconciling items are aging or clearing.
+    """
+    ws.title = '9 - Reconciling Aging'
+    ws.sheet_properties.tabColor = '00838F'
+
+    ws.column_dimensions['A'].width = 14
+    ws.column_dimensions['B'].width = 14
+    ws.column_dimensions['C'].width = 34
+    ws.column_dimensions['D'].width = 16
+    ws.column_dimensions['E'].width = 14
+    ws.column_dimensions['F'].width = 12
+
+    ws.merge_cells('A1:F1')
+    c = ws.cell(row=1, column=1, value='BANK RECONCILIATION — OUTSTANDING ITEM AGING')
+    c.font      = _font(bold=True, size=12, color=_WHITE)
+    c.fill      = _fill('00838F')
+    c.alignment = _align('center')
+    ws.row_dimensions[1].height = 20
+
+    row = 3
+    if not bank_recon_detail or not getattr(bank_recon_detail, 'outstanding_checks', None):
+        ws.cell(row=row, column=1,
+                value='No outstanding reconciling items this period.').font = _font(italic=True, color='9E9E9E')
+        return
+
+    _, period_end = _period_bounds(period)
+
+    headers = ['Date', 'Reference', 'Description', 'Amount', 'Days Outstanding', 'Status']
+    _write_header_row(ws, row, headers, fill_hex='00838F', font_size=9)
+    row += 1
+
+    items = list(bank_recon_detail.outstanding_checks)
+    items_with_age = []
+    for it in items:
+        d = getattr(it, 'date', None)
+        age = (period_end - d).days if (d is not None and period_end is not None) else None
+        items_with_age.append((it, d, age))
+    items_with_age.sort(key=lambda x: (x[2] is None, -(x[2] or 0)))
+
+    for it, d, age in items_with_age:
+        aged = age is not None and age >= 60
+        bg = _AMBER_LITE if aged else _WHITE
+        status = f'⚠️ AGED ({age}d)' if aged else (f'{age}d' if age is not None else 'no date')
+        vals = [
+            d.strftime('%m/%d/%Y') if d else '—',
+            str(getattr(it, 'reference', '') or getattr(it, 'control', '') or ''),
+            str(getattr(it, 'description', '') or ''),
+            float(getattr(it, 'credit', 0) or 0),
+            age if age is not None else '—',
+            status,
+        ]
+        for col, val in enumerate(vals, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.fill = _fill(bg)
+            cell.font = _font(size=9, bold=(col == 6 and aged), color='E65100' if (col == 6 and aged) else _BLACK)
+            cell.alignment = _align('right' if col in (4, 5) else 'left')
+            if col == 4:
+                cell.number_format = '#,##0.00'
+        row += 1
+
+    row += 1
+    aged_count = sum(1 for _, _, age in items_with_age if age is not None and age >= 60)
+    if aged_count:
+        c2 = ws.cell(row=row, column=1,
+                     value=f'{aged_count} item(s) outstanding 60+ days — review for clearing or write-off.')
+        c2.font = _font(bold=True, size=9, color='E65100')
+
+
+# ── Tab 10: Close Tracker & Sign-off Summary ──────────────────────────────────
+
+def _build_close_signoff(ws, close_tracker: Optional[Dict[int, dict]],
+                          signoff_state: Optional[Dict[int, dict]],
+                          signoff_items: Optional[List[str]]):
+    """
+    Pulls the close-tracker completion status and sign-off record into the
+    audit trail itself, so an auditor reviewing this one file can see who
+    did what and when without being handed two more separate files.
+    """
+    ws.title = '10 - Close & Signoff'
+    ws.sheet_properties.tabColor = '283593'
+
+    ws.column_dimensions['A'].width = 6
+    ws.column_dimensions['B'].width = 40
+    ws.column_dimensions['C'].width = 20
+    ws.column_dimensions['D'].width = 18
+
+    ws.merge_cells('A1:D1')
+    c = ws.cell(row=1, column=1, value='CLOSE TRACKER & SIGN-OFF SUMMARY')
+    c.font      = _font(bold=True, size=12, color=_WHITE)
+    c.fill      = _fill('283593')
+    c.alignment = _align('center')
+    ws.row_dimensions[1].height = 20
+
+    row = 3
+    _write_section_header(ws, row, 'CLOSE PROCESS TRACKER (9 STEPS)', 4)
+    row += 1
+    if not CLOSE_TRACKER_STEPS:
+        ws.cell(row=row, column=1, value='Close tracker step list unavailable.').font = _font(italic=True)
+        row += 1
+    else:
+        _write_header_row(ws, row, ['#', 'Step', 'Completed By', 'Timestamp'], fill_hex='283593', font_size=9)
+        row += 1
+        ct = close_tracker or {}
+        for idx, label, _kind in CLOSE_TRACKER_STEPS:
+            entry = ct.get(idx)
+            done = bool(entry)
+            bg = _GRP_GREEN_LITE if done else _GREY_LITE
+            vals = [idx, label,
+                    (entry or {}).get('completed_by', '—') if done else 'Pending',
+                    (entry or {}).get('timestamp', '—') if done else '—']
+            for col, val in enumerate(vals, 1):
+                cell = ws.cell(row=row, column=col, value=val)
+                cell.fill = _fill(bg)
+                cell.font = _font(size=9, color='2E7D32' if done else '9E9E9E')
+                cell.alignment = _align('left')
+            row += 1
+
+    row += 1
+    _write_section_header(ws, row, 'SIGN-OFF CHECKLIST', 4)
+    row += 1
+    if not signoff_items:
+        ws.cell(row=row, column=1, value='Sign-off checklist not available for this run.').font = _font(italic=True)
+        return
+
+    _write_header_row(ws, row, ['#', 'Item', 'Signed By', 'Timestamp'], fill_hex='283593', font_size=9)
+    row += 1
+    so = signoff_state or {}
+    for idx, item in enumerate(signoff_items):
+        entry = so.get(idx)
+        done = bool(entry)
+        bg = _GRP_GREEN_LITE if done else _GREY_LITE
+        vals = [idx + 1, item,
+                (entry or {}).get('signed_by', '—') if done else 'Pending',
+                (entry or {}).get('timestamp', '—') if done else '—']
+        for col, val in enumerate(vals, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.fill = _fill(bg)
+            cell.font = _font(size=9, color='2E7D32' if done else '9E9E9E')
+            cell.alignment = _align('left')
+        row += 1
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def generate_audit_trail(
@@ -934,6 +1288,10 @@ def generate_audit_trail(
     files_uploaded: Optional[Dict[str, Any]] = None,
     property_config=None,
     property_code: str = '',
+    bank_recon_detail=None,
+    close_tracker: Optional[Dict[int, dict]] = None,
+    signoff_state: Optional[Dict[int, dict]] = None,
+    signoff_items: Optional[List[str]] = None,
 ) -> str:
     """
     Generate the GA Pipeline Audit Trail workbook.
@@ -951,6 +1309,11 @@ def generate_audit_trail(
                              generic defaults (invoice prefix, entity names).
         property_code:       Yardi property code — used to reproduce the exact ETL
                              PROPERTY column value in Tab 6 (Yardi ETL CSV).
+        bank_recon_detail:   BankReconDetail from engine_result.bank_recon_detail —
+                             powers Tab 9 (Reconciling Item Aging).
+        close_tracker:       st.session_state.close_tracker dict — powers Tab 10.
+        signoff_state:       st.session_state.signoff_state dict — powers Tab 10.
+        signoff_items:       Ordered list of sign-off checklist item labels — powers Tab 10.
 
     Returns:
         output_path (for chaining).
@@ -988,6 +1351,18 @@ def generate_audit_trail(
 
     ws6 = wb.create_sheet()
     _build_yardi_csv_tab(ws6, all_je_lines, period, property_code)
+
+    ws7 = wb.create_sheet()
+    _build_methodology(ws7, property_config=property_config)
+
+    ws8 = wb.create_sheet()
+    _build_cutoff_review(ws8, all_je_lines, period)
+
+    ws9 = wb.create_sheet()
+    _build_reconciling_aging(ws9, bank_recon_detail, period)
+
+    ws10 = wb.create_sheet()
+    _build_close_signoff(ws10, close_tracker, signoff_state, signoff_items)
 
     wb.save(output_path)
     return output_path
