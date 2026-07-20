@@ -577,10 +577,14 @@ def detect_retax_amortization(
     period: str = '',
     re_tax_bill_amount: float = 0.0,
     re_tax_payment_months=None,
+    budget_data=None,
+    kardin_records=None,
 ) -> Optional[Dict[str, Any]]:
     """
     RE Tax prepaid deferral / release JE.  Fires every month automatically —
-    falls back to GL auto-detection when re_tax_bill_amount is not entered.
+    falls back to GL auto-detection when re_tax_bill_amount is not entered,
+    then to a budget-based estimate (annual RE tax budget ÷ 4) if GL
+    auto-detection also finds nothing usable.
 
     Business rule (quarterly invoice cycle — Jan / Apr / Jul / Oct):
     ─────────────────────────────────────────────────────────────────
@@ -622,6 +626,11 @@ def detect_retax_amortization(
         period:              Close period string e.g. 'Jan-2026'.
         re_tax_bill_amount:  Quarterly RE tax bill (user-entered); 0 triggers
                              GL auto-detection.
+        budget_data:         Budget Comparison rows — last-resort fallback
+                             (annual RE tax budget ÷ 4) when neither a manual
+                             entry nor GL auto-detection finds a bill.
+        kardin_records:      Kardin annual budget records — same fallback,
+                             used when the account has no BC data.
 
     Returns a JE dict or None.
     """
@@ -745,6 +754,42 @@ def detect_retax_amortization(
                     f'${beg_135120:,.2f} × {multiplier}'
                 )
 
+    # ── Budget-based fallback: last resort before giving up entirely ────────
+    # Only reached when no manual entry exists AND GL auto-detection (Berkadia
+    # transaction lookup / 135120 back-calc) found nothing usable — e.g. the
+    # very first month, before any prepaid balance exists to back-calculate
+    # from. Entering the real bill in the One-Off Accruals table is always
+    # preferred and takes priority over both this and the GL auto-detect
+    # above; this only prevents the RE tax JE from being silently skipped
+    # when neither of those is available.
+    if bill <= 0:
+        _annual_retax = 0.0
+        for _bi_item in (budget_data if isinstance(budget_data, list) else []):
+            _bi_code = str(
+                (_bi_item.get('account_code', '') if isinstance(_bi_item, dict)
+                 else getattr(_bi_item, 'account_code', '')) or ''
+            ).strip()
+            if _bi_code != _RETAX_EXPENSE_ACCT:
+                continue
+            _annual_retax = abs(float(
+                (_bi_item.get('annual', 0) if isinstance(_bi_item, dict)
+                 else getattr(_bi_item, 'annual', 0)) or 0
+            ))
+            break
+        if _annual_retax < 1:
+            for _kr in (kardin_records or []):
+                if str(_kr.get('account_code', '') or '').strip() != _RETAX_EXPENSE_ACCT:
+                    continue
+                _annual_retax = abs(float(_kr.get('m_total', 0) or 0))
+                break
+        if _annual_retax >= 1:
+            bill        = _round(_annual_retax / 4.0)
+            auto_source = (
+                f'estimated from annual RE tax budget ${_annual_retax:,.2f} ÷ 4 — '
+                f'no bill entered and GL auto-detection found nothing; verify '
+                f'against the actual Berkadia tax bill'
+            )
+
     if bill <= 0:
         import warnings as _warnings
         # H-5 / A-6: Surface a meaningful warning so a zero-bill never silently
@@ -754,7 +799,8 @@ def detect_retax_amortization(
             _warnings.warn(
                 f'RE tax bill could not be auto-detected for payment month {period_month} '
                 f'(GL 115200 credit = ${-net_115200:,.2f}, GL 641110 net debit = ${net_641110:,.2f}). '
-                f'No Berkadia entry found in GL. RE tax deferral JE will be skipped. '
+                f'No Berkadia entry found in GL, and no annual RE tax budget was available '
+                f'for a fallback estimate. RE tax deferral JE will be skipped. '
                 f'Enter the bill amount manually in the One-Off Accruals table '
                 f'(DR 135120 Prepaid RE Taxes / CR 641110 Real Estate Taxes).',
                 UserWarning,
@@ -767,7 +813,8 @@ def detect_retax_amortization(
             _warnings.warn(
                 f'RE tax release JE skipped for month {period_month}: GL 135120 '
                 f'beginning balance is ${beg_135120:,.2f} (expected > $100 for a '
-                f'release month).  If a release is expected, check the 135120 '
+                f'release month), and no annual RE tax budget was available for a '
+                f'fallback estimate. If a release is expected, check the 135120 '
                 f'beginning balance in the GL export or enter the amount manually '
                 f'(DR 641110 Real Estate Taxes / CR 135120 Prepaid RE Taxes).',
                 UserWarning,
@@ -1020,7 +1067,7 @@ def detect_invoice_proration_accruals(
                      month-end when ``month_end`` is not supplied explicitly)
         month_end:   Override: last day of the reporting month.  If None, derived
                      from ``period`` or from gl_data.metadata.period.
-        materiality: Minimum accrual (default $500) — smaller amounts are skipped.
+        materiality: Minimum accrual (default $2,500) — smaller amounts are skipped.
 
     Returns:
         List of candidate dicts::
@@ -3071,7 +3118,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     if gl_data:
         retax = detect_retax_amortization(gl_data, period=period,
                                            re_tax_bill_amount=re_tax_bill_amount,
-                                           re_tax_payment_months=re_tax_payment_months)
+                                           re_tax_payment_months=re_tax_payment_months,
+                                           budget_data=budget_data,
+                                           kardin_records=kardin_records)
         if retax:
             _post_amort(retax, 'TAX', 'TAX-AMORT', '[RE Tax Amortization]')
     # Note: detect_retax_escrow_je() (full-bill DR 641110 / CR 115200) is retained
@@ -3357,6 +3406,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             metered_utility_accounts=metered_utility_accounts,
             per_invoice_utility_accounts=per_invoice_utility_accounts,
             per_invoice_accrual_accounts=per_invoice_accrual_accounts,
+            materiality=accrual_materiality_floor,
         )
         _proration_covered: set = set()   # accounts handled by this layer
         for pro in prorations:
@@ -4432,15 +4482,35 @@ def build_reversing_je_csv(
     import csv as _csv_rev
     from calendar import monthrange as _monthrange_rev
 
-    # Derive last-day date for next_period
-    next_date = ''
-    try:
-        _dt_rev = datetime.strptime(next_period, '%b-%Y')
-        _last_rev = _monthrange_rev(_dt_rev.year, _dt_rev.month)[1]
-        from datetime import date as _date_rev
-        next_date = _date_rev(_dt_rev.year, _dt_rev.month, _last_rev).strftime('%m/%d/%Y')
-    except Exception:
-        pass
+    # Derive last-day date for next_period. Accepts 'Mon-YYYY', 'Mon YYYY',
+    # 'Month YYYY', 'Month-YYYY', or 'MM/YYYY' / 'MM-YYYY' — this field is a
+    # free-text UI input (not a fixed dropdown), so a single rigid '%b-%Y'
+    # strptime silently produced a blank DATE column on any other format.
+    # Raise instead of leaving next_date blank, since a blank DATE gets
+    # rejected or mis-posted by Yardi with no other signal of the failure.
+    _rev_month = _rev_year = None
+    _m_rev = re.match(r'([A-Za-z]{3,})[- ](\d{4})', (next_period or '').strip())
+    if _m_rev:
+        try:
+            _rev_month = datetime.strptime(_m_rev.group(1)[:3].capitalize(), '%b').month
+            _rev_year  = int(_m_rev.group(2))
+        except ValueError:
+            pass
+    if _rev_month is None:
+        _m_rev2 = re.match(r'(\d{1,2})[/\-](\d{4})', (next_period or '').strip())
+        if _m_rev2 and 1 <= int(_m_rev2.group(1)) <= 12:
+            _rev_month = int(_m_rev2.group(1))
+            _rev_year  = int(_m_rev2.group(2))
+
+    if _rev_month is None:
+        raise ValueError(
+            f"Could not parse reversing period '{next_period}' — expected a "
+            f"format like 'Feb-2026', 'February 2026', or '02/2026'."
+        )
+
+    _last_rev = _monthrange_rev(_rev_year, _rev_month)[1]
+    from datetime import date as _date_rev
+    next_date = _date_rev(_rev_year, _rev_month, _last_rev).strftime('%m/%d/%Y')
 
     # Index shortcuts
     _ti  = _ETL_IDX['TRANNUM']

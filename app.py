@@ -2388,7 +2388,7 @@ with tab1:
                         metered_utility_accounts=getattr(_active_cfg, 'metered_utility_accounts', None) or None,
                         per_invoice_utility_accounts=getattr(_active_cfg, 'per_invoice_utility_accounts', None) or None,
                         per_invoice_accrual_accounts=getattr(_active_cfg, 'per_invoice_accrual_accounts', None) or None,
-                        accrual_materiality_floor=getattr(_active_cfg, 'accrual_materiality_floor', 500.0),
+                        accrual_materiality_floor=getattr(_active_cfg, 'accrual_materiality_floor', 2500.0),
                         fiscal_year_start_month=getattr(_active_cfg, 'fiscal_year_start_month', 1) or 1,
                         layer3_exclude_accounts=getattr(_active_cfg, 'layer3_exclude_accounts', None) or None,
                     )
@@ -4823,14 +4823,20 @@ with tab2:
                         except Exception:
                             _rd_parsed_p2 = None
 
-                    fee_result = calculate_mgmt_fee(
-                        gl_parsed=gl_parsed,
-                        budget_rows=bc_parsed or [],
-                        daca_parsed=daca_bank_data,
-                        receivable_summary=_rs_parsed_p2,
-                        receivable_detail=_rd_parsed_p2,
-                        ar_aging=_ar_aging_parsed_p2,
-                    )
+                    import warnings as _warnings_fee_p2
+                    with _warnings_fee_p2.catch_warnings(record=True) as _fee_warns_p2:
+                        _warnings_fee_p2.simplefilter("always")
+                        fee_result = calculate_mgmt_fee(
+                            gl_parsed=gl_parsed,
+                            budget_rows=bc_parsed or [],
+                            daca_parsed=daca_bank_data,
+                            receivable_summary=_rs_parsed_p2,
+                            receivable_detail=_rd_parsed_p2,
+                            ar_aging=_ar_aging_parsed_p2,
+                        )
+                    for _fw_p2 in _fee_warns_p2:
+                        if issubclass(_fw_p2.category, UserWarning):
+                            st.warning(str(_fw_p2.message), icon="⚠️")
                     st.session_state.pass2_output_files["fee_result"] = fee_result
 
                     # Generate management fee invoice PDF

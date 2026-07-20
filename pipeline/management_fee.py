@@ -199,6 +199,21 @@ def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
     scan_prepay = 0.0
 
     if ar_aging is not None and hasattr(ar_aging, 'prepayment_balance'):
+        # The parser swallows its own read/format errors and still returns a
+        # dataclass with prepayment_balance=0.0, indistinguishable from a real
+        # $0 balance unless _parse_error is checked explicitly. Warn so a failed
+        # parse isn't silently treated as "no prepayments to exclude" — the fee
+        # basis below still falls back to the charge-code scan (scan_prepay).
+        if getattr(ar_aging, '_parse_error', None):
+            import warnings as _w
+            _w.warn(
+                f'AR Aging Detail failed to parse ({ar_aging._parse_error}) — its '
+                f'prepayment balance could not be read. Falling back to the '
+                f'charge-code scan for prepayment exclusion; verify the management '
+                f'fee basis manually against the AR Aging report.',
+                UserWarning,
+                stacklevel=2,
+            )
         # AR Aging prepayment_balance can be negative in application months (a tenant
         # applies a prior prepayment against current rent). abs() ensures we exclude
         # the correct cash amount regardless of the direction of the Yardi balance.
