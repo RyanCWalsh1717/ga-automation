@@ -1311,6 +1311,18 @@ def detect_invoice_proration_accruals(
                 # period happens to parse as 1 month even though the pipeline needs
                 # to compound multiple months of accrual between real invoices.
                 _p1_j_cr = _net_j_credit(acct)
+
+                # Guard: don't compound the reversal on top of monthly_rate if a
+                # REAL (non-pipeline) invoice already posted this period covering
+                # it — otherwise the liability the real invoice already satisfied
+                # gets double-counted. Mirrors the K/P/C-only net check used by
+                # the Layer 3 historical-recurring compound path above.
+                _j_cr_total = _j_credits(acct)
+                _kpc_net    = acct.net_change - (_p1_j_dr - _j_cr_total)
+                _non_j_net  = _kpc_net if _kpc_net > 0.01 else 0.0
+                if _p1_j_cr > 0 and _non_j_net >= _p1_j_cr * 0.25:
+                    _p1_j_cr = 0.0
+
                 accrual_amount = _p1_j_cr + monthly_rate
 
                 _cmpd_note = (

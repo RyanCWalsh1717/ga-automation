@@ -3736,9 +3736,10 @@ def generate_bs_workpaper_from_template(
             del wb[_sn]
 
             _raw_fp = _rc.get('raw_filepath')
+            _copied_ok = False
             if _raw_fp and os.path.exists(_raw_fp):
-                _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
-            else:
+                _copied_ok = _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
+            if not _copied_ok:
                 _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
 
             if _sn in wb.sheetnames:

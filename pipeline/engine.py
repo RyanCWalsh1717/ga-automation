@@ -1532,7 +1532,25 @@ def run_pipeline(files: dict) -> EngineResult:
                           result.parsed['gl'].metadata.property_code) or ''
             yardi_rec = parse_yardi_bank_rec(files["bank_rec"], property_code=_prop_code)
             result.parsed["bank_rec"] = yardi_rec
-            bank_data = yardi_rec   # preferred source
+            # parse_yardi_bank_rec() swallows its own exceptions and always returns
+            # a dict (never raises) — a failed parse sets _parse_error and leaves
+            # every balance field None rather than propagating. Detect that here so
+            # bank_data stays None and the PNC fallback below can actually trigger,
+            # instead of silently reconciling against an all-None sentinel.
+            _yr_failed = bool(yardi_rec.get('_parse_error')) or (
+                yardi_rec.get('beginning_balance') is None
+                and yardi_rec.get('ending_balance') is None
+                and yardi_rec.get('reconciled_bank_balance') is None
+            )
+            if _yr_failed:
+                result.add_exception(
+                    "warning", "parse", "bank_rec",
+                    f"Yardi Bank Rec parse failed"
+                    f"{': ' + yardi_rec['_parse_error'] if yardi_rec.get('_parse_error') else ''}"
+                    f" — falling back to raw PNC statement if uploaded."
+                )
+            else:
+                bank_data = yardi_rec   # preferred source
         except Exception as e:
             result.add_exception("warning", "parse", "bank_rec",
                                  f"Yardi Bank Rec parse failed: {e}")

@@ -145,6 +145,10 @@ def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
     Revenue accounts: TB net = credit - debit (income shown positive in BC)
     Expense accounts: TB net = debit - credit
     """
+    if not budget_rows:
+        return QCResult('CHECK_1', 'TB to Budget Comparison Tie-Out',
+                        'FAIL', 'Budget Comparison not uploaded — tie-out not performed.', [])
+
     findings: List[QCFinding] = []
     bc_map: Dict[str, dict] = {}
 
@@ -211,6 +215,10 @@ def check_2_budget_variances(
     Thresholds default to module constants but can be overridden per-property
     via config.yaml qc_thresholds — run_qc() reads and passes them automatically.
     """
+    if not budget_rows:
+        return QCResult('CHECK_2', 'Budget Variances',
+                        'FAIL', 'Budget Comparison not uploaded — variance check not performed.', [])
+
     findings: List[QCFinding] = []
 
     # Skip rows that should never be commented
@@ -350,6 +358,10 @@ def check_4_mom_swings(budget_rows: List[dict],
     swing — flood of false positives. Suppress the check in January.
     """
     from variance_comments import _is_skip_row
+
+    if not budget_rows:
+        return QCResult('CHECK_4', 'Month-over-Month Swings',
+                        'FAIL', 'Budget Comparison not uploaded — MoM swing check not performed.', [])
 
     # January: no prior-month data available — skip to avoid false positives
     if period_month == 1:
@@ -548,6 +560,10 @@ def check_6_accruals_vs_budget(budget_rows: List[dict],
     Also verifies that suggested accrual entries (from accrual engine) exist where expected.
     """
     from variance_comments import _is_skip_row, build_kardin_enrichment
+
+    if not budget_rows:
+        return QCResult('CHECK_6', 'Accruals vs Budget Coverage',
+                        'FAIL', 'Budget Comparison not uploaded — accrual coverage check not performed.', [])
 
     findings: List[QCFinding] = []
     kardin_records = kardin_records or []
