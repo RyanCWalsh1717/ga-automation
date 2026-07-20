@@ -244,18 +244,24 @@ def _parse_bank_date(date_str: str, period_str: str) -> Optional[date]:
     using the year from the GL period string (e.g. 'Feb-2026').
 
     Year-crossover logic (mm/dd format only — no explicit year):
-    If the bank date month is strictly greater than the GL period month, the
-    bank transaction is from the prior calendar year.  This covers all
-    quarter-end / quarter-start boundaries (e.g. a Dec check clearing in a
-    Jan close, a Mar check clearing in an Apr close, etc.) rather than only
-    the original Nov/Dec → Jan/Feb special case.
+    If the bank date month is more than 2 months ahead of the GL period
+    month, the bank transaction is treated as a long-outstanding item from
+    the prior calendar year (e.g. a Dec check finally clearing in a Jan
+    close: gap = 11). A small forward gap (1-2 months) is treated as the
+    same year instead — it's far more likely to be an early-clearing item
+    trailing off the end of the current period's bank statement (e.g. a
+    Feb-dated line appearing in a Jan close, gap = 1) than a check that sat
+    outstanding for most of a year.
     """
     if not date_str or not isinstance(date_str, str):
         return None
 
-    # Extract year and month from period string (e.g. 'Feb-2026')
-    year = datetime.now().year
-    period_month = datetime.now().month
+    # Extract year and month from period string (e.g. 'Feb-2026'). Both are
+    # required to safely resolve a bare 'mm/dd' date (no explicit year) below —
+    # silently falling back to today's date here would mis-date bank items
+    # under a period string this function can't parse, with no error surfaced.
+    year = None
+    period_month = None
     if '-' in period_str:
         try:
             parts = period_str.split('-')
@@ -269,8 +275,14 @@ def _parse_bank_date(date_str: str, period_str: str) -> Optional[date]:
         try:
             parsed = datetime.strptime(date_str.strip(), fmt)
             if fmt == '%m/%d':
-                # Generalised crossover: bank month > GL period month → prior year
-                if parsed.month > period_month:
+                if year is None or period_month is None:
+                    # Can't determine the close period — an mm/dd-only date is
+                    # ambiguous without it. Return None (callers already treat
+                    # an unparseable bank date as "no date-proximity match").
+                    return None
+                # Generalised crossover: bank month noticeably ahead of the GL
+                # period month → long-outstanding item from the prior year.
+                if parsed.month - period_month > 2:
                     return parsed.replace(year=year - 1).date()
                 return parsed.replace(year=year).date()
             return parsed.date()
@@ -1104,12 +1116,17 @@ def check_debt_service(gl_result, loan_result,
         if isinstance(loan, dict):
             # payment_interest = current-month interest from the Berkadia statement.
             # Prefer this over interest_paid_ytd — it is the PTD amount that should
-            # match the GL accrual for this period.
-            interest_ptd = loan.get('payment_interest') or loan.get('interest_paid_ytd', 0)
+            # match the GL accrual for this period. Check `is not None` rather than
+            # truthiness — a legitimate $0 (interest-only holiday, payoff month)
+            # must not be treated the same as "not parsed" and replaced with the
+            # much larger YTD figure.
+            _pi = loan.get('payment_interest')
+            interest_ptd = _pi if _pi is not None else loan.get('interest_paid_ytd', 0)
             principal = loan.get('principal_balance', 0)
             name = loan.get('property_name', loan.get('name', 'Unknown'))
         else:
-            interest_ptd = getattr(loan, 'payment_interest', None) or getattr(loan, 'interest_paid_ytd', 0)
+            _pi = getattr(loan, 'payment_interest', None)
+            interest_ptd = _pi if _pi is not None else getattr(loan, 'interest_paid_ytd', 0)
             principal = getattr(loan, 'principal_balance', 0)
             name = getattr(loan, 'property_name', getattr(loan, 'name', 'Unknown'))
 
@@ -1178,7 +1195,11 @@ def check_budget_variances(is_result, budget_result, threshold_pct=5.0) -> Tuple
             name = str(item.get('account_name', '') or '').strip()
             ptd_actual = item.get('ptd_actual', 0) or 0
             ptd_budget = item.get('ptd_budget', 0) or 0
-            variance = item.get('ptd_variance', 0) or 0
+            # Fall back to actual-minus-budget when the key is absent, matching
+            # the object-attribute branch below — a bare `or 0` here silently
+            # zeroed out real variances for any dict-shaped row missing the key.
+            _raw_variance = item.get('ptd_variance')
+            variance = _raw_variance if _raw_variance not in (None, '') else (ptd_actual - ptd_budget)
             var_pct = item.get('ptd_percent_var', item.get('ptd_variance_pct', 0))
         else:
             code = str(getattr(item, 'account_code', '') or '').strip()
