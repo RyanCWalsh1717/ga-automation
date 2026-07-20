@@ -161,12 +161,14 @@ try:
          'ptd_budget': 4704.68, 'ptd_actual': 0},
     ]
 
-    # Synthetic Kardin rows (Mode B)
+    # Synthetic Kardin rows (Mode B). Monthly columns are uppercase M1-M12 in
+    # the real Kardin parser (parsers/kardin_budget.py) — must match here or
+    # detect_insurance_amortization()'s row.get('M5', 0) lookup silently misses.
     kardin_data = [
         {'account_code': '639110', 'description': 'Property Insurance',
-         'm5': 4037.78, 'm_total': 48453.36},
+         'M5': 4037.78, 'm_total': 48453.36},
         {'account_code': '639110', 'description': 'Umbrella Policy',
-         'm5': 666.90,  'm_total': 8002.80},
+         'M5': 666.90,  'm_total': 8002.80},
     ]
 
     # Config policies (Mode A)
