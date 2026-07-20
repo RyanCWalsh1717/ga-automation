@@ -347,15 +347,26 @@ def check_3_tb_balance_and_gl(tb_result, gl_parsed) -> QCResult:
 
 def check_4_mom_swings(budget_rows: List[dict],
                        swing_threshold: float = 10_000.0,
-                       period_month: int = 0) -> QCResult:
+                       period_month: int = 0,
+                       t12_result=None) -> QCResult:
     """
-    For P&L accounts, derive prior-month actual = YTD actual - PTD actual.
-    Flag if |PTD actual - prior month actual| >= $2,500 (favorable or unfavorable).
-    Sign changes are always noted in the finding note when present.
+    For P&L accounts, compare current-month actual (PTD) to the actual prior
+    calendar month.  Flag if the swing >= swing_threshold (favorable or
+    unfavorable).  Sign changes are always noted in the finding note when present.
 
-    January (period_month=1): prior = YTD - PTD = 0 for all P&L accounts
-    because YTD == PTD in month 1. Every non-zero account would show a full-value
-    swing — flood of false positives. Suppress the check in January.
+    Prior month source, in priority order:
+      1. t12_result.prior_month() — real actual from the uploaded 12-Month
+         Statement.  Correctly wraps January's prior month to December of the
+         prior year (t12_result covers a rolling 12-month window).
+      2. YTD actual - PTD actual (derived fallback when no T12 is uploaded).
+         Only valid as "prior single month" when closing February (YTD covers
+         exactly Jan+Feb); for any other month this sums ALL prior months, not
+         just the one immediately before — kept as a best-effort fallback only.
+
+    January without a T12 upload: YTD == PTD in month 1, so the derived
+    fallback would show prior = $0 for every account — a flood of false
+    swings.  Suppressed in that specific case only; if a T12 is uploaded,
+    January is evaluated normally using T12's December actuals.
     """
     from variance_comments import _is_skip_row
 
@@ -363,12 +374,15 @@ def check_4_mom_swings(budget_rows: List[dict],
         return QCResult('CHECK_4', 'Month-over-Month Swings',
                         'FAIL', 'Budget Comparison not uploaded — MoM swing check not performed.', [])
 
-    # January: no prior-month data available — skip to avoid false positives
-    if period_month == 1:
+    has_t12 = t12_result is not None and hasattr(t12_result, 'prior_month')
+
+    # January without T12: no prior-month data available — skip to avoid false positives
+    if period_month == 1 and not has_t12:
         return QCResult(
             check_id='CHECK_4', check_name='Month-over-Month Swings',
             status='PASS',
-            summary='January — no prior-month comparison available; MoM check skipped.',
+            summary='January — no 12-Month Statement uploaded; MoM check skipped '
+                     '(upload the T12 to evaluate January against real December actuals).',
             findings=[],
         )
 
@@ -384,10 +398,12 @@ def check_4_mom_swings(budget_rows: List[dict],
             continue
 
         ptd = _safe_float(row.get('ptd_actual', 0))
-        ytd = _safe_float(row.get('ytd_actual', 0))
 
-        # Derive prior month
-        prior = ytd - ptd
+        if has_t12:
+            prior = t12_result.prior_month(code, period_month)
+        else:
+            ytd   = _safe_float(row.get('ytd_actual', 0))
+            prior = ytd - ptd
 
         swing = ptd - prior
         abs_swing = abs(swing)
@@ -949,6 +965,7 @@ def run_qc(
     cash_received: float = None,
     loan_data=None,
     property_config=None,
+    t12_result=None,
 ) -> QCReport:
     """
     Run all 7 QC checks and return a QCReport.
@@ -965,6 +982,8 @@ def run_qc(
         cash_received:   Total cash received for the month (for mgmt fee check).
         loan_data:       Parsed Berkadia loan data (list of dicts or LoanResult).
                          Used for Check 7e: GL 115300 vs lender insurance escrow balance.
+        t12_result:      Parsed T12Result — powers Check 4's prior-month actuals
+                         (same source used by the QC workbook's Tab 4).
     """
     kardin_records = kardin_records or []
 
@@ -996,7 +1015,8 @@ def run_qc(
         check_2_budget_variances(budget_rows,
                                  tier1_abs=_t1_abs, tier1_pct=_t1_pct, tier2_min=_t2_min),
         check_3_tb_balance_and_gl(tb_result, gl_parsed),
-        check_4_mom_swings(budget_rows, swing_threshold=_mom_sw, period_month=period_month),
+        check_4_mom_swings(budget_rows, swing_threshold=_mom_sw, period_month=period_month,
+                           t12_result=t12_result),
         check_5_gl_vs_workpapers(gl_parsed, tb_result),
         check_6_accruals_vs_budget(budget_rows, kardin_records, accrual_entries, period_month),
         check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received,

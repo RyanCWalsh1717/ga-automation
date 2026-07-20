@@ -4885,6 +4885,7 @@ with tab2:
                         cash_received=fee_result.cash_received if fee_result and fee_result.cash_received > 0 else None,
                         loan_data=engine_result.parsed.get('loan'),
                         property_config=_active_cfg,
+                        t12_result=t12_result,
                     )
                     st.session_state.pass2_output_files["qc_report"] = qc_report
                     qc_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_QC_Workbook.xlsx")
