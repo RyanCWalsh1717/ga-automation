@@ -250,19 +250,24 @@ def _month_amount(item: dict, amort_date: date) -> float:
 
 # ── Load ─────────────────────────────────────────────────────
 
-def load(path: Optional[str]) -> Tuple[List[Dict], List[Dict]]:
+def load(path: Optional[str]) -> Tuple[List[Dict], List[Dict], Optional[str]]:
     """
     Load existing ledger from Excel file.
 
-    Returns (active_items, completed_items).
-    If path is None or file doesn't exist, returns ([], []).
+    Returns (active_items, completed_items, error).
+    If path is None (no prior ledger expected — e.g. first month), returns
+    ([], [], None).  If path is set but the file can't be read (corrupt,
+    password-protected, unexpected layout), returns ([], [], error_message) —
+    callers must check `error` to distinguish "genuinely no prepaid items"
+    from "the prior ledger failed to load" (which silently drops every
+    prepaid release JE for the month if not surfaced).
     """
     if not path:
-        return [], []
+        return [], [], None
     try:
         wb = load_workbook(path, data_only=True)
-    except Exception:
-        return [], []
+    except Exception as exc:
+        return [], [], f'Could not read prior prepaid ledger ({path}): {exc}'
 
     active    = _read_sheet(wb, 'Active',    ACTIVE_COLS)
     completed = _read_sheet(wb, 'Completed', COMPLETED_COLS)
@@ -278,7 +283,7 @@ def load(path: Optional[str]) -> Tuple[List[Dict], List[Dict]]:
                  if str(r.get('gl_account_number', '') or '').strip()
                  not in _LEDGER_EXCLUDED_GL_ACCOUNTS]
 
-    return active, completed
+    return active, completed, None
 
 
 _DISPLAY_TO_INTERNAL = {
@@ -556,18 +561,16 @@ def get_current_amortization(active: List[Dict], close_period: str,
             # (e.g. the prepaid ledger was created manually for the first time).
             # Rebase anchor to (close_period − 1 month) so amort_month lands on
             # close_period this run, and future months chain forward correctly.
-            # Also persist the new first_added_period so advance_period and the
-            # next close calculate correctly.
+            #
+            # This function does NOT persist the rebase (no mutation of `item`)
+            # — it's called more than once per close as a pre-scan before the
+            # definitive release lines are computed (see app.py), and mutating
+            # here made the second call see already-rebased state, silently
+            # double-incrementing months_amortized once advance_period() also
+            # ran its own +1. The rebase is persisted exactly once, in
+            # advance_period(), which every close calls exactly once.
             if close_date:
-                new_anchor = close_date - relativedelta(months=1)
-                item['first_added_period'] = _date_to_period(new_anchor)
-                item['months_amortized']   = 1
-                # Feb+ months anchor from service_start, not first_added_period.
-                # Update service_start to new_anchor so the sequence chains correctly:
-                #   Jan: months_done=1, anchor=new_anchor     → amort = close_period ✓
-                #   Feb: months_done=2, anchor=service_start  → amort = close_period+1 ✓
-                item['service_start']      = new_anchor
-                anchor      = new_anchor
+                anchor      = close_date - relativedelta(months=1)
                 months_done = 1
             else:
                 continue   # can't determine period; skip
@@ -611,15 +614,44 @@ def advance_period(active: List[Dict], completed: List[Dict],
                    close_period: str) -> Tuple[List[Dict], List[Dict]]:
     """
     After the close period JEs are posted:
+      - Persist the legacy/initial-setup anchor rebase (see
+        get_current_amortization()) for items whose months_amortized was
+        never incremented and were added in a prior period — exactly once,
+        here, since this function is called once per close (unlike
+        get_current_amortization(), which is also called as a pre-scan).
       - Increment months_amortized by 1 for each active item
       - Move items with remaining_months == 0 to completed list
       - Return (new_active, new_completed)
     """
+    close_date = _period_to_date(close_period)
+
     new_active = []
     for item in active:
         item = dict(item)  # copy
         months_done = int(item.get('months_amortized', 0) or 0)
         remaining   = int(item.get('remaining_months', 0) or 0)
+
+        if months_done == 0 and close_date:
+            first_added = _period_to_date(item.get('first_added_period', ''))
+            added_this_period = (
+                first_added is not None
+                and first_added.year == close_date.year
+                and first_added.month == close_date.month
+            )
+            if not added_this_period:
+                # Legacy / initial-setup item (e.g. a seed ledger where every
+                # item starts at months_amortized=0): rebase the schedule
+                # anchor to close_period − 1 month so amort_month lands on
+                # close_period this run, and future months chain forward
+                # correctly from date(service_start.year, service_start.month, 1).
+                # get_current_amortization() used months_done=1 (local, unpersisted)
+                # to compute THIS period's release against this same new anchor —
+                # mirror that here so the persisted months_amortized (set below)
+                # lines up with next period's anchor + months_amortized lookup.
+                new_anchor = close_date - relativedelta(months=1)
+                item['first_added_period'] = _date_to_period(new_anchor)
+                item['service_start']      = new_anchor
+                months_done = 1
 
         item['months_amortized'] = months_done + 1
         # Decrement directly from remaining_months rather than recomputing from

@@ -2338,7 +2338,14 @@ with tab1:
                         "Upload the prior-month `GA_Prepaid_Ledger_Updated.xlsx` to carry forward.",
                         icon=None,
                     )
-                ledger_active, ledger_completed = prepaid_ledger.load(ledger_path)
+                ledger_active, ledger_completed, _ledger_load_err = prepaid_ledger.load(ledger_path)
+                if _ledger_load_err:
+                    st.warning(
+                        f"⚠️ **Prior Prepaid Ledger failed to load** — {_ledger_load_err} "
+                        f"Every prepaid release JE for this period will be skipped until a "
+                        f"readable ledger is uploaded.",
+                        icon=None,
+                    )
 
                 # Merge Nexus Invoice Detail into ledger
                 ledger_active, newly_added = prepaid_ledger.merge_nexus(
@@ -4703,7 +4710,9 @@ with tab2:
                         _prepaid_p2_path = st.session_state.uploaded_files.get("prepaid_ledger_p2")
                         if _prepaid_p2_path and os.path.exists(_prepaid_p2_path):
                             try:
-                                _prepaid_active, _ = prepaid_ledger.load(_prepaid_p2_path)
+                                _prepaid_active, _, _prepaid_load_err = prepaid_ledger.load(_prepaid_p2_path)
+                                if _prepaid_load_err:
+                                    st.caption(f"⚠️ Could not read Pass 2 prepaid ledger: {_prepaid_load_err}")
                             except Exception as _pe:
                                 st.caption(f"⚠️ Could not read Pass 2 prepaid ledger: {_pe}")
                         if not _prepaid_active:
