@@ -452,7 +452,8 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
 # ── Generate current period amortization JE lines ───────────
 
 def get_current_amortization(active: List[Dict], close_period: str,
-                              suppressed_invoice_numbers: Optional[set] = None) -> List[Dict]:
+                              suppressed_invoice_numbers: Optional[set] = None,
+                              gl_data=None) -> List[Dict]:
     """
     Return one amortization record per active ledger item for the current period.
 
@@ -470,8 +471,8 @@ def get_current_amortization(active: List[Dict], close_period: str,
       month-1 had been handled.
     Items with months_amortized == 0 added in a PRIOR period (initial / legacy
       ledger setup): rebased to release this period by treating close_period − 1
-      month as the new anchor. The item is updated in-place so advance_period
-      and all future closes chain forward correctly.
+      month as the new anchor. This function does NOT mutate the item in place
+      (see comment below) — the rebase is persisted once, in advance_period().
     Items with months_amortized >= 1: normal release — fires when
       anchor + months_amortized == close_period.
 
@@ -483,6 +484,15 @@ def get_current_amortization(active: List[Dict], close_period: str,
                                      expense was already in GL.  When a new item's invoice
                                      number is in this set, month-1 is emitted by the ledger
                                      rather than skipped.
+        gl_data:                     Optional GLParseResult. When provided, warns (does
+                                     NOT suppress) if an item's expense account already
+                                     has real, non-pipeline GL activity roughly matching
+                                     the expected release this period — this ledger has no
+                                     other way to detect that JLL already posted the same
+                                     release themselves. Suppressing outright is avoided
+                                     because prepaid expense accounts routinely carry
+                                     other, unrelated real activity too — a false match
+                                     would silently understate expense.
 
     Day-based proration: if the item has daily_rate > 0 (set automatically by
     merge_nexus() when service_start is mid-month or service_end is mid-month),
@@ -497,6 +507,30 @@ def get_current_amortization(active: List[Dict], close_period: str,
         # Cannot determine which period to amortize — return nothing rather
         # than silently releasing every active item at once.
         return []
+
+    _gl_by_code = {}
+    if gl_data is not None and hasattr(gl_data, 'accounts'):
+        _gl_by_code = {str(a.account_code).strip(): a for a in gl_data.accounts}
+
+    def _warn_if_already_posted(item: dict, expected_amount: float) -> None:
+        if expected_amount < 1.0:
+            return
+        _acct = _gl_by_code.get(str(item.get('gl_account_number', '') or '').strip())
+        if _acct is None:
+            return
+        from accrual_entry_generator import _real_net_change
+        _real = _real_net_change(_acct)
+        if _real >= expected_amount * 0.9:
+            import warnings as _w
+            _w.warn(
+                f"Prepaid release for {item.get('vendor', 'this item')} "
+                f"({item.get('gl_account_number', '')}) expects ${expected_amount:,.2f} "
+                f"this period, but that account already has ${_real:,.2f} of real "
+                f"(non-pipeline) GL activity — possibly JLL already posted this release. "
+                f"Verify before uploading to avoid duplicating it.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     results = []
 
@@ -542,6 +576,7 @@ def get_current_amortization(active: List[Dict], close_period: str,
                 # advance_period() increments months_amortized 0→1 and next month
                 # uses anchor=service_start + 1 = month-2 correctly.
                 _m1_amount = _month_amount(item, close_date)
+                _warn_if_already_posted(item, _m1_amount)
                 results.append({
                     'vendor':            item.get('vendor', ''),
                     'invoice_number':    item.get('invoice_number', ''),
@@ -590,6 +625,7 @@ def get_current_amortization(active: List[Dict], close_period: str,
 
         # Amount: day-based if daily_rate set, otherwise fixed monthly_amount
         amount = _month_amount(item, amort_month)
+        _warn_if_already_posted(item, amount)
 
         results.append({
             'vendor':            item.get('vendor', ''),

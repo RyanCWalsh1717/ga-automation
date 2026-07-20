@@ -2420,10 +2420,17 @@ with tab1:
                     for inv in (newly_added or [])
                     if inv.strip().lower() and inv.strip().lower() not in _emitted_nexus_invs
                 } or None
-                ledger_release_lines = prepaid_ledger.get_current_amortization(
-                    ledger_active, close_period,
-                    suppressed_invoice_numbers=_suppressed_prepaid_invs,
-                )
+                import warnings as _warnings_prepaid
+                with _warnings_prepaid.catch_warnings(record=True) as _prepaid_warns:
+                    _warnings_prepaid.simplefilter("always")
+                    ledger_release_lines = prepaid_ledger.get_current_amortization(
+                        ledger_active, close_period,
+                        suppressed_invoice_numbers=_suppressed_prepaid_invs,
+                        gl_data=gl_parsed,
+                    )
+                for _pw in _prepaid_warns:
+                    if issubclass(_pw.category, UserWarning):
+                        st.warning(str(_pw.message), icon="⚠️")
 
                 # Build prepaid release JEs after je_lines so JE numbers are sequential
                 prepaid_release_je = build_prepaid_release_je(
@@ -2485,16 +2492,16 @@ with tab1:
                         receivable_detail=_rd_parsed,
                         ar_aging=_ar_aging_parsed,
                     )
+                    fee_je = build_management_fee_je(
+                        fee_result,
+                        period=close_period,
+                        property_code=engine_result.property_name or _active_cfg.property_code,
+                        je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
+                        property_config=_active_cfg,
+                    )
                 for _fw in _fee_warns:
                     if issubclass(_fw.category, UserWarning):
                         st.warning(str(_fw.message), icon="⚠️")
-                fee_je = build_management_fee_je(
-                    fee_result,
-                    period=close_period,
-                    property_code=engine_result.property_name or _active_cfg.property_code,
-                    je_number=f'MGT-{len(je_lines)//2 + 1:03d}',
-                    property_config=_active_cfg,
-                )
 
                 _catchup_amount = detect_prior_period_catchup(
                     gl_parsed,

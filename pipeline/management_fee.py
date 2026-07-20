@@ -40,6 +40,7 @@ from typing import Optional
 
 from accounting_utils import _round
 from accrual_entry_generator import _fmt_period  # C-9: single definition; no circular dep
+from accrual_entry_generator import _real_net_change, _is_pipeline_txn
 
 
 # ── Account codes (defaults — overridden by PropertyConfig when provided) ──────
@@ -68,6 +69,11 @@ class ManagementFeeResult:
 
     jll_rate: float = JLL_RATE
     grp_rate: float = GRP_RATE
+
+    # True if the management fee expense account already has real (non-pipeline)
+    # GL activity this period -- e.g. JLL posted their own management fee JE.
+    # build_management_fee_je() checks this and skips generating a duplicate.
+    already_posted_jll: bool = False
 
     @property
     def jll_fee(self) -> float:
@@ -396,6 +402,19 @@ def calculate(
         if property_config else _MGMT_FEE_CODE
     )
 
+    # Has JLL (or anyone else) already posted their own management fee JE to
+    # _fee_acct this period? _real_net_change excludes only the pipeline's own
+    # entries (by JE signature, not control code), so a JLL-posted manual JE
+    # is correctly detected as real activity without also falsely triggering
+    # on the pipeline's own prior run.
+    _already_posted_je = False
+    if gl_parsed and hasattr(gl_parsed, 'accounts'):
+        for _fee_gl_acct in gl_parsed.accounts:
+            if str(_fee_gl_acct.account_code).strip() == _fee_acct:
+                if abs(_real_net_change(_fee_gl_acct)) > 1.0:
+                    _already_posted_je = True
+                break
+
     # 1. Receivable Summary — preferred (explicit Prepayment row, no scanning required)
     rs_cash, rs_prepay = _cash_from_receivable_summary(receivable_summary)
     if rs_cash is not None:
@@ -416,6 +435,7 @@ def calculate(
             prepayment_excluded=rs_prepay,
             jll_rate=jll_rate,
             grp_rate=grp_rate,
+            already_posted_jll=_already_posted_je,
         )
 
     # 2. Receivable Detail — alternate (JLL's exact method, excludes prepayments)
@@ -436,6 +456,7 @@ def calculate(
             prepayment_excluded=prepay_excl,
             jll_rate=jll_rate,
             grp_rate=grp_rate,
+            already_posted_jll=_already_posted_je,
         )
 
     # 3. DACA additions — fallback (matches JLL's basis when bank rec not yet run)
@@ -446,6 +467,7 @@ def calculate(
             cash_source='daca_additions',
             jll_rate=jll_rate,
             grp_rate=grp_rate,
+            already_posted_jll=_already_posted_je,
         )
 
     # 4. GL cash account — fallback when neither Receivable report nor DACA uploaded
@@ -456,6 +478,7 @@ def calculate(
             cash_source='gl_cash_account',
             jll_rate=jll_rate,
             grp_rate=grp_rate,
+            already_posted_jll=_already_posted_je,
         )
 
     # 5. Revenue proxy
@@ -466,6 +489,7 @@ def calculate(
             cash_source='revenue_proxy',
             jll_rate=jll_rate,
             grp_rate=grp_rate,
+            already_posted_jll=_already_posted_je,
         )
 
     # 6. Nothing available — return $0 with a note
@@ -474,6 +498,7 @@ def calculate(
         cash_source='not_available',
         jll_rate=jll_rate,
         grp_rate=grp_rate,
+        already_posted_jll=_already_posted_je,
     )
 
 
@@ -499,6 +524,20 @@ def build_management_fee_je(
     Both/all pairs share je_number so they import as a single Yardi batch.
     """
     if fee_result.cash_received <= 0:
+        return []
+
+    if fee_result.already_posted_jll:
+        import warnings as _w
+        _w.warn(
+            'Management fee JE skipped — the management fee expense account '
+            'already has real (non-pipeline) GL activity this period, which '
+            'likely means JLL already posted their own management fee JE. '
+            'Verify the posted amount against the expected fee '
+            f'(${fee_result.total_fee:,.2f} at {fee_result.total_rate:.2%}) '
+            'before assuming no further action is needed.',
+            UserWarning,
+            stacklevel=2,
+        )
         return []
 
     cash = fee_result.cash_received
@@ -683,10 +722,17 @@ def detect_prior_period_catchup(gl_data, mgmt_fee_account: str = _MGMT_FEE_CODE)
                                    if float(t.credit or 0) > 0)
 
         def _is_non_journal(txn) -> bool:
-            """True for K/P/other-type (real invoice/check entries); False for J-journals."""
-            ctrl = (str(getattr(txn, 'control', '') or '')).upper()
-            # J-prefix = Yardi journal entries (including auto-reversals and reclasses)
-            return not ctrl.startswith('J')
+            """
+            True for real invoice/check entries OR a JLL-posted manual JE;
+            False only for the pipeline's OWN entries (its prior accrual,
+            auto-reversal, or catch-up). Checking the pipeline's JE signature
+            (not raw control code) matters here specifically: a manual JE
+            JLL posts to catch up 637130 themselves is also Yardi control
+            code 'J', and excluding it as "not non-journal" would leave the
+            gap looking uncovered, causing MGT-002 to double-post on top of
+            JLL's own catch-up.
+            """
+            return not _is_pipeline_txn(txn)
 
         if _has_any_rev_signal:
             # Filtered mode: credits = identified auto-reversals only

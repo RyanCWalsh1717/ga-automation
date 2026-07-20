@@ -139,12 +139,29 @@ print('\n=== 2. INSURANCE AMORTIZATION: Mode A / B / C ===')
 try:
     from accrual_entry_generator import detect_insurance_amortization
 
-    # Minimal GL stub with 135110 positive balance and no 639110 activity yet
+    # Minimal GL stub with 135110 positive balance and no 639110 activity yet.
+    # transactions defaults to a single real (non-pipeline, control='K') entry
+    # matching net_change, so _real_net_change() (used by the production
+    # already-posted guard) sees the same value as net_change unless a test
+    # explicitly overrides it with its own transactions list.
+    class FakeTxn:
+        def __init__(self, net):
+            self.debit = net if net > 0 else 0
+            self.credit = -net if net < 0 else 0
+            self.control = 'K'
+            self.description = ''
+            self.remarks = ''
+            self.reference = ''
+
     class FakeAcct:
-        def __init__(self, code, ending, net_change=0):
+        def __init__(self, code, ending, net_change=0, transactions=None):
             self.account_code = code
             self.ending_balance = ending
             self.net_change = net_change
+            self.transactions = (
+                transactions if transactions is not None
+                else ([FakeTxn(net_change)] if net_change else [])
+            )
 
     class FakeGL:
         def __init__(self):
