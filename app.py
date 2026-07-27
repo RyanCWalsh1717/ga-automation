@@ -3483,14 +3483,16 @@ with tab1:
             )
             st.session_state.interco_recode_df = _ic_recode_edited
 
-            # Auto-populate Account Name for DR rows where Account is filled but
-            # Account Name is blank — same pattern as One-Off Accruals table.
+            # Auto-populate Account Name for any row (CR or DR) where Account is
+            # filled but Account Name is blank — same pattern as One-Off Accruals
+            # table. Covers both the DR target account AND a CR-leg 7xxxxx code
+            # the user types or edits manually — auto-detected CR rows get their
+            # name pre-filled once at detection time (see _interco_detected loop
+            # above), but that doesn't cover a manually entered/edited CR account.
             # Fires on the re-run triggered when the user tabs out of the Account cell.
             _ic_names_filled = 0
             _ic_df_with_names = _ic_recode_edited.copy()
             for _ic_n_idx, _ic_n_row in _ic_df_with_names.iterrows():
-                if str(_ic_n_row.get("Leg", "") or "").strip() != "DR":
-                    continue
                 _ic_n_acct = str(_ic_n_row.get("Account", "") or "").strip()
                 _ic_n_name = str(_ic_n_row.get("Account Name", "") or "").strip()
                 if _ic_n_acct and not _ic_n_name:
