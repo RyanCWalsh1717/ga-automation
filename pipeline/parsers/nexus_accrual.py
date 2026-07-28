@@ -400,6 +400,15 @@ _RE_SLASH_PARTIAL_END = re.compile(
     r'(\d{1,2})/(\d{1,2})/(\d{2,4})\s*(?:-|through|to)\s*(\d{1,2})/(\d{1,2})(?!\s*/\s*\d)',
     re.IGNORECASE,
 )
+# Slash range with the START year missing — the common "stated once" style,
+# e.g. '1/1 - 12/31/26 Annual Firewall, Switch, Wireless' (year applies to
+# both ends). The year is shared unless the start month is AFTER the end
+# month, which means the range wraps a calendar year boundary (e.g.
+# '12/1 - 1/31/26' = Dec of the prior year through Jan 2026).
+_RE_SLASH_PARTIAL_START = re.compile(
+    r'(?<!/)(\d{1,2})/(\d{1,2})\s*(?:-|through|to)\s*(\d{1,2})/(\d{1,2})/(\d{2,4})',
+    re.IGNORECASE,
+)
 
 # Quarter references, e.g. 'Q1 & Q2 2026', 'Q1-Q4 2026', 'Q3 2026'. The year
 # applies to both quarters — Nexus descriptions don't span quarters across
@@ -476,6 +485,21 @@ def _parse_service_period(description: str) -> Tuple[Optional[date], Optional[da
             sm, sd, sy = int(m.group(1)), int(m.group(2)), _norm_year(int(m.group(3)))
             em, ed = int(m.group(4)), int(m.group(5))
             ey = sy + 1 if em < sm else sy
+            start = date(sy, sm, sd)
+            end = date(ey, em, ed)
+            return start, end
+        except ValueError:
+            pass
+
+    # Slash range with the START year missing — the year is stated once, at
+    # the end, and applies to both dates unless the range wraps a calendar
+    # year boundary (start month after end month).
+    m = _RE_SLASH_PARTIAL_START.search(description)
+    if m:
+        try:
+            sm, sd = int(m.group(1)), int(m.group(2))
+            em, ed, ey = int(m.group(3)), int(m.group(4)), _norm_year(int(m.group(5)))
+            sy = ey - 1 if sm > em else ey
             start = date(sy, sm, sd)
             end = date(ey, em, ed)
             return start, end

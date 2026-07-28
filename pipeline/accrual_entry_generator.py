@@ -25,7 +25,7 @@ import calendar
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from openpyxl import Workbook
 
 from accounting_utils import _round, _safe_float
@@ -4093,6 +4093,168 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
         je_num += 1
 
     return je_lines
+
+
+def _period_month_year(period_str: str) -> Optional[Tuple[int, int]]:
+    """Parse a 'Jan-2026' style period string to (month, year), or None."""
+    _mmap = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    }
+    s = (period_str or '').strip().lower()
+    for abbr, num in _mmap.items():
+        if abbr in s:
+            _ym = re.search(r'(\d{4})', s)
+            return (num, int(_ym.group(1))) if _ym else None
+    return None
+
+
+def build_prepaid_reclass_je(
+    active: List[Dict[str, Any]],
+    newly_added_invoice_numbers: List[str],
+    gl_data,
+    period: str = '',
+    je_start: int = 1,
+) -> Tuple[List[Dict[str, Any]], set]:
+    """
+    Generate a "reclass to prepaid" JE for each newly-discovered multi-month
+    prepaid ledger item — DR 135150 Prepaid Other / CR [expense account] —
+    unless the accountant already posted a manual reclass for it (in which
+    case no JE is generated, but the invoice is still reported as reclassed
+    so the caller excludes it from suppressed_invoice_numbers when building
+    the definitive release lines).
+
+    Business rule: when a multi-month invoice is paid, its full amount hits
+    the expense account in the month it's processed. Exactly one month's
+    worth (item['monthly_amount']) is meant to stay there as that period's
+    real expense; the rest needs to move to the balance sheet so
+    prepaid_ledger.get_current_amortization() can release it evenly over the
+    remaining months. Two different scheduling paths apply depending on
+    which branch get_current_amortization() takes for this item:
+
+      "Added this period" (service_start's month matches the period the
+      item was discovered in): month index 1 is either skipped there
+      (assumed covered by Layer 1's own accrual) or, for a Paid invoice with
+      no Layer 1 accrual, emitted directly via the suppressed-invoice
+      exception. This reclass replaces that exception — once the invoice is
+      excluded from suppressed_invoice_numbers, the ledger goes back to
+      skipping month 1, and reclassing (total - 1 month) exactly funds the
+      remaining months with no double-count.
+
+      "Legacy rebase" (a day-based item whose service_start predates the
+      period it was discovered in — merge_nexus() anchors day-based items to
+      their true service_start month, not the discovery month):
+      get_current_amortization() emits a real release starting immediately
+      and every period after, with nothing held back — confirmed via
+      simulation the ledger releases the FULL invoice amount across its own
+      schedule in this case. The reclass here must be the full amount, or
+      the prepaid balance won't cover what the ledger goes on to release.
+
+    Args:
+        active: Current active ledger items (from merge_nexus()).
+        newly_added_invoice_numbers: Invoice numbers merge_nexus() just added.
+        gl_data: Parsed GL (GLParseResult) — used to detect an existing
+                 manual reclass already posted for a specific item.
+        period: Close period string, e.g. 'Jan-2026'.
+        je_start: Starting JE number (avoid collisions with other JEs).
+
+    Returns:
+        (je_lines, reclassed_invoice_numbers) — reclassed_invoice_numbers
+        (lowercased) includes BOTH invoices that got a new JE here and ones
+        already reclassed manually; exclude all of them from
+        suppressed_invoice_numbers before the definitive
+        get_current_amortization() call.
+    """
+    je_lines: List[Dict[str, Any]] = []
+    reclassed: set = set()
+    je_num = je_start
+
+    _added_keys = {str(k or '').strip().lower() for k in (newly_added_invoice_numbers or [])}
+    if not _added_keys:
+        return je_lines, reclassed
+
+    _close_my = _period_month_year(period)
+
+    _gl_by_code = {}
+    if gl_data is not None and hasattr(gl_data, 'accounts'):
+        _gl_by_code = {str(a.account_code).strip(): a for a in gl_data.accounts}
+
+    for item in active:
+        inv_key = str(item.get('invoice_number', '') or '').strip().lower()
+        if inv_key not in _added_keys:
+            continue
+
+        total_amount   = float(item.get('total_amount', 0) or 0)
+        monthly_amount = float(item.get('monthly_amount', 0) or 0)
+        gl_acct        = str(item.get('gl_account_number', '') or '').strip()
+        if total_amount < 1.0 or not gl_acct:
+            continue
+
+        _first_added_my = _period_month_year(str(item.get('first_added_period', '')))
+        _added_this_period = (
+            _first_added_my is not None and _close_my is not None
+            and _first_added_my == _close_my
+        )
+        reclass_amount = (
+            round(total_amount - monthly_amount, 2) if _added_this_period
+            else round(total_amount, 2)
+        )
+        if reclass_amount < 1.0:
+            continue
+
+        # Already reclassed manually? Search the expense account's real
+        # (non-pipeline) credits for a reclass-looking entry that also
+        # references this item's own description text — confirmed this
+        # pattern in real GL data (e.g. "Rcls to ppd : 02/26- 06/26- Q1 & Q2
+        # 2026 Shuttle Membership", containing the original invoice's own
+        # line description verbatim).
+        _already_reclassed = False
+        _acct = _gl_by_code.get(gl_acct)
+        _item_desc = str(item.get('description', '') or '').strip().lower()
+        if _acct is not None and _item_desc:
+            for txn in getattr(_acct, 'transactions', []):
+                if float(getattr(txn, 'credit', 0) or 0) <= 0:
+                    continue
+                if _is_pipeline_txn(txn):
+                    continue
+                _text = f"{getattr(txn, 'description', '') or ''} {getattr(txn, 'remarks', '') or ''}".lower()
+                if ('rcls' in _text or 'reclass' in _text) and _item_desc in _text:
+                    _already_reclassed = True
+                    break
+
+        reclassed.add(inv_key)
+        if _already_reclassed:
+            continue  # accountant already handled it — no JE, but still excluded from suppression
+
+        vendor  = str(item.get('vendor', '') or '')
+        gl_name = str(item.get('gl_account', '') or '')
+        je_id   = f'PPDRC-{je_num:04d}'
+        desc = (
+            f"Reclass {period} — {vendor} ({item.get('description', '')}): "
+            f"${total_amount:,.2f} total less ${total_amount - reclass_amount:,.2f} "
+            f"already-expensed = ${reclass_amount:,.2f} to prepaid"
+        )
+        je_lines.append({
+            'je_number': je_id, 'line': 1, 'date': '',
+            'account_code': PREPAID_ASSET_ACCOUNT, 'account_name': PREPAID_ASSET_NAME,
+            'description': desc, 'reference': 'PPD-RECLASS',
+            'debit': reclass_amount, 'credit': 0.0,
+            'vendor': vendor, 'invoice_number': item.get('invoice_number', ''),
+            'source': 'prepaid_reclass', 'confidence': 'high',
+            'reverse_next_month': 0,
+        })
+        je_lines.append({
+            'je_number': je_id, 'line': 2, 'date': '',
+            'account_code': gl_acct, 'account_name': gl_name,
+            'description': desc, 'reference': 'PPD-RECLASS',
+            'debit': 0.0, 'credit': reclass_amount,
+            'vendor': vendor, 'invoice_number': item.get('invoice_number', ''),
+            'source': 'prepaid_reclass', 'confidence': 'high',
+            'reverse_next_month': 0,
+        })
+        je_num += 1
+
+    return je_lines, reclassed
 
 
 # ── Insurance escrow reconciliation JE ───────────────────────

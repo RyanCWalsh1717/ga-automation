@@ -30,7 +30,7 @@ from report_generator import generate_exception_report
 import traceback
 from accrual_entry_generator import (
     build_accrual_entries, generate_yardi_je_csv, generate_etl_csv,
-    build_prepaid_amortization, build_prepaid_release_je,
+    build_prepaid_amortization, build_prepaid_release_je, build_prepaid_reclass_je,
     check_prior_accrual_vs_actual,
 )
 import prepaid_ledger
@@ -2420,6 +2420,38 @@ with tab1:
                     for inv in (newly_added or [])
                     if inv.strip().lower() and inv.strip().lower() not in _emitted_nexus_invs
                 } or None
+
+                # Reclass newly-discovered multi-month prepaid invoices: the full
+                # invoice amount hits the expense account when Nexus processes it,
+                # and needs a one-time DR Prepaid / CR expense JE moving everything
+                # except the amount already correctly expensed. Skips generating a
+                # duplicate when the accountant already posted a manual reclass —
+                # detected by searching the GL for a real (non-pipeline) "reclass"
+                # entry that references this item's own description.
+                prepaid_reclass_je, _reclassed_invs = build_prepaid_reclass_je(
+                    ledger_active, newly_added or [], gl_parsed,
+                    period=close_period, je_start=len(je_lines) // 2 + 1,
+                )
+                if _suppressed_prepaid_invs:
+                    _suppressed_prepaid_invs = _suppressed_prepaid_invs - _reclassed_invs
+                if prepaid_reclass_je:
+                    st.info(
+                        f"↳ Reclassed {len(prepaid_reclass_je) // 2} newly-discovered prepaid "
+                        f"invoice(s) to Prepaid Other — verify the accounts/amounts before uploading.",
+                        icon="ℹ️",
+                    )
+                _already_reclassed_invs = _reclassed_invs - {
+                    str(l.get('invoice_number', '') or '').strip().lower()
+                    for l in prepaid_reclass_je
+                }
+                if _already_reclassed_invs:
+                    st.info(
+                        f"↳ {len(_already_reclassed_invs)} newly-discovered prepaid invoice(s) "
+                        f"already have a manual reclass posted in the GL — no reclass JE generated "
+                        f"for those; still included in the prepaid ledger export.",
+                        icon="ℹ️",
+                    )
+
                 import warnings as _warnings_prepaid
                 with _warnings_prepaid.catch_warnings(record=True) as _prepaid_warns:
                     _warnings_prepaid.simplefilter("always")
@@ -2432,11 +2464,11 @@ with tab1:
                     if issubclass(_pw.category, UserWarning):
                         st.warning(str(_pw.message), icon="⚠️")
 
-                # Build prepaid release JEs after je_lines so JE numbers are sequential
+                # Build prepaid release JEs after je_lines/reclass so JE numbers are sequential
                 prepaid_release_je = build_prepaid_release_je(
                     ledger_release_lines,
                     period=close_period,
-                    je_start=len(je_lines) // 2 + 1,
+                    je_start=len(je_lines) // 2 + len(prepaid_reclass_je) // 2 + 1,
                 )
 
                 # Advance ledger (increment months_amortized, expire completed)
@@ -2524,7 +2556,8 @@ with tab1:
                 # One-Off Accruals → DR expense / CR 213100 (or custom CR Account if specified)
                 _supplement_je_lines = []
                 _periodic_supplement_rows = []
-                _sup_base = len(je_lines) // 2 + len(prepaid_release_je) // 2 + len(fee_je) // 2
+                _sup_base = (len(je_lines) // 2 + len(prepaid_reclass_je) // 2
+                             + len(prepaid_release_je) // 2 + len(fee_je) // 2)
 
                 _accruals_tbl = st.session_state.get("manual_accruals_df")
                 if _accruals_tbl is not None and not _accruals_tbl.empty:
@@ -2721,6 +2754,7 @@ with tab1:
 
                 all_je_lines = (
                     je_lines
+                    + prepaid_reclass_je
                     + prepaid_release_je
                     + fee_je
                     + _catchup_je
@@ -3646,7 +3680,7 @@ with tab1:
                                       'management_fee_catchup', 'invoice_proration',
                                       'prepaid_amortization', 'contract_supplement',
                                       'tenant_utility_billing', 'bonus_accrual', 'prepaid_ledger',
-                                      'manual_addition',
+                                      'prepaid_reclass', 'manual_addition',
                                   }]
         _src_label_map = {
             'nexus':                  'Nexus AP',
@@ -3654,6 +3688,7 @@ with tab1:
             'historical':             'Historical Pattern',
             'prepaid_amortization':   'Prepaid Amort.',
             'prepaid_ledger':         'Prepaid Release',
+            'prepaid_reclass':        'Prepaid Reclass',
             'management_fee':         'Management Fee',
             'management_fee_catchup': 'Mgmt Fee Catch-up',
             'contract_supplement':    'One-Off Accrual',

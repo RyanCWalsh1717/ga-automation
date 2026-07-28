@@ -396,12 +396,25 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
         if key in existing_keys:
             continue
 
+        svc_start = _ensure_date(inv.get('service_start'))
+        svc_end   = _ensure_date(inv.get('service_end'))
+
+        # Skip items whose service period has already fully elapsed before
+        # this close period even starts — there's nothing left to amortize
+        # going forward, regardless of how the multi-month span was detected.
+        # Real example: a retroactive payroll/overtime billback description
+        # like "DN OT Billback 6/15-11/1/25" reads as a >35-day date range
+        # (correctly, as dates) but isn't a forward-looking prepaid expense —
+        # it's billing for work already performed, entirely in a period
+        # before the current close.
+        _close_date_mn = _period_to_date(close_period)
+        if (svc_end and _close_date_mn
+                and (svc_end.year, svc_end.month) < (_close_date_mn.year, _close_date_mn.month)):
+            continue
+
         total_months = inv.get('prepaid_months', 1)
         total_amount = inv.get('amount', 0)
         monthly_amount = round(total_amount / total_months, 2)
-
-        svc_start = _ensure_date(inv.get('service_start'))
-        svc_end   = _ensure_date(inv.get('service_end'))
 
         # Day-based proration: auto-detect mid-month start or end.
         # Sets daily_rate so get_current_amortization() can compute the exact
@@ -515,7 +528,8 @@ def get_current_amortization(active: List[Dict], close_period: str,
     def _warn_if_already_posted(item: dict, expected_amount: float) -> None:
         if expected_amount < 1.0:
             return
-        _acct = _gl_by_code.get(str(item.get('gl_account_number', '') or '').strip())
+        _acct_code = str(item.get('gl_account_number', '') or '').strip()
+        _acct = _gl_by_code.get(_acct_code)
         if _acct is None:
             return
         from accrual_entry_generator import _real_net_change
@@ -523,11 +537,14 @@ def get_current_amortization(active: List[Dict], close_period: str,
         if _real >= expected_amount * 0.9:
             import warnings as _w
             _w.warn(
-                f"Prepaid release for {item.get('vendor', 'this item')} "
-                f"({item.get('gl_account_number', '')}) expects ${expected_amount:,.2f} "
-                f"this period, but that account already has ${_real:,.2f} of real "
-                f"(non-pipeline) GL activity — possibly JLL already posted this release. "
-                f"Verify before uploading to avoid duplicating it.",
+                f"Account {_acct_code} has ${_real:,.2f} of real (non-pipeline) GL "
+                f"activity this period — this is an ACCOUNT-LEVEL total, not proof "
+                f"specific to {item.get('vendor', 'this item')}'s ${expected_amount:,.2f} "
+                f"expected release. Other vendors/invoices posting to the same "
+                f"account will also trigger this. Check the GL for a reclass or "
+                f"release entry actually tied to {item.get('vendor', 'this item')} "
+                f"(invoice {item.get('invoice_number', '')}) specifically before "
+                f"assuming this release is already covered.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -688,6 +705,40 @@ def advance_period(active: List[Dict], completed: List[Dict],
                 item['first_added_period'] = _date_to_period(new_anchor)
                 item['service_start']      = new_anchor
                 months_done = 1
+                if float(item.get('daily_rate') or 0) > 0:
+                    # merge_nexus() seeds remaining_months at total_months + 1 for
+                    # day-based (partial-period) items specifically to reserve a
+                    # slot for the "skip month" on the OTHER pathway — an item
+                    # added_this_period, whose true month-1 is assumed covered by
+                    # Nexus's own invoice posting (or emitted directly as the
+                    # suppressed-invoice exception). This legacy-rebase pathway
+                    # never skips a month — every period from here on gets a real
+                    # release — so that reserved slot must be given back now, or
+                    # the item releases exactly one month too many. Confirmed on
+                    # a real invoice: a 12-month, $2,309.42 item released
+                    # $2,521.23 across 13 months before this fix.
+                    remaining = max(0, remaining - 1)
+            else:
+                # Brand-new item (added this period via merge_nexus) whose TRUE
+                # service_start is in an EARLIER month than the period the ledger
+                # first tracked it (e.g. an invoice for Dec service discovered in
+                # the Jan run). get_current_amortization()'s "else" branch anchors
+                # months_amortized>=1 releases off date(service_start.year,
+                # service_start.month, 1) — left as the true (earlier) service
+                # month, month 2 onward would compute an amort_month that never
+                # matches any real close_date again, permanently skipping every
+                # future release while remaining_months still counts down, so the
+                # item silently completes without ever releasing most of its
+                # balance. Rebase service_start to this tracking-start month so
+                # future anchors are computed from when the ledger actually began
+                # tracking it, not its true (now irrelevant for scheduling)
+                # original start. service_start's real value already did its job
+                # for month-1's proration check in get_current_amortization() —
+                # this rebase only affects months_amortized>=1 scheduling.
+                _svc_start = _ensure_date(item.get('service_start'))
+                if _svc_start and (_svc_start.year != close_date.year
+                                    or _svc_start.month != close_date.month):
+                    item['service_start'] = date(close_date.year, close_date.month, 1)
 
         item['months_amortized'] = months_done + 1
         # Decrement directly from remaining_months rather than recomputing from
