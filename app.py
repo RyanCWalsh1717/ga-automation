@@ -97,6 +97,7 @@ def _build_accruals_seed_df(cfg=None):
             "Description":    [''] * _n,
             "Auto-Reverse":   [True] * _n,
             "Split Schedule": [''] * _n,
+            "Compound":       [True] * _n,
         })
     # No default_accruals in config — return a single blank row so the editor renders
     return _pd_seed.DataFrame({
@@ -108,6 +109,7 @@ def _build_accruals_seed_df(cfg=None):
         "Description":    [''],
         "Auto-Reverse":   [True],
         "Split Schedule": [''],
+        "Compound":       [True],
     })
 
 
@@ -2079,6 +2081,13 @@ with tab1:
             st.session_state.manual_accruals_df["Auto-Reverse"] = True
         if "Prior Accrual ($)" not in st.session_state.manual_accruals_df.columns:
             st.session_state.manual_accruals_df["Prior Accrual ($)"] = 0.0
+        if "Compound" not in st.session_state.manual_accruals_df.columns:
+            # Default True on upgrade — preserves the pre-existing behavior
+            # (every row always compounded) for sessions created before this
+            # opt-out existed. Uncheck per-row for accounts billed on a normal
+            # monthly cadence, where compounding on top of the auto-reversal
+            # double-counts instead of building an irregular-billing liability.
+            st.session_state.manual_accruals_df["Compound"] = True
 
         _split_sch_help = (
             "Leave blank to use the property default split schedule. "
@@ -2114,6 +2123,15 @@ with tab1:
                                             "Uncheck for permanent JEs that should NOT reverse (ReverseNextMonth = 0)."),
                 "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
                                        help=_split_sch_help),
+                "Compound":        st.column_config.CheckboxColumn("Compound",
+                                       default=True, width="small",
+                                       help="✅ Checked (default) = this month's JE = last month's auto-reversed "
+                                            "amount + this month's Amount ($) — use for accounts billed "
+                                            "irregularly (e.g. Water/Sewer every 6 months), where the accrued "
+                                            "liability needs to keep building until a real invoice clears it. "
+                                            "❌ Uncheck for accounts billed on a normal monthly cadence — "
+                                            "otherwise the auto-reversal gets added back on top of this month's "
+                                            "rate every month, double-counting against real monthly invoices."),
             },
             key=f"manual_accruals_editor_{_selected_code}_{st.session_state.get('editor_reset_count', 0)}",
         )
@@ -2662,12 +2680,14 @@ with tab1:
                         _desc   = str(_row.get("Description", "") or "").strip()
                         _split_sch_override = str(_row.get("Split Schedule", "") or "").strip()
                         _row_auto_rev = bool(_row.get("Auto-Reverse", True))
+                        _row_compound = bool(_row.get("Compound", True))
                         _periodic_supplement_rows.append({
                             'account_code':    str(_row["Account Code"]).strip(),
                             'account_name':    str(_row.get("Account Name", "") or "").strip()
                                                or str(_row["Account Code"]).strip(),
                             'amount':          float(_row["Amount ($)"]),
                             'prior_accrual':   float(_row.get("Prior Accrual ($)", 0) or 0),
+                            'compound':        _row_compound,
                             'description':     _desc or _vendor or 'one-off accrual',
                             'vendor':          _vendor,
                             'auto_reverse':    _row_auto_rev,
@@ -2723,6 +2743,7 @@ with tab1:
                     _sga_obj        = _sup_gl_accts.get(_sup_acct_code)
                     _sga_j_cr       = _sup_j_credits(_sga_obj)
                     _sup_prior_seed = float(_sup.get('prior_accrual', 0) or 0)
+                    _sup_do_compound = bool(_sup.get('compound', True))
 
                     # If no J-credits from a prior pipeline auto-reversal (e.g. first
                     # pipeline run), fall back to the user-entered Prior Accrual ($) to
@@ -2731,11 +2752,24 @@ with tab1:
                     _sga_effective_j_cr = _sga_j_cr if _sga_j_cr > 0 else _sup_prior_seed
                     _prior_seed_note    = ' [prior accrual seeded manually]' if (_sga_j_cr == 0 and _sup_prior_seed > 0) else ''
 
-                    _sup_compound   = _sga_effective_j_cr + _sup_monthly
-                    _sup_cmpd_note  = (f' — cumulative ${_sup_compound:,.0f} '
-                                       f'(${_sga_effective_j_cr:,.0f} prior reversal + ${_sup_monthly:,.0f}/mo)'
-                                       f'{_prior_seed_note}'
-                                       if _sga_effective_j_cr > 0 else '')
+                    # Compounding only makes sense for accounts billed irregularly
+                    # (e.g. Water/Sewer every 6 months), where the accrued liability
+                    # needs to keep building until a real invoice finally clears it —
+                    # the prior reversal nets against it so the true monthly P&L hit
+                    # stays flat. For a normally monthly-billed account, the auto-
+                    # reversal is just the expected mechanical reversal of last
+                    # month's own JE — adding it back on top double-counts against
+                    # the real invoice landing that same month. Uncheck "Compound"
+                    # for those accounts to keep this row a flat monthly amount.
+                    if _sup_do_compound:
+                        _sup_compound   = _sga_effective_j_cr + _sup_monthly
+                        _sup_cmpd_note  = (f' — cumulative ${_sup_compound:,.0f} '
+                                           f'(${_sga_effective_j_cr:,.0f} prior reversal + ${_sup_monthly:,.0f}/mo)'
+                                           f'{_prior_seed_note}'
+                                           if _sga_effective_j_cr > 0 else '')
+                    else:
+                        _sup_compound  = _sup_monthly
+                        _sup_cmpd_note = ''
 
                     _sje_id  = f'SUP-{_sup_base + _sup_counter + 1:04d}'
                     _sup_counter += 1
