@@ -97,7 +97,10 @@ def _build_accruals_seed_df(cfg=None):
             "Description":    [''] * _n,
             "Auto-Reverse":   [True] * _n,
             "Split Schedule": [''] * _n,
-            "Compound":       [True] * _n,
+            # Per-account default from config.yaml — only accounts genuinely
+            # billed irregularly (e.g. Water Contract Svc) should compound.
+            # Defaults to False (flat monthly) when a row doesn't specify it.
+            "Compound":       [bool(r.get('compound', False)) for r in rows] + [False],
         })
     # No default_accruals in config — return a single blank row so the editor renders
     return _pd_seed.DataFrame({
@@ -109,7 +112,7 @@ def _build_accruals_seed_df(cfg=None):
         "Description":    [''],
         "Auto-Reverse":   [True],
         "Split Schedule": [''],
-        "Compound":       [True],
+        "Compound":       [False],
     })
 
 
@@ -2082,12 +2085,23 @@ with tab1:
         if "Prior Accrual ($)" not in st.session_state.manual_accruals_df.columns:
             st.session_state.manual_accruals_df["Prior Accrual ($)"] = 0.0
         if "Compound" not in st.session_state.manual_accruals_df.columns:
-            # Default True on upgrade — preserves the pre-existing behavior
-            # (every row always compounded) for sessions created before this
-            # opt-out existed. Uncheck per-row for accounts billed on a normal
-            # monthly cadence, where compounding on top of the auto-reversal
-            # double-counts instead of building an irregular-billing liability.
-            st.session_state.manual_accruals_df["Compound"] = True
+            # Migrate existing sessions using each account's config-driven
+            # default (see default_accruals[].compound in config.yaml) rather
+            # than blindly carrying forward the old always-compound behavior —
+            # confirmed with Ryan 2026-07-28 that only Water Contract Svc
+            # (619120) here is genuinely billed irregularly; everything else
+            # was silently compounding on top of real invoices. Unrecognized/
+            # custom rows (e.g. a manually typed-in vendor) default to False,
+            # since a normal monthly item is the more common case.
+            _compound_defaults = {
+                str(r.get('account_code', '')).strip(): bool(r.get('compound', False))
+                for r in (getattr(_active_cfg, 'default_accruals', None) or [])
+            }
+            st.session_state.manual_accruals_df["Compound"] = (
+                st.session_state.manual_accruals_df["Account Code"]
+                .astype(str).str.strip()
+                .map(lambda _c: _compound_defaults.get(_c, False))
+            )
 
         _split_sch_help = (
             "Leave blank to use the property default split schedule. "

@@ -51,26 +51,47 @@ tenants:
 # ── Default one-off accruals (Pass 1 seed table) ─────────────────────────────
 # Pre-seeded rows in the One-Off Accruals table — recurring monthly items.
 # Amounts are left at $0 and filled in each month. vendor is optional.
+# "compound: true" means this month's JE = last month's auto-reversed amount
+# + this month's entered Amount ($) -- only correct for accounts billed
+# irregularly (a few times a year), where the accrued liability needs to keep
+# building until a real invoice finally clears it. Confirmed with Ryan
+# 2026-07-28: only Water Contract Svc (619120) is genuinely irregular here.
 default_accruals:
   - account_code: "637150"
     account_name: Admin-Tenant Relations
+    compound: false
   - account_code: "617110"
     account_name: HVAC Maint-Contract Svc
+    compound: false          # mixed cadence (some quarterly, some monthly) -- see note below
   - account_code: "619120"
     account_name: Water Contract Svc
+    compound: true           # genuinely billed irregularly -- confirmed correct as-is
   - account_code: "627230"
     account_name: Fire Life Safety
+    compound: false          # mixed cadence (some quarterly, some monthly) -- see note below
   - account_code: "635110"
     account_name: Snow & Ice Removal
+    compound: false          # seasonal (Nov-Mar); wants budget-based estimate + PM review
+                              # flag each active month, not compounding -- not yet built
   - account_code: "610140"
     account_name: Cleaning Mat/Supplies
     vendor: Durkin
+    compound: false
   - account_code: "610160"
     account_name: Cleaning-Trash Removal (extra)
     vendor: Casella
+    compound: false
   - account_code: "637230"
     account_name: Admin-Materials/Supplies
     vendor: BlueTriton
+    compound: false
+
+# HVAC (617110) and Fire Life Safety (627230): billing cadence varies invoice
+# to invoice -- some months quarterly, some monthly. Ryan wants quarterly-cadence
+# months estimated off budget and monthly-cadence months taken from the actual
+# invoice, rather than either compounding or a flat guess. That hybrid isn't
+# built yet -- for now these default to compound: false (flat monthly) so they
+# at least don't double-count against a real invoice landing that month.
 
 # ── Management fee structure ──────────────────────────────────────────────────
 # Each entry produces one DR/CR pair in the JE and one line on the invoice.
