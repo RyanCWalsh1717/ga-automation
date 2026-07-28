@@ -64,6 +64,43 @@ def _fmt_period(period: str) -> str:
     return period
 
 
+def _period_to_month_date(period: str) -> Optional[date]:
+    """Convert 'Mar-2026' -> date(2026, 3, 1). Returns None on failure."""
+    if not period:
+        return None
+    m = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[- ]?(\d{4})',
+                  period, re.IGNORECASE)
+    if not m:
+        return None
+    month_map = dict(jan=1, feb=2, mar=3, apr=4, may=5, jun=6,
+                      jul=7, aug=8, sep=9, oct=10, nov=11, dec=12)
+    mon = month_map.get(m.group(1).lower(), 0)
+    if not mon:
+        return None
+    return date(int(m.group(2)), mon, 1)
+
+
+def _is_stale_prepaid_period(service_end, period: str) -> bool:
+    """
+    True if a prepaid invoice's service period has already fully elapsed
+    before the given close period even starts — i.e. there's nothing left
+    to amortize going forward, regardless of how the multi-month span was
+    detected.
+
+    Real example: a retroactive payroll/overtime billback description like
+    "DN OT Billback 6/15-11/1/25" reads as a >35-day date range (correctly,
+    as dates) but isn't a forward-looking prepaid expense — it's billing for
+    work already performed, entirely in a period before the current close.
+    Same check as prepaid_ledger.merge_nexus(), applied here so the Prepaid
+    Expense Amortization preview and Layer 1's JE split agree with the ledger
+    instead of still showing/booking a stale invoice as a future prepaid asset.
+    """
+    close_month = _period_to_month_date(period)
+    if not (service_end and close_month):
+        return False
+    return (service_end.year, service_end.month) < (close_month.year, close_month.month)
+
+
 # ── GL dedup utilities ──────────────────────────────────────
 
 def _normalize_vendor(name: str) -> str:
@@ -3279,6 +3316,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         #    Month 1 of N: DR expense (1/N) + DR 135150 (N-1/N) / CR 213100 (full)
         is_prepaid = inv.get('is_prepaid', False)
         prepaid_months = int(inv.get('prepaid_months', 1) or 1)
+        # A retroactive billback (e.g. "DN OT Billback 6/15-11/1/25") can span
+        # >35 days and read as prepaid, but if the service period is entirely
+        # in the past there's no future portion to defer — book it as a normal
+        # full-amount expense instead of splitting off a prepaid asset. Same
+        # rule as prepaid_ledger.merge_nexus() and build_prepaid_amortization().
+        if is_prepaid and _is_stale_prepaid_period(inv.get('service_end'), period):
+            is_prepaid = False
 
         if is_prepaid and prepaid_months > 1:
             monthly_amt = _round(abs(amount) / prepaid_months)
@@ -3867,6 +3911,12 @@ def build_prepaid_amortization(nexus_data: list, close_period: str = '') -> List
         svc_end = inv.get('service_end')
         total_months = inv.get('prepaid_months', 1)
         if not svc_start or not svc_end or total_months <= 1:
+            continue
+
+        # Skip invoices whose service period is entirely in the past — a
+        # retroactive billback spanning >35 days isn't a forward-looking
+        # prepaid expense. Same rule as prepaid_ledger.merge_nexus().
+        if _is_stale_prepaid_period(svc_end, close_period):
             continue
 
         total_amount = inv.get('amount', 0)

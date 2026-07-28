@@ -441,6 +441,83 @@ if "CR Account" in st.session_state.manual_accruals_df.columns:
     st.session_state.manual_accruals_df = _build_accruals_seed_df()
     st.session_state._accruals_df_for_property = None
 
+# Prepaid invoice correction table — lets the user fix a Nexus-parsed prepaid
+# invoice (amount, service dates, GL account) directly from the Prepaid
+# Expense Amortization panel when the parser misreads something. Keyed by
+# the same normalized vendor+invoice-number key prepaid_ledger.py uses, so a
+# correction here also fixes the ledger merge and reclass JE on the next run.
+if "prepaid_overrides_df" not in st.session_state:
+    st.session_state.prepaid_overrides_df = pd.DataFrame({
+        "_key": pd.Series([], dtype=str),
+        "Vendor": pd.Series([], dtype=str),
+        "Invoice #": pd.Series([], dtype=str),
+        "Description": pd.Series([], dtype=str),
+        "Total Amount ($)": pd.Series([], dtype=float),
+        "Service Start": pd.Series([], dtype=str),
+        "Service End": pd.Series([], dtype=str),
+        "GL Account": pd.Series([], dtype=str),
+    })
+
+
+def _apply_prepaid_overrides(nexus_records: list, overrides_df) -> list:
+    """
+    Apply user corrections from the Prepaid Expense Amortization editor onto
+    the parsed Nexus records, before they reach merge_nexus() / build_prepaid_
+    amortization() / build_accrual_entries(). Matched by the same normalized
+    vendor+invoice-number key prepaid_ledger._invoice_key() uses, so a fix
+    here stays consistent with ledger matching.
+    """
+    if overrides_df is None or overrides_df.empty:
+        return nexus_records
+    from parsers.nexus_accrual import _count_months as _nex_count_months
+
+    _overrides = {}
+    for _, _row in overrides_df.iterrows():
+        _k = str(_row.get("_key", "") or "").strip()
+        if not _k:
+            continue
+        _overrides[_k] = _row
+
+    if not _overrides:
+        return nexus_records
+
+    corrected = []
+    for inv in nexus_records:
+        if not inv.get('is_prepaid'):
+            corrected.append(inv)
+            continue
+        _key = prepaid_ledger._invoice_key(inv.get('vendor', ''), inv.get('invoice_number', ''))
+        _ov = _overrides.get(_key)
+        if _ov is None:
+            corrected.append(inv)
+            continue
+
+        _inv = dict(inv)
+        try:
+            _amt = float(_ov.get("Total Amount ($)", 0) or 0)
+            if _amt > 0:
+                _inv['amount'] = _amt
+        except (TypeError, ValueError):
+            pass
+
+        _svc_start = pd.to_datetime(_ov.get("Service Start", ""), errors='coerce')
+        _svc_end = pd.to_datetime(_ov.get("Service End", ""), errors='coerce')
+        if pd.notna(_svc_start):
+            _inv['service_start'] = _svc_start.date()
+        if pd.notna(_svc_end):
+            _inv['service_end'] = _svc_end.date()
+        if pd.notna(_svc_start) or pd.notna(_svc_end):
+            _inv['prepaid_months'] = _nex_count_months(
+                _inv.get('service_start'), _inv.get('service_end')
+            )
+
+        _gl_acct = str(_ov.get("GL Account", "") or "").strip()
+        if _gl_acct:
+            _inv['gl_account_number'] = _gl_acct
+
+        corrected.append(_inv)
+    return corrected
+
 
 # ── Image asset loader ────────────────────────────────────────
 import base64 as _b64
@@ -2197,6 +2274,14 @@ with tab1:
                 nexus_data = engine_result.parsed.get('nexus_accrual')
                 close_period = engine_result.period or ''
 
+                # Apply any user corrections made in the Prepaid Expense Amortization
+                # editor (prior run) before this data reaches merge_nexus() / the
+                # amortization schedule / Layer 1 — so a fixed misread actually
+                # changes the ledger and JEs, not just the preview table.
+                nexus_data = _apply_prepaid_overrides(
+                    nexus_data or [], st.session_state.get("prepaid_overrides_df")
+                )
+
                 # Guard: if the GL didn't yield a period we cannot label outputs.
                 if not close_period:
                     st.error(
@@ -3572,30 +3657,86 @@ with tab1:
         # ── Prepaid Amortization Panel ─────────────────────────────────────
         amort_lines = p1.get("amort_lines", [])
         if amort_lines:
-            st.markdown("### Prepaid Expense Amortization")
-            cur_lines = [l for l in amort_lines if l.get('is_current_period')]
-            fut_lines = [l for l in amort_lines if not l.get('is_current_period')]
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                st.metric("Current Period Expense", f"${sum(l['monthly_amount'] for l in cur_lines):,.2f}")
-            with col_p2:
-                st.metric("Future Periods (Prepaid Asset)", f"${sum(l['monthly_amount'] for l in fut_lines):,.2f}")
-            amort_rows = [{
-                "Vendor": l['vendor'], "Invoice #": l['invoice_number'],
-                "Period": l['period_label'], "Month": f"{l['month_index']}/{l['total_months']}",
-                "Monthly Amount": l['monthly_amount'], "GL Account": l['gl_account_number'],
-                "Current Period": "Yes" if l.get('is_current_period') else "",
-            } for l in amort_lines]
-            st.dataframe(amort_rows, use_container_width=True, hide_index=True,
-                         column_config={
-                             "Vendor": st.column_config.TextColumn(width="medium"),
-                             "Invoice #": st.column_config.TextColumn(width="small"),
-                             "Period": st.column_config.TextColumn(width="small"),
-                             "Month": st.column_config.TextColumn(width="small"),
-                             "Monthly Amount": st.column_config.NumberColumn(format="$%,.2f"),
-                             "GL Account": st.column_config.TextColumn(width="small"),
-                             "Current Period": st.column_config.TextColumn(width="small"),
-                         })
+            with st.expander("Prepaid Expense Amortization", expanded=False):
+                cur_lines = [l for l in amort_lines if l.get('is_current_period')]
+                fut_lines = [l for l in amort_lines if not l.get('is_current_period')]
+                col_p1, col_p2 = st.columns(2)
+                with col_p1:
+                    st.metric("Current Period Expense", f"${sum(l['monthly_amount'] for l in cur_lines):,.2f}")
+                with col_p2:
+                    st.metric("Future Periods (Prepaid Asset)", f"${sum(l['monthly_amount'] for l in fut_lines):,.2f}")
+
+                # One row per unique invoice (first occurrence) — editable, so a
+                # misread invoice (wrong amount, service dates, or GL account) can
+                # be corrected here. Corrections apply on the NEXT "Generate JEs" /
+                # "Re-run Pass 1" click, same as the One-Off Accruals table.
+                st.markdown("**Correct a misread invoice**")
+                st.caption(
+                    "Edit Total Amount, Service Start/End, or GL Account below, then "
+                    "click **Re-run Pass 1** to apply the correction to the ledger and JEs. "
+                    "Vendor / Invoice # are read-only — they're the match key."
+                )
+                _seen_keys = set()
+                _invoice_rows = []
+                for l in amort_lines:
+                    _k = prepaid_ledger._invoice_key(l['vendor'], l['invoice_number'])
+                    if _k in _seen_keys:
+                        continue
+                    _seen_keys.add(_k)
+                    _invoice_rows.append({
+                        "_key": _k,
+                        "Vendor": l['vendor'],
+                        "Invoice #": l['invoice_number'],
+                        "Description": l.get('description', ''),
+                        "Total Amount ($)": l['total_amount'],
+                        "Service Start": str(l['service_start']) if l.get('service_start') else '',
+                        "Service End": str(l['service_end']) if l.get('service_end') else '',
+                        "GL Account": l['gl_account_number'],
+                    })
+                # Preserve edits from a prior run for keys still present this run;
+                # add default rows for any newly-detected invoice.
+                _prior_ov = st.session_state.prepaid_overrides_df
+                _prior_by_key = {r["_key"]: r for _, r in _prior_ov.iterrows()} if not _prior_ov.empty else {}
+                _merged_rows = [_prior_by_key.get(r["_key"], r) for r in _invoice_rows]
+                _base_ov_df = pd.DataFrame(_merged_rows) if _merged_rows else st.session_state.prepaid_overrides_df
+
+                _ov_edited = st.data_editor(
+                    _base_ov_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["Vendor", "Invoice #"],
+                    column_order=["Vendor", "Invoice #", "Description",
+                                  "Total Amount ($)", "Service Start", "Service End", "GL Account"],
+                    column_config={
+                        "Vendor": st.column_config.TextColumn(width="medium"),
+                        "Invoice #": st.column_config.TextColumn(width="small"),
+                        "Description": st.column_config.TextColumn(width="large"),
+                        "Total Amount ($)": st.column_config.NumberColumn(format="$%,.2f", min_value=0.0),
+                        "Service Start": st.column_config.TextColumn(width="small", help="YYYY-MM-DD"),
+                        "Service End": st.column_config.TextColumn(width="small", help="YYYY-MM-DD"),
+                        "GL Account": st.column_config.TextColumn(width="small"),
+                    },
+                    key="prepaid_overrides_editor",
+                )
+                st.session_state.prepaid_overrides_df = _ov_edited
+
+                st.markdown("**Full amortization schedule**")
+                amort_rows = [{
+                    "Vendor": l['vendor'], "Invoice #": l['invoice_number'],
+                    "Period": l['period_label'], "Month": f"{l['month_index']}/{l['total_months']}",
+                    "Monthly Amount": l['monthly_amount'], "GL Account": l['gl_account_number'],
+                    "Current Period": "Yes" if l.get('is_current_period') else "",
+                } for l in amort_lines]
+                st.dataframe(amort_rows, use_container_width=True, hide_index=True,
+                             column_config={
+                                 "Vendor": st.column_config.TextColumn(width="medium"),
+                                 "Invoice #": st.column_config.TextColumn(width="small"),
+                                 "Period": st.column_config.TextColumn(width="small"),
+                                 "Month": st.column_config.TextColumn(width="small"),
+                                 "Monthly Amount": st.column_config.NumberColumn(format="$%,.2f"),
+                                 "GL Account": st.column_config.TextColumn(width="small"),
+                                 "Current Period": st.column_config.TextColumn(width="small"),
+                             })
             st.divider()
 
         # ── Prepaid Ledger Status ──────────────────────────────────────────
