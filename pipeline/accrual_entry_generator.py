@@ -4095,20 +4095,6 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
     return je_lines
 
 
-def _period_month_year(period_str: str) -> Optional[Tuple[int, int]]:
-    """Parse a 'Jan-2026' style period string to (month, year), or None."""
-    _mmap = {
-        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-    }
-    s = (period_str or '').strip().lower()
-    for abbr, num in _mmap.items():
-        if abbr in s:
-            _ym = re.search(r'(\d{4})', s)
-            return (num, int(_ym.group(1))) if _ym else None
-    return None
-
-
 def build_prepaid_reclass_je(
     active: List[Dict[str, Any]],
     newly_added_invoice_numbers: List[str],
@@ -4125,30 +4111,22 @@ def build_prepaid_reclass_je(
     the definitive release lines).
 
     Business rule: when a multi-month invoice is paid, its full amount hits
-    the expense account in the month it's processed. Exactly one month's
-    worth (item['monthly_amount']) is meant to stay there as that period's
-    real expense; the rest needs to move to the balance sheet so
-    prepaid_ledger.get_current_amortization() can release it evenly over the
-    remaining months. Two different scheduling paths apply depending on
-    which branch get_current_amortization() takes for this item:
-
-      "Added this period" (service_start's month matches the period the
-      item was discovered in): month index 1 is either skipped there
-      (assumed covered by Layer 1's own accrual) or, for a Paid invoice with
-      no Layer 1 accrual, emitted directly via the suppressed-invoice
-      exception. This reclass replaces that exception — once the invoice is
-      excluded from suppressed_invoice_numbers, the ledger goes back to
-      skipping month 1, and reclassing (total - 1 month) exactly funds the
-      remaining months with no double-count.
-
-      "Legacy rebase" (a day-based item whose service_start predates the
-      period it was discovered in — merge_nexus() anchors day-based items to
-      their true service_start month, not the discovery month):
-      get_current_amortization() emits a real release starting immediately
-      and every period after, with nothing held back — confirmed via
-      simulation the ledger releases the FULL invoice amount across its own
-      schedule in this case. The reclass here must be the full amount, or
-      the prepaid balance won't cover what the ledger goes on to release.
+    the expense account in the month it's processed. The number of months
+    already "elapsed" as of that close (item['months_elapsed_at_add'], set
+    by merge_nexus() — 1 for on-time discovery, or more if the invoice's
+    true service_start predates the period it was first tracked in, e.g. a
+    Nov-2025 start first tracked in the Jan-2026 run has 3 elapsed months:
+    Nov, Dec, Jan) is meant to stay in the expense account as real expense;
+    the rest (total − elapsed × monthly_amount) needs to move to the
+    balance sheet so prepaid_ledger.get_current_amortization() can release
+    it evenly over the remaining months, starting the period after this one
+    — merge_nexus() seeds remaining_months to match exactly
+    (total_months − elapsed + 1, the "+1" for this period's own skip).
+    Excluding the invoice from suppressed_invoice_numbers once it's
+    reclassed (here or already done manually) is what makes
+    get_current_amortization() skip this period instead of emitting it via
+    the suppressed-invoice exception, which would otherwise double-count
+    against this reclass.
 
     Args:
         active: Current active ledger items (from merge_nexus()).
@@ -4173,8 +4151,6 @@ def build_prepaid_reclass_je(
     if not _added_keys:
         return je_lines, reclassed
 
-    _close_my = _period_month_year(period)
-
     _gl_by_code = {}
     if gl_data is not None and hasattr(gl_data, 'accounts'):
         _gl_by_code = {str(a.account_code).strip(): a for a in gl_data.accounts}
@@ -4190,15 +4166,14 @@ def build_prepaid_reclass_je(
         if total_amount < 1.0 or not gl_acct:
             continue
 
-        _first_added_my = _period_month_year(str(item.get('first_added_period', '')))
-        _added_this_period = (
-            _first_added_my is not None and _close_my is not None
-            and _first_added_my == _close_my
-        )
-        reclass_amount = (
-            round(total_amount - monthly_amount, 2) if _added_this_period
-            else round(total_amount, 2)
-        )
+        # Months already elapsed as of this close (set by merge_nexus() —
+        # 1 for on-time discovery, more for a late-discovered item whose true
+        # service_start predates the period it was first tracked in). Reclass
+        # everything except that many months' worth, which stays as real
+        # expense (covered by the original invoice posting) — matches the
+        # confirmed business rule for both on-time and late-discovered items.
+        _months_elapsed = int(item.get('months_elapsed_at_add', 1) or 1)
+        reclass_amount = round(total_amount - _months_elapsed * monthly_amount, 2)
         if reclass_amount < 1.0:
             continue
 

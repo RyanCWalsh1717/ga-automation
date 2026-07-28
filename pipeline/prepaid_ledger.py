@@ -416,28 +416,53 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
         total_amount = inv.get('amount', 0)
         monthly_amount = round(total_amount / total_months, 2)
 
-        # Day-based proration: auto-detect mid-month start or end.
-        # Sets daily_rate so get_current_amortization() can compute the exact
-        # calendar-day amount for each month (partial first, full middle, partial last).
+        # Day-based proration rate: computed from the TRUE service dates
+        # regardless of when the ledger first tracks this item, so the last
+        # (and, if ever needed, first) month's release is still prorated
+        # correctly by _month_amount(). This is independent of the elapsed-
+        # months scheduling below — daily_rate only affects the PER-RELEASE
+        # amount, not which periods get released.
+        daily_rate = 0.0
         if svc_start and svc_end and _is_partial_period(svc_start, svc_end):
             daily_rate = _calc_daily_rate(total_amount, svc_start, svc_end)
-            # Anchor = service_start month (e.g. Oct for an Oct 20 start).
-            # months_amortized=0 → get_current_amortization() skips month 0
-            # (the partial first month is handled by the Nexus accrual JE).
-            # months_amortized=1 → amort_month = Oct+1 = Nov (first full month) ✓
-            # months_amortized=N → amort_month = Oct+N, using daily_rate for
-            # partial last month and full days for all middle months.
-            first_added = _date_to_period(date(svc_start.year, svc_start.month, 1))
-        else:
-            daily_rate   = 0.0
-            first_added  = close_period
 
-        # For partial-period items the anchor month (service_start month) is
-        # slot 0 and is skipped by get_current_amortization() — but advance_period()
-        # still increments months_amortized, consuming one slot.  To ensure all
-        # total_months JEs fire we start remaining_months at total_months + 1 so
-        # the skip slot doesn't eat one of the real release periods.
-        init_remaining = float(total_months + 1) if daily_rate > 0 else float(total_months)
+        # Elapsed months: how many months of this invoice's service period
+        # have already occurred by the time the ledger first tracks it,
+        # inclusive of the current close period itself. On-time discovery
+        # (service starts the same month it's found) is always 1. Late
+        # discovery (e.g. a Nov-2025 start first tracked in the Jan-2026
+        # run) counts every month from service_start through this close —
+        # Nov, Dec, Jan = 3. This drives both the reclass amount
+        # (build_prepaid_reclass_je: total − elapsed × monthly) and how
+        # many release months remain here.
+        _close_date_mn = _period_to_date(close_period)
+        months_elapsed = 1
+        if svc_start and _close_date_mn:
+            _r = relativedelta(_close_date_mn, date(svc_start.year, svc_start.month, 1))
+            months_elapsed = max(1, _r.years * 12 + _r.months + 1)
+
+        # Every item is tracked uniformly from here: this period is always
+        # skipped (get_current_amortization()'s standard "added this period"
+        # path — assumed covered by Layer 1's own accrual, or by the reclass
+        # JE once the invoice is excluded from suppressed_invoice_numbers),
+        # and releases begin next period. remaining_months = total_months −
+        # months_elapsed + 1: the "+1" accounts for this period's own skip,
+        # which always consumes exactly one slot regardless of how many
+        # months are truly elapsed (verified against worked examples with
+        # 1, 2, and 3 elapsed months — the reclass amount and the number of
+        # releases that follow always balance to the total invoice amount).
+        remaining = max(1.0, float(total_months - months_elapsed + 1))
+
+        # Anchor at the tracking-start month (this close period), not the
+        # true (possibly earlier) service_start — get_current_amortization()
+        # schedules months_amortized>=1 releases from date(service_start.year,
+        # service_start.month, 1); leaving the true, earlier service_start in
+        # place would permanently misalign every release after the first
+        # (confirmed: this is what silently broke the schedule for a
+        # late-discovered item before this fix). The true start date is no
+        # longer needed once elapsed months are covered by a reclass instead
+        # of a ledger release.
+        anchor_start = date(_close_date_mn.year, _close_date_mn.month, 1) if _close_date_mn else svc_start
 
         active.append({
             'vendor':            inv.get('vendor', ''),
@@ -448,13 +473,14 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
             'gl_account':        inv.get('gl_account', ''),
             'total_amount':      total_amount,
             'monthly_amount':    monthly_amount,
-            'service_start':     svc_start,
+            'service_start':     anchor_start,
             'service_end':       svc_end,
             'total_months':      float(total_months),
             'months_amortized':  0.0,
-            'remaining_months':  init_remaining,
-            'first_added_period': first_added,
+            'remaining_months':  remaining,
+            'first_added_period': close_period,
             'daily_rate':        daily_rate,
+            'months_elapsed_at_add': months_elapsed,
         })
         existing_keys.add(key)
         added.append(inv.get('invoice_number', ''))
