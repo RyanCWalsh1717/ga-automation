@@ -128,8 +128,25 @@ def _ensure_date(val) -> Optional[date]:
     return None
 
 
+_VENDOR_CODE_SUFFIX = re.compile(r'\s*\(v\d+\)\s*$', re.IGNORECASE)
+
+
+def _normalize_vendor(vendor: str) -> str:
+    """
+    Strip a trailing Yardi vendor-code suffix like ' (v0000360)' before
+    matching. A seed/manually-maintained ledger typically carries this
+    suffix in its vendor field (e.g. 'Apex Computers, Inc. (v0000360)'),
+    while nexus_accrual.parse() returns the vendor name alone ('Apex
+    Computers, Inc.') — without normalizing, _invoice_key() would never
+    recognize these as the same vendor, causing merge_nexus() to re-add an
+    item that's already tracked (confirmed: this duplicated a real seeded
+    item and generated a second reclass JE for it).
+    """
+    return _VENDOR_CODE_SUFFIX.sub('', str(vendor or '')).strip().lower()
+
+
 def _invoice_key(vendor: str, invoice_number: str) -> str:
-    return f"{str(vendor).strip().lower()}||{str(invoice_number).strip().lower()}"
+    return f"{_normalize_vendor(vendor)}||{str(invoice_number).strip().lower()}"
 
 
 # ── Day-based proration helpers ──────────────────────────────
