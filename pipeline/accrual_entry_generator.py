@@ -4282,6 +4282,229 @@ def build_prepaid_reclass_je(
     return je_lines, reclassed
 
 
+# ── Budget-based accruals for irregular-cadence service contracts ───────────
+#
+# Some service contracts don't fit any of the four normal layers cleanly:
+# their real invoice sometimes lands mid-month (should just use the actual),
+# and sometimes doesn't (should fall back to a budget estimate). Two of them
+# (HVAC, Fire Life Safety) also bill a base monthly service fee PLUS a larger
+# quarterly inspection/service invoice every quarter-end month, and Ryan wants
+# those split into two separate JE lines rather than one blended number.
+# Snow & Ice is purely seasonal (Nov-Mar) and budget-based, with no quarterly
+# split — instead it needs a PM review flag every active month so someone
+# confirms the estimate (or the real invoice, if one landed) is right.
+#
+# 'quarter_months' / 'season_months' are calendar months (1=Jan...12=Dec).
+# Confirmed with Ryan 2026-07-28.
+BUDGET_BASED_ACCOUNTS: dict = {
+    '617110': {
+        'label': 'HVAC Maint-Contract Svc',
+        'mode': 'quarterly_split',
+        'quarter_months': (3, 6, 9, 12),
+    },
+    '627230': {
+        'label': 'Fire Life Safety',
+        'mode': 'quarterly_split',
+        'quarter_months': (3, 6, 9, 12),
+    },
+    '635110': {
+        'label': 'Snow & Ice Removal',
+        'mode': 'seasonal',
+        'season_months': (11, 12, 1, 2, 3),
+    },
+}
+
+# Fraction of the expected accrual that real (non-pipeline) GL activity must
+# already cover before this layer treats the account as "actual landed this
+# month, skip the estimate" — same 90% tolerance used elsewhere in this file
+# for similar already-covered checks (see CLAUDE.md Budget gap PASS 2 note).
+_BUDGET_BASED_REAL_COVERAGE_THRESHOLD = 0.9
+
+
+def build_budget_based_accruals(
+    je_lines_so_far: List[Dict[str, Any]],
+    gl_data,
+    kardin_records: Optional[List[Dict[str, Any]]],
+    period: str = '',
+    je_start: int = 1,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Generate accruals for BUDGET_BASED_ACCOUNTS (see dict above) from the
+    Kardin monthly budget (M1-M12 per account), instead of requiring a
+    manually-entered One-Off Accruals amount every month.
+
+    Skip logic (per account, each month):
+      1. Skip entirely if an earlier layer (Nexus, proration, historical,
+         etc.) already generated a DR line for this account this period —
+         a real invoice already came through the normal path.
+      2. Otherwise, skip if real (non-pipeline) GL activity on the account
+         already covers >= 90% of the expected accrual — a real invoice
+         posted directly (check/PCard) without going through Nexus.
+      3. Otherwise, accrue from budget.
+
+    'quarterly_split' accounts (HVAC, Fire Life Safety) always accrue a base
+    monthly line (the account's minimum M1-M12 value, i.e. the non-quarter-end
+    baseline), plus a SEPARATE second line for the incremental quarterly
+    service invoice in quarter-end months (this month's budget minus the
+    monthly baseline) — two distinct JEs in March/June/September/December.
+
+    'seasonal' accounts (Snow & Ice) accrue the full month's budgeted amount,
+    only in season_months, and always emit a review_flag entry (regardless
+    of whether the JE fired or was skipped for real activity) so a PM can
+    confirm the estimate or invoice coverage is correct.
+
+    Returns:
+        (je_lines, review_flags) — review_flags is a list of dicts:
+            {account_code, account_name, period, budgeted, real_activity, message}
+    """
+    je_lines: List[Dict[str, Any]] = []
+    review_flags: List[Dict[str, Any]] = []
+    if not kardin_records:
+        return je_lines, review_flags
+
+    close_month = _period_to_month_date(period)
+    if not close_month:
+        return je_lines, review_flags
+    period_month = close_month.month
+    period_label = _fmt_period(period)
+
+    _gl_by_code = {}
+    if gl_data is not None and hasattr(gl_data, 'accounts'):
+        _gl_by_code = {str(a.account_code).strip(): a for a in gl_data.accounts}
+
+    _already_claimed = {
+        str(l.get('account_code', '')).strip()
+        for l in (je_lines_so_far or [])
+        if (l.get('debit') or 0) > 0
+    }
+
+    je_num = je_start
+    for acct_code, cfg in BUDGET_BASED_ACCOUNTS.items():
+        if acct_code in _already_claimed:
+            continue
+
+        _kr = next(
+            (r for r in kardin_records if str(r.get('account_code', '')).strip() == acct_code),
+            None,
+        )
+        if not _kr:
+            continue
+        _months = [float(_kr.get(f'M{m}', 0) or 0) for m in range(1, 13)]
+        _positive_months = [m for m in _months if m > 0]
+        if not _positive_months:
+            continue
+        _standard_monthly = _round(min(_positive_months))
+        _this_month_budget = _round(_months[period_month - 1])
+
+        _gl_acct = _gl_by_code.get(acct_code)
+        _real_activity = _real_net_change(_gl_acct) if _gl_acct is not None else 0.0
+        _acct_name = cfg['label']
+
+        if cfg['mode'] == 'quarterly_split':
+            _is_quarter_end = period_month in cfg['quarter_months']
+            _quarterly_incremental = (
+                _round(_this_month_budget - _standard_monthly) if _is_quarter_end else 0.0
+            )
+            _expected_total = _standard_monthly + max(_quarterly_incremental, 0.0)
+            if _expected_total > 0 and _real_activity >= _expected_total * _BUDGET_BASED_REAL_COVERAGE_THRESHOLD:
+                continue
+
+            _base_desc = f"Accrual {period_label} — {_acct_name} (monthly contract, from budget)"
+            je_id = f'BGT-{je_num:04d}'
+            je_lines.append({
+                'je_number': je_id, 'line': 1, 'date': '',
+                'account_code': acct_code, 'account_name': _acct_name,
+                'description': _base_desc, 'reference': 'BUDGET-ACCRUAL',
+                'debit': _standard_monthly, 'credit': 0.0,
+                'vendor': _acct_name, 'invoice_number': '',
+                'source': 'budget_based_accrual', 'confidence': 'medium',
+            })
+            je_lines.append({
+                'je_number': je_id, 'line': 2, 'date': '',
+                'account_code': '213100', 'account_name': 'Accrued Expenses',
+                'description': _base_desc, 'reference': 'BUDGET-ACCRUAL',
+                'debit': 0.0, 'credit': _standard_monthly,
+                'vendor': _acct_name, 'invoice_number': '',
+                'source': 'budget_based_accrual', 'confidence': 'medium',
+            })
+            je_num += 1
+
+            if _is_quarter_end and _quarterly_incremental > 0:
+                _q_desc = (
+                    f"Accrual {period_label} — {_acct_name} (quarterly service invoice: "
+                    f"${_this_month_budget:,.0f} budgeted − ${_standard_monthly:,.0f} monthly base "
+                    f"= ${_quarterly_incremental:,.0f})"
+                )
+                q_id = f'BGT-{je_num:04d}'
+                je_lines.append({
+                    'je_number': q_id, 'line': 1, 'date': '',
+                    'account_code': acct_code, 'account_name': _acct_name,
+                    'description': _q_desc, 'reference': 'BUDGET-ACCRUAL-QTR',
+                    'debit': _quarterly_incremental, 'credit': 0.0,
+                    'vendor': _acct_name, 'invoice_number': '',
+                    'source': 'budget_based_accrual', 'confidence': 'medium',
+                })
+                je_lines.append({
+                    'je_number': q_id, 'line': 2, 'date': '',
+                    'account_code': '213100', 'account_name': 'Accrued Expenses',
+                    'description': _q_desc, 'reference': 'BUDGET-ACCRUAL-QTR',
+                    'debit': 0.0, 'credit': _quarterly_incremental,
+                    'vendor': _acct_name, 'invoice_number': '',
+                    'source': 'budget_based_accrual', 'confidence': 'medium',
+                })
+                je_num += 1
+
+        elif cfg['mode'] == 'seasonal':
+            if period_month not in cfg['season_months']:
+                continue
+            _covered = (
+                _this_month_budget > 0
+                and _real_activity >= _this_month_budget * _BUDGET_BASED_REAL_COVERAGE_THRESHOLD
+            )
+            if _covered:
+                review_flags.append({
+                    'account_code': acct_code, 'account_name': _acct_name, 'period': period,
+                    'budgeted': _this_month_budget, 'real_activity': _real_activity,
+                    'message': (
+                        f"{_acct_name} ({acct_code}): a real invoice (${_real_activity:,.2f}) already "
+                        f"covers this month's ${_this_month_budget:,.2f} budgeted amount — no accrual "
+                        f"generated. Review: confirm the invoice fully covers this month's service."
+                    ),
+                })
+                continue
+            if _this_month_budget > 0:
+                _desc = f"Accrual {period_label} — {_acct_name} (seasonal budget estimate)"
+                je_id = f'BGT-{je_num:04d}'
+                je_lines.append({
+                    'je_number': je_id, 'line': 1, 'date': '',
+                    'account_code': acct_code, 'account_name': _acct_name,
+                    'description': _desc, 'reference': 'BUDGET-ACCRUAL',
+                    'debit': _this_month_budget, 'credit': 0.0,
+                    'vendor': _acct_name, 'invoice_number': '',
+                    'source': 'budget_based_accrual', 'confidence': 'medium',
+                })
+                je_lines.append({
+                    'je_number': je_id, 'line': 2, 'date': '',
+                    'account_code': '213100', 'account_name': 'Accrued Expenses',
+                    'description': _desc, 'reference': 'BUDGET-ACCRUAL',
+                    'debit': 0.0, 'credit': _this_month_budget,
+                    'vendor': _acct_name, 'invoice_number': '',
+                    'source': 'budget_based_accrual', 'confidence': 'medium',
+                })
+                je_num += 1
+                review_flags.append({
+                    'account_code': acct_code, 'account_name': _acct_name, 'period': period,
+                    'budgeted': _this_month_budget, 'real_activity': _real_activity,
+                    'message': (
+                        f"{_acct_name} ({acct_code}): accrued ${_this_month_budget:,.2f} from budget "
+                        f"(no real invoice posted yet). Review: confirm this covers actual snow/ice "
+                        f"activity this month, or increase the accrual if conditions ran heavier than budgeted."
+                    ),
+                })
+
+    return je_lines, review_flags
+
+
 # ── Insurance escrow reconciliation JE ───────────────────────
 
 def build_insurance_escrow_je(

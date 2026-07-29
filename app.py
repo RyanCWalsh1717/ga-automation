@@ -31,7 +31,7 @@ import traceback
 from accrual_entry_generator import (
     build_accrual_entries, generate_yardi_je_csv, generate_etl_csv,
     build_prepaid_amortization, build_prepaid_release_je, build_prepaid_reclass_je,
-    check_prior_accrual_vs_actual,
+    check_prior_accrual_vs_actual, build_budget_based_accruals, BUDGET_BASED_ACCOUNTS,
 )
 import prepaid_ledger
 import bs_workpaper_generator
@@ -2522,6 +2522,19 @@ with tab1:
                         st.warning(str(_w.message), icon="⚠️")
                 st.session_state['pass1_gl_activity_log'] = _gl_activity_log
 
+                # Budget-based accruals for HVAC / Fire Life Safety / Snow & Ice —
+                # these no longer live in the One-Off Accruals table (see config.yaml
+                # comment). Skips any account already claimed by an earlier layer
+                # (a real invoice came through Nexus/GL normally) or already covered
+                # by real GL activity; otherwise accrues from the Kardin monthly
+                # budget. HVAC/Fire Life Safety additionally split a separate
+                # quarterly-service-invoice line in quarter-end months.
+                budget_based_je, _budget_review_flags = build_budget_based_accruals(
+                    je_lines, gl_parsed, engine_result.parsed.get('kardin_budget') or [],
+                    period=close_period, je_start=1,
+                )
+                st.session_state['pass1_budget_review_flags'] = _budget_review_flags
+
                 # Phase-2 release scan — now that we know which Nexus JEs fired,
                 # determine which newly-added prepaid invoice numbers were suppressed
                 # (expense already in GL, invoice deduplicated).  For those items,
@@ -2674,7 +2687,8 @@ with tab1:
                 _supplement_je_lines = []
                 _periodic_supplement_rows = []
                 _sup_base = (len(je_lines) // 2 + len(prepaid_reclass_je) // 2
-                             + len(prepaid_release_je) // 2 + len(fee_je) // 2)
+                             + len(prepaid_release_je) // 2 + len(fee_je) // 2
+                             + len(budget_based_je) // 2)
 
                 _accruals_tbl = st.session_state.get("manual_accruals_df")
                 if _accruals_tbl is not None and not _accruals_tbl.empty:
@@ -2690,6 +2704,16 @@ with tab1:
                         '213100': 'Accrued Expenses',
                     }
                     for _, _row in _active_accruals.iterrows():
+                        _row_acct_code = str(_row["Account Code"]).strip()
+                        if _row_acct_code in BUDGET_BASED_ACCOUNTS:
+                            st.warning(
+                                f"Account {_row_acct_code} ({BUDGET_BASED_ACCOUNTS[_row_acct_code]['label']}) "
+                                f"is now accrued automatically from budget — see the Budget-Based Accrual "
+                                f"section below. Remove it from the One-Off Accruals table to avoid a "
+                                f"potential duplicate JE.",
+                                icon="⚠️",
+                            )
+                            continue
                         _vendor = str(_row.get("Vendor", "") or "").strip()
                         _desc   = str(_row.get("Description", "") or "").strip()
                         _split_sch_override = str(_row.get("Split Schedule", "") or "").strip()
@@ -2893,6 +2917,7 @@ with tab1:
                     + _catchup_je
                     + _supplement_je_lines
                     + _recode_je_lines
+                    + budget_based_je
                 )
 
                 # Apply pro-rata building splits for multi-building properties
@@ -2946,6 +2971,7 @@ with tab1:
                 p1["prepaid_ledger_updated"]= updated_ledger_path
                 p1["prepaid_released_count"]= len(prepaid_release_je) // 2
                 p1["prepaid_release_lines"] = ledger_release_lines
+                p1["budget_review_flags"]   = _budget_review_flags
 
                 progress_bar.progress(100)
                 status_text.text("✓ JEs ready for Yardi upload!")
@@ -3858,6 +3884,19 @@ with tab1:
                              })
             st.divider()
 
+        # ── Budget-Based Accrual Review Flags ───────────────────────────────
+        # HVAC / Fire Life Safety / Snow & Ice are accrued automatically from
+        # the Kardin budget (see build_budget_based_accruals) instead of a
+        # manually-entered One-Off Accruals amount. Snow & Ice in particular
+        # always surfaces a flag here each active month (Nov-Mar) so a PM
+        # confirms the estimate — or the real invoice, if one landed — is right.
+        _budget_review_flags = p1.get("budget_review_flags", [])
+        if _budget_review_flags:
+            st.markdown("### ⚠️ Budget-Based Accrual — PM Review Needed")
+            for _brf in _budget_review_flags:
+                st.warning(_brf.get('message', ''), icon="⚠️")
+            st.divider()
+
         # ── Download Section ───────────────────────────────────────────────
         st.markdown("### Download JE Files")
         st.caption("Upload these CSVs to Yardi, run the final close, then switch to **Pass 2** to generate reports.")
@@ -3869,7 +3908,7 @@ with tab1:
                                       'management_fee_catchup', 'invoice_proration',
                                       'prepaid_amortization', 'contract_supplement',
                                       'tenant_utility_billing', 'bonus_accrual', 'prepaid_ledger',
-                                      'prepaid_reclass', 'manual_addition',
+                                      'prepaid_reclass', 'manual_addition', 'budget_based_accrual',
                                   }]
         _src_label_map = {
             'nexus':                  'Nexus AP',
@@ -3884,6 +3923,7 @@ with tab1:
             'tenant_utility_billing': 'Tenant Utility',
             'bonus_accrual':          'Bonus Accrual',
             'manual_addition':        'Manually Added',
+            'budget_based_accrual':   'Budget-Based Accrual',
         }
         # Count unique JEs (not lines) per source — DR lines only to avoid double-count
         _src_je_counts = {}

@@ -56,23 +56,30 @@ tenants:
 # irregularly (a few times a year), where the accrued liability needs to keep
 # building until a real invoice finally clears it. Confirmed with Ryan
 # 2026-07-28: only Water Contract Svc (619120) is genuinely irregular here.
+#
+# NOTE: 617110 (HVAC), 627230 (Fire Life Safety), and 635110 (Snow & Ice) are
+# NOT listed here anymore -- they're accrued automatically from the Kardin
+# monthly budget by build_budget_based_accruals() (accrual_entry_generator.py,
+# BUDGET_BASED_ACCOUNTS dict) instead of a manual One-Off Accruals amount:
+#   - HVAC / Fire Life Safety: billing cadence varies invoice to invoice (some
+#     quarterly, some monthly), so each month accrues a flat monthly baseline
+#     (the account's minimum M1-M12 budget value) PLUS a separate second JE
+#     line for the incremental quarterly service invoice in quarter-end months
+#     (Mar/Jun/Sep/Dec) -- both suppressed if a real invoice already landed
+#     via Nexus/GL that period.
+#   - Snow & Ice: seasonal (Nov-Mar only), accrues the month's full Kardin
+#     budget figure, and always raises a PM review flag in the Pass 1 UI each
+#     active month (whether accrued from budget or already covered by a real
+#     invoice) so someone confirms the amount is right.
+# Do not re-add these 3 codes here -- entering them manually in the One-Off
+# table would risk a duplicate JE (the UI warns if you try).
 default_accruals:
   - account_code: "637150"
     account_name: Admin-Tenant Relations
     compound: false
-  - account_code: "617110"
-    account_name: HVAC Maint-Contract Svc
-    compound: false          # mixed cadence (some quarterly, some monthly) -- see note below
   - account_code: "619120"
     account_name: Water Contract Svc
     compound: true           # genuinely billed irregularly -- confirmed correct as-is
-  - account_code: "627230"
-    account_name: Fire Life Safety
-    compound: false          # mixed cadence (some quarterly, some monthly) -- see note below
-  - account_code: "635110"
-    account_name: Snow & Ice Removal
-    compound: false          # seasonal (Nov-Mar); wants budget-based estimate + PM review
-                              # flag each active month, not compounding -- not yet built
   - account_code: "610140"
     account_name: Cleaning Mat/Supplies
     vendor: Durkin
@@ -85,13 +92,6 @@ default_accruals:
     account_name: Admin-Materials/Supplies
     vendor: BlueTriton
     compound: false
-
-# HVAC (617110) and Fire Life Safety (627230): billing cadence varies invoice
-# to invoice -- some months quarterly, some monthly. Ryan wants quarterly-cadence
-# months estimated off budget and monthly-cadence months taken from the actual
-# invoice, rather than either compounding or a flat guess. That hybrid isn't
-# built yet -- for now these default to compound: false (flat monthly) so they
-# at least don't double-count against a real invoice landing that month.
 
 # ── Management fee structure ──────────────────────────────────────────────────
 # Each entry produces one DR/CR pair in the JE and one line on the invoice.
