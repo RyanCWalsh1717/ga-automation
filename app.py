@@ -461,6 +461,14 @@ if "prepaid_overrides_df" not in st.session_state:
         "Service Start": pd.Series([], dtype=str),
         "Service End": pd.Series([], dtype=str),
         "GL Account": pd.Series([], dtype=str),
+        # Hidden snapshot of what Nexus reported for this invoice the FIRST
+        # time this row was tracked — used to detect whether the source data
+        # has since changed (e.g. a corrected/re-exported Nexus file), so a
+        # stale override doesn't silently keep masking updated real data.
+        "_orig_amount":        pd.Series([], dtype=float),
+        "_orig_service_start": pd.Series([], dtype=str),
+        "_orig_service_end":   pd.Series([], dtype=str),
+        "_orig_gl_account":    pd.Series([], dtype=str),
     })
 
 
@@ -499,9 +507,10 @@ def _apply_prepaid_overrides(nexus_records: list, overrides_df) -> list:
 
         _inv = dict(inv)
         try:
-            _amt = float(_ov.get("Total Amount ($)", 0) or 0)
-            if _amt > 0:
-                _inv['amount'] = _amt
+            # No ">0" guard — a user explicitly zeroing this out to void a
+            # misparsed invoice must take effect (amount=0 then naturally
+            # skips downstream, e.g. Layer 1's "if amount == 0: continue").
+            _inv['amount'] = float(_ov.get("Total Amount ($)", 0) or 0)
         except (TypeError, ValueError):
             pass
 
@@ -2138,14 +2147,15 @@ with tab1:
                 "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
                                        help=_split_sch_help),
                 "Compound":        st.column_config.CheckboxColumn("Compound",
-                                       default=True, width="small",
-                                       help="✅ Checked (default) = this month's JE = last month's auto-reversed "
-                                            "amount + this month's Amount ($) — use for accounts billed "
-                                            "irregularly (e.g. Water/Sewer every 6 months), where the accrued "
-                                            "liability needs to keep building until a real invoice clears it. "
-                                            "❌ Uncheck for accounts billed on a normal monthly cadence — "
-                                            "otherwise the auto-reversal gets added back on top of this month's "
-                                            "rate every month, double-counting against real monthly invoices."),
+                                       default=False, width="small",
+                                       help="❌ Unchecked (default for new rows) = flat monthly amount — correct "
+                                            "for a normal monthly-billed account. "
+                                            "✅ Check ONLY for accounts billed irregularly (e.g. Water/Sewer "
+                                            "every 6 months), where this month's JE = last month's auto-reversed "
+                                            "amount + this month's Amount ($), so the accrued liability keeps "
+                                            "building until a real invoice clears it. Checking this for a normal "
+                                            "monthly account double-counts against the real invoice landing "
+                                            "that month."),
             },
             key=f"manual_accruals_editor_{_selected_code}_{st.session_state.get('editor_reset_count', 0)}",
         )
@@ -3757,21 +3767,57 @@ with tab1:
                     if _k in _seen_keys:
                         continue
                     _seen_keys.add(_k)
+                    _fresh_start = str(l['service_start']) if l.get('service_start') else ''
+                    _fresh_end   = str(l['service_end']) if l.get('service_end') else ''
+                    _fresh_gl    = l['gl_account_number']
+                    _fresh_amt   = l['total_amount']
                     _invoice_rows.append({
                         "_key": _k,
                         "Vendor": l['vendor'],
                         "Invoice #": l['invoice_number'],
                         "Description": l.get('description', ''),
-                        "Total Amount ($)": l['total_amount'],
-                        "Service Start": str(l['service_start']) if l.get('service_start') else '',
-                        "Service End": str(l['service_end']) if l.get('service_end') else '',
-                        "GL Account": l['gl_account_number'],
+                        "Total Amount ($)": _fresh_amt,
+                        "Service Start": _fresh_start,
+                        "Service End": _fresh_end,
+                        "GL Account": _fresh_gl,
+                        "_orig_amount": _fresh_amt,
+                        "_orig_service_start": _fresh_start,
+                        "_orig_service_end": _fresh_end,
+                        "_orig_gl_account": _fresh_gl,
                     })
-                # Preserve edits from a prior run for keys still present this run;
-                # add default rows for any newly-detected invoice.
+                # Preserve a prior run's edit ONLY if the underlying Nexus data
+                # hasn't changed since this invoice was first tracked (compare
+                # the stored _orig_* snapshot against this run's fresh values).
+                # Otherwise a corrected/re-exported Nexus file (a real workflow
+                # this session used repeatedly) would have its new numbers
+                # silently overridden by a stale first-seen value forever.
                 _prior_ov = st.session_state.prepaid_overrides_df
                 _prior_by_key = {r["_key"]: r for _, r in _prior_ov.iterrows()} if not _prior_ov.empty else {}
-                _merged_rows = [_prior_by_key.get(r["_key"], r) for r in _invoice_rows]
+                _stale_refreshed = []
+                _merged_rows = []
+                for r in _invoice_rows:
+                    _prior_row = _prior_by_key.get(r["_key"])
+                    if _prior_row is None:
+                        _merged_rows.append(r)
+                        continue
+                    _source_changed = (
+                        float(_prior_row.get("_orig_amount", 0) or 0) != r["_orig_amount"]
+                        or str(_prior_row.get("_orig_service_start", "") or "") != r["_orig_service_start"]
+                        or str(_prior_row.get("_orig_service_end", "") or "") != r["_orig_service_end"]
+                        or str(_prior_row.get("_orig_gl_account", "") or "") != r["_orig_gl_account"]
+                    )
+                    if _source_changed:
+                        _merged_rows.append(r)
+                        _stale_refreshed.append(r["Invoice #"])
+                    else:
+                        _merged_rows.append(_prior_row)
+                if _stale_refreshed:
+                    st.info(
+                        f"↳ Nexus data changed since last tracked for invoice(s) "
+                        f"{', '.join(_stale_refreshed)} — override reset to the new "
+                        f"values below. Re-verify before re-running.",
+                        icon="ℹ️",
+                    )
                 _base_ov_df = pd.DataFrame(_merged_rows) if _merged_rows else st.session_state.prepaid_overrides_df
 
                 _ov_edited = st.data_editor(

@@ -128,7 +128,7 @@ def _ensure_date(val) -> Optional[date]:
     return None
 
 
-_VENDOR_CODE_SUFFIX = re.compile(r'\s*\(v\d+\)\s*$', re.IGNORECASE)
+_VENDOR_CODE_SUFFIX = re.compile(r'\s*\(v\d{4,}\)\s*$', re.IGNORECASE)
 
 
 def _normalize_vendor(vendor: str) -> str:
@@ -141,6 +141,10 @@ def _normalize_vendor(vendor: str) -> str:
     recognize these as the same vendor, causing merge_nexus() to re-add an
     item that's already tracked (confirmed: this duplicated a real seeded
     item and generated a second reclass JE for it).
+
+    Requires 4+ digits so this only matches genuine Yardi vendor codes
+    (e.g. v0000360) — a short "(v2)"-style product/version tag that's
+    legitimately part of a vendor's real name is left alone.
     """
     return _VENDOR_CODE_SUFFIX.sub('', str(vendor or '')).strip().lower()
 

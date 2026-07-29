@@ -134,7 +134,7 @@ def _detect_columns(header_row: List[Any]) -> Dict[str, Optional[int]]:
         h = str(cell or '').strip().lower()
         if not h:
             continue
-        if cols['vendor'] is None and h == 'vendor':
+        if cols['vendor'] is None and 'vendor' in h:
             cols['vendor'] = idx
         elif cols['property'] is None and 'propert' in h:
             cols['property'] = idx

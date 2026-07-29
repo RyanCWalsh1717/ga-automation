@@ -4209,6 +4209,13 @@ def build_prepaid_reclass_je(
         inv_key = str(item.get('invoice_number', '') or '').strip().lower()
         if inv_key not in _added_keys:
             continue
+        # Matching on invoice_number alone risks pulling in an unrelated,
+        # already-amortizing ledger item from a DIFFERENT vendor that just
+        # happens to share the same invoice number string. merge_nexus() only
+        # ever adds a new item this period, so require first_added_period to
+        # match too — the one true match for "was this item just added now."
+        if str(item.get('first_added_period', '') or '') != str(period or ''):
+            continue
 
         total_amount   = float(item.get('total_amount', 0) or 0)
         monthly_amount = float(item.get('monthly_amount', 0) or 0)
@@ -4310,7 +4317,10 @@ BUDGET_BASED_ACCOUNTS: dict = {
     '635110': {
         'label': 'Snow & Ice Removal',
         'mode': 'seasonal',
-        'season_months': (11, 12, 1, 2, 3),
+        # Nov-Apr — the real Kardin budget carries an April line at the same
+        # $5,000 tier as March (confirmed 2026-07-28 diagnostic), so the
+        # season extends one month past the originally-assumed Nov-Mar window.
+        'season_months': (11, 12, 1, 2, 3, 4),
     },
 }
 
@@ -4383,13 +4393,22 @@ def build_budget_based_accruals(
         if acct_code in _already_claimed:
             continue
 
-        _kr = next(
-            (r for r in kardin_records if str(r.get('account_code', '')).strip() == acct_code),
-            None,
-        )
-        if not _kr:
+        # Kardin budgets MULTIPLE separate contract/vendor line items under the
+        # same GL account code (e.g. 617110 HVAC has 6: a quarterly maintenance
+        # contract, a flat monthly contingency, semi-annual/PM contracts, and a
+        # Jan/Feb-only testing charge). Sum every sub-line per month — reading
+        # only the first match (the original bug here) silently dropped the
+        # other 5 and used a single arbitrary row's baseline for every month,
+        # which either zeroed out most of the real budget or, if the one row
+        # picked was itself quarterly-only, booked its full quarterly amount
+        # as a "monthly" accrual in every non-quarter month too.
+        _kr_rows = [r for r in kardin_records if str(r.get('account_code', '')).strip() == acct_code]
+        if not _kr_rows:
             continue
-        _months = [float(_kr.get(f'M{m}', 0) or 0) for m in range(1, 13)]
+        _months = [
+            _round(sum(float(r.get(f'M{m}', 0) or 0) for r in _kr_rows))
+            for m in range(1, 13)
+        ]
         _positive_months = [m for m in _months if m > 0]
         if not _positive_months:
             continue
@@ -4401,11 +4420,15 @@ def build_budget_based_accruals(
         _acct_name = cfg['label']
 
         if cfg['mode'] == 'quarterly_split':
-            _is_quarter_end = period_month in cfg['quarter_months']
-            _quarterly_incremental = (
-                _round(_this_month_budget - _standard_monthly) if _is_quarter_end else 0.0
-            )
-            _expected_total = _standard_monthly + max(_quarterly_incremental, 0.0)
+            # Split off whatever this month's combined budget exceeds the
+            # normal monthly baseline by — this naturally captures the
+            # quarterly contract's spike in quarter-end months AND any other
+            # irregular sub-line (e.g. a Jan/Feb-only testing charge) without
+            # needing to special-case every contract individually. The whole
+            # point is debit(base) + debit(incremental) == _this_month_budget
+            # exactly, so the real budgeted total is never understated.
+            _incremental = _round(_this_month_budget - _standard_monthly)
+            _expected_total = _standard_monthly + max(_incremental, 0.0)
             if _expected_total > 0 and _real_activity >= _expected_total * _BUDGET_BASED_REAL_COVERAGE_THRESHOLD:
                 continue
 
@@ -4429,18 +4452,20 @@ def build_budget_based_accruals(
             })
             je_num += 1
 
-            if _is_quarter_end and _quarterly_incremental > 0:
+            if _incremental > 0:
+                _is_quarter_end = period_month in cfg['quarter_months']
+                _label = 'quarterly service invoice' if _is_quarter_end else 'additional service charge'
                 _q_desc = (
-                    f"Accrual {period_label} — {_acct_name} (quarterly service invoice: "
+                    f"Accrual {period_label} — {_acct_name} ({_label}: "
                     f"${_this_month_budget:,.0f} budgeted − ${_standard_monthly:,.0f} monthly base "
-                    f"= ${_quarterly_incremental:,.0f})"
+                    f"= ${_incremental:,.0f})"
                 )
                 q_id = f'BGT-{je_num:04d}'
                 je_lines.append({
                     'je_number': q_id, 'line': 1, 'date': '',
                     'account_code': acct_code, 'account_name': _acct_name,
                     'description': _q_desc, 'reference': 'BUDGET-ACCRUAL-QTR',
-                    'debit': _quarterly_incremental, 'credit': 0.0,
+                    'debit': _incremental, 'credit': 0.0,
                     'vendor': _acct_name, 'invoice_number': '',
                     'source': 'budget_based_accrual', 'confidence': 'medium',
                 })
@@ -4448,7 +4473,7 @@ def build_budget_based_accruals(
                     'je_number': q_id, 'line': 2, 'date': '',
                     'account_code': '213100', 'account_name': 'Accrued Expenses',
                     'description': _q_desc, 'reference': 'BUDGET-ACCRUAL-QTR',
-                    'debit': 0.0, 'credit': _quarterly_incremental,
+                    'debit': 0.0, 'credit': _incremental,
                     'vendor': _acct_name, 'invoice_number': '',
                     'source': 'budget_based_accrual', 'confidence': 'medium',
                 })
