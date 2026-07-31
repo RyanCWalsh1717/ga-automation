@@ -1554,6 +1554,20 @@ _REVERSAL_PREFIX_RE = re.compile(
     r'^(reversal\s+of\s+)?[Jj]-\d+\s*[:\-–]\s+', re.IGNORECASE
 )
 
+# Broader reversal detector — matches "reversal of J-XXXXX" ANYWHERE in the
+# text, not just as a prefix. Real Yardi exports also produce it as a suffix
+# after an empty vendor/memo field (e.g. ": Reversal of J-18456", where the
+# leading ": " is the blank field's own separator) which _REVERSAL_PREFIX_RE's
+# start anchor misses entirely.
+_REVERSAL_ANYWHERE_RE = re.compile(r'reversal\s+of\s+[Jj]-\d+', re.IGNORECASE)
+
+
+def _is_reversal_txn(txn) -> bool:
+    """True if a GL transaction's description/remarks mark it as an auto-reversal."""
+    desc    = str(getattr(txn, 'description', '') or '')
+    remarks = str(getattr(txn, 'remarks', '') or '')
+    return bool(_REVERSAL_ANYWHERE_RE.search(desc) or _REVERSAL_ANYWHERE_RE.search(remarks))
+
 
 _NO_DESC_FLAG = '[!] No Description - Review Required'
 
@@ -3691,6 +3705,11 @@ def generate_bs_workpaper_from_template(
         txn_date = _coerce_date(getattr(txn, 'date', None))
         desc = (str(getattr(txn, 'description', '') or '').strip() or
                 str(getattr(txn, 'remarks', '') or '').strip())
+        # Strip a leading blank-field separator (e.g. a blank vendor/memo
+        # field exported as ": Reversal of J-18456" — the reversal itself is
+        # already filtered out upstream, but the same blank-field artifact
+        # can appear on other boilerplate text too).
+        desc = desc.lstrip(': –-').strip()
         amt = float(getattr(txn, 'net_amount', 0) or 0)
         ctrl = str(getattr(txn, 'control', '') or '').strip()
         offset_code, _ = _ctrl_to_acct.get(ctrl, ('', ''))
@@ -3781,6 +3800,18 @@ def generate_bs_workpaper_from_template(
         # GL account for this tab
         _gl_acct = gl_map.get(_acct_code)
         _all_txns = list(getattr(_gl_acct, 'transactions', None) or []) if _gl_acct else []
+        # Auto-reversals of last period's own accrual are a mechanical Yardi
+        # artifact, not real activity to review — exclude them from every
+        # workpaper detail tab, not just this one. Also drop transactions
+        # with no date and no description/remarks — these carry nothing
+        # displayable and previously produced a blank-looking row with the
+        # amount shifted into the wrong column.
+        def _is_blank_txn(t) -> bool:
+            has_date = _coerce_date(getattr(t, 'date', None)) is not None
+            has_text = bool(str(getattr(t, 'description', '') or '').strip()
+                             or str(getattr(t, 'remarks', '') or '').strip())
+            return not has_date and not has_text
+        _all_txns = [t for t in _all_txns if not _is_reversal_txn(t) and not _is_blank_txn(t)]
 
         # ── CUMULATIVE tab: append new transactions after existing template rows ──
         if _cumulative:
