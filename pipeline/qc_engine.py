@@ -160,6 +160,7 @@ def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
     tb_map = tb_result.account_map if tb_result else {}
 
     matched = 0
+    unbudgeted_findings: List[QCFinding] = []
     for code, tb_acct in tb_map.items():
         if code not in bc_map:
             continue
@@ -176,27 +177,56 @@ def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
         diff = abs(tb_net - ptd_actual)
         matched += 1
 
-        if diff > 0.02:  # $0.02 tolerance for rounding
-            findings.append(QCFinding(
+        if diff <= 0.02:  # $0.02 tolerance for rounding
+            continue
+
+        # BC PTD Actual of exactly $0 against real TB activity isn't a case
+        # where TB and Budget Comparison disagree — it means this account has
+        # no budgeted/tracked line in BC at all (an unbudgeted one-off item),
+        # so there's nothing there to tie against. That's a budget-coverage
+        # question, not a reporting mismatch, so it's kept separate with its
+        # own wording/flag rather than folded into a "doesn't tie" FAIL.
+        if abs(ptd_actual) <= 0.02:
+            unbudgeted_findings.append(QCFinding(
                 account_code=code,
                 account_name=tb_acct.account_name,
                 value_a=tb_net,
                 value_b=ptd_actual,
                 difference=tb_net - ptd_actual,
-                flag='MISMATCH',
-                note=f'TB net activity ${tb_net:,.2f} ≠ BC PTD Actual ${ptd_actual:,.2f}',
+                flag='MISSING',
+                note=(f'${tb_net:,.2f} of real TB activity has no Budget Comparison '
+                      f'actual line (unbudgeted account) — not a tie-out mismatch.'),
             ))
+            continue
 
-    if not findings:
+        findings.append(QCFinding(
+            account_code=code,
+            account_name=tb_acct.account_name,
+            value_a=tb_net,
+            value_b=ptd_actual,
+            difference=tb_net - ptd_actual,
+            flag='MISMATCH',
+            note=f'TB net activity ${tb_net:,.2f} ≠ BC PTD Actual ${ptd_actual:,.2f}',
+        ))
+
+    all_findings = findings + unbudgeted_findings
+    if not findings and not unbudgeted_findings:
         summary = (f'All {matched} accounts with TB activity tie to Budget Comparison PTD Actual. '
                    f'Difference = $0.00.')
         status = 'PASS'
+    elif not findings:
+        summary = (f'{len(unbudgeted_findings)} account(s) have real TB activity with no '
+                   f'Budget Comparison actual line (unbudgeted) out of {matched} checked — '
+                   f'review for budget completeness, not a tie-out error.')
+        status = 'FLAG'
     else:
-        summary = (f'{len(findings)} account(s) do not tie between TB and Budget Comparison '
-                   f'out of {matched} checked.')
+        summary = (f'{len(findings)} account(s) show a genuine TB vs Budget Comparison mismatch'
+                   + (f'; {len(unbudgeted_findings)} additional unbudgeted account(s) flagged '
+                      f'separately (not a tie-out error)' if unbudgeted_findings else '')
+                   + f' out of {matched} checked.')
         status = 'FAIL'
 
-    return QCResult('CHECK_1', 'TB to Budget Comparison Tie-Out', status, summary, findings)
+    return QCResult('CHECK_1', 'TB to Budget Comparison Tie-Out', status, summary, all_findings)
 
 
 # ══════════════════════════════════════════════════════════════
