@@ -223,64 +223,69 @@ def _pdf_via_reportlab(period: str, cash_received: float, pdf_path: str,
     c.setFillColor(BLACK)
 
     # ── Meta block (right side) ───────────────────────────────────────────────
+    # Rows below here start at top=140, not 112 — the 20pt INVOICE title's cap
+    # height reaches up to roughly top=94, so top=112 (only 4pt past its own
+    # baseline at 108) put BILL TO/META inside the title's glyph box, visibly
+    # overlapping it. +28 clears it with real margin, absorbed by the large
+    # (180pt, now ~152pt) gap before PAYMENT INSTRUCTIONS below.
     META = [
-        ('INVOICE #', inv_num,          112),
-        ('DATE',      inv_date_s,        126),
-        ('DUE DATE',  inv_date_s,        140),
-        ('TERMS',     'Due on receipt',  154),
+        ('INVOICE #', inv_num,          140),
+        ('DATE',      inv_date_s,        154),
+        ('DUE DATE',  inv_date_s,        168),
+        ('TERMS',     'Due on receipt',  182),
     ]
     for lbl, val, top in META:
         c.setFont('Times-Bold',  10); c.drawString(355, _y(top), lbl)
         c.setFont('Times-Roman', 10); c.drawString(460, _y(top), val)
 
     # ── Bill To (left side, same rows as Meta) ────────────────────────────────
-    c.setFont('Times-Bold',  10); c.drawString(L, _y(112), 'BILL TO:')
-    c.setFont('Times-Roman', 10); c.drawString(L, _y(126), bill_to)  # C-NF-4: from config
+    c.setFont('Times-Bold',  10); c.drawString(L, _y(140), 'BILL TO:')
+    c.setFont('Times-Roman', 10); c.drawString(L, _y(154), bill_to)  # C-NF-4: from config
 
     # ── Divider above table ───────────────────────────────────────────────────
     c.setStrokeColor(BLACK); c.setLineWidth(0.75)
-    c.line(L, _y(174), R, _y(174))
+    c.line(L, _y(202), R, _y(202))
 
     # ── Table header row (green fill) ─────────────────────────────────────────
     c.setFillColor(GREEN_LIGHT); c.setStrokeColor(GREEN_LIGHT)
-    c.rect(L, _y(196), R - L, 22, fill=1, stroke=0)
-    c.setStrokeColor(BLACK); c.line(L, _y(196), R, _y(196))
+    c.rect(L, _y(224), R - L, 22, fill=1, stroke=0)
+    c.setStrokeColor(BLACK); c.line(L, _y(224), R, _y(224))
 
     c.setFont('Times-Bold', 9); c.setFillColor(BLACK)
-    c.drawString(DATE_X, _y(188), 'DATE')
-    c.drawString(DESC_X, _y(188), 'DESCRIPTION')
+    c.drawString(DATE_X, _y(216), 'DATE')
+    c.drawString(DESC_X, _y(216), 'DESCRIPTION')
     c.setFillColor(GREEN_DARK)
-    c.drawRightString(R_COLL, _y(188), 'COLLECTIONS')
+    c.drawRightString(R_COLL, _y(216), 'COLLECTIONS')
     c.setFillColor(BLACK)
-    c.drawRightString(R_RATE, _y(188), 'RATE')
-    c.drawRightString(R_AMT,  _y(188), 'AMOUNT')
+    c.drawRightString(R_RATE, _y(216), 'RATE')
+    c.drawRightString(R_AMT,  _y(216), 'AMOUNT')
 
     def _money(v, neg=False):
         return f'{"-" if neg else ""}${abs(v):,.2f}'
 
     # ── Row 1 — Management fee ────────────────────────────────────────────────
     c.setFont('Times-Roman', 10)
-    c.drawString(DATE_X, _y(214), inv_date_s)
-    c.drawString(DESC_X, _y(214), f'{month_lbl} {year} Property Management Fee')
-    c.drawRightString(R_COLL, _y(214), _money(cash_received))
-    c.drawRightString(R_RATE, _y(214), f'{total_rate * 100:.2f}%')
-    c.drawRightString(R_AMT,  _y(214), _money(total_fee))
-    c.setLineWidth(0.5); c.line(L, _y(222), R, _y(222))
+    c.drawString(DATE_X, _y(242), inv_date_s)
+    c.drawString(DESC_X, _y(242), f'{month_lbl} {year} Property Management Fee')
+    c.drawRightString(R_COLL, _y(242), _money(cash_received))
+    c.drawRightString(R_RATE, _y(242), f'{total_rate * 100:.2f}%')
+    c.drawRightString(R_AMT,  _y(242), _money(total_fee))
+    c.setLineWidth(0.5); c.line(L, _y(250), R, _y(250))
 
     # ── Row 2 — JLL deduction ─────────────────────────────────────────────────
     c.setFont('Times-Roman', 10)
-    c.drawString(DATE_X, _y(238), inv_date_s)
-    c.drawString(DESC_X, _y(238), 'Less: JLL Portion')
-    c.drawRightString(R_COLL, _y(238), _money(cash_received))
-    c.drawRightString(R_RATE, _y(238), f'{jll_rate * 100:.2f}%')
-    c.drawRightString(R_AMT,  _y(238), _money(jll_fee, neg=True))
-    c.setLineWidth(0.5); c.line(L, _y(246), R, _y(246))
+    c.drawString(DATE_X, _y(266), inv_date_s)
+    c.drawString(DESC_X, _y(266), 'Less: JLL Portion')
+    c.drawRightString(R_COLL, _y(266), _money(cash_received))
+    c.drawRightString(R_RATE, _y(266), f'{jll_rate * 100:.2f}%')
+    c.drawRightString(R_AMT,  _y(266), _money(jll_fee, neg=True))
+    c.setLineWidth(0.5); c.line(L, _y(274), R, _y(274))
 
     # ── Balance Due ───────────────────────────────────────────────────────────
-    c.setLineWidth(0.75); c.line(L, _y(272), R, _y(272))
+    c.setLineWidth(0.75); c.line(L, _y(300), R, _y(300))
     c.setFont('Times-Bold', 10)
-    c.drawString(L,         _y(284), 'BALANCE DUE')
-    c.drawRightString(R_AMT, _y(284), _money(balance))
+    c.drawString(L,         _y(312), 'BALANCE DUE')
+    c.drawRightString(R_AMT, _y(312), _money(balance))
 
     # ── Payment instructions ──────────────────────────────────────────────────
     c.setFont('Times-Bold', 9)
