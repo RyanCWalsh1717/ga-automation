@@ -4008,14 +4008,42 @@ def generate_bs_workpaper_from_template(
             _insert_at = _tieout
             ws.insert_rows(_insert_at, _to_insert)
             _tieout += _to_insert
-            for _r in range(_insert_at, _insert_at + _to_insert):
-                # Preserve the template's alternating row-banding fill by
-                # copying from whichever of the two existing reference rows
-                # (data_start / data_start+1) shares this row's parity —
-                # always copying from data_start alone flattened every
-                # inserted row to the same (unfilled) style.
-                _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
-                _copy_row_style(ws, _src, _r, 2, 12)
+
+            # openpyxl's insert_rows() shifts real cell objects but does NOT
+            # update the merged-cell range *definitions* — confirmed against
+            # the real template: the footer's own label merges (e.g. 'Ending
+            # Balance per GL' spanning B:D, plus its blank E:G/H:J
+            # companions) stayed registered at their OLD row number after
+            # the insert, so the newly-inserted row (now holding real item
+            # data, not the footer) silently blocked writes to every
+            # non-anchor cell in those stale ranges — Description/Invoice
+            # #/GL Account/Start Date/Total/Monthly Amt all came back None
+            # with no error, while the anchor columns (Vendor/Invoice
+            # Date/End Date) wrote fine. ws.unmerge_cells() itself isn't safe
+            # to call here — it assumes real MergedCell placeholders still
+            # sit at those (now-stale) coordinates, which insert_rows leaves
+            # empty, raising KeyError. Drop the range registration directly
+            # instead, which is all that's needed since there's nothing
+            # left to actually unmerge.
+            for _mg in list(ws.merged_cells.ranges):
+                if _mg.min_row < _tieout and _mg.max_row >= _data_start:
+                    ws.merged_cells.remove(_mg)
+
+        # Apply proper data-row formatting (font/border/fill/number-format)
+        # to every row that will hold an item, not just rows insert_rows()
+        # just created — confirmed against the real template: it reserves
+        # one extra blank "spacer" row (data_start + 9) styled as a plain
+        # divider (General number format, no currency/date formats, a
+        # heavier "medium" border) rather than a real data row, so an item
+        # landing there via the 9th-of-9-original-slots path came out with
+        # correct values but wrong formatting instead of the missing-value
+        # symptom above (the two mangled rows were adjacent for this exact
+        # reason: one pre-existing under-styled spacer immediately followed
+        # by one newly-inserted, merge-blocked row).
+        for _i in range(len(_items)):
+            _r = _data_start + _i
+            _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+            _copy_row_style(ws, _src, _r, 2, 12)
 
         for _i, _item in enumerate(_items):
             _r = _data_start + _i
