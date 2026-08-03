@@ -3792,9 +3792,20 @@ def generate_bs_workpaper_from_template(
         written from data):
           B Vendor | C Description | D Invoice # | E Invoice Date |
           F GL Account | G Start Date | H End Date | I Total Amount |
-          J =I/DATEDIF(G,H+1,"M")            (monthly amount)
-          K =J*DATEDIF(G,'Summary Page'!$C$4+1,"M")   (amortized to date)
+          J =I/DATEDIF(G,H+1,"M")             (monthly amount, reference only)
+          K =I*(days elapsed)/(total days)    (amortized to date, day-prorated)
           L =I-K                              (remaining balance)
+
+        K uses straight-line day proration, not DATEDIF(...,"M") — DATEDIF's
+        "M" unit only counts COMPLETE calendar months and gives zero credit
+        for a partial month, so a policy starting mid-month (virtually all
+        of them) permanently understates amortized-to-date by however many
+        days fall in its partial start month. Confirmed by Ryan 2026-08-03
+        with a concrete example (a mid-June start splitting across two
+        different Junes a year apart). Unlike Insurance Analysis's version
+        of this same formula (which doesn't feed anything downstream), L's
+        SUM here IS the real 135150 GL tie-out, so this bug directly
+        understated the reported prepaid balance.
         Footer: L{tieout}=SUM(L{data_start}:L{last}), L{tieout+1}=VLOOKUP
         ending balance per TB, L{tieout+2}=variance — same B1-anchor
         pattern as every other tab.
@@ -3837,7 +3848,9 @@ def generate_bs_workpaper_from_template(
             ws.cell(_r, 8).value = _coerce_date(_item.get('service_end'))
             ws.cell(_r, 9).value = float(_item.get('total_amount', 0) or 0)
             ws.cell(_r, 10).value = f'=I{_r}/DATEDIF(G{_r},H{_r}+1,"M")'
-            ws.cell(_r, 11).value = f"=J{_r}*DATEDIF(G{_r},'Summary Page'!$C$4+1,\"M\")"
+            ws.cell(_r, 11).value = (
+                f"=I{_r}*(MIN('Summary Page'!$C$4,H{_r})-G{_r}+1)/(H{_r}-G{_r}+1)"
+            )
             ws.cell(_r, 12).value = f'=I{_r}-K{_r}'
 
         _last_written = _data_start + len(_items) - 1
