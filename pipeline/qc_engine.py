@@ -139,8 +139,13 @@ class QCReport:
 
 def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
     """
-    For every account present in both the Trial Balance and Budget Comparison,
-    confirm that TB net activity equals Budget Comparison PTD Actual.
+    For every INCOME STATEMENT account present in both the Trial Balance and
+    Budget Comparison, confirm that TB net activity equals Budget Comparison
+    PTD Actual. Balance sheet accounts (1xxxxx-3xxxxx) are excluded — Budget
+    Comparison (CIS) is a P&L report and was never meant to carry balance
+    sheet actuals; some Yardi exports still include a BS row, but with an
+    opposite sign convention that isn't comparable to the revenue/expense
+    logic below.
 
     Revenue accounts: TB net = credit - debit (income shown positive in BC)
     Expense accounts: TB net = debit - credit
@@ -163,6 +168,17 @@ def check_1_tb_to_budget(tb_result, budget_rows: List[dict]) -> QCResult:
     unbudgeted_findings: List[QCFinding] = []
     for code, tb_acct in tb_map.items():
         if code not in bc_map:
+            continue
+        # Budget Comparison (CIS) is a P&L report — it was never meant to
+        # carry balance sheet actuals. Some Yardi BC exports still include a
+        # row for BS accounts (e.g. an ending-balance figure with an opposite
+        # sign convention from the revenue/expense one below), which produced
+        # a systematic sign-flip "mismatch" on every BS account that happened
+        # to appear (confirmed 2026-08-03: 111100, 131100, 213100, etc. all
+        # showed BC PTD Actual as the exact negative of TB net). Skip BS
+        # accounts here entirely — this tie-out only applies to income
+        # statement accounts.
+        if _is_balance_sheet(code):
             continue
 
         bc_row = bc_map[code]
