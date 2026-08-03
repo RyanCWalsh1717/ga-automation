@@ -758,6 +758,15 @@ def advance_period(active: List[Dict], completed: List[Dict],
                 # mirror that here so the persisted months_amortized (set below)
                 # lines up with next period's anchor + months_amortized lookup.
                 new_anchor = close_date - relativedelta(months=1)
+                # Preserve the true original start (e.g. a seed item's real
+                # date) before overwriting it below — confirmed on a real
+                # invoice (Apex Computers, true start 1/1/2026): this rebase
+                # silently replaced it with 12/1/2025 (close_period − 1)
+                # with nothing anywhere keeping the real date, so the
+                # workpaper display (and anyone auditing the ledger) saw
+                # the scheduling anchor instead of the actual service start.
+                if not item.get('true_service_start'):
+                    item['true_service_start'] = item.get('service_start')
                 item['first_added_period'] = _date_to_period(new_anchor)
                 item['service_start']      = new_anchor
                 months_done = 1
@@ -794,6 +803,12 @@ def advance_period(active: List[Dict], completed: List[Dict],
                 _svc_start = _ensure_date(item.get('service_start'))
                 if _svc_start and (_svc_start.year != close_date.year
                                     or _svc_start.month != close_date.month):
+                    # Same preservation as the legacy-rebase branch above —
+                    # covers a manually-added item (Pass 2 UI) that reaches
+                    # this branch without ever going through merge_nexus(),
+                    # which is the only other place true_service_start gets set.
+                    if not item.get('true_service_start'):
+                        item['true_service_start'] = _svc_start
                     item['service_start'] = date(close_date.year, close_date.month, 1)
 
         item['months_amortized'] = months_done + 1
@@ -901,6 +916,22 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
 
     # Row 4: blank spacer (matches workpaper layout — data starts at row 6)
 
+    # ── "As Of" anchor cell — this file has no Summary Page tab, so the
+    # day-based proration formulas below need their own reference date.
+    # Placed past the visible table (col N) so it doesn't disturb the
+    # B:L layout that mirrors build_135150_tab().
+    _period_start = _period_to_date(period)
+    _period_end = (
+        _period_start + relativedelta(months=1) - relativedelta(days=1)
+        if _period_start else None
+    )
+    _ANCHOR_COL = LAST_COL + 2  # col N
+    ws.cell(row=1, column=_ANCHOR_COL, value='As Of:').font = Font(
+        name='Calibri', size=9, italic=True, color='666666')
+    _anchor_cell = ws.cell(row=1, column=_ANCHOR_COL + 1, value=_period_end)
+    _anchor_cell.number_format = 'MM/DD/YYYY'
+    _anchor_ref = f'${get_column_letter(_ANCHOR_COL + 1)}$1'
+
     # ── Row 5: Column headers ─────────────────────────────────────────────
     for ci, lbl in enumerate(col_labels):
         col = FIRST_COL + ci
@@ -911,9 +942,15 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
         c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[5].height = 18
 
-    # ── Data rows from row 6 ──────────────────────────────────────────────
-    # Values only (no DATEDIF formulas — this file is standalone, no Summary Page).
-    # Amt Amort. and Remaining are Python-computed dollar amounts.
+    # ── Data rows from row 6 ────────────────────────────────────────────────
+    # Amt Amort. / Remaining are now LIVE day-based proration formulas (not
+    # Python-computed values) — safe to do here specifically because this
+    # tab is never re-parsed by load() (that only reads 'Active'/'Completed'),
+    # so a stale cached formula result before the file is next opened in
+    # Excel can't corrupt the carry-forward round-trip. Day-based straight-
+    # line proration (Total * elapsed / total days, from the TRUE start)
+    # handles a mid-month start or end automatically, with no separate
+    # first/last-month branching needed.
     next_row = 6
     for i, rec in enumerate(active):
         alt = i % 2 == 1
@@ -925,29 +962,28 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
         inv_num    = str(rec.get('invoice_number') or '')
         inv_date   = rec.get('invoice_date') or ''
         gl_account = str(rec.get('gl_account_number') or '')
-        start      = rec.get('service_start') or rec.get('first_added_period') or ''
-        end        = rec.get('service_end') or ''
-        total      = float(rec.get('total_amount') or 0)
-        monthly    = float(rec.get('monthly_amount') or 0)
-        months_am  = int(rec.get('months_amortized') or 0)
-        rem_months = int(rec.get('remaining_months') or 0)
-        amt_amort  = round(months_am * monthly, 2)
-        remaining  = round(rem_months * monthly, 2)
+        # TRUE service_start — 'service_start' itself may be rebased to a
+        # scheduling anchor by advance_period()/merge_nexus() (confirmed:
+        # this displayed a real invoice's start a month+ off from its
+        # actual date). Falls back to service_start for items that were
+        # never rebased (it already holds the true date for those).
+        start = _ensure_date(rec.get('true_service_start') or rec.get('service_start'))
+        end   = _ensure_date(rec.get('service_end'))
+        total = float(rec.get('total_amount') or 0)
+        monthly = float(rec.get('monthly_amount') or 0)
 
         row_vals = [
-            (vendor,                             None,        True),
-            (desc,                               None,        True),
-            (inv_num,                            None,        False),
-            (str(inv_date) if inv_date else '',  None,        False),
-            (gl_account,                         None,        False),
-            (str(start),                         None,        False),
-            (str(end),                           None,        False),
-            (total,                              '$#,##0.00', False),
-            (monthly,                            '$#,##0.00', False),
-            (amt_amort,                          '$#,##0.00', False),
-            (remaining,                          '$#,##0.00', False),
+            (vendor,   None,          True,  'left'),
+            (desc,     None,          True,  'left'),
+            (inv_num,  None,          False, 'left'),
+            (str(inv_date) if inv_date else '', None, False, 'left'),
+            (gl_account, None,        False, 'left'),
+            (start,    'MM/DD/YYYY',  False, 'left'),
+            (end,      'MM/DD/YYYY',  False, 'left'),
+            (total,    '$#,##0.00',   False, 'right'),
+            (monthly,  '$#,##0.00',   False, 'right'),
         ]
-        for ci, (val, fmt, wrap) in enumerate(row_vals):
+        for ci, (val, fmt, wrap, halign) in enumerate(row_vals):
             col = FIRST_COL + ci
             c = ws.cell(row=next_row, column=col, value=val)
             c.font   = Font(name='Calibri', size=10)
@@ -955,10 +991,24 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
             if alt_fill:
                 c.fill = alt_fill
             c.number_format = fmt or 'General'
-            c.alignment = Alignment(
-                wrap_text=wrap,
-                horizontal='right' if fmt else 'left',
-            )
+            c.alignment = Alignment(wrap_text=wrap, horizontal=halign)
+
+        # K (Amt Amort.) / L (Remaining) — live formulas, columns 10/11 past FIRST_COL
+        _g, _h, _i = get_column_letter(FIRST_COL + 5), get_column_letter(FIRST_COL + 6), get_column_letter(FIRST_COL + 7)
+        _k_col, _l_col = FIRST_COL + 9, FIRST_COL + 10
+        c_k = ws.cell(row=next_row, column=_k_col, value=(
+            f'=IF(OR({_g}{next_row}="",{_h}{next_row}=""),0,'
+            f'{_i}{next_row}*(MIN({_anchor_ref},{_h}{next_row})-{_g}{next_row}+1)'
+            f'/({_h}{next_row}-{_g}{next_row}+1))'
+        ))
+        c_l = ws.cell(row=next_row, column=_l_col, value=f'={_i}{next_row}-{get_column_letter(_k_col)}{next_row}')
+        for c in (c_k, c_l):
+            c.font = Font(name='Calibri', size=10)
+            c.border = THIN
+            c.number_format = '$#,##0.00'
+            c.alignment = Alignment(horizontal='right')
+            if alt_fill:
+                c.fill = alt_fill
         next_row += 1
 
     last_data_row = max(next_row - 1, 5)
