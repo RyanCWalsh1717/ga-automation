@@ -1083,6 +1083,20 @@ FILE_CONFIG = {
         "in the workpaper — matching the exact format of the 111100 PNC and 115100 DACA tabs. "
         "Without it: tab is generated from the BofA PDF (ending balance only, no detail).",
     ),
+    "bank_rec_xlsx": (
+        "Yardi Operating Bank Rec — 111100 (.xlsx)", "xlsx", False, "bank",
+        "Yardi Bank Reconciliation Report for the PNC Operating account. Copies the "
+        "raw Yardi export directly into the '111100 PNC Cash' tab in the workpaper — "
+        "a separate file from the PDF used for the bank rec calculation ('bank_rec' above). "
+        "Without it: '111100 PNC Cash' tab shows a 'no data uploaded' placeholder.",
+    ),
+    "daca_bank_rec_xlsx": (
+        "Yardi DACA Bank Rec — 115100 (.xlsx)", "xlsx", False, "bank",
+        "Yardi Bank Reconciliation Report for the KeyBank DACA account. Copies the "
+        "raw Yardi export directly into the '115100 DACA' tab in the workpaper — "
+        "a separate file from the PDF used for the bank rec calculation ('daca_bank' above). "
+        "Without it: '115100 DACA' tab shows a 'no data uploaded' placeholder.",
+    ),
     "capital_schedule": (
         "Capital Accounts Schedule (.xlsx)", "xlsx", False, "reference",
         "Capital improvement schedules (154500 Building Improvements, 181200 LC, "
@@ -1128,7 +1142,8 @@ if "bulk_overrides_p1" not in st.session_state:
 _P1_SLOT_KEYS = [
     "gl", "trial_balance", "budget_comparison", "kardin_budget", "t12_statement",
     "nexus_accrual", "bank_rec", "receivable_summary", "receivable_detail", "ar_aging",
-    "bank_rec_dev", "capital_schedule", "capital_seed", "daca_bank", "loan",
+    "bank_rec_dev", "bank_rec_xlsx", "bank_rec_dev_xlsx", "daca_bank_rec_xlsx",
+    "capital_schedule", "capital_seed", "daca_bank", "loan",
     "prepaid_ledger", "unknown",
 ]
 _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
@@ -5078,6 +5093,7 @@ with tab2:
                                 bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_xlsx"),
                                 daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
                                 dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
+                                prepaid_ledger_active=_prepaid_active,
                             )
                             st.caption(
                                 "↳ Workpaper: generated from template — PNC Cash, DACA, AR Aging, "

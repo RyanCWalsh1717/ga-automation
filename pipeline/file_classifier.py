@@ -36,7 +36,9 @@ FILE_LABELS = {
     "ar_aging":              "Yardi AR Detail Aging",
     "bank_rec_dev":          "BofA Development Statement (PDF)",
     "bank_rec_dev_xlsx":     "Yardi Development Bank Rec (111210)",
+    "bank_rec_xlsx":         "Yardi Operating Bank Rec (111100)",
     "daca_bank":             "KeyBank DACA Statement",
+    "daca_bank_rec_xlsx":    "Yardi DACA Bank Rec (115100)",
     "loan":                  "Berkadia Loan Statement(s) — due 7th of following month",
     "prepaid_ledger":        "Prior Month Prepaid Ledger",
     "prior_workpaper":       "Prior Month Workpaper",
@@ -335,18 +337,27 @@ def _classify_xlsx(file_bytes: bytes, signals: dict = None) -> Tuple[str, float]
     _daca_accts = _s.get('daca_accounts', {'329681415132', 'x5132', '5132'})
 
     if "bank reconciliation report" in all_text:
+        # This branch only fires for an actual Yardi "Bank Reconciliation
+        # Report" export (Excel), never a raw bank statement PDF — so every
+        # outcome here must route to the corresponding "_xlsx" workpaper-fill
+        # slot (bank_rec_xlsx / daca_bank_rec_xlsx / bank_rec_dev_xlsx), not
+        # the raw-PDF slots (bank_rec / daca_bank) those slots' FILE_CONFIG
+        # entries describe. Only "Development" did this correctly before —
+        # Operating and DACA were silently misfiled into the PDF slots, so
+        # the 111100/115100 workpaper tabs never saw this data even when the
+        # right file was uploaded (confirmed 2026-08-03).
         # DACA check first — most specific
         if "daca" in all_text or any(a in all_text for a in _daca_accts):
-            return "daca_bank", 0.95
+            return "daca_bank_rec_xlsx", 0.95
         # Development check — BofA / dev account
         if ("development" in all_text or "bank of america" in all_text
                 or any(a in all_text for a in _dev_accts)):
             return "bank_rec_dev_xlsx", 0.95
         # Operating (PNC or whatever the operating account is)
         if any(a in all_text for a in _op_accts):
-            return "bank_rec", 0.95
+            return "bank_rec_xlsx", 0.95
         # Generic fallback — some bank rec but no account match
-        return "bank_rec", 0.80
+        return "bank_rec_xlsx", 0.80
 
     # ── GL: "General Ledger" OR property code with GL-specific column signals ──
     if "general ledger" in all_text:

@@ -3445,6 +3445,7 @@ def generate_bs_workpaper_from_template(
     bank_rec_xlsx_filepath: str = '',
     daca_bank_rec_xlsx_filepath: str = '',
     dev_bank_rec_xlsx_filepath: str = '',
+    prepaid_ledger_active: list = None,
 ) -> str:
     """
     Template-based monthly close workpaper generator.
@@ -3669,14 +3670,54 @@ def generate_bs_workpaper_from_template(
         new_v = _re.sub(r'\d{2}/\d{2}/\d{4}', _today_str, new_v)
         ws.cell(3, 2).value = new_v
 
+    def _copy_row_style(ws, src_row: int, dst_row: int, col_start: int, col_end: int) -> None:
+        """
+        Copy font/border/fill/number_format from src_row onto dst_row.
+
+        insert_rows() only shifts existing rows and creates blank ones with
+        default (unformatted) styling — it doesn't clone the surrounding
+        rows' formatting. Every newly-inserted row (i.e. any account with
+        more transactions this period than the template had pre-formatted
+        placeholder rows for) came out with no currency format/borders/font,
+        looking visibly different from the rest of the table.
+        """
+        from copy import copy as _copy_style
+        for _c in range(col_start, col_end + 1):
+            src_cell = ws.cell(src_row, _c)
+            dst_cell = ws.cell(dst_row, _c)
+            dst_cell.font = _copy_style(src_cell.font)
+            dst_cell.border = _copy_style(src_cell.border)
+            dst_cell.fill = _copy_style(src_cell.fill)
+            dst_cell.alignment = _copy_style(src_cell.alignment)
+            dst_cell.number_format = src_cell.number_format
+
     def _coerce_date(d):
-        """Return a plain datetime.date from whatever the GL stores."""
+        """
+        Return a plain datetime.date from whatever the GL — or an existing
+        template row — stores.
+
+        Cumulative tabs (115200, 115300, 115600) determine "new since last
+        run" by reading the date already written in the last template row.
+        That value can be a real date/datetime OR plain text (e.g. a prior
+        run of this same code, or manual template editing, can leave a
+        string like '01/16/2026'). Without string support here, the "last
+        date" lookup silently resolved to None, which made the fill logic
+        treat every transaction as new and re-append rows that were
+        already there — confirmed duplicate rows on 115200 and 115600.
+        """
         if d is None:
             return None
         if hasattr(d, 'date') and callable(d.date):
             return d.date()
         if isinstance(d, _date):
             return d
+        if isinstance(d, str):
+            s = d.strip()
+            for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%m/%d/%y'):
+                try:
+                    return _dt.strptime(s, fmt).date()
+                except ValueError:
+                    continue
         return None
 
     def _rewrite_tieout_formulas(ws, tieout_row: int, data_start: int,
@@ -3737,6 +3778,76 @@ def generate_bs_workpaper_from_template(
             ws.cell(row, 5).value = vendor
             ws.cell(row, amount_col).value = amt
 
+    def _fill_ppd_other_tab(ws) -> None:
+        """
+        Rebuild '135150 PPD Other' from the live prepaid ledger every period.
+
+        This tab used to be static — carried over untouched from the
+        template, so new invoices discovered by prepaid_ledger.py never
+        showed up here even though the ledger itself was current.
+
+        Layout (unlike the generic _FILL_TABS accounts, this schema is
+        specific to this tab and keeps the template's own live formulas
+        for the amortization math, only the invoice-level facts are
+        written from data):
+          B Vendor | C Description | D Invoice # | E Invoice Date |
+          F GL Account | G Start Date | H End Date | I Total Amount |
+          J =I/DATEDIF(G,H+1,"M")            (monthly amount)
+          K =J*DATEDIF(G,'Summary Page'!$C$4+1,"M")   (amortized to date)
+          L =I-K                              (remaining balance)
+        Footer: L{tieout}=SUM(L{data_start}:L{last}), L{tieout+1}=VLOOKUP
+        ending balance per TB, L{tieout+2}=variance — same B1-anchor
+        pattern as every other tab.
+        """
+        _data_start = 6
+        _tieout = _find_tieout_row(ws)
+        if _tieout is None:
+            return
+
+        for _mg in list(ws.merged_cells.ranges):
+            if _mg.min_row < _tieout + 3 and _mg.max_row >= _data_start:
+                ws.unmerge_cells(str(_mg))
+
+        for _r in range(_data_start, _tieout):
+            for _c in range(2, 13):
+                ws.cell(_r, _c).value = None
+
+        _items = prepaid_ledger_active or []
+        if not _items:
+            _rewrite_ppd_tieout(ws, _tieout, _data_start, _data_start)
+            return
+
+        _cleared_rows = _tieout - _data_start
+        if len(_items) > _cleared_rows:
+            _to_insert = len(_items) - _cleared_rows
+            _insert_at = _tieout
+            ws.insert_rows(_insert_at, _to_insert)
+            _tieout += _to_insert
+            for _r in range(_insert_at, _insert_at + _to_insert):
+                _copy_row_style(ws, _data_start, _r, 2, 12)
+
+        for _i, _item in enumerate(_items):
+            _r = _data_start + _i
+            ws.cell(_r, 2).value = str(_item.get('vendor', '') or '')
+            ws.cell(_r, 3).value = str(_item.get('description', '') or '')
+            ws.cell(_r, 4).value = str(_item.get('invoice_number', '') or '')
+            ws.cell(_r, 5).value = _coerce_date(_item.get('invoice_date'))
+            ws.cell(_r, 6).value = str(_item.get('gl_account_number', '') or '')
+            ws.cell(_r, 7).value = _coerce_date(_item.get('service_start'))
+            ws.cell(_r, 8).value = _coerce_date(_item.get('service_end'))
+            ws.cell(_r, 9).value = float(_item.get('total_amount', 0) or 0)
+            ws.cell(_r, 10).value = f'=I{_r}/DATEDIF(G{_r},H{_r}+1,"M")'
+            ws.cell(_r, 11).value = f"=J{_r}*DATEDIF(G{_r},'Summary Page'!$C$4+1,\"M\")"
+            ws.cell(_r, 12).value = f'=I{_r}-K{_r}'
+
+        _last_written = _data_start + len(_items) - 1
+        _rewrite_ppd_tieout(ws, _tieout, _data_start, _last_written)
+
+    def _rewrite_ppd_tieout(ws, tieout_row: int, data_start: int, last_written: int) -> None:
+        ws.cell(tieout_row,     12).value = f'=SUM(L{data_start}:L{last_written})'
+        ws.cell(tieout_row + 1, 12).value = "=VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)"
+        ws.cell(tieout_row + 2, 12).value = f'=L{tieout_row}-L{tieout_row + 1}'
+
     # ── 7. Summary Page: update period-end date anchor ────────────────────────
     if 'Summary Page' in wb.sheetnames:
         _ws_s = wb['Summary Page']
@@ -3781,6 +3892,11 @@ def generate_bs_workpaper_from_template(
         # --- Update row-3 header (period + prepared date) ---
         _update_row3_header(_ws)
 
+        # --- 135150 PPD Other: distinct schema, filled from the live ledger ---
+        if _sn == '135150 PPD Other':
+            _fill_ppd_other_tab(_ws)
+            continue
+
         # --- Auto-fill if this tab has a GL data config ---
         if _sn not in _FILL_TABS:
             continue
@@ -3796,6 +3912,17 @@ def generate_bs_workpaper_from_template(
         _tieout = _find_tieout_row(_ws)
         if _tieout is None:
             continue  # template structure unrecognised — skip
+
+        # Unmerge any merged cells inside the data-write range before touching
+        # it — a template placeholder row (e.g. "No activity this period",
+        # which spans multiple columns) is commonly merged, and writing
+        # .value on a merged non-anchor cell raises AttributeError
+        # ('MergedCell' object attribute 'value' is read-only). Confirmed
+        # present in the real template for 133100/133110/211300/213100 and
+        # in the footer rows of 115200/115600.
+        for _mg in list(_ws.merged_cells.ranges):
+            if _mg.min_row < _tieout + 3 and _mg.max_row >= _data_start:
+                _ws.unmerge_cells(str(_mg))
 
         # GL account for this tab
         _gl_acct = gl_map.get(_acct_code)
@@ -3845,8 +3972,11 @@ def generate_bs_workpaper_from_template(
             _rows_avail = _tieout - _write_start - 1
             if len(_new_txns) > _rows_avail:
                 _to_insert = len(_new_txns) - _rows_avail
-                _ws.insert_rows(_tieout, _to_insert)
+                _insert_at = _tieout
+                _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
+                for _r in range(_insert_at, _insert_at + _to_insert):
+                    _copy_row_style(_ws, _data_start, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_new_txns):
                 _write_txn_row(_ws, _write_start + _i, _t, _layout, _amt_col)
@@ -3869,8 +3999,11 @@ def generate_bs_workpaper_from_template(
             _cleared_rows = _tieout - _data_start  # rows data_start … tieout-1
             if len(_all_txns) > _cleared_rows:
                 _to_insert = len(_all_txns) - _cleared_rows
-                _ws.insert_rows(_tieout, _to_insert)
+                _insert_at = _tieout
+                _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
+                for _r in range(_insert_at, _insert_at + _to_insert):
+                    _copy_row_style(_ws, _data_start, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_all_txns):
                 _write_txn_row(_ws, _data_start + _i, _t, _layout, _amt_col)
