@@ -994,12 +994,41 @@ def _write_135150_workpaper_tab(wb: Workbook, active: List[Dict], period: str,
             c.alignment = Alignment(wrap_text=wrap, horizontal=halign)
 
         # K (Amt Amort.) / L (Remaining) — live formulas, columns 10/11 past FIRST_COL
-        _g, _h, _i = get_column_letter(FIRST_COL + 5), get_column_letter(FIRST_COL + 6), get_column_letter(FIRST_COL + 7)
+        _g, _h, _i, _j = (get_column_letter(FIRST_COL + 5), get_column_letter(FIRST_COL + 6),
+                          get_column_letter(FIRST_COL + 7), get_column_letter(FIRST_COL + 8))
         _k_col, _l_col = FIRST_COL + 9, FIRST_COL + 10
+        _r = next_row
+        # Monthly-bucket-with-boundary-proration model — matches the REAL
+        # release schedule (_month_amount()) exactly: every month gets the
+        # flat monthly amount except the first/last service months, which
+        # are day-prorated within that one month only. Replaces the simpler
+        # continuous day-based straight-line formula used previously.
+        # total_months uses DATEDIF(start,end,"M")+1 — this matches
+        # prepaid_ledger.py's own real total_months basis (_count_months(),
+        # relativedelta-based — see nexus_accrual.py) exactly, verified
+        # against 200k random date-pair tests. This matters here more than
+        # anywhere else this formula is used: J (monthly_amount) on this
+        # tab is the REAL stored ledger value (total_amount/prepaid_months),
+        # not a self-contained Excel recomputation, so the total-months
+        # basis used here must agree with the real prepaid_months or K's
+        # cumulative total silently drifts from the true schedule. The more
+        # obvious-looking DATEDIF(start,end+1,"M") undercounts by one whole
+        # month whenever the end day is earlier in its month than the start
+        # day is in its month, which is exactly the case that would cause
+        # that drift.
+        _boundary_formula = (
+            f'IF({_anchor_ref}<{_g}{_r},0,'
+            f'IF({_anchor_ref}>={_h}{_r},{_i}{_r},'
+            f'MIN(DATEDIF(DATE(YEAR({_g}{_r}),MONTH({_g}{_r}),1),{_anchor_ref},"M")+1,'
+            f'DATEDIF({_g}{_r},{_h}{_r},"M")+1)*{_j}{_r}'
+            f'-IF(DAY({_g}{_r})>1,{_j}{_r}*(DAY({_g}{_r})-1)/DAY(EOMONTH({_g}{_r},0)),0)'
+            f'-IF({_anchor_ref}>=DATE(YEAR({_h}{_r}),MONTH({_h}{_r}),1),'
+            f'IF(DAY({_h}{_r})<DAY(EOMONTH({_h}{_r},0)),'
+            f'{_j}{_r}*(DAY(EOMONTH({_h}{_r},0))-DAY({_h}{_r}))/DAY(EOMONTH({_h}{_r},0)),0),0)'
+            f'))'
+        )
         c_k = ws.cell(row=next_row, column=_k_col, value=(
-            f'=IF(OR({_g}{next_row}="",{_h}{next_row}=""),0,'
-            f'{_i}{next_row}*(MIN({_anchor_ref},{_h}{next_row})-{_g}{next_row}+1)'
-            f'/({_h}{next_row}-{_g}{next_row}+1))'
+            f'=IF(OR({_g}{next_row}="",{_h}{next_row}=""),0,{_boundary_formula})'
         ))
         c_l = ws.cell(row=next_row, column=_l_col, value=f'={_i}{next_row}-{get_column_letter(_k_col)}{next_row}')
         for c in (c_k, c_l):

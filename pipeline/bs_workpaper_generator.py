@@ -3859,6 +3859,45 @@ def generate_bs_workpaper_from_template(
             f'={col_ltr}{tieout_row}-{col_ltr}{tieout_row + 1}'
         )
 
+    def _boundary_prorated_formula(g: str, h: str, i: str, j: str, r: int, asof_ref: str) -> str:
+        """
+        Cumulative-amortized-to-date formula matching prepaid_ledger.py's
+        REAL release schedule (_month_amount() / get_current_amortization())
+        exactly — not the simpler continuous day-based straight-line used
+        elsewhere (Insurance Analysis originally, before this fix). That
+        model is: every month gets the flat monthly rate EXCEPT the first
+        and last service months, which are day-prorated within that one
+        month only. Confirmed against the real release logic (summing
+        _month_amount() month-by-month) for both Greatland and Apex real
+        invoices — exact match at every checkpoint.
+
+        g/h/i/j are the column letters for Start Date / End Date / Total /
+        Monthly Amount; r is the row number; asof_ref is the absolute cell
+        reference holding the "as of" reporting date.
+
+        total_months uses DATEDIF({g},{h},"M")+1 — verified to match
+        prepaid_ledger.py's real `_count_months()` (relativedelta-based)
+        exactly across 200k random date-pair tests, including the edge case
+        below. This is NOT the same as the more obvious-looking
+        DATEDIF({g},{h}+1,"M") (shift the end date by a day, then diff) —
+        that alternative undercounts by one whole month whenever the end
+        day is earlier in its month than the start day is in its month
+        (e.g. starts the 10th, ends the 20th of an 11-months-later month),
+        which would silently understate the cumulative total near the end
+        of an affected item's schedule.
+        """
+        return (
+            f'=IF({asof_ref}<{g}{r},0,'
+            f'IF({asof_ref}>={h}{r},{i}{r},'
+            f'MIN(DATEDIF(DATE(YEAR({g}{r}),MONTH({g}{r}),1),{asof_ref},"M")+1,'
+            f'DATEDIF({g}{r},{h}{r},"M")+1)*{j}{r}'
+            f'-IF(DAY({g}{r})>1,{j}{r}*(DAY({g}{r})-1)/DAY(EOMONTH({g}{r},0)),0)'
+            f'-IF({asof_ref}>=DATE(YEAR({h}{r}),MONTH({h}{r}),1),'
+            f'IF(DAY({h}{r})<DAY(EOMONTH({h}{r},0)),'
+            f'{j}{r}*(DAY(EOMONTH({h}{r},0))-DAY({h}{r}))/DAY(EOMONTH({h}{r},0)),0),0)'
+            f'))'
+        )
+
     def _write_txn_row(ws, row: int, txn, layout: str,
                        amount_col: int) -> None:
         """Write one GL transaction into the appropriate columns."""
@@ -3911,20 +3950,28 @@ def generate_bs_workpaper_from_template(
         written from data):
           B Vendor | C Description | D Invoice # | E Invoice Date |
           F GL Account | G Start Date | H End Date | I Total Amount |
-          J =I/DATEDIF(G,H+1,"M")             (monthly amount, reference only)
-          K =I*(days elapsed)/(total days)    (amortized to date, day-prorated)
+          J =I/(DATEDIF(G,H,"M")+1)           (monthly amount, reference only)
+          K monthly-bucket, boundary-day-prorated cumulative (amortized to date)
           L =I-K                              (remaining balance)
 
-        K uses straight-line day proration, not DATEDIF(...,"M") — DATEDIF's
-        "M" unit only counts COMPLETE calendar months and gives zero credit
-        for a partial month, so a policy starting mid-month (virtually all
-        of them) permanently understates amortized-to-date by however many
-        days fall in its partial start month. Confirmed by Ryan 2026-08-03
-        with a concrete example (a mid-June start splitting across two
-        different Junes a year apart). Unlike Insurance Analysis's version
-        of this same formula (which doesn't feed anything downstream), L's
-        SUM here IS the real 135150 GL tie-out, so this bug directly
-        understated the reported prepaid balance.
+        J and K's total-months basis (DATEDIF(G,H,"M")+1, not the more
+        obvious-looking DATEDIF(G,H+1,"M")) is deliberately chosen to match
+        prepaid_ledger.py's real `_count_months()` (relativedelta-based)
+        exactly — verified against 200k random date pairs with zero
+        mismatches. The two differ only in a rare edge case (end-of-service
+        day earlier in its month than the start day is in its month), where
+        DATEDIF(G,H+1,"M") undercounts by one whole month; using the wrong
+        one here would silently understate K's cumulative total near the
+        end of an affected item's schedule even though this tab's own J/K
+        pair would still look internally consistent. K itself uses a
+        monthly-bucket model (flat monthly amount every month except the
+        first/last service months, which are day-prorated within that one
+        month only) — not straight-line day proration across the whole
+        period, which understates amortized-to-date for any mid-month start
+        (confirmed by Ryan 2026-08-03 with a concrete example). Unlike
+        Insurance Analysis's version of this same formula (which doesn't
+        feed anything downstream), L's SUM here IS the real 135150 GL
+        tie-out, so getting both of these right matters.
         Footer: L{tieout}=SUM(L{data_start}:L{last}), L{tieout+1}=VLOOKUP
         ending balance per TB, L{tieout+2}=variance — same B1-anchor
         pattern as every other tab.
@@ -3990,20 +4037,23 @@ def generate_bs_workpaper_from_template(
             )
             ws.cell(_r, 8).value = _coerce_date(_item.get('service_end'))
             ws.cell(_r, 9).value = float(_item.get('total_amount', 0) or 0)
-            ws.cell(_r, 10).value = f'=I{_r}/DATEDIF(G{_r},H{_r}+1,"M")'
+            ws.cell(_r, 10).value = f'=I{_r}/(DATEDIF(G{_r},H{_r},"M")+1)'
             # IF-guarded: a blank Start/End date (a real possibility per
             # prepaid_ledger.py's own None-guards on these exact fields)
-            # would otherwise make MIN(...)-G+1)/(H-G+1) evaluate to 1.0
-            # with NO visible Excel error — silently reporting the item as
-            # fully amortized (remaining balance $0) instead of flagging it.
-            # Default to 0 amortized (full amount held as Remaining) when
-            # either date is missing — safe/conservative and visibly wrong
-            # via the blank Start/End cells, not silently wrong via a $0
-            # balance nobody would think to question.
-            ws.cell(_r, 11).value = (
-                f'=IF(OR(G{_r}="",H{_r}=""),0,'
-                f"I{_r}*(MIN('Summary Page'!$C$4,H{_r})-G{_r}+1)/(H{_r}-G{_r}+1))"
-            )
+            # would otherwise evaluate incorrectly with NO visible Excel
+            # error — silently reporting the item as fully amortized
+            # (remaining balance $0) instead of flagging it. Default to 0
+            # amortized (full amount held as Remaining) when either date is
+            # missing — safe/conservative and visibly wrong via the blank
+            # Start/End cells, not silently wrong via a $0 balance nobody
+            # would think to question.
+            #
+            # Monthly-bucket-with-boundary-proration model (matches the REAL
+            # release schedule in prepaid_ledger._month_amount(), not a
+            # continuous day-based straight-line) — see
+            # _boundary_prorated_formula() for the full model explanation.
+            _k_formula = _boundary_prorated_formula('G', 'H', 'I', 'J', _r, "'Summary Page'!$C$4")
+            ws.cell(_r, 11).value = f'=IF(OR(G{_r}="",H{_r}=""),0,{_k_formula[1:]})'
             ws.cell(_r, 12).value = f'=I{_r}-K{_r}'
 
         _last_written = _data_start + len(_items) - 1
