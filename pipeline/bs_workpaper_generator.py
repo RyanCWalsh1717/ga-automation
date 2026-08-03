@@ -3815,8 +3815,16 @@ def generate_bs_workpaper_from_template(
         if _tieout is None:
             return
 
+        # Only unmerge the DATA region (data_start..tieout-1) — a placeholder
+        # like "No activity this period" merged across several columns lives
+        # there and blocks .value writes. The footer rows (tieout, +1, +2)
+        # have their OWN merged label cells (e.g. 'Ending Balance per GL'
+        # spanning B:D) that are never written to — only the single amount
+        # column is — so unmerging them was unnecessary and, confirmed
+        # against the real template, destroyed their intentional formatting
+        # on every sheet, every run.
         for _mg in list(ws.merged_cells.ranges):
-            if _mg.min_row < _tieout + 3 and _mg.max_row >= _data_start:
+            if _mg.min_row < _tieout and _mg.max_row >= _data_start:
                 ws.unmerge_cells(str(_mg))
 
         for _r in range(_data_start, _tieout):
@@ -3835,7 +3843,13 @@ def generate_bs_workpaper_from_template(
             ws.insert_rows(_insert_at, _to_insert)
             _tieout += _to_insert
             for _r in range(_insert_at, _insert_at + _to_insert):
-                _copy_row_style(ws, _data_start, _r, 2, 12)
+                # Preserve the template's alternating row-banding fill by
+                # copying from whichever of the two existing reference rows
+                # (data_start / data_start+1) shares this row's parity —
+                # always copying from data_start alone flattened every
+                # inserted row to the same (unfilled) style.
+                _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+                _copy_row_style(ws, _src, _r, 2, 12)
 
         for _i, _item in enumerate(_items):
             _r = _data_start + _i
@@ -3848,8 +3862,18 @@ def generate_bs_workpaper_from_template(
             ws.cell(_r, 8).value = _coerce_date(_item.get('service_end'))
             ws.cell(_r, 9).value = float(_item.get('total_amount', 0) or 0)
             ws.cell(_r, 10).value = f'=I{_r}/DATEDIF(G{_r},H{_r}+1,"M")'
+            # IF-guarded: a blank Start/End date (a real possibility per
+            # prepaid_ledger.py's own None-guards on these exact fields)
+            # would otherwise make MIN(...)-G+1)/(H-G+1) evaluate to 1.0
+            # with NO visible Excel error — silently reporting the item as
+            # fully amortized (remaining balance $0) instead of flagging it.
+            # Default to 0 amortized (full amount held as Remaining) when
+            # either date is missing — safe/conservative and visibly wrong
+            # via the blank Start/End cells, not silently wrong via a $0
+            # balance nobody would think to question.
             ws.cell(_r, 11).value = (
-                f"=I{_r}*(MIN('Summary Page'!$C$4,H{_r})-G{_r}+1)/(H{_r}-G{_r}+1)"
+                f'=IF(OR(G{_r}="",H{_r}=""),0,'
+                f"I{_r}*(MIN('Summary Page'!$C$4,H{_r})-G{_r}+1)/(H{_r}-G{_r}+1))"
             )
             ws.cell(_r, 12).value = f'=I{_r}-K{_r}'
 
@@ -3926,15 +3950,24 @@ def generate_bs_workpaper_from_template(
         if _tieout is None:
             continue  # template structure unrecognised — skip
 
-        # Unmerge any merged cells inside the data-write range before touching
-        # it — a template placeholder row (e.g. "No activity this period",
-        # which spans multiple columns) is commonly merged, and writing
-        # .value on a merged non-anchor cell raises AttributeError
-        # ('MergedCell' object attribute 'value' is read-only). Confirmed
-        # present in the real template for 133100/133110/211300/213100 and
-        # in the footer rows of 115200/115600.
+        # Unmerge any merged cells inside the DATA region (data_start..
+        # tieout-1) before touching it — a template placeholder row (e.g.
+        # "No activity this period", which spans multiple columns) is
+        # commonly merged, and writing .value on a merged non-anchor cell
+        # raises AttributeError ('MergedCell' object attribute 'value' is
+        # read-only). Confirmed present in the real template for
+        # 133100/133110/211300/213100.
+        #
+        # Deliberately does NOT extend into the footer rows (tieout, +1, +2)
+        # — those have their own merged LABEL cells ('Ending Balance per
+        # GL' etc. spanning multiple columns) that are never written to
+        # (only the single amount column is, via _rewrite_tieout_formulas).
+        # An earlier version of this fix used `_tieout + 3` and unmerged
+        # those too — confirmed against the real template that this broke
+        # the footer's intentional formatting on every sheet, every run,
+        # for no reason (nothing there was actually causing the crash).
         for _mg in list(_ws.merged_cells.ranges):
-            if _mg.min_row < _tieout + 3 and _mg.max_row >= _data_start:
+            if _mg.min_row < _tieout and _mg.max_row >= _data_start:
                 _ws.unmerge_cells(str(_mg))
 
         # GL account for this tab
@@ -3989,7 +4022,12 @@ def generate_bs_workpaper_from_template(
                 _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
                 for _r in range(_insert_at, _insert_at + _to_insert):
-                    _copy_row_style(_ws, _data_start, _r, 2, _amt_col)
+                    # Preserve alternating row-banding — copying from
+                    # _data_start alone flattened every inserted row to
+                    # that one row's (unfilled) style regardless of where
+                    # it lands in the banding sequence.
+                    _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+                    _copy_row_style(_ws, _src, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_new_txns):
                 _write_txn_row(_ws, _write_start + _i, _t, _layout, _amt_col)
@@ -4016,7 +4054,8 @@ def generate_bs_workpaper_from_template(
                 _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
                 for _r in range(_insert_at, _insert_at + _to_insert):
-                    _copy_row_style(_ws, _data_start, _r, 2, _amt_col)
+                    _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+                    _copy_row_style(_ws, _src, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_all_txns):
                 _write_txn_row(_ws, _data_start + _i, _t, _layout, _amt_col)
