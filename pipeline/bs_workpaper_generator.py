@@ -3977,7 +3977,17 @@ def generate_bs_workpaper_from_template(
             ws.cell(_r, 4).value = str(_item.get('invoice_number', '') or '')
             ws.cell(_r, 5).value = _coerce_date(_item.get('invoice_date'))
             ws.cell(_r, 6).value = str(_item.get('gl_account_number', '') or '')
-            ws.cell(_r, 7).value = _coerce_date(_item.get('service_start'))
+            # Prefer the TRUE original service start over 'service_start' —
+            # prepaid_ledger.merge_nexus() deliberately rebases that field to
+            # the tracking-start month for its own internal release
+            # scheduling (confirmed necessary there), which made a
+            # late-discovered item's start date shown here silently wrong
+            # (e.g. a true Dec-2025 start displayed as Jan-2026). Falls back
+            # to 'service_start' for items with no rebasing history (seed/
+            # manually-added items, where it already holds the true date).
+            ws.cell(_r, 7).value = _coerce_date(
+                _item.get('true_service_start') or _item.get('service_start')
+            )
             ws.cell(_r, 8).value = _coerce_date(_item.get('service_end'))
             ws.cell(_r, 9).value = float(_item.get('total_amount', 0) or 0)
             ws.cell(_r, 10).value = f'=I{_r}/DATEDIF(G{_r},H{_r}+1,"M")'

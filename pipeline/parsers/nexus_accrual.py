@@ -393,9 +393,13 @@ _RE_SLASH_FULL = re.compile(
 # Slash range with the end year missing entirely — a real data-entry gap seen
 # in Nexus invoice text (e.g. 'Yardi Accounting Software - 12/1/2025 through
 # 11/3', clearly meant to run through Nov 2026 but the year got dropped). The
-# day is taken literally even though it may itself be truncated (e.g. '11/3'
-# instead of '11/30') — the *inclusive month count* used for amortization
-# comes out the same either way, since neither day crosses a month boundary.
+# end day itself can ALSO be truncated (confirmed: this exact real invoice
+# meant 11/30, not 11/3 — Yardi's description field cut the trailing zero).
+# _parse_service_period() below corrects for this: a single-digit day that
+# would land exactly on that month's actual last day if a 0 were appended is
+# treated as the truncated last-of-month, not a literal single-digit day —
+# this matters beyond just the month count used for amortization: the exact
+# end date also feeds day-based proration and is shown directly to the user.
 _RE_SLASH_PARTIAL_END = re.compile(
     r'(\d{1,2})/(\d{1,2})/(\d{2,4})\s*(?:-|through|to)\s*(\d{1,2})/(\d{1,2})(?!\s*/\s*\d)',
     re.IGNORECASE,
@@ -485,6 +489,18 @@ def _parse_service_period(description: str) -> Tuple[Optional[date], Optional[da
             sm, sd, sy = int(m.group(1)), int(m.group(2)), _norm_year(int(m.group(3)))
             em, ed = int(m.group(4)), int(m.group(5))
             ey = sy + 1 if em < sm else sy
+            # A single-digit end day (1-9) with nothing after it in the
+            # description is often a truncated two-digit day with a dropped
+            # trailing zero — confirmed against a real invoice: "12/1/2025
+            # through 11/3" meant 11/30/2026 (a clean 12-month span from the
+            # 1st of a month), not a literal November 3rd cutoff. If
+            # appending a 0 lands exactly on that month's actual last day,
+            # prefer that reading over the literal single digit.
+            if 1 <= ed <= 9:
+                import calendar as _cal
+                _last_day = _cal.monthrange(ey, em)[1]
+                if ed * 10 == _last_day:
+                    ed = _last_day
             start = date(sy, sm, sd)
             end = date(ey, em, ed)
             return start, end

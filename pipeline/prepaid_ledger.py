@@ -53,7 +53,7 @@ ACTIVE_COLS = [
     'gl_account_number', 'gl_account', 'total_amount', 'monthly_amount',
     'service_start', 'service_end', 'total_months',
     'months_amortized', 'remaining_months', 'first_added_period',
-    'daily_rate',
+    'daily_rate', 'true_service_start',
 ]
 
 COMPLETED_COLS = ACTIVE_COLS + ['completed_period']
@@ -324,6 +324,7 @@ _DISPLAY_TO_INTERNAL = {
     'first added':          'first_added_period',
     'daily rate':           'daily_rate',
     'completed period':     'completed_period',
+    'true service start':   'true_service_start',
 }
 
 
@@ -370,7 +371,7 @@ def _read_sheet(wb: Workbook, sheet_name: str, expected_cols: List[str]) -> List
                 rec[h] = row[ci]
 
         # Coerce date fields
-        for df in ('invoice_date', 'service_start', 'service_end'):
+        for df in ('invoice_date', 'service_start', 'service_end', 'true_service_start'):
             rec[df] = _ensure_date(rec.get(df))
 
         # Coerce numeric fields
@@ -502,6 +503,14 @@ def merge_nexus(active: List[Dict], nexus_records: List[Dict],
             'first_added_period': close_period,
             'daily_rate':        daily_rate,
             'months_elapsed_at_add': months_elapsed,
+            # The TRUE original service start, kept alongside the rebased
+            # 'service_start' anchor above — needed for display/audit (e.g.
+            # the 135150 PPD Other workpaper tab) and for that tab's own
+            # day-based proration math, both of which need the real start
+            # date, not the scheduling anchor. Confirmed: without this, a
+            # late-discovered item's true start date was invisible anywhere
+            # downstream once merge_nexus() rebased it.
+            'true_service_start': svc_start,
         })
         existing_keys.add(key)
         added.append(inv.get('invoice_number', ''))
@@ -1011,6 +1020,7 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
         'remaining_months': 'Months Left', 'first_added_period': 'First Added',
         'daily_rate': 'Daily Rate',
         'completed_period': 'Completed Period',
+        'true_service_start': 'True Service Start',
     }
     hdr_row = 4
     for ci, col in enumerate(cols, 1):
@@ -1042,7 +1052,7 @@ def _write_sheet(wb: Workbook, sheet_name: str, records: List[Dict],
                 c.number_format = '$#,##0.00'
             elif col == 'daily_rate':
                 c.number_format = '$#,##0.000000'
-            elif col in ('invoice_date', 'service_start', 'service_end'):
+            elif col in ('invoice_date', 'service_start', 'service_end', 'true_service_start'):
                 if isinstance(val, date):
                     c.number_format = 'MM/DD/YYYY'
             elif col in ('total_months', 'months_amortized', 'remaining_months'):
