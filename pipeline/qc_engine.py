@@ -1398,11 +1398,32 @@ def _write_tab1(wb, report: QCReport, tb_result, budget_rows):
             _qtxt(ws, row, 7, '')
             row += 1
 
-    # check_1 finding notes
+    # check_1 findings — listed explicitly here because the account list
+    # above is a CURATED display subset (_active_pl_accounts()), while the
+    # actual PASS/FLAG/FAIL check (check_1_tb_to_budget) scans every account
+    # present in both TB and Budget Comparison. Without this, an account
+    # outside the curated list can drive a FAIL with nothing visibly wrong
+    # anywhere on this tab — exactly the "says failed, nothing is failed"
+    # gap this section closes.
     c1 = next((c for c in report.checks if c.check_id == 'CHECK_1'), None)
     if c1 and c1.findings:
-        ws.cell(row=row + 1, column=1,
+        row += 1
+        ws.cell(row=row, column=1,
                 value=f'Pipeline check: {c1.summary}').font = _qfont(italic=True, size=9, color=_C_GRAY)
+        row += 1
+        _fnd_headers = ['Account', 'Line Item', 'TB Net', 'BC PTD Actual', 'Difference', 'Flag', 'Note']
+        _fnd_widths  = [12, 30, 16, 16, 14, 12, 55]
+        _qwrite_col_headers(ws, row, _fnd_headers, _fnd_widths)
+        row += 1
+        for f in c1.findings:
+            _qtxt(ws, row, 1, f.account_code)
+            _qtxt(ws, row, 2, f.account_name)
+            _qmoney(ws, row, 3, f.value_a)
+            _qmoney(ws, row, 4, f.value_b)
+            _qmoney(ws, row, 5, f.difference)
+            _qstatus(ws, row, 6, f.flag)
+            _qtxt(ws, row, 7, f.note)
+            row += 1
 
     ws.freeze_panes = 'A9'
 
