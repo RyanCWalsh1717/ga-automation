@@ -774,6 +774,107 @@ def _write_no_data_placeholder_tab(wb, tab_name: str, missing_label: str, accoun
     return ws
 
 
+def _write_gl_transactions_tab(wb, tab_name: str, account_code: str,
+                               gl_transactions: list, period: str,
+                               property_name: str) -> object:
+    """
+    Fallback for a raw-report tab (111100 PNC Cash / 115100 DACA) when no
+    Excel bank rec export was uploaded but a Yardi Bank Rec PDF was — its
+    GL-detail pages (parsers.yardi_bank_rec.parse()'s 'gl_transactions')
+    carry the same per-transaction data an Excel export would, just from a
+    different source file. Not a byte-for-byte copy of Yardi's raw sheet
+    (that's only possible from the actual Excel export), but real
+    transaction-level detail instead of the "no data uploaded" placeholder.
+    """
+    ws = wb.create_sheet(tab_name[:31])
+    ws.sheet_properties.tabColor = 'FFC000'  # same amber as the placeholder —
+                                              # this is a fallback source, not the primary one
+    ws.column_dimensions['A'].width = 2
+
+    c = ws.cell(1, 2, f'{account_code} — from Yardi Bank Rec PDF (no Excel export uploaded)')
+    c.font = _font(bold=True, size=12, color='FFFFFF')
+    c.fill = _fill('BF8F00')
+    ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=6)
+
+    c = ws.cell(2, 2, f'{property_name or "Revolution Labs"}  |  Period: {period}')
+    c.font = _font(italic=True, size=10, color='FFFFFF')
+    c.fill = _fill('BF8F00')
+    ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=6)
+
+    headers = ['Date', 'Description', 'Vendor', 'Debit', 'Credit']
+    widths  = [14, 45, 24, 16, 16]
+    for ci, (h, w) in enumerate(zip(headers, widths)):
+        col = 2 + ci
+        hc = ws.cell(4, col, h)
+        _apply(hc, font=_font(bold=True, size=10, color='FFFFFF'),
+               fill=_fill('000000'), border=THIN,
+               align=Alignment(horizontal='center'))
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+    row = 5
+    total_debit = total_credit = 0.0
+    for txn in (gl_transactions or []):
+        d = txn.get('date')
+        debit  = float(txn.get('debit', 0) or 0)
+        credit = float(txn.get('credit', 0) or 0)
+        total_debit  += debit
+        total_credit += credit
+        ws.cell(row, 2, d.strftime('%m/%d/%Y') if hasattr(d, 'strftime') else (d or ''))
+        ws.cell(row, 3, str(txn.get('description', '') or ''))
+        ws.cell(row, 4, str(txn.get('vendor', '') or ''))
+        c5 = ws.cell(row, 5, debit if debit else None)
+        c5.number_format = '$#,##0.00'
+        c6 = ws.cell(row, 6, credit if credit else None)
+        c6.number_format = '$#,##0.00'
+        row += 1
+
+    if not gl_transactions:
+        ws.cell(row, 2, 'No GL transaction detail found in the Bank Rec PDF for this period.')
+        row += 1
+
+    row += 1
+    ws.cell(row, 2, 'Total').font = _font(bold=True)
+    tc5 = ws.cell(row, 5, total_debit)
+    tc5.number_format = '$#,##0.00'; tc5.font = _font(bold=True)
+    tc6 = ws.cell(row, 6, total_credit)
+    tc6.number_format = '$#,##0.00'; tc6.font = _font(bold=True)
+
+    return ws
+
+
+def _daca_fallback_txns(daca_bank_data: dict) -> list:
+    """
+    parsers.yardi_daca_rec.parse() doesn't extract a 'gl_transactions'
+    section the way parsers.yardi_bank_rec.parse() does for the Operating
+    account — no sample DACA Bank Rec PDF exists yet to build that
+    extraction against. Reshape what it DOES already extract
+    (cleared_deposits / cleared_other_items) into the same
+    date/description/vendor/debit/credit shape _write_gl_transactions_tab
+    expects, so '115100 DACA' gets real transaction-level data instead of
+    a placeholder whenever a DACA Bank Rec PDF (but no Excel export) is
+    uploaded.
+    """
+    if not daca_bank_data:
+        return []
+    gl_txns = daca_bank_data.get('gl_transactions')
+    if gl_txns:
+        return gl_txns
+
+    combined = []
+    for d in (daca_bank_data.get('cleared_deposits') or []):
+        combined.append({
+            'date': d.get('date'), 'description': d.get('notes', '') or 'Cleared Deposit',
+            'vendor': '', 'debit': float(d.get('amount', 0) or 0), 'credit': 0.0,
+        })
+    for d in (daca_bank_data.get('cleared_other_items') or []):
+        amt = float(d.get('amount', 0) or 0)
+        combined.append({
+            'date': d.get('date'), 'description': d.get('notes', '') or 'Cleared Item',
+            'vendor': '', 'debit': max(amt, 0.0), 'credit': max(-amt, 0.0),
+        })
+    return combined
+
+
 # ── Summary tab ───────────────────────────────────────────────
 
 def _write_summary_tab(wb, bs_accounts, tb_map, period, property_name,
@@ -3446,6 +3547,8 @@ def generate_bs_workpaper_from_template(
     daca_bank_rec_xlsx_filepath: str = '',
     dev_bank_rec_xlsx_filepath: str = '',
     prepaid_ledger_active: list = None,
+    bank_rec_data: dict = None,
+    daca_bank_data: dict = None,
 ) -> str:
     """
     Template-based monthly close workpaper generator.
@@ -3490,6 +3593,12 @@ def generate_bs_workpaper_from_template(
                          *period* if not supplied)
         prepared_by:     Name for 'Prepared by:' in row-3 headers
         property_code:   Yardi property code (e.g. 'revlabspm')
+        bank_rec_data:   Parsed Yardi Bank Rec PDF dict (parsers.yardi_bank_rec.parse())
+                         for the Operating account — used to fill '111100 PNC Cash'
+                         from its 'gl_transactions' field when no Excel bank rec
+                         report is uploaded. The PDF's GL-detail pages carry the
+                         same transaction-level data an Excel export would.
+        daca_bank_data:  Same, for the DACA account → '115100 DACA'.
 
     Returns:
         output_path
@@ -3616,10 +3725,20 @@ def generate_bs_workpaper_from_template(
         '111100 PNC Cash': {
             'account': '111100', 'raw_filepath': bank_rec_xlsx_filepath,
             'missing_label': 'Bank Reconciliation Excel (PNC Operating)',
+            # Fallback when no Excel export is uploaded — the Yardi Bank Rec
+            # PDF (already parsed elsewhere for the reconciliation itself)
+            # carries the same GL transaction detail on its later pages.
+            'pdf_gl_transactions': (bank_rec_data or {}).get('gl_transactions'),
         },
         '115100 DACA': {
             'account': '115100', 'raw_filepath': daca_bank_rec_xlsx_filepath,
             'missing_label': 'DACA Bank Reconciliation Excel',
+            # parsers.yardi_daca_rec.parse() doesn't extract a GL-detail
+            # section like the Operating parser does (no sample PDF to build
+            # that against yet) — fall back to its cleared_deposits/
+            # cleared_other_items lists instead, which it DOES already
+            # extract, reshaped into the same tab format.
+            'pdf_gl_transactions': _daca_fallback_txns(daca_bank_data),
         },
         '131100 AR Aging': {
             'account': '131100', 'raw_filepath': ar_aging_filepath,
@@ -3906,6 +4025,14 @@ def generate_bs_workpaper_from_template(
             _copied_ok = False
             if _raw_fp and os.path.exists(_raw_fp):
                 _copied_ok = _copy_raw_tb_sheet(_raw_fp, wb, tab_name=_sn)
+            if not _copied_ok and _rc.get('pdf_gl_transactions'):
+                # No Excel export uploaded, but a Bank Rec PDF was — use its
+                # GL-detail transactions instead of showing "no data uploaded".
+                _write_gl_transactions_tab(
+                    wb, _sn, _acct_code, _rc['pdf_gl_transactions'],
+                    _period_str, property_name,
+                )
+                _copied_ok = True
             if not _copied_ok:
                 _write_no_data_placeholder_tab(wb, _sn, _missing_lbl, _acct_code)
 

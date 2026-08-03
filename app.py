@@ -1084,18 +1084,19 @@ FILE_CONFIG = {
         "Without it: tab is generated from the BofA PDF (ending balance only, no detail).",
     ),
     "bank_rec_xlsx": (
-        "Yardi Operating Bank Rec — 111100 (.xlsx)", "xlsx", False, "bank",
-        "Yardi Bank Reconciliation Report for the PNC Operating account. Copies the "
-        "raw Yardi export directly into the '111100 PNC Cash' tab in the workpaper — "
-        "a separate file from the PDF used for the bank rec calculation ('bank_rec' above). "
-        "Without it: '111100 PNC Cash' tab shows a 'no data uploaded' placeholder.",
+        "Yardi Operating Bank Rec — 111100 (.xlsx, optional)", "xlsx", False, "bank",
+        "OPTIONAL Excel export for the PNC Operating account — copies the raw Yardi "
+        "sheet directly into the '111100 PNC Cash' tab. Not required: if you only have "
+        "the 'Yardi Bank Rec PDF — Operating' uploaded above ('bank_rec'), the tab is "
+        "filled from that PDF's own GL-detail pages instead — real transaction detail, "
+        "just not a byte-for-byte copy of the raw sheet. Without either: placeholder.",
     ),
     "daca_bank_rec_xlsx": (
-        "Yardi DACA Bank Rec — 115100 (.xlsx)", "xlsx", False, "bank",
-        "Yardi Bank Reconciliation Report for the KeyBank DACA account. Copies the "
-        "raw Yardi export directly into the '115100 DACA' tab in the workpaper — "
-        "a separate file from the PDF used for the bank rec calculation ('daca_bank' above). "
-        "Without it: '115100 DACA' tab shows a 'no data uploaded' placeholder.",
+        "Yardi DACA Bank Rec — 115100 (.xlsx, optional)", "xlsx", False, "bank",
+        "OPTIONAL Excel export for the KeyBank DACA account — copies the raw Yardi "
+        "sheet directly into the '115100 DACA' tab. Not required: if you only have "
+        "the 'KeyBank DACA Statement' uploaded above ('daca_bank'), the tab is filled "
+        "from that PDF's cleared deposits/other items instead. Without either: placeholder.",
     ),
     "capital_schedule": (
         "Capital Accounts Schedule (.xlsx)", "xlsx", False, "reference",
@@ -5094,6 +5095,8 @@ with tab2:
                                 daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
                                 dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
                                 prepaid_ledger_active=_prepaid_active,
+                                bank_rec_data=bank_rec_data,
+                                daca_bank_data=daca_bank_data,
                             )
                             st.caption(
                                 "↳ Workpaper: generated from template — PNC Cash, DACA, AR Aging, "
