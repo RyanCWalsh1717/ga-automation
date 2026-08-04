@@ -2495,6 +2495,62 @@ with tab1:
                     ledger_active, nexus_data or [], close_period
                 )
 
+                # Apply the 7xxxxx Intercompany Recode table to ledger items whose
+                # gl_account_number was just recoded — otherwise every future
+                # release keeps debiting the original (miscoded) account even
+                # though this period's recode JE already moved the balance
+                # elsewhere. Built early (a lightweight source→target map only,
+                # not the actual JE lines — those are still built later, from
+                # the same table) so it lands before merge_nexus()'s items are
+                # scheduled and before _ledger_release_accounts below reads
+                # gl_account_number. Confirmed on a real invoice: a Nexus item
+                # picked up as 712210 (Software-AP) had been manually recoded
+                # to a different account this period, but the ledger kept
+                # citing 712210 for every future release.
+                _early_recode_map = {}
+                _rc_tbl_early = st.session_state.get("interco_recode_df")
+                _rc_editor_key_early = f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}"
+                _rc_editor_raw_early = st.session_state.get(_rc_editor_key_early)
+                if _rc_tbl_early is not None and _rc_editor_raw_early:
+                    _rc_pending_edits = _rc_editor_raw_early.get("edited_rows", {})
+                    if _rc_pending_edits:
+                        _rc_tbl_early = _rc_tbl_early.copy()
+                        for _rc_ridx_s, _rc_cell_edits in _rc_pending_edits.items():
+                            _rc_ridx = int(_rc_ridx_s)
+                            if _rc_ridx < len(_rc_tbl_early):
+                                for _rc_col, _rc_val in _rc_cell_edits.items():
+                                    _rc_tbl_early.at[_rc_ridx, _rc_col] = _rc_val
+                if _rc_tbl_early is not None and not _rc_tbl_early.empty:
+                    _rc_pending_cr = None
+                    for _, _rc_row in _rc_tbl_early.iterrows():
+                        _rc_leg = str(_rc_row.get("Leg", "") or "").strip()
+                        if _rc_leg == "CR":
+                            _rc_pending_cr = _rc_row
+                        elif _rc_leg == "DR" and _rc_pending_cr is not None:
+                            _rc_dr_acct = str(_rc_row.get("Account", "") or "").strip()
+                            _rc_cr_acct = str(_rc_pending_cr.get("Account", "") or "").strip()
+                            if _rc_dr_acct and _rc_cr_acct:
+                                _rc_dr_name = (str(_rc_row.get("Account Name", "") or "").strip()
+                                               or _rc_dr_acct)
+                                _early_recode_map[_rc_cr_acct] = (_rc_dr_acct, _rc_dr_name)
+                            _rc_pending_cr = None
+                if _early_recode_map:
+                    _recoded_items = 0
+                    for _item in ledger_active:
+                        _cur_acct = str(_item.get('gl_account_number', '') or '').strip()
+                        if _cur_acct in _early_recode_map:
+                            _new_acct, _new_name = _early_recode_map[_cur_acct]
+                            _item['gl_account_number'] = _new_acct
+                            _item['gl_account']         = _new_name
+                            _recoded_items += 1
+                    if _recoded_items:
+                        st.info(
+                            f"↳ Prepaid ledger: {_recoded_items} item(s) updated to the recoded "
+                            f"GL account per the Intercompany Recode table — future releases will "
+                            f"debit the corrected account.",
+                            icon="ℹ️",
+                        )
+
                 # Build visual amortization schedule
                 amort_lines = build_prepaid_amortization(nexus_data or [], close_period=close_period)
 
