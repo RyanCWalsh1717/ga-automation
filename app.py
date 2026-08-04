@@ -3902,12 +3902,26 @@ with tab1:
             with col_l4:
                 st.metric("Completed This Month", len(ledger_completed))
 
-            # Diagnostic: active items but nothing released → period mismatch
-            if ledger_active and released_count == 0:
+            # Diagnostic: active items but nothing released → period mismatch.
+            # False-positive guard: if EVERY active item was newly discovered
+            # this period, 0 releases is expected by design — merge_nexus()
+            # always skips month-1 for a brand-new item (assumed covered by
+            # Nexus's own accrual/reclass instead), with the first real
+            # release starting next period. Only warn when at least one
+            # active item is a carry-forward (not newly added) — that's the
+            # case this diagnostic actually exists to catch: an old item that
+            # should be mid-schedule but shows no release, signaling a stale
+            # ledger upload.
+            _newly_added_invs = {str(n or '').strip() for n in newly_added}
+            _carry_forward_items = [
+                _it for _it in ledger_active
+                if str(_it.get('invoice_number', '') or '').strip() not in _newly_added_invs
+            ]
+            if _carry_forward_items and released_count == 0:
                 from dateutil.relativedelta import relativedelta as _rdelta
                 import re as _re
                 next_fires = []
-                for _item in ledger_active:
+                for _item in _carry_forward_items:
                     _fap = _item.get('first_added_period', '')
                     _ma  = int(_item.get('months_amortized', 0) or 0)
                     _rem = int(_item.get('remaining_months', 0) or 0)
@@ -3927,10 +3941,10 @@ with tab1:
                                     f"{_item.get('vendor','?')} — next: {_nf.strftime('%b-%Y')}"
                                 )
                 st.warning(
-                    f"⚠️ **{len(ledger_active)} active prepaid item(s) but 0 released for "
-                    f"{close_period}.** The ledger's `months_amortized` values don't match "
-                    f"the current period — the uploaded ledger may be from a prior month. "
-                    f"Upload the **updated Prepaid Ledger** from the previous close.\n\n"
+                    f"⚠️ **{len(_carry_forward_items)} carried-forward prepaid item(s) but 0 "
+                    f"released for {close_period}.** The ledger's `months_amortized` values "
+                    f"don't match the current period — the uploaded ledger may be from a prior "
+                    f"month. Upload the **updated Prepaid Ledger** from the previous close.\n\n"
                     + ("\n".join(f"• {f}" for f in next_fires[:8]) if next_fires else "")
                 )
             if ledger_active:

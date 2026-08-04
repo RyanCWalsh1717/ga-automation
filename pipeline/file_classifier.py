@@ -230,13 +230,33 @@ def _classify_xlsx(file_bytes: bytes, signals: dict = None) -> Tuple[str, float]
 
     # ── Check sheet names first (prepaid ledger, workpaper) ──────────────
     sheet_names_lower = [s.lower() for s in wb.sheetnames]
-    if any("prepaid" in s for s in sheet_names_lower):
-        wb.close()
-        return "prepaid_ledger", 0.92
-    # Prepaid ledger seed file uses "Active" and "Completed" sheet names
+    # Prepaid ledger seed/output file uses "Active" and "Completed" sheet
+    # names — this is the real signal. A broader "any sheet name contains
+    # 'prepaid'" check used to run here first, but the real ledger file's own
+    # sheets ('135150 PPD Other', 'Active', 'Completed') never actually
+    # contain that substring, so it never correctly matched its intended
+    # target — it only ever caused a false positive: a real 30-tab workpaper
+    # has an account-name sheet ("221100 Prepaid Rent - Tenant") that matched
+    # it, misclassifying the entire workpaper as the prepaid ledger. Confirmed
+    # on a real file: prepaid_ledger.load() then silently returned 0 active
+    # items with no error (no 'Active'/'Completed' sheets to find), so
+    # nothing carried forward and no warning fired either.
     if "active" in sheet_names_lower and "completed" in sheet_names_lower:
         wb.close()
         return "prepaid_ledger", 0.90
+    # The real template-based GA_Workpapers.xlsx output (generate_bs_workpaper_
+    # from_template) never actually hits the two checks below — its sheets are
+    # named "111100 PNC Cash", "213100 Accr Exp", etc., not "GL vs TB" or
+    # "Jan-2026 GL vs TB". Confirmed on a real generated file: neither check
+    # matched, so it fell through to "unknown" (safe — forces manual
+    # selection — but not auto-detected). 'summary page' + 'trial balance'
+    # together are that template's actual distinctive signature; a standalone
+    # Yardi Trial Balance export is a single sheet and won't have a
+    # 'summary page' sheet alongside it, so this doesn't collide with that
+    # upload slot's own detection.
+    if "summary page" in sheet_names_lower and "trial balance" in sheet_names_lower:
+        wb.close()
+        return "prior_workpaper", 0.90
     if any(s in ("gl vs tb", "bank rec", "debt service", "accruals") for s in sheet_names_lower):
         wb.close()
         return "prior_workpaper", 0.90

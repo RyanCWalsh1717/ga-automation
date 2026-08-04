@@ -290,6 +290,20 @@ def load(path: Optional[str]) -> Tuple[List[Dict], List[Dict], Optional[str]]:
     except Exception as exc:
         return [], [], f'Could not read prior prepaid ledger ({path}): {exc}'
 
+    # The file opened fine but isn't a ledger at all (e.g. the Pass 2
+    # workpaper uploaded into this slot by mistake, or a misclassification —
+    # confirmed on a real file: a 30-tab workpaper has an account-name sheet
+    # containing "Prepaid" that fooled the auto-classifier). Without this
+    # check, a missing 'Active' sheet silently returns the same ([], [], None)
+    # as a genuine first-month run with no prior ledger, so the wrong file
+    # gets zero items and no warning instead of a clear error.
+    if 'Active' not in wb.sheetnames:
+        return [], [], (
+            f"'{path}' doesn't look like a prepaid ledger file (no 'Active' sheet found — "
+            f"sheets present: {', '.join(wb.sheetnames[:6])}{'...' if len(wb.sheetnames) > 6 else ''}). "
+            f"Check that the prior-month GA_Prepaid_Ledger_Updated.xlsx was uploaded, not a workpaper."
+        )
+
     active    = _read_sheet(wb, 'Active',    ACTIVE_COLS)
     completed = _read_sheet(wb, 'Completed', COMPLETED_COLS)
 
