@@ -2998,6 +2998,7 @@ with tab1:
                 p1["prepaid_released_count"]= len(prepaid_release_je) // 2
                 p1["prepaid_release_lines"] = ledger_release_lines
                 p1["budget_review_flags"]   = _budget_review_flags
+                p1["close_period"]          = close_period
 
                 progress_bar.progress(100)
                 status_text.text("✓ JEs ready for Yardi upload!")
@@ -3881,6 +3882,14 @@ with tab1:
         newly_added      = p1.get("newly_added_prepaids", [])
         released_count   = p1.get("prepaid_released_count", 0)
         release_lines    = p1.get("prepaid_release_lines", [])
+        # close_period itself is a local variable set inside the "Generate JEs"
+        # button handler above — it only exists in the SAME script run that
+        # button click triggered. This results block renders on every rerun
+        # while p1 has persisted data (e.g. the user just clicking something
+        # else on the page after Pass 1 already completed), so it must read
+        # the period back from p1 rather than reference that local variable,
+        # which would raise NameError on any later rerun.
+        close_period     = p1.get("close_period", "")
         if ledger_active or ledger_completed or newly_added:
             st.markdown("### Prepaid Ledger")
             col_l1, col_l2, col_l3, col_l4 = st.columns(4)
