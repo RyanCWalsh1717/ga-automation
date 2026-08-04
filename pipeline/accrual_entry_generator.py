@@ -4878,10 +4878,11 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
         book:          Unused — kept for signature compatibility
         auto_reverse:  Deprecated — kept for signature compatibility but ignored.
                        BM is now determined per-batch: -1 if the batch contains any
-                       line posting to 213100 (Accrued Expenses) or 213200 (Accrued
-                       Interest Payable); 0 otherwise. This ensures only true
-                       accrual entries auto-reverse, while prepaid, management fee,
-                       and reclassification batches do not.
+                       line posting to 213100 (Accrued Expenses), 213200 (Accrued
+                       Interest Payable), or 133110 (AR Billback — Tenant Utility
+                       Billing/recovery accrual); 0 otherwise. This ensures only
+                       true accrual entries auto-reverse, while prepaid,
+                       management fee, and reclassification batches do not.
                        Per-line override: set 'reverse_next_month' key on the dict.
 
     Returns:
@@ -4923,15 +4924,19 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
             batch_counter += 1
 
     # Pre-scan: which JE batches contain at least one line posting to 213100
-    # (Accrued Expenses) or 213200 (Accrued Interest Payable)? Only those
-    # batches are true accruals that should auto-reverse next month — interest
-    # accruals (801xxx expense routes to 213200 instead of 213100, see
-    # _cr_for()) need the same always-reverse treatment as any other accrual.
+    # (Accrued Expenses), 213200 (Accrued Interest Payable), or 133110
+    # (Accounts Receivable Billback — the DR leg of every Tenant Utility
+    # Billing JE, both electric/440500 and gas/440700, per
+    # TENANT_UTILITY_AR_ACCOUNT / _post_tub_line())? Only those batches are
+    # true accruals that should auto-reverse next month — interest accruals
+    # (801xxx expense routes to 213200 instead of 213100, see _cr_for()) and
+    # the tenant recovery accrual (Recovery - Electricity / Recovery - Misc
+    # Utilities) need the same always-reverse treatment as any other accrual.
     # All other batches (prepaid releases, mgmt fee, reclasses, etc.) get BM = 0.
     _batches_with_213100: set = {
         line.get('je_number', '')
         for line in je_lines
-        if str(line.get('account_code', '') or '').strip() in ('213100', '213200')
+        if str(line.get('account_code', '') or '').strip() in ('213100', '213200', '133110')
     }
 
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
