@@ -4002,9 +4002,16 @@ def generate_bs_workpaper_from_template(
             _rewrite_ppd_tieout(ws, _tieout, _data_start, _data_start)
             return
 
+        # +1 reserves a permanent blank row between the last item and the
+        # footer — the template's original design (one real "buffer" row
+        # before 'Ending Balance per GL'), which the item-count-driven
+        # insert below would otherwise consume once there are enough items
+        # to fill every available row, butting the footer directly against
+        # the last item with no visual break.
         _cleared_rows = _tieout - _data_start
-        if len(_items) > _cleared_rows:
-            _to_insert = len(_items) - _cleared_rows
+        _needed_rows = len(_items) + 1
+        if _needed_rows > _cleared_rows:
+            _to_insert = _needed_rows - _cleared_rows
             _insert_at = _tieout
             ws.insert_rows(_insert_at, _to_insert)
             _tieout += _to_insert

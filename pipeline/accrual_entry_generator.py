@@ -3554,7 +3554,12 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'reference':      'INV-PRORATION',
                 'debit':          pro['accrual_amount'],
                 'credit':         0,
-                'vendor':         '[Invoice Proration]',
+                # Real vendor from detect_invoice_proration_accruals() (e.g.
+                # "Hudson Energy Services LLC") — was previously discarded
+                # here in favor of a generic placeholder, so the workpaper's
+                # Vendor column fell back to showing the full combined
+                # description once posted and re-parsed from the GL.
+                'vendor':         pro.get('vendor') or '[Invoice Proration]',
                 'invoice_number': '',
                 'source':         'invoice_proration',
             })
@@ -3569,7 +3574,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 'reference':      'INV-PRORATION',
                 'debit':          0,
                 'credit':         pro['accrual_amount'],
-                'vendor':         '[Invoice Proration]',
+                'vendor':         pro.get('vendor') or '[Invoice Proration]',
                 'invoice_number': '',
                 'source':         'invoice_proration',
             })
@@ -4856,7 +4861,10 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
       POSTMONTH      (E)  — period end date MM/DD/YYYY
       BOOKNUM        (F)  — 1 (Accrual book)
       AMOUNT         (G)  — signed amount (positive = DR, negative = CR)
-      REMARK         (H)  — JE description (optional; also in DESC)
+      REMARK         (H)  — vendor name (falls back to the description if a
+                            line has no vendor set) — read back as the GL
+                            transaction's "remarks" field, which the Pass 2
+                            workpaper displays as Vendor
       REF            (I)  — reference number / JE code
       DESC           (S)  — line description
       DISPLAYTYPE    (AY) — 'Standard Journal Display Type'
@@ -4938,6 +4946,14 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
             je_num  = line.get('je_number', '')
             batch   = batch_map.get(je_num, 1)
             desc    = str(line.get('description', '') or '')[:60]
+            # REMARK gets the clean vendor name (falls back to desc for the
+            # rare line with no vendor set at all) instead of duplicating
+            # DESC — previously both columns held the same combined
+            # "Accrual {period} — {vendor} (...)" string, so once Yardi
+            # re-exported the posted JE, the workpaper's Vendor column
+            # (sourced from the GL transaction's remarks field) showed that
+            # whole sentence instead of just the vendor.
+            vendor  = str(line.get('vendor', '') or '')[:60] or desc
             gl_acct = str(line.get('account_code', '') or '')
             ref     = str(line.get('reference', '') or je_num)
             debit   = line.get('debit', 0) or 0
@@ -4957,7 +4973,7 @@ def generate_etl_csv(je_lines: List[Dict], output_path: str,
             row[_ETL_IDX['POSTMONTH']]        = period_date
             row[_ETL_IDX['BOOKNUM']]          = 1
             row[_ETL_IDX['AMOUNT']]           = amount
-            row[_ETL_IDX['REMARK']]           = desc
+            row[_ETL_IDX['REMARK']]           = vendor
             row[_ETL_IDX['REF']]              = ref
             row[_ETL_IDX['DESC']]             = desc
             row[_ETL_IDX['DISPLAYTYPE']]      = 'Standard Journal Display Type'
