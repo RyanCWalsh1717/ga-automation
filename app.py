@@ -4438,9 +4438,12 @@ with tab2:
     # the raw Yardi export pasted directly into the workpaper.
     with st.expander("📋 Workpaper raw report overrides (optional)", expanded=False):
         st.caption(
-            "Drop raw Yardi Excel exports here — each file is assigned a type and copied "
+            "Drop raw Yardi exports here — each file is assigned a type and copied "
             "directly into the matching workpaper tab. AR Aging and Capital Schedule "
-            "auto-source from Pass 1 when available."
+            "auto-source from Pass 1 when available. Bank Rec also accepts a PDF if "
+            "you don't have access to the Excel export — it's parsed the same way as "
+            "the main Bank Rec PDF upload. The other report types need the Excel "
+            "version; there's no PDF parser for them yet."
         )
 
         # ── WP bulk uploader session state ────────────────────────────────────
@@ -4461,11 +4464,23 @@ with tab2:
             "Capital Schedule Seed",
             "Unknown — select type",
         ]
+        # PDF is only usable for the two bank rec slots — those are the only
+        # report types here with an existing PDF parser (yardi_bank_rec.py /
+        # yardi_daca_rec.py, the same ones the main Bank Rec PDF upload uses).
+        # AR/AP Aging, Capital Schedule, and Prepaid Ledger have no PDF parser
+        # at all, so a PDF assigned to one of those would just be silently
+        # unusable — narrow the dropdown instead of letting that happen.
+        _WP_PDF_SLOT_KEYS = ["bank_rec_xlsx", "daca_bank_rec_xlsx", "unknown"]
+        _WP_PDF_SLOT_LABELS = [
+            "Bank Rec PDF — 111100 PNC Operating",
+            "Bank Rec PDF — 115100 DACA",
+            "Unknown — select type",
+        ]
 
         _bulk_wp = st.file_uploader(
             "Drop all workpaper override files here",
             accept_multiple_files=True,
-            type=["xlsx", "xls"],
+            type=["xlsx", "xls", "pdf"],
             key=f"bulk_upload_wp_{st.session_state.get('upload_key_p2', 0)}",
         )
 
@@ -4477,14 +4492,22 @@ with tab2:
             st.session_state['_bulk_wp_fingerprint'] = _bulk_wp_fingerprint
             for _clr_kwp in set(_WP_SLOT_KEYS) - {"unknown"}:
                 st.session_state.uploaded_files.pop(_clr_kwp, None)
+            st.session_state.pop('wp_override_bank_rec_data', None)
+            st.session_state.pop('wp_override_daca_rec_data', None)
 
         if _bulk_wp:
             for _ufwp in _bulk_wp:
                 _raw_wp = bytes(_ufwp.getbuffer())
+                _is_pdf_wp = _ufwp.name.lower().endswith('.pdf')
                 # These are custom Yardi reports — auto-detection is unreliable;
                 # always show the type selectbox for explicit user assignment.
                 _ovr_key_wp = (_ufwp.name, _ufwp.size)  # B-F4: composite key prevents stale classifications
                 _eff_key_wp = st.session_state.bulk_overrides_wp.get(_ovr_key_wp, "unknown")
+
+                _slot_keys_wp   = _WP_PDF_SLOT_KEYS if _is_pdf_wp else _WP_SLOT_KEYS
+                _slot_labels_wp = _WP_PDF_SLOT_LABELS if _is_pdf_wp else _WP_SLOT_LABELS
+                if _is_pdf_wp and _eff_key_wp not in _slot_keys_wp:
+                    _eff_key_wp = "unknown"  # a prior Excel assignment doesn't carry over to a PDF re-upload
 
                 _ic_wp, _fn_wp, _tp_wp = st.columns([1, 3, 4])
                 _ic_wp.markdown("✅" if _eff_key_wp != "unknown" else "⚠️")
@@ -4493,18 +4516,38 @@ with tab2:
                 _fn_wp.caption(_short_wp)
 
                 _cur_idx_wp = (
-                    _WP_SLOT_KEYS.index(_eff_key_wp)
-                    if _eff_key_wp in _WP_SLOT_KEYS
-                    else len(_WP_SLOT_KEYS) - 1
+                    _slot_keys_wp.index(_eff_key_wp)
+                    if _eff_key_wp in _slot_keys_wp
+                    else len(_slot_keys_wp) - 1
                 )
                 _sel_label_wp = _tp_wp.selectbox(
-                    "type", _WP_SLOT_LABELS, index=_cur_idx_wp,
+                    "type", _slot_labels_wp, index=_cur_idx_wp,
                     key=f"ovr_wp_{_ufwp.name}_{_ufwp.size}", label_visibility="collapsed",
                 )
-                _eff_key_wp = _WP_SLOT_KEYS[_WP_SLOT_LABELS.index(_sel_label_wp)]
+                _eff_key_wp = _slot_keys_wp[_slot_labels_wp.index(_sel_label_wp)]
                 st.session_state.bulk_overrides_wp[_ovr_key_wp] = _eff_key_wp
 
-                if _eff_key_wp != "unknown":
+                if _is_pdf_wp and _eff_key_wp in ("bank_rec_xlsx", "daca_bank_rec_xlsx"):
+                    # Parse right here rather than saving a filepath — the raw_filepath
+                    # slots downstream expect a raw-copyable Excel sheet, which a PDF
+                    # isn't. Route the parsed result into the same bank_rec_data/
+                    # daca_bank_data shape the main PDF upload already produces, so the
+                    # existing pdf_gl_transactions fallback tier in
+                    # bs_workpaper_generator.py renders it without any new code there.
+                    _wp_pdf_path = os.path.join(st.session_state.temp_dir, f"wp_{_ufwp.name}")
+                    if not os.path.exists(_wp_pdf_path) or os.path.getsize(_wp_pdf_path) != _ufwp.size:
+                        with open(_wp_pdf_path, "wb") as _f_wp_pdf:
+                            _f_wp_pdf.write(_raw_wp)
+                    try:
+                        if _eff_key_wp == "bank_rec_xlsx":
+                            from parsers.yardi_bank_rec import parse as _parse_bank_rec_wp
+                            st.session_state['wp_override_bank_rec_data'] = _parse_bank_rec_wp(_wp_pdf_path)
+                        else:
+                            from parsers.yardi_daca_rec import parse as _parse_daca_rec_wp
+                            st.session_state['wp_override_daca_rec_data'] = _parse_daca_rec_wp(_wp_pdf_path)
+                    except Exception as _pdf_wp_err:
+                        st.warning(f"Could not parse {_ufwp.name} as a Bank Rec PDF: {_pdf_wp_err}")
+                elif _eff_key_wp != "unknown":
                     _wp_path = os.path.join(st.session_state.temp_dir, f"wp_{_ufwp.name}")
                     if not os.path.exists(_wp_path) or os.path.getsize(_wp_path) != _ufwp.size:
                         with open(_wp_path, "wb") as _f_wp:
@@ -5064,6 +5107,17 @@ with tab2:
                                 f"loaded + {len(_manual_prepaids)} manually added"
                             )
 
+                        # A PDF uploaded in the "Workpaper raw report overrides" section
+                        # for either bank rec slot takes priority over the main Bank Rec
+                        # PDF upload's own parsed data — it was uploaded specifically to
+                        # override this period's workpaper tabs.
+                        _effective_bank_rec_data = (
+                            st.session_state.get('wp_override_bank_rec_data') or bank_rec_data
+                        )
+                        _effective_daca_bank_data = (
+                            st.session_state.get('wp_override_daca_rec_data') or daca_bank_data
+                        )
+
                         # ── Template-based workpaper (preferred) ─────────────
                         # If a GA_Workpaper_Template.xlsx is committed for this
                         # property, use the template-based generator which preserves
@@ -5095,8 +5149,8 @@ with tab2:
                                 daca_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("daca_bank_rec_xlsx"),
                                 dev_bank_rec_xlsx_filepath=st.session_state.uploaded_files.get("bank_rec_dev_xlsx"),
                                 prepaid_ledger_active=_prepaid_active,
-                                bank_rec_data=bank_rec_data,
-                                daca_bank_data=daca_bank_data,
+                                bank_rec_data=_effective_bank_rec_data,
+                                daca_bank_data=_effective_daca_bank_data,
                             )
                             st.caption(
                                 "↳ Workpaper: generated from template — PNC Cash, DACA, AR Aging, "
@@ -5112,9 +5166,9 @@ with tab2:
                                 period=close_period,
                                 property_name=engine_result.property_name or _prop_display,
                                 prepaid_ledger_active=_prepaid_active,
-                                bank_rec_data=bank_rec_data,
+                                bank_rec_data=_effective_bank_rec_data,
                                 gl_cash_balance=gl_cash_balance,
-                                daca_bank_data=daca_bank_data,
+                                daca_bank_data=_effective_daca_bank_data,
                                 daca_gl_balance=daca_gl_balance,
                                 prior_workpaper_path=_prior_wp_path,
                                 prior_period=_prior_period,
