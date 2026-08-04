@@ -204,6 +204,10 @@ per_invoice_accrual_accounts:
 # a recurring contract. Layer 2 invoice proration and one-off accruals are unaffected.
 layer3_exclude_accounts:
   - "637170"   # Admin-Food Service Amenities (discretionary spend, not a standing contract)
+  - "637150"   # Admin-Tenant Relations — never gets a real invoice, so Layer 3's
+               # compound-with-prior-reversal logic never resets and grows
+               # unbounded month over month (confirmed: $173,142.10 by Jan-2026).
+               # Use the One-Off Accruals table for a flat monthly estimate instead.
 
 # ── Insurance policies (prepaid amortization breakdown) ───────────────────────
 # Each policy gets its own JE line: DR expense_account / CR 135110.
