@@ -3462,10 +3462,14 @@ with tab1:
 
             # ── Add Missed Entry(ies) ──────────────────────────────────────────
             # Lets you append DR/CR pairs to the Accruals CSV after JEs are
-            # generated — e.g. forgotten one-off accrual entries. A table
-            # (not a single-row form) so several entries can be filled in and
-            # submitted together in one click instead of one add+rerun cycle
-            # per entry.
+            # generated — e.g. forgotten one-off accrual entries. A dynamic
+            # list of plain widget rows (text_input/number_input/checkbox),
+            # not a data_editor grid — the grid's canvas-based cell editing
+            # (glide-data-grid) needed a second click to enter a cell and
+            # could lose in-progress text on Description specifically.
+            # Confirmed with Ryan 2026-08-06. Plain widgets don't have that
+            # class of issue at all, at the cost of needing a row-count
+            # control instead of the grid's built-in "+" button.
             st.markdown("#### ➕  Add Missed Entries")
 
             # Keep the expander open after a successful add (st.rerun() collapses
@@ -3474,54 +3478,69 @@ with tab1:
             if _add_expanded_key not in st.session_state:
                 st.session_state[_add_expanded_key] = False
 
-            _add_df_key = f"je_add_df_{_run_key}"
-            if _add_df_key not in st.session_state:
-                st.session_state[_add_df_key] = pd.DataFrame({
-                    "DR Account":   [''],
-                    "CR Account":   ['213100'],
-                    "Description":  [''],
-                    "Amount ($)":   [0.0],
-                    "Auto-Reverse": [True],
-                })
-            # data_editor tracks its own edit state under its widget key, which
-            # can outlive a plain session-state reassignment of the underlying
-            # DataFrame — bust the key on every successful submit (same reason
-            # the old single-row form bumped a counter into its text_input
-            # keys) so the table actually goes back to blank instead of
-            # silently keeping the just-submitted rows on screen.
-            _add_editor_ctr_key = f"je_add_editor_ctr_{_run_key}"
-            if _add_editor_ctr_key not in st.session_state:
-                st.session_state[_add_editor_ctr_key] = 0
+            # How many rows to show, and a "generation" counter that busts
+            # every row widget's key on reset so fields actually go blank
+            # after a submit instead of the widgets remembering their last
+            # typed value (same reason the original single-row form bumped
+            # a counter into its own widget keys).
+            _add_rows_key = f"je_add_rows_{_run_key}"
+            if _add_rows_key not in st.session_state:
+                st.session_state[_add_rows_key] = 1
+            _add_gen_key = f"je_add_gen_{_run_key}"
+            if _add_gen_key not in st.session_state:
+                st.session_state[_add_gen_key] = 0
+            _gen = st.session_state[_add_gen_key]
 
             with st.expander("Add entries to Accruals CSV",
                              expanded=st.session_state[_add_expanded_key]):
                 st.caption(
-                    "Fill in as many rows as you need — use the **+** at the bottom of the "
-                    "table to add more rows — then click **Add All Entries** once to submit "
-                    "them together. Blank or zero-amount rows are skipped."
+                    "Fill in as many rows as you need — click **+ Add Row** for more — then "
+                    "click **Add All Entries** once to submit them together. Blank rows are "
+                    "skipped."
                 )
-                _add_edited_df = st.data_editor(
-                    st.session_state[_add_df_key],
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    column_config={
-                        "DR Account":   st.column_config.TextColumn("DR Account", width="small",
-                                            help="6-digit Yardi GL account code (e.g. 637150)"),
-                        "CR Account":   st.column_config.TextColumn("CR Account", width="small"),
-                        "Description":  st.column_config.TextColumn("Description", width="large"),
-                        "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
-                                            width="small", min_value=0.0),
-                        "Auto-Reverse": st.column_config.CheckboxColumn(
-                            "Auto-Rev", width="small",
+                for _r_i in range(st.session_state[_add_rows_key]):
+                    _rc1, _rc2, _rc3, _rc4, _rc5 = st.columns([1.3, 1.3, 3.6, 1.5, 1])
+                    with _rc1:
+                        st.text_input(
+                            "DR Account", placeholder="e.g. 637150",
+                            key=f"add_dr_{_run_key}_{_gen}_{_r_i}",
+                            label_visibility="visible" if _r_i == 0 else "collapsed",
+                        )
+                    with _rc2:
+                        st.text_input(
+                            "CR Account", value="213100",
+                            key=f"add_cr_{_run_key}_{_gen}_{_r_i}",
+                            label_visibility="visible" if _r_i == 0 else "collapsed",
+                        )
+                    with _rc3:
+                        st.text_input(
+                            "Description", placeholder="e.g. Tenant Relations accrual",
+                            key=f"add_desc_{_run_key}_{_gen}_{_r_i}",
+                            label_visibility="visible" if _r_i == 0 else "collapsed",
+                        )
+                    with _rc4:
+                        st.number_input(
+                            "Amount ($)", min_value=0.0, step=100.0, format="%.2f",
+                            key=f"add_amt_{_run_key}_{_gen}_{_r_i}",
+                            label_visibility="visible" if _r_i == 0 else "collapsed",
+                        )
+                    with _rc5:
+                        st.checkbox(
+                            "Auto-Rev", value=True,
+                            key=f"add_autorev_{_run_key}_{_gen}_{_r_i}",
                             help="✅ Checked = auto-reverses next month (ReverseNextMonth = -1). "
-                                 "Uncheck for permanent JEs (ReverseNextMonth = 0)."),
-                    },
-                    key=f"add_editor_{_run_key}_{st.session_state[_add_editor_ctr_key]}",
-                )
-                st.session_state[_add_df_key] = _add_edited_df
+                                 "Uncheck for permanent JEs (ReverseNextMonth = 0).",
+                        )
 
-                _add_submit = st.button("Add All Entries", key=f"add_btn_{_run_key}",
-                                       type="primary")
+                _row_add_col, _submit_col = st.columns([1, 3])
+                with _row_add_col:
+                    if st.button("➕ Add Row", key=f"add_row_btn_{_run_key}_{_gen}"):
+                        st.session_state[_add_rows_key] += 1
+                        st.session_state[_add_expanded_key] = True
+                        st.rerun()
+                with _submit_col:
+                    _add_submit = st.button("Add All Entries", key=f"add_btn_{_run_key}_{_gen}",
+                                           type="primary")
 
                 if _add_submit:
                     # Determine the next ADD-XXXX number once, then increment
@@ -3536,23 +3555,24 @@ with tab1:
                     _new_je_lines = []
                     _added_summaries = []
                     _skipped_rows = 0
-                    for _, _row in _add_edited_df.iterrows():
-                        _dr = str(_row.get('DR Account', '') or '').strip()
-                        _cr = str(_row.get('CR Account', '') or '213100').strip()
-                        _desc = str(_row.get('Description', '') or '').strip()
-                        _amt = float(_row.get('Amount ($)', 0) or 0)
+                    for _r_i in range(st.session_state[_add_rows_key]):
+                        _dr = (st.session_state.get(f"add_dr_{_run_key}_{_gen}_{_r_i}", '') or '').strip()
+                        _cr = (st.session_state.get(f"add_cr_{_run_key}_{_gen}_{_r_i}", '') or '213100').strip()
+                        _desc = (st.session_state.get(f"add_desc_{_run_key}_{_gen}_{_r_i}", '') or '').strip()
+                        _amt = float(st.session_state.get(f"add_amt_{_run_key}_{_gen}_{_r_i}", 0) or 0)
                         if not _dr or not _desc or _amt <= 0:
-                            # A fully blank trailing row is normal (the default
-                            # editor state) — only count it as "skipped" if the
-                            # user partially filled it in, so the warning below
-                            # doesn't fire on every ordinary submission.
+                            # A fully blank extra row is normal — only count it
+                            # as "skipped" if the user partially filled it in,
+                            # so the warning below doesn't fire on every
+                            # ordinary single-row submission.
                             if _dr or _desc or _amt:
                                 _skipped_rows += 1
                             continue
 
                         _new_je_id = f"ADD-{_next_add_num:04d}"
                         _next_add_num += 1
-                        _add_rev_flag = -1 if bool(_row.get('Auto-Reverse', True)) else 0
+                        _add_rev_flag = -1 if bool(st.session_state.get(
+                            f"add_autorev_{_run_key}_{_gen}_{_r_i}", True)) else 0
                         _new_je_lines.extend([
                             {
                                 'je_number':          _new_je_id, 'line': 1, 'date': '',
@@ -3632,19 +3652,15 @@ with tab1:
                                 icon="⚠️",
                             )
 
-                        # Reset the editor to a single blank row and keep the
-                        # expander open so the user can immediately add more.
-                        # Bumping the counter forces a fresh data_editor widget
-                        # (see comment above) so the reset DataFrame actually
-                        # shows instead of the editor's own remembered edits.
-                        st.session_state[_add_df_key] = pd.DataFrame({
-                            "DR Account":   [''],
-                            "CR Account":   ['213100'],
-                            "Description":  [''],
-                            "Amount ($)":   [0.0],
-                            "Auto-Reverse": [True],
-                        })
-                        st.session_state[_add_editor_ctr_key] += 1
+                        # Reset to a single blank row and keep the expander
+                        # open so the user can immediately add more. Bumping
+                        # the generation counter changes every row widget's
+                        # key, which is what actually clears them — resetting
+                        # _add_rows_key alone wouldn't, since row 0's widgets
+                        # would keep their same keys (and therefore their old
+                        # typed values) across the rerun.
+                        st.session_state[_add_rows_key] = 1
+                        st.session_state[_add_gen_key] += 1
                         st.session_state[_add_expanded_key] = True
                         st.rerun()
 
