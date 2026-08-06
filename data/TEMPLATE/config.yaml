@@ -43,8 +43,8 @@ firm_name:              'Greatland Realty Partners (GRP)'
 
 team_members:
   - CHANGE_ME   # Property Accountant name
-  - CHANGE_ME   # Accounting Manager name
-  - CHANGE_ME   # CFO name
+  - CHANGE_ME   # Property Manager name
+  - CHANGE_ME   # Accounting Manager/Controller name
 
 
 # ── MANAGEMENT FEE STRUCTURE ─────────────────────────────────────────────────

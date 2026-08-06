@@ -1441,7 +1441,7 @@ with tab0:
     with _ck_col_name:
         _team_names = (_active_cfg.team_members
                        if _active_cfg.team_members
-                       else ['[Property Accountant]', '[Accounting Manager]', '[CFO]'])
+                       else ['[Property Accountant]', '[Property Manager]', '[Accounting Manager/Controller]'])
         _cur_name   = st.session_state.get('prepared_by', _team_names[0])
         _name_idx   = _team_names.index(_cur_name) if _cur_name in _team_names else 0
         _chosen_name = st.selectbox(
@@ -1617,14 +1617,14 @@ with tab0:
             },
             7: {
                 'emoji': '📦', 'color': '#2D6F50', 'bg': '#E8F5E9',
-                'headline': 'Action needed: Release final package to CFO',
+                'headline': 'Action needed: Release final package to Accounting Manager/Controller',
                 'body': ('{period} QC review is complete for {prop}. '
-                         'The final package is ready for the CFO. '
+                         'The final package is ready for the Accounting Manager/Controller. '
                          'Upload the deliverables and mark Step 9 complete.'),
                 'draft': True,
-                'draft_label': '📋 Suggested message for the CFO:',
-                # team_members convention: [Property Accountant, Accounting Manager, CFO] —
-                # CFO is the 3rd entry by position, not matched by name.
+                'draft_label': '📋 Suggested message for the Accounting Manager/Controller:',
+                # team_members convention: [Property Accountant, Property Manager, Accounting Manager/Controller] —
+                # Accounting Manager/Controller is the 3rd entry by position, not matched by name.
                 'draft_fn': lambda period, prop, team, user: (
                     f"Hi {(team[2].split()[0] if len(team) > 2 and team[2] else 'there')},\n\n"
                     f"The {period} monthly close package for {prop} is ready for your review. "
@@ -1645,7 +1645,7 @@ with tab0:
         if _ni:
             _period_lbl  = period_key_to_label(_ck_pkey) if '_ck_pkey' in dir() else period_key_to_label(st.session_state.get('checklist_period_key', current_period_key()))
             _team_members = list(getattr(_active_cfg, 'team_members', None) or
-                                 ['[Property Accountant]', '[Accounting Manager]', '[CFO]'])
+                                 ['[Property Accountant]', '[Property Manager]', '[Accounting Manager/Controller]'])
             _prepared_by  = st.session_state.get('prepared_by', 'GRP')
             _body_text = _ni['body'].format(
                 period=_period_lbl,
@@ -6318,7 +6318,7 @@ with tab2:
 
         _SIGNOFF_REVIEWERS = (_active_cfg.team_members
                               if _active_cfg.team_members
-                              else ["[Property Accountant]", "[Accounting Manager]", "[CFO]"])
+                              else ["[Property Accountant]", "[Property Manager]", "[Accounting Manager/Controller]"])
 
         for _so_idx, _so_item in enumerate(_SIGNOFF_ITEMS):
             _so_existing = st.session_state.signoff_state.get(_so_idx)
@@ -6582,9 +6582,9 @@ with tab3:
     )
     st.info(
         "**Roles referenced throughout:** the **Property Accountant** runs Pass 1 and Pass 2 "
-        "(this may be GRP staff or an outsourced team member). The **Accounting Manager** "
-        "reviews outputs before release. The **CFO** is the final reviewer — sees the package "
-        "only after the Property Accountant and Accounting Manager have both signed off. "
+        "(this may be GRP staff or an outsourced team member). The **Property Manager** "
+        "reviews outputs before release. The **Accounting Manager/Controller** is the final reviewer — sees the package "
+        "only after the Property Accountant and Property Manager have both signed off. "
         "Actual names for each role are configured per property in the Properties tab.",
         icon="👥",
     )
@@ -6603,8 +6603,8 @@ with tab3:
 | 6 | Property Accountant | Upload Pass 2 files (+ raw report overrides) → click **Generate Reports** |
 | 7 | Property Accountant | Review QC results and JE posting verification |
 | 8 | Property Accountant | Complete Close Tracker steps + sign off on the checklist |
-| 9 | Accounting Manager | Reviews Workpapers, QC Workbook, Audit Trail, and Annotated BC → signs off |
-| 10 | CFO | Final review of the released package |
+| 9 | Property Manager | Reviews Workpapers, QC Workbook, Audit Trail, and Annotated BC → signs off |
+| 10 | Accounting Manager/Controller | Final review of the released package |
 """)
     st.markdown(
         "> **Start here every month:** the **Dashboard** tab (leftmost tab) shows the close "
@@ -6789,17 +6789,17 @@ After clicking **Generate Reports**, download the full package or individual fil
 
 | File | Contents | Audience |
 |------|----------|----------|
-| **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Accountant / Accounting Manager |
+| **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Accountant / Property Manager |
 | **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist — see Step 8 below | Property Accountant |
 | **{_pfx_int}_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Accountant |
-| **{_pfx_int}_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Property Accountant / Accounting Manager |
-| **{_pfx_int}_Audit_Trail.xlsx** | Every JE's math, the exact Yardi ETL import rows, management fee calculation detail, and QC results in one file — the record an auditor would review | Accounting Manager / Auditor |
-| **{_pfx_int}_Signoff_Record.xlsx** | Who reviewed and approved each section of the close package, and when | Accounting Manager / CFO |
-| **{_pfx_int}_Close_Tracker.xlsx** | The 9-step close lifecycle record, from JLL handoff through CFO release | Accounting Manager |
+| **{_pfx_int}_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Property Accountant / Property Manager |
+| **{_pfx_int}_Audit_Trail.xlsx** | Every JE's math, the exact Yardi ETL import rows, management fee calculation detail, and QC results in one file — the record an auditor would review | Property Manager / Auditor |
+| **{_pfx_int}_Signoff_Record.xlsx** | Who reviewed and approved each section of the close package, and when | Property Manager / Accounting Manager/Controller |
+| **{_pfx_int}_Close_Tracker.xlsx** | The 9-step close lifecycle record, from JLL handoff through Accounting Manager/Controller release | Property Manager |
 | **{_pfx_int}_Run_Log.csv** | Running history of every close run for this property (timestamp, JE counts, QC results) — not financial detail, just a log | Internal reference |
-| Management Fee Invoice (PDF) | JLL/GRP management fee invoice for this period | Accounting Manager |
+| Management Fee Invoice (PDF) | JLL/GRP management fee invoice for this period | Property Manager |
 
-> **Before sending to Accounting Manager:** clear any open Errors in the Exception Report.
+> **Before sending to Property Manager:** clear any open Errors in the Exception Report.
 > Warnings should be reviewed but may be acceptable.
 """)
 
@@ -6854,12 +6854,12 @@ Post-close JEs are **not** auto-reversing — they are permanent adjustments.
     with st.expander("📋  Close Tracker & Sign-off"):
         st.markdown("""
 The **Dashboard** tab tracks the full close lifecycle in 9 steps, from JLL's initial bank rec
-through the CFO's final release:
+through the Accounting Manager/Controller's final release:
 
 `0` JLL Completes Bank Rec & Payments · `1` Pass 1 Files Uploaded & JEs Generated ·
 `2` JEs Uploaded to Yardi · `3` Final Close Run in Yardi · `4` Final Files Re-Exported from Yardi ·
 `5` Pass 2 Files Uploaded · `6` Reports Generated · `7` QC Review Complete (Property Accountant /
-Accounting Manager) · `8` Final Package Released to CFO
+Property Manager) · `8` Final Package Released to Accounting Manager/Controller
 
 Steps 1, 5, and 6 auto-complete when you run Pass 1 / upload Pass 2 files / generate reports.
 The rest require clicking **Mark Complete** on the Dashboard as each step actually happens.
@@ -6875,7 +6875,7 @@ off to produce the permanent record.
     st.markdown("---")
     with st.expander("📬  Final Deliverables — What Goes Where"):
         st.markdown(f"""
-#### To Accounting Manager
+#### To Property Manager
 | Item | Source |
 |------|--------|
 | Workpapers (GL ↔ TB tie-out) | `{_pfx_int}_Workpapers.xlsx` from Pass 2 |
@@ -7225,7 +7225,7 @@ with tab4:
             "Team members (one per line)",
             value=_default_members,
             height=120,
-            placeholder="Jane Smith (Property Accountant)\nJohn Doe (Accounting Manager)\nAlex Lee (CFO)",
+            placeholder="Jane Smith (Property Accountant)\nJohn Doe (Property Manager)\nAlex Lee (Accounting Manager/Controller)",
             label_visibility="collapsed",
         )
 
