@@ -2203,20 +2203,35 @@ with tab1:
             except Exception:
                 pass
 
-        # Apply: fill Account Name for any row where code is set but name is blank
+        # Source 3: Budget Comparison — same fallback the 7xxxxx Recode table
+        # uses below, added here too so an account with no GL activity yet
+        # this period (but a budget line) still auto-populates a name.
+        if _p1_er_for_lookup:
+            try:
+                _bc_for_lookup_oa = getattr(_p1_er_for_lookup, 'parsed', {}).get('budget_comparison')
+                if _bc_for_lookup_oa and hasattr(_bc_for_lookup_oa, 'line_items'):
+                    for _bcl_oa in _bc_for_lookup_oa.line_items:
+                        _bcl_oa_code = str(getattr(_bcl_oa, 'account_code', '') or '').strip()
+                        _bcl_oa_name = str(getattr(_bcl_oa, 'account_name', '') or '').strip()
+                        if _bcl_oa_code and _bcl_oa_name and _bcl_oa_code not in _acct_name_lookup:
+                            _acct_name_lookup[_bcl_oa_code] = _bcl_oa_name
+            except Exception:
+                pass
+
+        # Apply: fill Account Name for any row where code is set but name is blank.
+        # Deliberately does NOT force an immediate st.rerun() here — doing so
+        # raced against the grid's own rerun for other in-flight edits (most
+        # visibly: clicking the "+" add-row button right after typing an
+        # account code could lose that just-typed code). The filled name
+        # still lands in session_state and appears on the very next natural
+        # rerun (any other click/edit), just not instantly on this one.
         _df_to_save = accruals_edited_df.copy()
-        _names_filled = 0
         for _idx, _row in _df_to_save.iterrows():
             _code_val = str(_row.get("Account Code", "") or "").strip()
             _name_val = str(_row.get("Account Name", "") or "").strip()
             if _code_val and not _name_val and _code_val in _acct_name_lookup:
                 _df_to_save.at[_idx, "Account Name"] = _acct_name_lookup[_code_val]
-                _names_filled += 1
-        if _names_filled:
-            st.session_state.manual_accruals_df = _df_to_save
-            st.rerun()
-        else:
-            st.session_state.manual_accruals_df = accruals_edited_df
+        st.session_state.manual_accruals_df = _df_to_save
 
         _accrual_active = accruals_edited_df[
             accruals_edited_df["Account Code"].fillna("").str.strip().astype(bool) &
@@ -3825,8 +3840,11 @@ with tab1:
             # the user types or edits manually — auto-detected CR rows get their
             # name pre-filled once at detection time (see _interco_detected loop
             # above), but that doesn't cover a manually entered/edited CR account.
-            # Fires on the re-run triggered when the user tabs out of the Account cell.
-            _ic_names_filled = 0
+            # No forced st.rerun() here — same reason as One-Off Accruals: it
+            # could race against the grid's own rerun for a different in-flight
+            # edit (e.g. clicking "+" to add a row right after typing an
+            # account code) and clobber it. The filled name lands in
+            # session_state and shows up on the next natural rerun instead.
             _ic_df_with_names = _ic_recode_edited.copy()
             for _ic_n_idx, _ic_n_row in _ic_df_with_names.iterrows():
                 _ic_n_acct = str(_ic_n_row.get("Account", "") or "").strip()
@@ -3835,10 +3853,7 @@ with tab1:
                     _ic_looked_up = _acct_name_lookup.get(_ic_n_acct, "")
                     if _ic_looked_up:
                         _ic_df_with_names.at[_ic_n_idx, "Account Name"] = _ic_looked_up
-                        _ic_names_filled += 1
-            if _ic_names_filled:
-                st.session_state.interco_recode_df = _ic_df_with_names
-                st.rerun()
+            st.session_state.interco_recode_df = _ic_df_with_names
 
             # Active = DR rows that have a non-blank target Account and a Debit amount
             _ic_dr_active = _ic_recode_edited[
