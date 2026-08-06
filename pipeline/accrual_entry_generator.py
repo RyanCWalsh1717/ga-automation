@@ -1874,6 +1874,19 @@ def detect_historical_recurring(gl_data, budget_data, period: str = '',
             _gl_handled_codes.add(code)  # mark as handled so budget-gap doesn't fire either
             continue
 
+        # Skip payroll-named accounts unconditionally — these belong to Layer 2's
+        # dedicated payroll proration (detect_invoice_proration_accruals, same
+        # _PAYROLL_NAME_KW check), which self-corrects every month off the actual
+        # most recent payroll run instead of compounding a prior-period reversal.
+        # Without this guard, an account that briefly lacks the 2 payroll runs
+        # Layer 2 needs to infer a pay period would fall through to Layer 3's
+        # compound-with-prior-reversal logic — the exact mechanism that produced
+        # a runaway $173,142.10 accrual for Admin-Tenant Relations (637150,
+        # excluded above instead, since that account isn't payroll at all).
+        if any(kw in (acct.account_name or '').lower() for kw in _PAYROLL_NAME_KW):
+            _gl_handled_codes.add(code)
+            continue
+
         # Partial-coverage detection: if some (but not enough) invoices have already
         # posted this period, don't suppress entirely — compute the expected monthly
         # amount and accrue only the shortfall.
