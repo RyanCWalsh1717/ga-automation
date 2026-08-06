@@ -1505,7 +1505,16 @@ def detect_invoice_proration_accruals(
             continue
 
         # Collect payroll runs: debit entries where description mentions payroll.
+        # Field naming note: for this GL, txn.description holds the vendor
+        # name (e.g. "Jones Lang LaSalle Americas Inc") and txn.remarks holds
+        # the line-item label (e.g. "Eng Payroll 01.02.26") — confirmed
+        # against a real GL, opposite of what the names might suggest.
         payroll_runs: List[tuple] = []   # (run_date: date, amount: float)
+        # (vendor name lower, run_date) pairs confirmed as a real payroll run
+        # below — used by the second pass to pick up same-vendor, same-date
+        # companion lines (overtime, etc.) that don't themselves contain a
+        # recognized payroll keyword.
+        _confirmed_vendor_dates: set = set()
         for txn in acct.transactions:
             amt = (txn.debit or 0) - (txn.credit or 0)
             if amt <= 0:
@@ -1529,6 +1538,32 @@ def detect_invoice_proration_accruals(
                 # Fall back to the transaction's posted date
                 run_date = txn.date if isinstance(txn.date, date) else None
             if run_date:
+                payroll_runs.append((run_date, amt))
+                _confirmed_vendor_dates.add(((txn.description or '').strip().lower(), run_date))
+
+        # Second pass: a real payroll run often posts as several lines —
+        # regular pay, overtime, bonus — and not every line's own text
+        # contains a payroll keyword (confirmed on a real GL: "Eng Payroll
+        # 01.02.26" and its companion "Eng OT 01.02.26" on the same date
+        # from the same vendor — the OT line has no "payroll" keyword at
+        # all, so it was silently dropped from the run total). Pick up any
+        # other debit line from the same vendor on a date already confirmed
+        # as a payroll run above, regardless of what its own text says.
+        for txn in acct.transactions:
+            amt = (txn.debit or 0) - (txn.credit or 0)
+            if amt <= 0:
+                continue
+            if str(getattr(txn, 'control', '') or '').upper().startswith('J'):
+                continue
+            combined = ((txn.remarks or '') + ' ' + (txn.description or '')).lower()
+            if any(kw in combined for kw in _PAYROLL_DESC_KW):
+                continue   # already counted in the first pass
+            run_date = _parse_single_date(txn.remarks or '')
+            if run_date is None:
+                run_date = _parse_single_date(txn.description or '')
+            if run_date is None:
+                run_date = txn.date if isinstance(txn.date, date) else None
+            if run_date and ((txn.description or '').strip().lower(), run_date) in _confirmed_vendor_dates:
                 payroll_runs.append((run_date, amt))
 
         if len(payroll_runs) < 2:
