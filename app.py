@@ -167,6 +167,63 @@ def _df_to_oa_rows(df, cfg=None) -> list:
     return rows or [_blank_oa_row()]
 
 
+_IC_COLUMNS = ["Leg", "Account", "Account Name", "Credit ($)", "Debit ($)", "Description"]
+
+
+def _blank_ic_row(leg: str = "") -> dict:
+    return {
+        "Leg": leg, "Account": "", "Account Name": "",
+        "Credit ($)": 0.0, "Debit ($)": 0.0, "Description": "",
+    }
+
+
+def _df_to_ic_rows(df) -> list:
+    """Convert interco_recode_df into a list of plain dicts, same pattern as _df_to_oa_rows."""
+    if df is None or df.empty:
+        return []
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "Leg": str(r.get("Leg", "") or "").strip(),
+            "Account": str(r.get("Account", "") or "").strip(),
+            "Account Name": str(r.get("Account Name", "") or "").strip(),
+            "Credit ($)": float(r.get("Credit ($)", 0) or 0),
+            "Debit ($)": float(r.get("Debit ($)", 0) or 0),
+            "Description": str(r.get("Description", "") or "").strip(),
+        })
+    return rows
+
+
+def _read_interco_df_from_widgets():
+    """
+    Rebuild the interco_recode_df-shaped DataFrame directly from the live
+    plain-widget row state (see the 7xxxxx Intercompany Recode Table block).
+    Reads st.session_state[f"ic_*_{rid}"] rather than st.session_state.interco_recode_df
+    so callers upstream of that block's own render/write-back (e.g. the Pass 1
+    JE-build step, which runs earlier in script order) still see the user's
+    latest typed values — plain widgets update their session_state key the
+    instant the user interacts, unlike st.data_editor's internal edited_rows
+    diff, which previously had to be peeked at separately for this same reason.
+    Falls back to the plain DataFrame mirror if the row list hasn't been
+    seeded yet this session (e.g. before Pass 1 has ever completed once).
+    """
+    import pandas as _pd_ic_read
+    if "ic_row_ids" not in st.session_state:
+        return st.session_state.get("interco_recode_df")
+    _rows = [
+        {
+            "Leg": st.session_state.get(f"ic_leg_{_rid}", ""),
+            "Account": st.session_state.get(f"ic_account_{_rid}", ""),
+            "Account Name": st.session_state.get(f"ic_name_{_rid}", ""),
+            "Credit ($)": float(st.session_state.get(f"ic_credit_{_rid}", 0.0) or 0.0),
+            "Debit ($)": float(st.session_state.get(f"ic_debit_{_rid}", 0.0) or 0.0),
+            "Description": st.session_state.get(f"ic_desc_{_rid}", ""),
+        }
+        for _rid in st.session_state.get("ic_row_ids", [])
+    ]
+    return _pd_ic_read.DataFrame(_rows, columns=_IC_COLUMNS)
+
+
 def _save_checklist_now() -> None:
     """Persist current close_tracker + custom items to GitHub/local."""
     try:
@@ -465,6 +522,13 @@ if "interco_recode_df" not in st.session_state:
         "Debit ($)":    _pd_ic_init.Series([], dtype=float),
         "Description":  _pd_ic_init.Series([], dtype=str),
     })
+# Bumped whenever interco_recode_df is externally replaced (property switch,
+# Reset All, Reset Pass 1) or newly-detected 7xxxxx accounts are auto-merged
+# into it — the Intercompany Recode plain-widget row list re-seeds from the
+# DataFrame only when this counter changes, same pattern as
+# _accruals_seed_gen for One-Off Accruals.
+if "_interco_seed_gen" not in st.session_state:
+    st.session_state._interco_seed_gen = 0
 
 if "post_close_je_df" not in st.session_state:
     import pandas as _pd_init
@@ -827,6 +891,7 @@ if st.session_state.get('_prev_active_property_code') != _selected_code:
         "Credit ($)": pd.Series([], dtype=float), "Debit ($)": pd.Series([], dtype=float),
         "Description": pd.Series([], dtype=str),
     })
+    st.session_state._interco_seed_gen     = st.session_state.get('_interco_seed_gen', 0) + 1
     st.session_state.pass2_complete        = False
     st.session_state.pass2_engine_result   = None
     st.session_state.pass2_output_files    = {}
@@ -1063,6 +1128,7 @@ else:
             "Credit ($)": _pd.Series([], dtype=float), "Debit ($)": _pd.Series([], dtype=float),
             "Description": _pd.Series([], dtype=str),
         })
+        st.session_state._interco_seed_gen   = st.session_state.get('_interco_seed_gen', 0) + 1
         # Clear keys missed by prior Reset All logic
         st.session_state.pop('_je_desc_run', None)
         st.session_state.pop('prior_period_label_input', None)
@@ -2427,6 +2493,7 @@ with tab1:
                 "Credit ($)": pd.Series([], dtype=float), "Debit ($)": pd.Series([], dtype=float),
                 "Description": pd.Series([], dtype=str),
             })
+            st.session_state._interco_seed_gen = st.session_state.get('_interco_seed_gen', 0) + 1
             for _clr in list(st.session_state.uploaded_files.keys()):
                 if _clr not in ("gl_pass2", "budget_comparison_pass2",
                                 "trial_balance_pass2", "loan_pass2",
@@ -2638,18 +2705,12 @@ with tab1:
                 # to a different account this period, but the ledger kept
                 # citing 712210 for every future release.
                 _early_recode_map = {}
-                _rc_tbl_early = st.session_state.get("interco_recode_df")
-                _rc_editor_key_early = f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}"
-                _rc_editor_raw_early = st.session_state.get(_rc_editor_key_early)
-                if _rc_tbl_early is not None and _rc_editor_raw_early:
-                    _rc_pending_edits = _rc_editor_raw_early.get("edited_rows", {})
-                    if _rc_pending_edits:
-                        _rc_tbl_early = _rc_tbl_early.copy()
-                        for _rc_ridx_s, _rc_cell_edits in _rc_pending_edits.items():
-                            _rc_ridx = int(_rc_ridx_s)
-                            if _rc_ridx < len(_rc_tbl_early):
-                                for _rc_col, _rc_val in _rc_cell_edits.items():
-                                    _rc_tbl_early.at[_rc_ridx, _rc_col] = _rc_val
+                # Reads the live per-row widget state directly (see
+                # _read_interco_df_from_widgets) rather than st.session_state.
+                # interco_recode_df, since plain widgets already hold the
+                # user's latest typed value the instant they interact —
+                # no need to separately peek at pending edits.
+                _rc_tbl_early = _read_interco_df_from_widgets()
                 if _rc_tbl_early is not None and not _rc_tbl_early.empty:
                     _rc_pending_cr = None
                     for _, _rc_row in _rc_tbl_early.iterrows():
@@ -3057,21 +3118,10 @@ with tab1:
                 # DR [target 6/8xxxxx expense account] / CR [7xxxxx account]
                 # Permanent (no auto-reverse) — the recode is a permanent reclassification.
                 _recode_je_lines = []
-                _recode_tbl = st.session_state.get("interco_recode_df")
-                # Merge any in-flight data_editor edits that haven't been committed
-                # to interco_recode_df yet (happens when user types DR account and
-                # immediately clicks Re-run without clicking outside the cell first).
-                _recode_editor_key = f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}"
-                _recode_editor_raw = st.session_state.get(_recode_editor_key)
-                if _recode_tbl is not None and _recode_editor_raw:
-                    _pending_edits = _recode_editor_raw.get("edited_rows", {})
-                    if _pending_edits:
-                        _recode_tbl = _recode_tbl.copy()
-                        for _ridx_s, _cell_edits in _pending_edits.items():
-                            _ridx = int(_ridx_s)
-                            if _ridx < len(_recode_tbl):
-                                for _col, _val in _cell_edits.items():
-                                    _recode_tbl.at[_ridx, _col] = _val
+                # See _read_interco_df_from_widgets — reads live widget state
+                # directly so a DR account typed just before clicking Re-run
+                # (without tabbing out first) is still picked up.
+                _recode_tbl = _read_interco_df_from_widgets()
                 if _recode_tbl is not None and not _recode_tbl.empty:
                     _recode_base = _sup_base + _sup_counter
                     _recode_ri   = 0
@@ -3866,8 +3916,7 @@ with tab1:
             )
 
         # Auto-merge newly detected accounts into the recode table (idempotent).
-        # Dedup by Leg=="CR" + Account — Leg is a visible column so data_editor
-        # never drops it (unlike hidden _ref which caused a reset-on-type rerun loop).
+        # Dedup by Leg=="CR" + Account.
         if _interco_detected:
             _ic_df_cur = st.session_state.interco_recode_df.copy()
             _existing_cr_accts = set()
@@ -3895,6 +3944,10 @@ with tab1:
                 st.session_state.interco_recode_df = pd.concat(
                     [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
                 )
+                # New rows landed in the DataFrame mirror, not the row-widget
+                # list yet — bump so the render block below re-seeds from it
+                # and actually shows this period's newly detected accounts.
+                st.session_state._interco_seed_gen = st.session_state.get('_interco_seed_gen', 0) + 1
 
         # Enrich _acct_name_lookup with budget comparison accounts so the recode
         # DR row Account Name can auto-populate even for 6xxx accounts with no
@@ -3923,52 +3976,117 @@ with tab1:
                 "7xxxxx accounts are **corporate expenses** (non-property) — they should not remain on the property GL. "
                 "Each detected account auto-populates as a **DR / CR pair**: the CR row is pre-filled with the 7xxxxx account; "
                 "enter the **6xxxxx or 8xxxxx** target expense account on the **DR row**. "
-                "The Account Name fills automatically once you tab out of the Account cell. "
+                "The Account Name fills automatically once you tab out of the Account field. "
                 "The pipeline generates **DR [expense account] / CR [7xxx account]** (permanent — no auto-reverse). "
                 "Edit the Amount on the DR row if you're only recoding a partial amount. "
                 "**Re-run Generate JEs after filling in target accounts** to include the recode JEs in the CSV."
             )
 
-            _ic_recode_edited = st.data_editor(
-                st.session_state.interco_recode_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                column_config={
-                    "Leg":          st.column_config.TextColumn("Leg", width="small", disabled=True,
-                                        help="CR = the 7xxxxx being credited out | DR = the expense account to debit"),
-                    "Account":      st.column_config.TextColumn("Account", width="small",
-                                        help="CR row: 7xxxxx account (pre-filled). DR row: enter the 6xxxxx or 8xxxxx target expense account."),
-                    "Account Name": st.column_config.TextColumn("Account Name", width="medium", disabled=True),
-                    "Credit ($)":   st.column_config.NumberColumn("Credit ($)", format="$%,.2f", width="small",
-                                        help="Pre-filled on the CR row from the GL. Edit if recoding a partial amount."),
-                    "Debit ($)":    st.column_config.NumberColumn("Debit ($)", format="$%,.2f", width="small",
-                                        help="Pre-filled on the DR row to match the CR. Edit if recoding a partial amount."),
-                    "Description":  st.column_config.TextColumn("Description", width="large"),
-                },
-                key=f"interco_recode_editor_{st.session_state.get('pass1_run_count', 0)}",
-            )
-            st.session_state.interco_recode_df = _ic_recode_edited
+            # Plain widgets (text_input/number_input) instead of st.data_editor —
+            # same fix as One-Off Accruals and Add Missed Entries. This table had
+            # an additional, distinct data_editor bug: the auto-populated Account
+            # Name never actually displayed, because Streamlit widgets (data_editor
+            # included) ignore a freshly-computed `value=`/`data=` on any rerun
+            # after the widget's `key` already has established state — so writing
+            # the looked-up name into st.session_state.interco_recode_df (a
+            # different, non-widget key) and waiting for "the next natural rerun"
+            # never actually reached the grid, since the grid kept displaying its
+            # OWN internal state under interco_recode_editor_<run_count> instead.
+            # Confirmed with Ryan 2026-08-06 (name not populating running Feb after
+            # Jan). Plain widgets don't have this failure mode: writing directly to
+            # a row's own f"ic_name_{rid}" key before that widget is re-instantiated
+            # this run takes effect immediately.
+            _IC_IDS_KEY  = "ic_row_ids"
+            _IC_NEXT_KEY = "ic_next_id"
+            _IC_GEN_KEY  = "ic_rows_seed_gen"
+
+            def _ic_seed_widget(_rid: int, _seed: dict) -> None:
+                st.session_state[f"ic_leg_{_rid}"]     = _seed["Leg"]
+                st.session_state[f"ic_account_{_rid}"] = _seed["Account"]
+                st.session_state[f"ic_name_{_rid}"]    = _seed["Account Name"]
+                st.session_state[f"ic_credit_{_rid}"]  = _seed["Credit ($)"]
+                st.session_state[f"ic_debit_{_rid}"]   = _seed["Debit ($)"]
+                st.session_state[f"ic_desc_{_rid}"]    = _seed["Description"]
+
+            if (_IC_IDS_KEY not in st.session_state
+                    or st.session_state.get(_IC_GEN_KEY) != st.session_state.get("_interco_seed_gen", 0)):
+                _ic_seed_rows = _df_to_ic_rows(st.session_state.interco_recode_df)
+                _ic_new_ids = list(range(len(_ic_seed_rows)))
+                for _rid, _seed in zip(_ic_new_ids, _ic_seed_rows):
+                    _ic_seed_widget(_rid, _seed)
+                st.session_state[_IC_IDS_KEY]  = _ic_new_ids
+                st.session_state[_IC_NEXT_KEY] = len(_ic_seed_rows)
+                st.session_state[_IC_GEN_KEY]  = st.session_state.get("_interco_seed_gen", 0)
 
             # Auto-populate Account Name for any row (CR or DR) where Account is
-            # filled but Account Name is blank — same pattern as One-Off Accruals
-            # table. Covers both the DR target account AND a CR-leg 7xxxxx code
-            # the user types or edits manually — auto-detected CR rows get their
-            # name pre-filled once at detection time (see _interco_detected loop
-            # above), but that doesn't cover a manually entered/edited CR account.
-            # No forced st.rerun() here — same reason as One-Off Accruals: it
-            # could race against the grid's own rerun for a different in-flight
-            # edit (e.g. clicking "+" to add a row right after typing an
-            # account code) and clobber it. The filled name lands in
-            # session_state and shows up on the next natural rerun instead.
-            _ic_df_with_names = _ic_recode_edited.copy()
-            for _ic_n_idx, _ic_n_row in _ic_df_with_names.iterrows():
-                _ic_n_acct = str(_ic_n_row.get("Account", "") or "").strip()
-                _ic_n_name = str(_ic_n_row.get("Account Name", "") or "").strip()
+            # filled but Account Name is blank — covers both the DR target
+            # account AND a CR-leg 7xxxxx code the user edits manually
+            # (auto-detected CR rows get their name pre-filled at detection
+            # time above, but that doesn't cover a manually-edited CR account).
+            # Must run BEFORE this run's widgets are instantiated below —
+            # Streamlit forbids writing to a widget's session_state key after
+            # that widget has already rendered in the same script run.
+            for _rid in st.session_state[_IC_IDS_KEY]:
+                _ic_n_acct = str(st.session_state.get(f"ic_account_{_rid}", "") or "").strip()
+                _ic_n_name = str(st.session_state.get(f"ic_name_{_rid}", "") or "").strip()
                 if _ic_n_acct and not _ic_n_name:
                     _ic_looked_up = _acct_name_lookup.get(_ic_n_acct, "")
                     if _ic_looked_up:
-                        _ic_df_with_names.at[_ic_n_idx, "Account Name"] = _ic_looked_up
-            st.session_state.interco_recode_df = _ic_df_with_names
+                        st.session_state[f"ic_name_{_rid}"] = _ic_looked_up
+
+            if not st.session_state[_IC_IDS_KEY]:
+                st.caption("No 7xxxxx activity detected this period.")
+
+            for _ic_row_i, _rid in enumerate(st.session_state[_IC_IDS_KEY]):
+                _ic_lbl = "visible" if _ic_row_i == 0 else "collapsed"
+                _ic_cols = st.columns([0.7, 1.1, 1.8, 1.1, 1.1, 2.2, 0.5])
+                with _ic_cols[0]:
+                    st.text_input("Leg", key=f"ic_leg_{_rid}", label_visibility=_ic_lbl,
+                                  disabled=True,
+                                  help="CR = the 7xxxxx being credited out | DR = the expense account to debit")
+                with _ic_cols[1]:
+                    st.text_input("Account", key=f"ic_account_{_rid}", label_visibility=_ic_lbl,
+                                  help="CR row: 7xxxxx account (pre-filled). DR row: enter the 6xxxxx or 8xxxxx target expense account.")
+                with _ic_cols[2]:
+                    st.text_input("Account Name", key=f"ic_name_{_rid}", label_visibility=_ic_lbl,
+                                  disabled=True)
+                with _ic_cols[3]:
+                    st.number_input("Credit ($)", key=f"ic_credit_{_rid}", label_visibility=_ic_lbl,
+                                    min_value=0.0, step=100.0, format="%.2f",
+                                    help="Pre-filled on the CR row from the GL. Edit if recoding a partial amount.")
+                with _ic_cols[4]:
+                    st.number_input("Debit ($)", key=f"ic_debit_{_rid}", label_visibility=_ic_lbl,
+                                    min_value=0.0, step=100.0, format="%.2f",
+                                    help="Pre-filled on the DR row to match the CR. Edit if recoding a partial amount.")
+                with _ic_cols[5]:
+                    st.text_input("Description", key=f"ic_desc_{_rid}", label_visibility=_ic_lbl)
+                with _ic_cols[6]:
+                    if _ic_row_i == 0:
+                        st.write("")   # align delete button with inputs, not their labels
+                    if st.button("🗑️", key=f"ic_del_{_rid}", help="Remove this row"):
+                        st.session_state[_IC_IDS_KEY] = [
+                            _i for _i in st.session_state[_IC_IDS_KEY] if _i != _rid
+                        ]
+                        st.rerun()
+
+            # ── Write back to interco_recode_df for downstream consumers ────────
+            # (early prepaid-ledger recode map, JE building — both now read the
+            # live widget state directly via _read_interco_df_from_widgets, but
+            # this mirror is still what re-seeds the row list on a reset and what
+            # the auto-merge-new-accounts dedup check reads against.)
+            _ic_out_rows = [
+                {
+                    "Leg": st.session_state.get(f"ic_leg_{_rid}", ""),
+                    "Account": st.session_state.get(f"ic_account_{_rid}", ""),
+                    "Account Name": st.session_state.get(f"ic_name_{_rid}", ""),
+                    "Credit ($)": float(st.session_state.get(f"ic_credit_{_rid}", 0.0) or 0.0),
+                    "Debit ($)": float(st.session_state.get(f"ic_debit_{_rid}", 0.0) or 0.0),
+                    "Description": st.session_state.get(f"ic_desc_{_rid}", ""),
+                }
+                for _rid in st.session_state[_IC_IDS_KEY]
+            ]
+            _ic_recode_edited = pd.DataFrame(_ic_out_rows, columns=_IC_COLUMNS)
+            st.session_state.interco_recode_df = _ic_recode_edited
 
             # Active = DR rows that have a non-blank target Account and a Debit amount
             _ic_dr_active = _ic_recode_edited[
