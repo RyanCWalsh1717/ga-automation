@@ -1510,6 +1510,15 @@ def detect_invoice_proration_accruals(
             amt = (txn.debit or 0) - (txn.credit or 0)
             if amt <= 0:
                 continue
+            # Real payroll runs post as P-type (Payable) entries. A J-type
+            # (Journal) entry mentioning "payroll" is a reclass or accrual,
+            # not an actual run — confirmed on a real GL: a "Rcls to 637150 /
+            # 12.25 Reimbursable Payroll" reclass (J-19093) got miscounted as
+            # a payroll run dated the last day of the month, which zeroed
+            # out "days uncovered" and silently suppressed the real accrual
+            # for the rest of that month.
+            if str(getattr(txn, 'control', '') or '').upper().startswith('J'):
+                continue
             combined = ((txn.remarks or '') + ' ' + (txn.description or '')).lower()
             if not any(kw in combined for kw in _PAYROLL_DESC_KW):
                 continue
