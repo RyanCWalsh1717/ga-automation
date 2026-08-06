@@ -1189,11 +1189,11 @@ else:
 # ── Main content: Two-pass tabs ──────────────────────────────
 # ═══════════════════════════════════════════════════════════════
 
-tab0, tab1, tab2, tab3, tab4 = st.tabs([
+tab3, tab0, tab1, tab2, tab4 = st.tabs([
+    "📖  How to Use",
     "🏠  Dashboard",
     "📋  Pass 1 — Generate JEs",
     "📊  Pass 2 — Generate Reports & JEs",
-    "📖  How to Use",
     "⚙️  Properties",
 ])
 
@@ -6723,12 +6723,18 @@ data instead of staying frozen:
 |-------------|-----------|
 | AR Aging Detail — 133100 AR Control | 131100 AR Aging **and** 221100 Prepaid Rent (one Yardi report covers both — same file, both tabs) |
 | AP Aging Detail — 211300 AP Control | 211100 Accounts Payable |
-| Bank Rec Excel — 111100 PNC Operating | 111100 PNC Cash |
-| Bank Rec Excel — 115100 DACA | 115100 DACA |
+| Bank Rec — 111100 PNC Operating | 111100 PNC Cash |
+| Bank Rec — 115100 DACA | 115100 DACA |
 
 > **If a file isn't uploaded for one of these tabs**, that tab shows an explicit
 > **"No data uploaded this period"** message instead of silently reusing last month's data —
 > upload the missing file and re-run if you see this.
+
+> **Don't have the Excel export?** The two Bank Rec slots also accept a **PDF** — drop the
+> same Bank Rec PDF you'd upload elsewhere and assign it to the matching Bank Rec slot; it's
+> parsed the same way and takes priority over whatever the main Bank Rec upload produced for
+> this period. AR Aging, AP Aging, and the other slots still need the Excel version — there's
+> no PDF parser for those yet.
 """)
 
     # ── Pass 2 Outputs ────────────────────────────────────────────────────────
@@ -6883,6 +6889,14 @@ Carry-Forward section above). Leave blank only for a property's genuinely first 
 **A raw-report workpaper tab (PNC Cash, DACA, AR Aging, Prepaid Rent, AP, BofA Dev) shows
 "No data uploaded this period"**
 → Upload the matching file in "Workpaper raw report overrides" (Step 6b) and re-run.
+
+**Prepaid ledger shows 0 active items you know should be there, or "0 released" for the whole
+active list**
+→ Double-check the **Prior Month Prepaid Ledger** upload slot actually has last month's
+`{_pfx_int}_Prepaid_Ledger_UPLOAD_NEXT_CLOSE.xlsx` selected — not last month's Workpaper. If
+the wrong file type ends up there, the app now shows a clear error naming the problem instead
+of silently loading 0 items, but it's still an easy mix-up if both files are open at once when
+picking one to upload.
 
 **JE Verification / Audit Trail JE detail is missing in Pass 2**
 → Pass 1 wasn't run in this session. Upload the JE Cache JSON from Pass 1's download package
