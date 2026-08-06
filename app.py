@@ -3460,16 +3460,13 @@ with tab1:
                 except Exception:
                     pass
 
-            # ── Add Missed Entry ──────────────────────────────────────────────
-            # Lets you append a DR/CR pair to the Accruals CSV after JEs are
-            # generated — e.g. a forgotten one-off accrual entry.
-            st.markdown("#### ➕  Add a Missed Entry")
-
-            # Counter drives input key changes so fields clear after each submit
-            _add_counter_key = f"je_add_count_{_run_key}"
-            if _add_counter_key not in st.session_state:
-                st.session_state[_add_counter_key] = 0
-            _add_n = st.session_state[_add_counter_key]
+            # ── Add Missed Entry(ies) ──────────────────────────────────────────
+            # Lets you append DR/CR pairs to the Accruals CSV after JEs are
+            # generated — e.g. forgotten one-off accrual entries. A table
+            # (not a single-row form) so several entries can be filled in and
+            # submitted together in one click instead of one add+rerun cycle
+            # per entry.
+            st.markdown("#### ➕  Add Missed Entries")
 
             # Keep the expander open after a successful add (st.rerun() collapses
             # expanders that use a hardcoded expanded=False default).
@@ -3477,65 +3474,86 @@ with tab1:
             if _add_expanded_key not in st.session_state:
                 st.session_state[_add_expanded_key] = False
 
-            with st.expander("Add entry to Accruals CSV",
+            _add_df_key = f"je_add_df_{_run_key}"
+            if _add_df_key not in st.session_state:
+                st.session_state[_add_df_key] = pd.DataFrame({
+                    "DR Account":   [''],
+                    "CR Account":   ['213100'],
+                    "Description":  [''],
+                    "Amount ($)":   [0.0],
+                    "Auto-Reverse": [True],
+                })
+            # data_editor tracks its own edit state under its widget key, which
+            # can outlive a plain session-state reassignment of the underlying
+            # DataFrame — bust the key on every successful submit (same reason
+            # the old single-row form bumped a counter into its text_input
+            # keys) so the table actually goes back to blank instead of
+            # silently keeping the just-submitted rows on screen.
+            _add_editor_ctr_key = f"je_add_editor_ctr_{_run_key}"
+            if _add_editor_ctr_key not in st.session_state:
+                st.session_state[_add_editor_ctr_key] = 0
+
+            with st.expander("Add entries to Accruals CSV",
                              expanded=st.session_state[_add_expanded_key]):
-                _ac1, _ac2, _ac3, _ac4, _ac5, _ac6 = st.columns([1.5, 1.5, 4, 1.8, 0.8, 0.8])
-                with _ac1:
-                    _add_dr_raw = st.text_input(
-                        "DR Account", placeholder="e.g. 637150",
-                        key=f"add_dr_{_run_key}_{_add_n}",
-                    )
-                with _ac2:
-                    _add_cr_raw = st.text_input(
-                        "CR Account", value="213100",
-                        key=f"add_cr_{_run_key}_{_add_n}",
-                    )
-                with _ac3:
-                    _add_desc_raw = st.text_input(
-                        "Description", placeholder="e.g. Tenant Relations accrual",
-                        key=f"add_desc_{_run_key}_{_add_n}",
-                    )
-                with _ac4:
-                    _add_amt_raw = st.number_input(
-                        "Amount ($)", min_value=0.0, step=100.0, format="%.2f",
-                        key=f"add_amt_{_run_key}_{_add_n}",
-                    )
-                with _ac5:
-                    st.write("")   # vertical align
-                    _add_auto_rev = st.checkbox(
-                        "Auto-Rev", value=True,
-                        key=f"add_autorev_{_run_key}_{_add_n}",
-                        help="✅ Checked = auto-reverses next month (ReverseNextMonth = -1). "
-                             "Uncheck for permanent JEs (ReverseNextMonth = 0).",
-                    )
-                with _ac6:
-                    st.write("")   # vertical align
-                    st.write("")
-                    _add_submit = st.button("Add", key=f"add_btn_{_run_key}_{_add_n}",
-                                           type="primary", use_container_width=True)
+                st.caption(
+                    "Fill in as many rows as you need — use the **+** at the bottom of the "
+                    "table to add more rows — then click **Add All Entries** once to submit "
+                    "them together. Blank or zero-amount rows are skipped."
+                )
+                _add_edited_df = st.data_editor(
+                    st.session_state[_add_df_key],
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    column_config={
+                        "DR Account":   st.column_config.TextColumn("DR Account", width="small",
+                                            help="6-digit Yardi GL account code (e.g. 637150)"),
+                        "CR Account":   st.column_config.TextColumn("CR Account", width="small"),
+                        "Description":  st.column_config.TextColumn("Description", width="large"),
+                        "Amount ($)":   st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
+                                            width="small", min_value=0.0),
+                        "Auto-Reverse": st.column_config.CheckboxColumn(
+                            "Auto-Rev", width="small",
+                            help="✅ Checked = auto-reverses next month (ReverseNextMonth = -1). "
+                                 "Uncheck for permanent JEs (ReverseNextMonth = 0)."),
+                    },
+                    key=f"add_editor_{_run_key}_{st.session_state[_add_editor_ctr_key]}",
+                )
+                st.session_state[_add_df_key] = _add_edited_df
+
+                _add_submit = st.button("Add All Entries", key=f"add_btn_{_run_key}",
+                                       type="primary")
 
                 if _add_submit:
-                    _dr = (_add_dr_raw or '').strip()
-                    _cr = (_add_cr_raw or '213100').strip()
-                    _desc = (_add_desc_raw or '').strip()
-                    _amt  = float(_add_amt_raw or 0.0)
-                    if not _dr:
-                        st.warning("Please enter a DR Account code.", icon="⚠️")
-                    elif not _desc:
-                        st.warning("Please enter a Description.", icon="⚠️")
-                    elif _amt <= 0:
-                        st.warning("Amount must be greater than zero.", icon="⚠️")
-                    else:
-                        # Determine next ADD-XXXX number
-                        _prev_adds = [
-                            l for l in p1.get("all_je_lines", [])
-                            if str(l.get('je_number', '')).startswith('ADD-')
-                        ]
-                        _next_add_num = (len(_prev_adds) // 2) + 1
-                        _new_je_id    = f"ADD-{_next_add_num:04d}"
+                    # Determine the next ADD-XXXX number once, then increment
+                    # across every new row so a single submission with several
+                    # rows gets sequential JE numbers instead of colliding.
+                    _prev_adds = [
+                        l for l in p1.get("all_je_lines", [])
+                        if str(l.get('je_number', '')).startswith('ADD-')
+                    ]
+                    _next_add_num = (len(_prev_adds) // 2) + 1
 
-                        _add_rev_flag = -1 if _add_auto_rev else 0
-                        _new_je_lines = [
+                    _new_je_lines = []
+                    _added_summaries = []
+                    _skipped_rows = 0
+                    for _, _row in _add_edited_df.iterrows():
+                        _dr = str(_row.get('DR Account', '') or '').strip()
+                        _cr = str(_row.get('CR Account', '') or '213100').strip()
+                        _desc = str(_row.get('Description', '') or '').strip()
+                        _amt = float(_row.get('Amount ($)', 0) or 0)
+                        if not _dr or not _desc or _amt <= 0:
+                            # A fully blank trailing row is normal (the default
+                            # editor state) — only count it as "skipped" if the
+                            # user partially filled it in, so the warning below
+                            # doesn't fire on every ordinary submission.
+                            if _dr or _desc or _amt:
+                                _skipped_rows += 1
+                            continue
+
+                        _new_je_id = f"ADD-{_next_add_num:04d}"
+                        _next_add_num += 1
+                        _add_rev_flag = -1 if bool(_row.get('Auto-Reverse', True)) else 0
+                        _new_je_lines.extend([
                             {
                                 'je_number':          _new_je_id, 'line': 1, 'date': '',
                                 'account_code':       _dr,
@@ -3562,12 +3580,28 @@ with tab1:
                                 'confidence':         'high',
                                 'reverse_next_month': _add_rev_flag,
                             },
-                        ]
+                        ])
+                        _added_summaries.append(
+                            f"**{_new_je_id}** — DR {_dr} / CR {_cr}  ${_amt:,.2f}  ·  {_desc}"
+                        )
 
+                    if _skipped_rows:
+                        st.warning(
+                            f"⚠️ Skipped {_skipped_rows} row(s) missing a DR Account, "
+                            f"Description, or a positive Amount.",
+                            icon="⚠️",
+                        )
+
+                    if not _new_je_lines:
+                        st.warning(
+                            "No complete rows to add — fill in DR Account, Description, "
+                            "and Amount for at least one row.", icon="⚠️",
+                        )
+                    else:
                         _updated_all = p1.get("all_je_lines", []) + _new_je_lines
                         p1["all_je_lines"] = _updated_all
 
-                        # Regenerate CSV
+                        # Regenerate CSV once for the whole batch
                         _p1_er_add = st.session_state.pass1_engine_result
                         _p1_prop_add = (
                             (_p1_er_add.parsed.get('gl') and
@@ -3587,20 +3621,30 @@ with tab1:
                             )
                             p1["accrual_je_csv"] = _add_csv_path
                             st.success(
-                                f"✅  **{_new_je_id}** added — "
-                                f"DR {_dr} / CR {_cr}  ${_amt:,.2f}  ·  {_desc}  ·  CSV updated.",
+                                f"✅  Added {len(_added_summaries)} entr"
+                                f"{'y' if len(_added_summaries) == 1 else 'ies'} — CSV updated.\n\n"
+                                + "\n\n".join(_added_summaries),
                                 icon="✅",
                             )
                         except Exception as _add_ex:
                             st.warning(
-                                f"Entry added to session but CSV regeneration failed: {_add_ex}",
+                                f"Entries added to session but CSV regeneration failed: {_add_ex}",
                                 icon="⚠️",
                             )
 
-                        # Bump counter → clears input fields on next render.
-                        # Keep expander open so the user can add another entry
-                        # without having to re-expand the section.
-                        st.session_state[_add_counter_key] += 1
+                        # Reset the editor to a single blank row and keep the
+                        # expander open so the user can immediately add more.
+                        # Bumping the counter forces a fresh data_editor widget
+                        # (see comment above) so the reset DataFrame actually
+                        # shows instead of the editor's own remembered edits.
+                        st.session_state[_add_df_key] = pd.DataFrame({
+                            "DR Account":   [''],
+                            "CR Account":   ['213100'],
+                            "Description":  [''],
+                            "Amount ($)":   [0.0],
+                            "Auto-Reverse": [True],
+                        })
+                        st.session_state[_add_editor_ctr_key] += 1
                         st.session_state[_add_expanded_key] = True
                         st.rerun()
 
@@ -6642,10 +6686,11 @@ target account on each DR row, then click **Re-run Pass 1** (a second copy of th
 directly below the recode table, so you don't need to scroll back to the top) to include the
 recode JEs in the CSV.
 
-**Add a Missed Entry** — for a JE the pipeline didn't generate at all (not a recode, not
-covered by One-Off Accruals). Enter the DR/CR accounts, description, and amount, and it's
-appended to the CSV immediately. These entries survive a **Re-run Pass 1** click — they are not
-regenerated by the pipeline, so re-running only adds to them, never discards them.
+**Add Missed Entries** — for JEs the pipeline didn't generate at all (not a recode, not
+covered by One-Off Accruals). Fill in as many rows as you need in the table — DR/CR accounts,
+description, amount — then click **Add All Entries** once to submit them all together. These
+entries survive a **Re-run Pass 1** click — they are not regenerated by the pipeline, so
+re-running only adds to them, never discards them.
 
 > **Re-running Pass 1 after any edit** (table changes, recode entries, new uploads) always
 > reflects the current state of everything on the page at the moment you click — you should
