@@ -527,18 +527,23 @@ def build_management_fee_je(
         return []
 
     if fee_result.already_posted_jll:
+        # Confirmed with Ryan 2026-08-06: the management fee calculation
+        # should always be included, even when the fee account already
+        # shows real (non-pipeline) GL activity this period — that signal
+        # is informational (flag it for review, e.g. via the Include
+        # checkbox in the JE review table) rather than a reason to skip
+        # generating the JE outright.
         import warnings as _w
         _w.warn(
-            'Management fee JE skipped — the management fee expense account '
-            'already has real (non-pipeline) GL activity this period, which '
-            'likely means JLL already posted their own management fee JE. '
-            'Verify the posted amount against the expected fee '
+            'Management fee expense account already has real (non-pipeline) '
+            'GL activity this period, which may mean JLL already posted their '
+            'own management fee JE. The calculated fee JE is still included — '
+            'verify the posted amount against the expected fee '
             f'(${fee_result.total_fee:,.2f} at {fee_result.total_rate:.2%}) '
-            'before assuming no further action is needed.',
+            'and exclude it in the JE review table if it would double-post.',
             UserWarning,
             stacklevel=2,
         )
-        return []
 
     cash = fee_result.cash_received
     _period_label = _fmt_period(period)
