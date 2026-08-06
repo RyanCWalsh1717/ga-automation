@@ -116,6 +116,57 @@ def _build_accruals_seed_df(cfg=None):
     })
 
 
+_OA_COLUMNS = [
+    "Account Code", "Account Name", "Vendor", "Amount ($)", "Prior Accrual ($)",
+    "Description", "Auto-Reverse", "Split Schedule", "Compound",
+]
+
+
+def _blank_oa_row() -> dict:
+    return {
+        "Account Code": "", "Account Name": "", "Vendor": "",
+        "Amount ($)": 0.0, "Prior Accrual ($)": 0.0, "Description": "",
+        "Auto-Reverse": True, "Split Schedule": "", "Compound": False,
+    }
+
+
+def _df_to_oa_rows(df, cfg=None) -> list:
+    """
+    Convert the manual_accruals_df DataFrame into a list of plain dicts for the
+    One-Off Accruals plain-widget row list. Missing columns fall back to
+    defaults per-field (rather than mutating the DataFrame first) so an old
+    session's DataFrame from before a column was added still converts cleanly.
+    """
+    if df is None or df.empty:
+        return [_blank_oa_row()]
+    has_compound_col = "Compound" in df.columns
+    # Migration only: sessions saved before the Compound column existed get
+    # each row's default from config.yaml (default_accruals[].compound) keyed
+    # by account code, rather than blindly defaulting to False for everyone.
+    # Confirmed with Ryan 2026-07-28 — only genuinely irregular-billed accounts
+    # (e.g. Water Contract Svc) should compound.
+    _compound_defaults = {
+        str(r.get('account_code', '')).strip(): bool(r.get('compound', False))
+        for r in (getattr(cfg, 'default_accruals', None) or [])
+    }
+    rows = []
+    for _, r in df.iterrows():
+        _code = str(r.get("Account Code", "") or "").strip()
+        rows.append({
+            "Account Code": _code,
+            "Account Name": str(r.get("Account Name", "") or "").strip(),
+            "Vendor": str(r.get("Vendor", "") or "").strip(),
+            "Amount ($)": float(r.get("Amount ($)", 0) or 0),
+            "Prior Accrual ($)": float(r.get("Prior Accrual ($)", 0) or 0),
+            "Description": str(r.get("Description", "") or "").strip(),
+            "Auto-Reverse": bool(r.get("Auto-Reverse", True)),
+            "Split Schedule": str(r.get("Split Schedule", "") or "").strip(),
+            "Compound": bool(r.get("Compound", False)) if has_compound_col
+                        else _compound_defaults.get(_code, False),
+        })
+    return rows or [_blank_oa_row()]
+
+
 def _save_checklist_now() -> None:
     """Persist current close_tracker + custom items to GitHub/local."""
     try:
@@ -439,12 +490,21 @@ if "manual_accruals_df" not in st.session_state:
     # reset happens after _active_cfg is loaded (see "Rebuild accruals seed" block).
     st.session_state.manual_accruals_df = _build_accruals_seed_df()
     st.session_state._accruals_df_for_property = None
+# Bumped every time manual_accruals_df is externally replaced (property switch,
+# Reset All, stale-column migration, session-snapshot restore) — the One-Off
+# Accruals plain-widget row list re-seeds from the DataFrame only when this
+# counter changes, so its own per-render write-back of manual_accruals_df
+# (mirroring live widget edits for downstream consumers) never triggers a
+# self-inflicted reseed.
+if "_accruals_seed_gen" not in st.session_state:
+    st.session_state._accruals_seed_gen = 0
 
 # If session has stale columns from an older version, reset the whole table.
 # "CR Account" is deprecated; "Auto-Reverse" is now a valid column so is NOT listed here.
 if "CR Account" in st.session_state.manual_accruals_df.columns:
     st.session_state.manual_accruals_df = _build_accruals_seed_df()
     st.session_state._accruals_df_for_property = None
+    st.session_state._accruals_seed_gen += 1
 
 # Prepaid invoice correction table — lets the user fix a Nexus-parsed prepaid
 # invoice (amount, service dates, GL account) directly from the Prepaid
@@ -833,6 +893,7 @@ if not st.session_state.get('prepared_by'):
 if st.session_state.get('_accruals_df_for_property') != _selected_code:
     st.session_state.manual_accruals_df = _build_accruals_seed_df(_active_cfg)
     st.session_state._accruals_df_for_property = _selected_code
+    st.session_state._accruals_seed_gen = st.session_state.get('_accruals_seed_gen', 0) + 1
 
 # Committed Kardin budget for the active property
 _COMMITTED_BUDGET = _committed_path(
@@ -982,6 +1043,7 @@ else:
         # leave stale account codes/vendors that suppress automated accruals.
         st.session_state.manual_accruals_df = _build_accruals_seed_df(_active_cfg)
         st.session_state._accruals_df_for_property = _selected_code
+        st.session_state._accruals_seed_gen = st.session_state.get('_accruals_seed_gen', 0) + 1
         st.session_state.tub_key += 1   # forces TUB number inputs to re-render at $0
         st.session_state.custom_checklist_items = []
         # Set checklist_loaded = True so the load block does NOT immediately
@@ -2093,6 +2155,15 @@ with tab1:
     st.divider()
 
     # ── One-Off Accruals Table ────────────────────────────────────────────────
+    # Plain widgets (text_input/number_input/checkbox) in a dynamic row list —
+    # not st.data_editor. The grid's canvas-based editing (glide-data-grid)
+    # could lose an in-progress "Account Code" edit when the native "+" add-row
+    # button triggered its own rerun (confirmed with Ryan 2026-08-06 even after
+    # removing an unrelated forced st.rerun() elsewhere in this block — the
+    # fragility is in the grid itself). Each row here is its own set of
+    # independently-keyed widgets, so adding/removing a row never touches any
+    # other row's key or in-progress value. Same fix already applied to
+    # "Add Missed Entries" below.
     with st.expander("🧾 One-Off Accruals  (DR expense → CR 213100 Accrued Expenses)", expanded=False):
         st.caption(
             "Use this for known invoices not yet in Nexus or Yardi — quarterly contracts, "
@@ -2102,31 +2173,6 @@ with tab1:
             "**Leave Amount at $0** to suppress automated detection for that account without generating a JE — "
             "use this when a JE has already been posted to Yardi to prevent double-counting."
         )
-        # Session upgrades: add new columns to existing sessions without full reset
-        if "Split Schedule" not in st.session_state.manual_accruals_df.columns:
-            st.session_state.manual_accruals_df["Split Schedule"] = ""
-        if "Auto-Reverse" not in st.session_state.manual_accruals_df.columns:
-            st.session_state.manual_accruals_df["Auto-Reverse"] = True
-        if "Prior Accrual ($)" not in st.session_state.manual_accruals_df.columns:
-            st.session_state.manual_accruals_df["Prior Accrual ($)"] = 0.0
-        if "Compound" not in st.session_state.manual_accruals_df.columns:
-            # Migrate existing sessions using each account's config-driven
-            # default (see default_accruals[].compound in config.yaml) rather
-            # than blindly carrying forward the old always-compound behavior —
-            # confirmed with Ryan 2026-07-28 that only Water Contract Svc
-            # (619120) here is genuinely billed irregularly; everything else
-            # was silently compounding on top of real invoices. Unrecognized/
-            # custom rows (e.g. a manually typed-in vendor) default to False,
-            # since a normal monthly item is the more common case.
-            _compound_defaults = {
-                str(r.get('account_code', '')).strip(): bool(r.get('compound', False))
-                for r in (getattr(_active_cfg, 'default_accruals', None) or [])
-            }
-            st.session_state.manual_accruals_df["Compound"] = (
-                st.session_state.manual_accruals_df["Account Code"]
-                .astype(str).str.strip()
-                .map(lambda _c: _compound_defaults.get(_c, False))
-            )
 
         _split_sch_help = (
             "Leave blank to use the property default split schedule. "
@@ -2136,50 +2182,44 @@ with tab1:
             "Only applies to multi-building properties. "
             "Configure building splits in the ⚙️ Properties tab."
         )
-        accruals_edited_df = st.data_editor(
-            st.session_state.manual_accruals_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "Account Code":    st.column_config.TextColumn("DR Account", width="small",
-                                       help="6-digit Yardi GL account code (e.g. 613310)"),
-                "Account Name":    st.column_config.TextColumn("Account Name", width="medium"),
-                "Vendor":          st.column_config.TextColumn("Vendor", width="medium"),
-                "Amount ($)":      st.column_config.NumberColumn("Amount ($)", format="$%,.2f",
-                                       width="small", min_value=0.0,
-                                       help="Monthly accrual amount — debit to expense account"),
-                "Prior Accrual ($)": st.column_config.NumberColumn("Prior Accrual ($)", format="$%,.2f",
-                                       width="small", min_value=0.0,
-                                       help="For semi-annual / irregular accounts (e.g. Water/Sewer): "
-                                            "enter the cumulative prior-month accrual balance to seed compounding "
-                                            "on the first pipeline run. Leave $0 once prior pipeline auto-reversals "
-                                            "appear in the GL — the pipeline picks them up automatically."),
-                "Description":     st.column_config.TextColumn("Description", width="large",
-                                       help="Description for the Yardi JE line"),
-                "Auto-Reverse":    st.column_config.CheckboxColumn("Auto-Rev",
-                                       default=True, width="small",
-                                       help="✅ Checked = entry auto-reverses next month (ReverseNextMonth = -1). "
-                                            "Uncheck for permanent JEs that should NOT reverse (ReverseNextMonth = 0)."),
-                "Split Schedule":  st.column_config.TextColumn("Split Schedule", width="small",
-                                       help=_split_sch_help),
-                "Compound":        st.column_config.CheckboxColumn("Compound",
-                                       default=False, width="small",
-                                       help="❌ Unchecked (default for new rows) = flat monthly amount — correct "
-                                            "for a normal monthly-billed account. "
-                                            "✅ Check ONLY for accounts billed irregularly (e.g. Water/Sewer "
-                                            "every 6 months), where this month's JE = last month's auto-reversed "
-                                            "amount + this month's Amount ($), so the accrued liability keeps "
-                                            "building until a real invoice clears it. Checking this for a normal "
-                                            "monthly account double-counts against the real invoice landing "
-                                            "that month."),
-            },
-            key=f"manual_accruals_editor_{_selected_code}_{st.session_state.get('editor_reset_count', 0)}",
-        )
+
+        _OA_IDS_KEY  = "oa_row_ids"
+        _OA_NEXT_KEY = "oa_next_id"
+        _OA_GEN_KEY  = "oa_rows_seed_gen"
+
+        def _oa_seed_widget(_rid: int, _seed: dict) -> None:
+            st.session_state[f"oa_code_{_rid}"]     = _seed["Account Code"]
+            st.session_state[f"oa_name_{_rid}"]     = _seed["Account Name"]
+            st.session_state[f"oa_vendor_{_rid}"]   = _seed["Vendor"]
+            st.session_state[f"oa_amt_{_rid}"]      = _seed["Amount ($)"]
+            st.session_state[f"oa_prior_{_rid}"]    = _seed["Prior Accrual ($)"]
+            st.session_state[f"oa_desc_{_rid}"]     = _seed["Description"]
+            st.session_state[f"oa_autorev_{_rid}"]  = _seed["Auto-Reverse"]
+            st.session_state[f"oa_split_{_rid}"]    = _seed["Split Schedule"]
+            st.session_state[f"oa_compound_{_rid}"] = _seed["Compound"]
+
+        # (Re)seed the row list only when manual_accruals_df was just replaced
+        # out from under us (property switch, Reset All, session restore) —
+        # see _accruals_seed_gen. Never on an ordinary rerun, since this
+        # block's own write-back of manual_accruals_df (below) must not
+        # trigger re-seeding itself and clobber in-progress edits.
+        if (_OA_IDS_KEY not in st.session_state
+                or st.session_state.get(_OA_GEN_KEY) != st.session_state.get("_accruals_seed_gen", 0)):
+            _oa_seed_rows = _df_to_oa_rows(st.session_state.manual_accruals_df, _active_cfg)
+            _oa_new_ids = list(range(len(_oa_seed_rows)))
+            for _rid, _seed in zip(_oa_new_ids, _oa_seed_rows):
+                _oa_seed_widget(_rid, _seed)
+            st.session_state[_OA_IDS_KEY]  = _oa_new_ids
+            st.session_state[_OA_NEXT_KEY] = len(_oa_seed_rows)
+            st.session_state[_OA_GEN_KEY]  = st.session_state.get("_accruals_seed_gen", 0)
 
         # ── Account name auto-populate ────────────────────────────────────────
-        # When the user types an account code in a new row and leaves the Account
-        # Name blank, look it up from (1) the parsed GL, (2) property config
-        # defaults, and fill it in automatically on the next render.
+        # When the user types an account code in a row and leaves the Account
+        # Name blank, look it up from (1) property config defaults, (2) the
+        # parsed GL, (3) Budget Comparison, and fill it in. Must run BEFORE
+        # this run's widgets are instantiated below — Streamlit forbids
+        # writing to a widget's session_state key after that widget has
+        # already rendered in the same script run.
         _acct_name_lookup: dict = {}
 
         # Source 1: property config default_accruals
@@ -2218,20 +2258,95 @@ with tab1:
             except Exception:
                 pass
 
-        # Apply: fill Account Name for any row where code is set but name is blank.
-        # Deliberately does NOT force an immediate st.rerun() here — doing so
-        # raced against the grid's own rerun for other in-flight edits (most
-        # visibly: clicking the "+" add-row button right after typing an
-        # account code could lose that just-typed code). The filled name
-        # still lands in session_state and appears on the very next natural
-        # rerun (any other click/edit), just not instantly on this one.
-        _df_to_save = accruals_edited_df.copy()
-        for _idx, _row in _df_to_save.iterrows():
-            _code_val = str(_row.get("Account Code", "") or "").strip()
-            _name_val = str(_row.get("Account Name", "") or "").strip()
+        for _rid in st.session_state[_OA_IDS_KEY]:
+            _code_val = str(st.session_state.get(f"oa_code_{_rid}", "") or "").strip()
+            _name_val = str(st.session_state.get(f"oa_name_{_rid}", "") or "").strip()
             if _code_val and not _name_val and _code_val in _acct_name_lookup:
-                _df_to_save.at[_idx, "Account Name"] = _acct_name_lookup[_code_val]
-        st.session_state.manual_accruals_df = _df_to_save
+                st.session_state[f"oa_name_{_rid}"] = _acct_name_lookup[_code_val]
+
+        # ── Row widgets ──────────────────────────────────────────────────────
+        for _row_i, _rid in enumerate(st.session_state[_OA_IDS_KEY]):
+            _lbl = "visible" if _row_i == 0 else "collapsed"
+            _top = st.columns([1.3, 2.0, 1.6, 1.3, 1.3, 0.5])
+            with _top[0]:
+                st.text_input("DR Account", key=f"oa_code_{_rid}", label_visibility=_lbl,
+                              placeholder="e.g. 613310",
+                              help="6-digit Yardi GL account code (e.g. 613310)")
+            with _top[1]:
+                st.text_input("Account Name", key=f"oa_name_{_rid}", label_visibility=_lbl)
+            with _top[2]:
+                st.text_input("Vendor", key=f"oa_vendor_{_rid}", label_visibility=_lbl)
+            with _top[3]:
+                st.number_input("Amount ($)", key=f"oa_amt_{_rid}", label_visibility=_lbl,
+                                min_value=0.0, step=100.0, format="%.2f",
+                                help="Monthly accrual amount — debit to expense account")
+            with _top[4]:
+                st.number_input("Prior Accrual ($)", key=f"oa_prior_{_rid}", label_visibility=_lbl,
+                                min_value=0.0, step=100.0, format="%.2f",
+                                help="For semi-annual / irregular accounts (e.g. Water/Sewer): "
+                                     "enter the cumulative prior-month accrual balance to seed compounding "
+                                     "on the first pipeline run. Leave $0 once prior pipeline auto-reversals "
+                                     "appear in the GL — the pipeline picks them up automatically.")
+            with _top[5]:
+                if _row_i == 0:
+                    st.write("")   # align delete button with inputs, not their labels
+                if st.button("🗑️", key=f"oa_del_{_rid}", help="Remove this row"):
+                    st.session_state[_OA_IDS_KEY] = [
+                        _i for _i in st.session_state[_OA_IDS_KEY] if _i != _rid
+                    ]
+                    st.rerun()
+
+            _bot = st.columns([2.8, 1.0, 1.5, 1.0])
+            with _bot[0]:
+                st.text_input("Description", key=f"oa_desc_{_rid}", label_visibility=_lbl,
+                              help="Description for the Yardi JE line")
+            with _bot[1]:
+                st.checkbox("Auto-Rev", key=f"oa_autorev_{_rid}",
+                           help="✅ Checked = entry auto-reverses next month (ReverseNextMonth = -1). "
+                                "Uncheck for permanent JEs that should NOT reverse (ReverseNextMonth = 0).")
+            with _bot[2]:
+                st.text_input("Split Schedule", key=f"oa_split_{_rid}", label_visibility=_lbl,
+                              help=_split_sch_help)
+            with _bot[3]:
+                st.checkbox("Compound", key=f"oa_compound_{_rid}",
+                           help="❌ Unchecked (default for new rows) = flat monthly amount — correct "
+                                "for a normal monthly-billed account. "
+                                "✅ Check ONLY for accounts billed irregularly (e.g. Water/Sewer "
+                                "every 6 months), where this month's JE = last month's auto-reversed "
+                                "amount + this month's Amount ($), so the accrued liability keeps "
+                                "building until a real invoice clears it. Checking this for a normal "
+                                "monthly account double-counts against the real invoice landing "
+                                "that month.")
+            if _row_i < len(st.session_state[_OA_IDS_KEY]) - 1:
+                st.markdown("<hr style='margin:4px 0;opacity:0.15;'>", unsafe_allow_html=True)
+
+        if st.button("➕ Add Row", key="oa_add_row_btn"):
+            _new_rid = st.session_state[_OA_NEXT_KEY]
+            st.session_state[_OA_NEXT_KEY] += 1
+            _oa_seed_widget(_new_rid, _blank_oa_row())
+            st.session_state[_OA_IDS_KEY] = st.session_state[_OA_IDS_KEY] + [_new_rid]
+            st.rerun()
+
+        # ── Write back to manual_accruals_df for downstream consumers ────────
+        # (accrual_entry_generator exclusion list, JE building, session
+        # snapshot save) — same DataFrame shape/columns as before, just
+        # rebuilt from the live widget values instead of a data_editor return.
+        _oa_out_rows = [
+            {
+                "Account Code": st.session_state.get(f"oa_code_{_rid}", ""),
+                "Account Name": st.session_state.get(f"oa_name_{_rid}", ""),
+                "Vendor": st.session_state.get(f"oa_vendor_{_rid}", ""),
+                "Amount ($)": float(st.session_state.get(f"oa_amt_{_rid}", 0.0) or 0.0),
+                "Prior Accrual ($)": float(st.session_state.get(f"oa_prior_{_rid}", 0.0) or 0.0),
+                "Description": st.session_state.get(f"oa_desc_{_rid}", ""),
+                "Auto-Reverse": bool(st.session_state.get(f"oa_autorev_{_rid}", True)),
+                "Split Schedule": st.session_state.get(f"oa_split_{_rid}", ""),
+                "Compound": bool(st.session_state.get(f"oa_compound_{_rid}", False)),
+            }
+            for _rid in st.session_state[_OA_IDS_KEY]
+        ]
+        accruals_edited_df = pd.DataFrame(_oa_out_rows, columns=_OA_COLUMNS)
+        st.session_state.manual_accruals_df = accruals_edited_df
 
         _accrual_active = accruals_edited_df[
             accruals_edited_df["Account Code"].fillna("").str.strip().astype(bool) &

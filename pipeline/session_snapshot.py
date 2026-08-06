@@ -128,6 +128,10 @@ def restore_snapshot(data: dict, session_state: Any) -> list[str]:
             if 'Amount ($)' in df.columns:
                 df['Amount ($)'] = pd.to_numeric(df['Amount ($)'], errors='coerce').fillna(0.0)
             session_state['manual_accruals_df'] = df
+            # Bump so the One-Off Accruals plain-widget row list re-seeds from
+            # this restored DataFrame instead of keeping whatever rows/values
+            # were already showing in the UI before the restore.
+            session_state['_accruals_seed_gen'] = session_state.get('_accruals_seed_gen', 0) + 1
             restored.append(f'One-Off Accruals ({len(df)} rows)')
         except Exception:
             pass
