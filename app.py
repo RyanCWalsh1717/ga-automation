@@ -2241,12 +2241,18 @@ with tab1:
         )
 
         _split_sch_help = (
-            "Leave blank to use the property default split schedule. "
-            "Enter a schedule name (e.g. '2-Bldg') to override for this line. "
-            "Enter 'No Split' to post the full amount to the parent property code."
+            "Which buildings this line's dollar amount gets pro-rated across. "
+            "'(use property default)' applies the property's default split "
+            "schedule (see ⚙️ Properties tab). 'No Split' posts the full "
+            "amount to the parent property code regardless of default."
         ) if _active_cfg.is_multi_building else (
             "Only applies to multi-building properties. "
             "Configure building splits in the ⚙️ Properties tab."
+        )
+        _SPLIT_DEFAULT_SENTINEL = "(use property default)"
+        _split_sch_options = (
+            [_SPLIT_DEFAULT_SENTINEL] + sorted(_active_cfg.allocation_schedules.keys()) + ["No Split"]
+            if _active_cfg.is_multi_building else [_SPLIT_DEFAULT_SENTINEL]
         )
 
         _OA_IDS_KEY  = "oa_row_ids"
@@ -2261,7 +2267,7 @@ with tab1:
             st.session_state[f"oa_prior_{_rid}"]    = _seed["Prior Accrual ($)"]
             st.session_state[f"oa_desc_{_rid}"]     = _seed["Description"]
             st.session_state[f"oa_autorev_{_rid}"]  = _seed["Auto-Reverse"]
-            st.session_state[f"oa_split_{_rid}"]    = _seed["Split Schedule"]
+            st.session_state[f"oa_split_{_rid}"]    = _seed["Split Schedule"] or _SPLIT_DEFAULT_SENTINEL
             st.session_state[f"oa_compound_{_rid}"] = _seed["Compound"]
 
         # (Re)seed the row list only when manual_accruals_df was just replaced
@@ -2330,6 +2336,16 @@ with tab1:
             if _code_val and not _name_val and _code_val in _acct_name_lookup:
                 st.session_state[f"oa_name_{_rid}"] = _acct_name_lookup[_code_val]
 
+        # Widen the Split Schedule dropdown with any value already stored on
+        # a row (e.g. a schedule that was renamed/removed since this row was
+        # seeded) so the selectbox never errors on a value outside its
+        # current options list. Runs after seeding so it sees every row's
+        # final value for this run.
+        for _rid in st.session_state[_OA_IDS_KEY]:
+            _cur_split = st.session_state.get(f"oa_split_{_rid}")
+            if _cur_split and _cur_split not in _split_sch_options:
+                _split_sch_options.append(_cur_split)
+
         # ── Row widgets ──────────────────────────────────────────────────────
         for _row_i, _rid in enumerate(st.session_state[_OA_IDS_KEY]):
             _lbl = "visible" if _row_i == 0 else "collapsed"
@@ -2371,8 +2387,9 @@ with tab1:
                            help="✅ Checked = entry auto-reverses next month (ReverseNextMonth = -1). "
                                 "Uncheck for permanent JEs that should NOT reverse (ReverseNextMonth = 0).")
             with _bot[2]:
-                st.text_input("Split Schedule", key=f"oa_split_{_rid}", label_visibility=_lbl,
-                              help=_split_sch_help)
+                st.selectbox("Split Schedule", options=_split_sch_options, key=f"oa_split_{_rid}",
+                             label_visibility=_lbl, help=_split_sch_help,
+                             disabled=not _active_cfg.is_multi_building)
             with _bot[3]:
                 st.checkbox("Compound", key=f"oa_compound_{_rid}",
                            help="❌ Unchecked (default for new rows) = flat monthly amount — correct "

@@ -143,7 +143,7 @@ pipeline/
 - Reset All button
 
 ### Pass 1 Tab — Generate JEs (Pre-Close)
-1. **One-Off Accruals table** (`st.data_editor`) — DR expense / CR 213100 auto (or custom CR Account for AR Other / AP Other / Prepaid entries). Pre-seeded with common monthly items (637150 Tenant Relations, 617110 HVAC quarterly, 619120 PPM, 627230 Fire Life Safety, 635110 Snow & Ice, 610140 Durkin, 610160 Casella extra, 637230 BlueTriton, 613310 Water/Sewer).
+1. **One-Off Accruals table** (plain widgets — text_input/number_input/checkbox/selectbox in a dynamic row list, not `st.data_editor`; see Development Notes) — DR expense / CR 213100 auto (or custom CR Account for AR Other / AP Other / Prepaid entries). Pre-seeded with common monthly items (637150 Tenant Relations, 617110 HVAC quarterly, 619120 PPM, 627230 Fire Life Safety, 635110 Snow & Ice, 610140 Durkin, 610160 Casella extra, 637230 BlueTriton, 613310 Water/Sewer). Split Schedule is a dropdown (`(use property default)` / named schedules from `config.yaml` / `No Split`) for multi-building properties — disabled/no-op for single-building properties.
 2. **Manual JEs & Reclasses table** (`st.data_editor`) — fully balanced JEs (positive = DR, negative = CR, must net to $0 per JE#).
 3. **Generate JEs** button
 
@@ -303,14 +303,19 @@ Two modes, mutually exclusive:
   Retains GL activity guard; skips if 440500/440700 already posted.
 
 **Electric recovery/reclass always ties and always reverses** (both Mode a and b,
-regardless of source): the 440500 accrual, the 613115/613110 reclass, and the
-440500↔133110 tie-out adjustment (posted when catch-up or JLL-netting moves the
-reclass off the 440500 total) are ALL set `reverse_next_month=-1`. Every one of
-these JEs reverses out next month and gets recalculated fresh from that month's
-best-available data — same estimate/reverse/replace cycle Layer 2 already uses for
-the electricity expense side. Descriptions all lead with `Accr: Tenant Electric...`
-so the identifying text survives Yardi's 60-char DESC truncation. Confirmed with
-Ryan 2026-08-12.
+regardless of source): whenever catch-up or JLL-netting moves the 613115/613110
+reclass amount below or above the 440500 total, a second DR/CR 613115/613110 JE
+posts the delta so 613115's total always equals 440500's total. The correction
+ALWAYS flows through 613115/613110 (the reclass itself) — 440500/133110 are never
+touched by this adjustment, since they reflect a real/estimated billing fact that
+shouldn't move just because a reclass netted against JLL activity. The 440500
+accrual, the reclass, and the tie-out adjustment are ALL set `reverse_next_month=-1`
+and reverse out next month, recalculating fresh from that month's best-available
+data — same estimate/reverse/replace cycle Layer 2 already uses for the electricity
+expense side. Descriptions all lead with `Accr: Tenant Electric...` so the
+identifying text survives Yardi's 60-char DESC truncation. Confirmed with Ryan
+2026-08-12 (twice — the first version of this tie-out incorrectly ran the
+adjustment through 440500/133110 instead of 613115/613110).
 
 TUB entries appear in `GA_Accruals_JE.csv`.
 
@@ -355,6 +360,28 @@ TUB entries appear in `GA_Accruals_JE.csv`.
 
 ## Development Notes
 
+- **Plain-widget tables (not `st.data_editor`)**: One-Off Accruals, Add Missed Entries,
+  and the 7xxxxx Intercompany Recode table are all built from a dynamic list of
+  plain `st.text_input`/`st.number_input`/`st.checkbox`/`st.selectbox` widgets keyed
+  per row (`{prefix}_{field}_{row_id}`), not `st.data_editor`. `st.data_editor` had
+  two confirmed, unrelated failure modes in this app: (1) canvas-based cell editing
+  lost in-progress edits when the grid's own rerun raced another widget's rerun
+  (e.g. clicking "+" right after typing a cell), and (2) a freshly-computed
+  `value=`/`data=` is silently ignored on any rerun after the widget's `key` already
+  has established state — so an auto-fill written to a *different* session_state
+  variable (hoping the grid would pick it up "on the next natural rerun") never
+  actually reached the grid. Plain widgets don't have either failure mode: each
+  row's fields are independently keyed (so add/delete never touches another row's
+  in-progress value), and writing directly to a widget's own `session_state[key]`
+  *before* that widget is re-instantiated in the same script run takes effect
+  immediately. Each of these tables keeps a `{prefix}_row_ids` list plus a
+  `_..._seed_gen` counter in session_state — the row list only re-seeds from the
+  authoritative DataFrame (`manual_accruals_df`, `interco_recode_df`, etc.) when
+  that counter changes (property switch, Reset All, session restore, or an
+  auto-merge of newly-detected rows), never on an ordinary rerun, so the table's
+  own per-render write-back of that DataFrame doesn't trigger a self-inflicted
+  reseed. The Manual JEs & Reclasses table still uses `st.data_editor` — it hasn't
+  hit either failure mode in practice, no need to rewrite it preemptively.
 - **Imports**: `app.py` adds `pipeline/` to `sys.path`. Standalone scripts need
   `sys.path.insert(0, 'pipeline')` or `sys.path.insert(0, '/path/to/pipeline')`.
 - **Parser returns**: Each parser returns a dataclass or dict. Keys vary by parser;

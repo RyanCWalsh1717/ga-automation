@@ -2834,27 +2834,33 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     })
                     je_num += 1
 
-                    # ── Tie 440500 to the reclass total ───────────────────────
+                    # ── Tie 613115/613110 to the 440500 total ─────────────────
                     # JLL-netting (_existing_reclass) reduced the reclass below
                     # _total_elec_billed (what was actually posted to 440500
-                    # above), so post the delta here — same fix as Mode (b).
-                    # Confirmed with Ryan 2026-08-06.
-                    _440500_tie_delta_a = _round(_pipeline_reclass - _total_elec_billed)
-                    if abs(_440500_tie_delta_a) >= 0.01:
+                    # above). Post the delta through 613115/613110 — the same
+                    # accounts as the reclass itself — so 613115's total
+                    # matches 440500 without ever touching the AR/revenue side
+                    # (440500/133110 reflect a real/estimated billing fact and
+                    # should never be adjusted just because a reclass netted
+                    # against JLL activity). Confirmed with Ryan 2026-08-12 —
+                    # the correction belongs in the reclass, not in recovery
+                    # revenue or AR.
+                    _613115_tie_delta_a = _round(_total_elec_billed - _pipeline_reclass)
+                    if abs(_613115_tie_delta_a) >= 0.01:
                         _tie_je_id_a = f'TUB-{je_num:04d}'
                         _tie_desc_a  = (
-                            f'Accr: Tenant Electric — tie to 613115 reclass total '
-                            f'(${_pipeline_reclass:,.2f}) '
-                            f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'
+                            f'Accr: Tenant Electric — tie 613115 to 440500 total '
+                            f'(${_total_elec_billed:,.2f}) '
+                            f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})'
                         )
-                        _tie_increase_a = _440500_tie_delta_a > 0
+                        _tie_increase_a = _613115_tie_delta_a > 0
                         je_lines.append({
                             'je_number':      _tie_je_id_a, 'line': 1, 'date': '',
-                            'account_code':   TENANT_UTILITY_AR_ACCOUNT if _tie_increase_a else '440500',
-                            'account_name':   TENANT_UTILITY_AR_NAME if _tie_increase_a else 'Recovery - Electricity',
+                            'account_code':   ELEC_TENANT_REIMB_ACCOUNT if _tie_increase_a else ELEC_EXPENSE_ACCOUNT,
+                            'account_name':   ELEC_TENANT_REIMB_NAME if _tie_increase_a else ELEC_EXPENSE_NAME,
                             'description':    _tie_desc_a,
                             'reference':      'ELEC-REIMB',
-                            'debit':          abs(_440500_tie_delta_a), 'credit': 0,
+                            'debit':          abs(_613115_tie_delta_a), 'credit': 0,
                             'vendor':         '[Tenant Electric Billing]',
                             'invoice_number': '',
                             'source':         'tenant_utility_billing', 'confidence': 'high',
@@ -2862,11 +2868,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         })
                         je_lines.append({
                             'je_number':      _tie_je_id_a, 'line': 2, 'date': '',
-                            'account_code':   '440500' if _tie_increase_a else TENANT_UTILITY_AR_ACCOUNT,
-                            'account_name':   'Recovery - Electricity' if _tie_increase_a else TENANT_UTILITY_AR_NAME,
+                            'account_code':   ELEC_EXPENSE_ACCOUNT if _tie_increase_a else ELEC_TENANT_REIMB_ACCOUNT,
+                            'account_name':   ELEC_EXPENSE_NAME if _tie_increase_a else ELEC_TENANT_REIMB_NAME,
                             'description':    _tie_desc_a,
                             'reference':      'ELEC-REIMB',
-                            'debit':          0, 'credit': abs(_440500_tie_delta_a),
+                            'debit':          0, 'credit': abs(_613115_tie_delta_a),
                             'vendor':         '[Tenant Electric Billing]',
                             'invoice_number': '',
                             'source':         'tenant_utility_billing', 'confidence': 'high',
@@ -3232,31 +3238,34 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     })
                     je_num += 1
 
-                    # ── Tie 440500 to the reclass total ───────────────────────
-                    # The 613115/613110 reclass just posted above absorbs a
-                    # catch-up and/or nets against a JLL reclass already in the
-                    # GL — neither of which touched the 440500 AR/recovery JE(s)
-                    # posted earlier in this function, so the two totals could
-                    # diverge. Post the delta here so 440500's total always
-                    # equals the reclass total. Confirmed with Ryan 2026-08-06 —
-                    # 613115 (Tenant Electric Reimbursement) should tie to the
-                    # accrual posted for 440500 (Recovery - Electricity).
-                    _440500_tie_delta = _round(_pipeline_reclass_b - _mode_b_elec_total)
-                    if abs(_440500_tie_delta) >= 0.01:
+                    # ── Tie 613115/613110 to the 440500 total ─────────────────
+                    # The reclass just posted above absorbs a catch-up and/or
+                    # nets against a JLL reclass already in the GL, so it can
+                    # land below or above the 440500 AR/recovery JE(s) posted
+                    # earlier. Post the delta through 613115/613110 — the same
+                    # accounts as the reclass itself — so 613115's total
+                    # matches 440500 without ever touching the AR/revenue side
+                    # (440500/133110 reflect a real/estimated billing fact and
+                    # should never be adjusted just because a reclass netted
+                    # against JLL activity). Confirmed with Ryan 2026-08-12 —
+                    # the correction belongs in the reclass, not in recovery
+                    # revenue or AR.
+                    _613115_tie_delta = _round(_mode_b_elec_total - _pipeline_reclass_b)
+                    if abs(_613115_tie_delta) >= 0.01:
                         _tie_je_id = f'TUB-{je_num:04d}'
                         _tie_desc  = (
-                            f'Accr: Tenant Electric — tie to 613115 reclass total '
-                            f'(${_pipeline_reclass_b:,.2f}) '
-                            f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'
+                            f'Accr: Tenant Electric — tie 613115 to 440500 total '
+                            f'(${_mode_b_elec_total:,.2f}) '
+                            f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})'
                         )
-                        _tie_increase = _440500_tie_delta > 0
+                        _tie_increase = _613115_tie_delta > 0
                         je_lines.append({
                             'je_number':      _tie_je_id, 'line': 1, 'date': '',
-                            'account_code':   TENANT_UTILITY_AR_ACCOUNT if _tie_increase else '440500',
-                            'account_name':   TENANT_UTILITY_AR_NAME if _tie_increase else 'Recovery - Electricity',
+                            'account_code':   ELEC_TENANT_REIMB_ACCOUNT if _tie_increase else ELEC_EXPENSE_ACCOUNT,
+                            'account_name':   ELEC_TENANT_REIMB_NAME if _tie_increase else ELEC_EXPENSE_NAME,
                             'description':    _tie_desc,
                             'reference':      'ELEC-REIMB',
-                            'debit':          abs(_440500_tie_delta), 'credit': 0,
+                            'debit':          abs(_613115_tie_delta), 'credit': 0,
                             'vendor':         _elec_vendor,
                             'invoice_number': '',
                             'source':         'tenant_utility_billing', 'confidence': _elec_conf,
@@ -3264,11 +3273,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         })
                         je_lines.append({
                             'je_number':      _tie_je_id, 'line': 2, 'date': '',
-                            'account_code':   '440500' if _tie_increase else TENANT_UTILITY_AR_ACCOUNT,
-                            'account_name':   'Recovery - Electricity' if _tie_increase else TENANT_UTILITY_AR_NAME,
+                            'account_code':   ELEC_EXPENSE_ACCOUNT if _tie_increase else ELEC_TENANT_REIMB_ACCOUNT,
+                            'account_name':   ELEC_EXPENSE_NAME if _tie_increase else ELEC_TENANT_REIMB_NAME,
                             'description':    _tie_desc,
                             'reference':      'ELEC-REIMB',
-                            'debit':          0, 'credit': abs(_440500_tie_delta),
+                            'debit':          0, 'credit': abs(_613115_tie_delta),
                             'vendor':         _elec_vendor,
                             'invoice_number': '',
                             'source':         'tenant_utility_billing', 'confidence': _elec_conf,
