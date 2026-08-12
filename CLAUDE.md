@@ -302,20 +302,25 @@ Two modes, mutually exclusive:
   4. Budget (PTD for 440500, usually $0 — passthrough account) → 613115 PTD budget proxy
   Retains GL activity guard; skips if 440500/440700 already posted.
 
-**Electric recovery/reclass always ties and always reverses** (both Mode a and b,
-regardless of source): whenever catch-up or JLL-netting moves the 613115/613110
-reclass amount below or above the 440500 total, a second DR/CR 613115/613110 JE
-posts the delta so 613115's total always equals 440500's total. The correction
-ALWAYS flows through 613115/613110 (the reclass itself) — 440500/133110 are never
-touched by this adjustment, since they reflect a real/estimated billing fact that
-shouldn't move just because a reclass netted against JLL activity. The 440500
-accrual, the reclass, and the tie-out adjustment are ALL set `reverse_next_month=-1`
-and reverse out next month, recalculating fresh from that month's best-available
-data — same estimate/reverse/replace cycle Layer 2 already uses for the electricity
-expense side. Descriptions all lead with `Accr: Tenant Electric...` so the
-identifying text survives Yardi's 60-char DESC truncation. Confirmed with Ryan
-2026-08-12 (twice — the first version of this tie-out incorrectly ran the
-adjustment through 440500/133110 instead of 613115/613110).
+**Electric recovery/reclass ties in exactly ONE entry, always reverses** (both
+Mode a and b): `reclass = 440500 total − whatever JLL already reclassed (a
+different, non-`ELEC-REIMB` reference already in 613115)`. This is deliberately
+the SAME simple formula in both modes — no catch-up term. 613115's aggregate
+balance (our JE + JLL's own entry, if any) always equals the 440500 total by
+construction, with no separate adjustment JE needed. An earlier version of this
+logic added a "catch-up" term in Mode (b) that summed ELECTRIC AND GAS real
+credits in 440500 against an ELECTRIC-ONLY prior-period reversal, producing a
+wrong, inflated reclass amount — and a since-removed "tie-out" JE bolted on top
+of that (first through 440500/133110, which double-counted revenue/AR; then
+through 613115/613110, which double-counted whenever JLL had already partially
+reclassed). Both are gone — one entry, correct math. If `reclass < $0.01` after
+netting against JLL's existing reclass, no JE posts at all (JLL already covered
+it in full). The 440500 accrual and the reclass both set `reverse_next_month=-1`
+and reverse out next month, recalculating fresh from that month's
+best-available data — same estimate/reverse/replace cycle Layer 2 already uses
+for the electricity expense side. Descriptions all lead with
+`Accr: Tenant Electric...` so the identifying text survives Yardi's 60-char DESC
+truncation. Confirmed with Ryan 2026-08-12.
 
 TUB entries appear in `GA_Accruals_JE.csv`.
 

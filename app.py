@@ -3934,36 +3934,69 @@ with tab1:
 
         # Auto-merge newly detected accounts into the recode table (idempotent).
         # Dedup by Leg=="CR" + Account.
+        #
+        # Appends directly to the LIVE row-widget list (when it already
+        # exists) instead of mutating interco_recode_df and bumping
+        # _interco_seed_gen. Bumping the gen forces a full reseed of every
+        # row from interco_recode_df — which discards any value the user
+        # just typed this same run (e.g. a DR account typed right before
+        # clicking Generate JEs) if that keystroke hadn't yet been captured
+        # into interco_recode_df by the render block's own write-back, since
+        # the write-back runs AFTER this auto-merge in script order. A direct
+        # append only adds the new rows' ids/widget state and never touches
+        # any existing row's key, so nothing in-progress can be clobbered.
+        # Confirmed with Ryan 2026-08-12.
         if _interco_detected:
-            _ic_df_cur = st.session_state.interco_recode_df.copy()
-            _existing_cr_accts = set()
-            if "Leg" in _ic_df_cur.columns and "Account" in _ic_df_cur.columns:
-                _cr_mask = _ic_df_cur["Leg"].fillna("") == "CR"
-                _existing_cr_accts = set(_ic_df_cur.loc[_cr_mask, "Account"].fillna("").str.strip())
-            _new_ic_rows = []
+            _ic_row_ids_key_early = "ic_row_ids"
+            if _ic_row_ids_key_early in st.session_state:
+                _existing_cr_accts = {
+                    str(st.session_state.get(f"ic_account_{_rid}", "") or "").strip()
+                    for _rid in st.session_state[_ic_row_ids_key_early]
+                    if str(st.session_state.get(f"ic_leg_{_rid}", "") or "") == "CR"
+                }
+            else:
+                _ic_df_cur = st.session_state.interco_recode_df.copy()
+                _existing_cr_accts = set()
+                if "Leg" in _ic_df_cur.columns and "Account" in _ic_df_cur.columns:
+                    _cr_mask = _ic_df_cur["Leg"].fillna("") == "CR"
+                    _existing_cr_accts = set(_ic_df_cur.loc[_cr_mask, "Account"].fillna("").str.strip())
+
+            _new_ic_pairs = []
             for _ic in _interco_detected:
                 _ic_code = str(_ic.get('account_code', '')).strip()
                 if _ic_code and _ic_code not in _existing_cr_accts:
                     _ic_amt  = abs(float(_ic.get('net_amount', 0)))
                     _ic_name = str(_ic.get('account_name', ''))
                     _ic_desc = f"Recode {_ic_code} to expense account"
-                    # CR row first: pre-filled account + credit amount so user can see what's being reversed
-                    _new_ic_rows.append({
-                        "Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
-                        "Credit ($)": _ic_amt, "Debit ($)": 0.0, "Description": _ic_desc,
-                    })
-                    # DR row: amount pre-filled, Account blank for user to enter 6xxxxx/8xxxxx target
-                    _new_ic_rows.append({
-                        "Leg": "DR", "Account": "", "Account Name": "",
-                        "Credit ($)": 0.0, "Debit ($)": _ic_amt, "Description": _ic_desc,
-                    })
-            if _new_ic_rows:
+                    _new_ic_pairs.append((
+                        {"Leg": "CR", "Account": _ic_code, "Account Name": _ic_name,
+                         "Credit ($)": _ic_amt, "Debit ($)": 0.0, "Description": _ic_desc},
+                        {"Leg": "DR", "Account": "", "Account Name": "",
+                         "Credit ($)": 0.0, "Debit ($)": _ic_amt, "Description": _ic_desc},
+                    ))
+
+            if _new_ic_pairs and _ic_row_ids_key_early in st.session_state:
+                # Row list already live — append directly, touching nothing else.
+                for _cr_row, _dr_row in _new_ic_pairs:
+                    for _new_row in (_cr_row, _dr_row):
+                        _new_rid = st.session_state["ic_next_id"]
+                        st.session_state["ic_next_id"] += 1
+                        st.session_state[f"ic_leg_{_new_rid}"]     = _new_row["Leg"]
+                        st.session_state[f"ic_account_{_new_rid}"] = _new_row["Account"]
+                        st.session_state[f"ic_name_{_new_rid}"]    = _new_row["Account Name"]
+                        st.session_state[f"ic_credit_{_new_rid}"]  = _new_row["Credit ($)"]
+                        st.session_state[f"ic_debit_{_new_rid}"]   = _new_row["Debit ($)"]
+                        st.session_state[f"ic_desc_{_new_rid}"]    = _new_row["Description"]
+                        st.session_state["ic_row_ids"].append(_new_rid)
+            elif _new_ic_pairs:
+                # Row list doesn't exist yet (first-ever render) — nothing
+                # live to preserve, so the DataFrame + gen-bump path (which
+                # the initial seed reads) is fine here.
+                _ic_df_cur = st.session_state.interco_recode_df.copy()
+                _flat_new_rows = [r for pair in _new_ic_pairs for r in pair]
                 st.session_state.interco_recode_df = pd.concat(
-                    [_ic_df_cur, pd.DataFrame(_new_ic_rows)], ignore_index=True
+                    [_ic_df_cur, pd.DataFrame(_flat_new_rows)], ignore_index=True
                 )
-                # New rows landed in the DataFrame mirror, not the row-widget
-                # list yet — bump so the render block below re-seeds from it
-                # and actually shows this period's newly detected accounts.
                 st.session_state._interco_seed_gen = st.session_state.get('_interco_seed_gen', 0) + 1
 
         # Enrich _acct_name_lookup with budget comparison accounts so the recode
