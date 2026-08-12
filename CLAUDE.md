@@ -302,25 +302,29 @@ Two modes, mutually exclusive:
   4. Budget (PTD for 440500, usually $0 — passthrough account) → 613115 PTD budget proxy
   Retains GL activity guard; skips if 440500/440700 already posted.
 
-**Electric recovery/reclass ties in exactly ONE entry, always reverses** (both
-Mode a and b): `reclass = 440500 total − whatever JLL already reclassed (a
-different, non-`ELEC-REIMB` reference already in 613115)`. This is deliberately
-the SAME simple formula in both modes — no catch-up term. 613115's aggregate
-balance (our JE + JLL's own entry, if any) always equals the 440500 total by
-construction, with no separate adjustment JE needed. An earlier version of this
-logic added a "catch-up" term in Mode (b) that summed ELECTRIC AND GAS real
-credits in 440500 against an ELECTRIC-ONLY prior-period reversal, producing a
-wrong, inflated reclass amount — and a since-removed "tie-out" JE bolted on top
-of that (first through 440500/133110, which double-counted revenue/AR; then
-through 613115/613110, which double-counted whenever JLL had already partially
-reclassed). Both are gone — one entry, correct math. If `reclass < $0.01` after
-netting against JLL's existing reclass, no JE posts at all (JLL already covered
-it in full). The 440500 accrual and the reclass both set `reverse_next_month=-1`
-and reverse out next month, recalculating fresh from that month's
-best-available data — same estimate/reverse/replace cycle Layer 2 already uses
-for the electricity expense side. Descriptions all lead with
+**Electric recovery/reclass ties in exactly ONE entry, always reverses, never
+nets against JLL** (both Mode a and b): `reclass = 440500 total` — full stop.
+Whenever there's an accrual to 440500 (Recovery-Electricity), there is ALWAYS
+also a matching accrual moving that same amount between 613115 (Tenant Electric
+Reimbursement) and 613110 (Utilities-Electricity) — the two are a fixed pair,
+not something to reconcile against whatever else JLL happens to have posted to
+613115. The ONLY guard is `_reimb_posted`/`_reimb_b_posted` — it blocks posting
+this SAME JE a second time on a re-run (checked via the pipeline's own
+`ELEC-REIMB` reference), but never reduces the amount. Two earlier, now-removed
+attempts got this wrong: (1) a "catch-up" term in Mode (b) that summed ELECTRIC
+AND GAS real credits in 440500 against an ELECTRIC-ONLY prior reversal,
+producing a wrong inflated amount; (2) netting the reclass against JLL's own
+non-`ELEC-REIMB` activity in 613115, which silently zeroed out or shrank the
+reclass whenever JLL had posted anything there at all — even though JLL
+recording tenant *charges* doesn't mean the pipeline's own accrual/reclass pair
+has been recorded. Confirmed with Ryan 2026-08-12 (three rounds — always net
+$0/wrong amount, then a tie-out bolted on through the wrong accounts, then
+finally: never net against JLL at all). The 440500 accrual and the reclass both
+set `reverse_next_month=-1` and reverse out next month, recalculating fresh from
+that month's best-available data — same estimate/reverse/replace cycle Layer 2
+already uses for the electricity expense side. Descriptions all lead with
 `Accr: Tenant Electric...` so the identifying text survives Yardi's 60-char DESC
-truncation. Confirmed with Ryan 2026-08-12.
+truncation.
 
 TUB entries appear in `GA_Accruals_JE.csv`.
 

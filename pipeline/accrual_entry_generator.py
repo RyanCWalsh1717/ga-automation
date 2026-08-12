@@ -2771,42 +2771,29 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 and str(getattr(t, 'control',   '') or '').upper().startswith('J')
                 and str(getattr(t, 'reference', '') or '').upper() == 'ELEC-REIMB'
             ) >= 0.01
-            # Existing non-pipeline J-debits (e.g. JLL manual reclass) —
-            # count toward what has already been reclassed this period.
-            _existing_reclass = _round(sum(
-                float(t.debit or 0) for t in _reimb_gl_txns
-                if float(t.debit or 0) > 0
-                and str(getattr(t, 'control',   '') or '').upper().startswith('J')
-                and str(getattr(t, 'reference', '') or '').upper() != 'ELEC-REIMB'
-            ))
             if not _reimb_posted:
                 # ── Reclass: DR 613115 / CR 613110 ───────────────────────────────────
                 #
-                # In Mode (a) the pipeline owns 440500 — it posts exactly
-                # _total_elec_billed as new credits this month.  613115 needs to
-                # match 440500, so the reclass is simply:
-                #
-                #   pipeline_reclass = total_elec_billed − existing_JLL_reclass
-                #
-                # No catch-up formula: when the pipeline controls the TUB entries,
-                # the GL gap between 440500 and 613115 is already captured in
-                # existing_reclass vs total_elec_billed.  A catch-up term causes
-                # double-counting when 440500 has reversal debits but no current-
-                # period C-credits yet (pre-close timing), inflating the result.
-                _pipeline_reclass = max(0.0, _round(_total_elec_billed - _existing_reclass))
+                # Always the full _total_elec_billed — NOT netted against any
+                # other activity already in 613115 (e.g. JLL's own manual
+                # reclass). Whenever there's an accrual to 440500 (recovery
+                # electricity), there is ALSO an accrual moving that same
+                # amount between 613115 (Tenant Electric Reimbursement) and
+                # 613110 (Utilities Electricity) — the two are a pair, not
+                # something to reconcile against unrelated JLL activity.
+                # The ONLY guard is _reimb_posted above, which blocks posting
+                # this SAME JE twice on a re-run — it does not reduce the
+                # amount. Confirmed with Ryan 2026-08-12 (this was previously
+                # netted against JLL's activity, which silently zeroed out
+                # the reclass whenever JLL had posted anything to 613115).
+                _pipeline_reclass = _round(_total_elec_billed)
                 if _pipeline_reclass < 0.01:
                     je_num += 1
-                    pass  # JLL covered it fully — nothing to post
+                    pass  # nothing billed this period — nothing to post
                 else:
-                    _jll_note = (
-                        f' (JLL posted ${_existing_reclass:,.2f}; pipeline posts ${_pipeline_reclass:,.2f} incremental)'
-                        if _existing_reclass >= 0.01 else ''
-                    )
-                    _cmpd_note = ''
                     _elec_je_id = f'TUB-{je_num:04d}'
                     _elec_desc  = (f'Accr: Tenant Electric Reclass — '
-                                   f'total billed ${_total_elec_billed:,.2f}'
-                                   f'{_jll_note} '
+                                   f'total billed ${_total_elec_billed:,.2f} '
                                    f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                     je_lines.append({
                         'je_number':      _elec_je_id, 'line': 1, 'date': '',
@@ -3095,29 +3082,23 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 and str(getattr(t, 'control',   '') or '').upper().startswith('J')
                 and str(getattr(t, 'reference', '') or '').upper() == 'ELEC-REIMB'
             ) >= 0.01
-            _existing_reclass_b = _round(sum(
-                float(t.debit or 0) for t in _reimb_gl_txns_b
-                if float(t.debit or 0) > 0
-                and str(getattr(t, 'control',   '') or '').upper().startswith('J')
-                and str(getattr(t, 'reference', '') or '').upper() != 'ELEC-REIMB'
-            ))
             if not _reimb_b_posted:
-                # Same formula as Mode (a) — deliberately NO catch-up term.
-                # reclass = 440500 total minus whatever JLL already reclassed
-                # (different reference). This ties naturally: 613115's
-                # aggregate balance (our JE + JLL's own entry, if any) always
-                # equals the 440500 total, in ONE JE, with no separate
-                # adjustment needed. A catch-up term was here previously and
-                # caused a wrong, inflated amount — it summed ELECTRIC AND GAS
-                # real credits in 440500 against an ELECTRIC-ONLY prior-period
-                # reversal, producing a bogus "gap" that was mostly gas
-                # contamination, not a real shortfall. Confirmed with Ryan
-                # 2026-08-12 — should be exactly one entry, not a reclass plus
-                # a separate tie-out.
-                _pipeline_reclass_b = max(0.0, _round(_mode_b_elec_total - _existing_reclass_b))
+                # Always the full _mode_b_elec_total — NOT netted against any
+                # other activity already in 613115 (e.g. JLL's own manual
+                # reclass). Same rule as Mode (a): whenever there's an
+                # accrual to 440500, there is ALSO an accrual moving that
+                # same amount between 613115 and 613110 — the two are a
+                # pair, not something to reconcile against unrelated JLL
+                # activity. The ONLY guard is _reimb_b_posted above, which
+                # blocks posting this SAME JE twice on a re-run — it does
+                # not reduce the amount. Confirmed with Ryan 2026-08-12
+                # (this was previously netted against JLL's activity, which
+                # silently zeroed out the reclass whenever JLL had posted
+                # anything to 613115).
+                _pipeline_reclass_b = _round(_mode_b_elec_total)
                 if _pipeline_reclass_b < 0.01:
                     je_num += 1
-                    pass  # JLL covered it fully; fall through without appending
+                    pass  # nothing to reclass this period
                 else:
                     _elec_je_id  = f'TUB-{je_num:04d}'
                     _src_label   = {
@@ -3132,13 +3113,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         f'{_n_tenants} tenant(s)' if _elec_source == 'receivable_detail'
                         else _src_label
                     )
-                    _jll_b_note = (
-                        f' (JLL posted ${_existing_reclass_b:,.2f}; pipeline posts ${_pipeline_reclass_b:,.2f} incremental)'
-                        if _existing_reclass_b >= 0.01 else ''
-                    )
                     _elec_desc   = (f'Accr: Tenant Electric Reclass — {_tenant_note} — '
-                                    f'${_mode_b_elec_total:,.2f}'
-                                    f'{_jll_b_note} '
+                                    f'${_mode_b_elec_total:,.2f} '
                                     f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                     _elec_vendor = {
                         'receivable_detail':     '[Receivable Detail]',
