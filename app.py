@@ -3948,7 +3948,22 @@ with tab1:
         # Confirmed with Ryan 2026-08-12.
         if _interco_detected:
             _ic_row_ids_key_early = "ic_row_ids"
-            if _ic_row_ids_key_early in st.session_state:
+            # The live-append path is only safe when the row list is FRESH
+            # for the current _interco_seed_gen. Right after Reset Pass 1 /
+            # a property switch, ic_row_ids can still exist (stale, from
+            # before the reset) while ic_rows_seed_gen no longer matches
+            # _interco_seed_gen — appending live in that state is pointless,
+            # since the render block's own reseed check (which also fires
+            # this run, because the gen still mismatches) would immediately
+            # overwrite ic_row_ids from interco_recode_df anyway, discarding
+            # whatever was just appended. Route through the DataFrame in
+            # that case instead, so the upcoming reseed picks up the merge
+            # too. Confirmed with Ryan 2026-08-12.
+            _ic_rows_are_fresh = (
+                _ic_row_ids_key_early in st.session_state
+                and st.session_state.get("ic_rows_seed_gen") == st.session_state.get("_interco_seed_gen", 0)
+            )
+            if _ic_rows_are_fresh:
                 _existing_cr_accts = {
                     str(st.session_state.get(f"ic_account_{_rid}", "") or "").strip()
                     for _rid in st.session_state[_ic_row_ids_key_early]
@@ -3975,8 +3990,9 @@ with tab1:
                          "Credit ($)": 0.0, "Debit ($)": _ic_amt, "Description": _ic_desc},
                     ))
 
-            if _new_ic_pairs and _ic_row_ids_key_early in st.session_state:
-                # Row list already live — append directly, touching nothing else.
+            if _new_ic_pairs and _ic_rows_are_fresh:
+                # Row list already live and current — append directly,
+                # touching nothing else.
                 for _cr_row, _dr_row in _new_ic_pairs:
                     for _new_row in (_cr_row, _dr_row):
                         _new_rid = st.session_state["ic_next_id"]
@@ -3989,9 +4005,12 @@ with tab1:
                         st.session_state[f"ic_desc_{_new_rid}"]    = _new_row["Description"]
                         st.session_state["ic_row_ids"].append(_new_rid)
             elif _new_ic_pairs:
-                # Row list doesn't exist yet (first-ever render) — nothing
-                # live to preserve, so the DataFrame + gen-bump path (which
-                # the initial seed reads) is fine here.
+                # Row list doesn't exist yet, or is stale relative to the
+                # current _interco_seed_gen (e.g. right after Reset Pass 1) —
+                # nothing live to safely preserve, so merge into the
+                # DataFrame and bump the gen; the reseed check below (which
+                # already needs to run in this case) will pick up both the
+                # reset and this merge in one pass.
                 _ic_df_cur = st.session_state.interco_recode_df.copy()
                 _flat_new_rows = [r for pair in _new_ic_pairs for r in pair]
                 st.session_state.interco_recode_df = pd.concat(
