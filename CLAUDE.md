@@ -291,19 +291,26 @@ Two modes, mutually exclusive:
   Always fires regardless of GL activity — no guard.
   Followed by aggregate P&L reclass: DR 613115 / CR 613110 (if 613115 not already in GL).
 - **Mode (b)**: No TUB rows provided — auto-detects electric (440500) in priority order:
-  1. Receivable Detail (real per-tenant charges — permanent, no reversal)
-  2. GL 613115 reclass basis (JLL already posted a P&L reclass this period — permanent)
+  1. Receivable Detail (real per-tenant charges)
+  2. GL 613115 reclass basis (JLL already posted a P&L reclass this period)
   3. **Carry-forward estimate** — no real data available; carries forward whatever
      amount auto-reversed out of 440500 this period (i.e., last period's own accrual)
-     as this period's estimate. **Auto-reverses next month** (`reverse_next_month=-1`
-     on both the 440500 JE and the paired 613115/613110 reclass) so it gets replaced
-     once real meter-read billing lands — same estimate/reverse/replace cycle Layer 2
-     already uses for the electric expense side (613110). Added 2026-08-06 because
-     meter-based tenant electric recovery can't be predicted cold each month, but
-     613115 still needs *something* posted each period so it tracks against 613110's
-     expense proration instead of silently lagging behind it.
+     as this period's estimate. Added 2026-08-06 because meter-based tenant electric
+     recovery can't be predicted cold each month, but 613115 still needs *something*
+     posted each period so it tracks against 613110's expense proration instead of
+     silently lagging behind it.
   4. Budget (PTD for 440500, usually $0 — passthrough account) → 613115 PTD budget proxy
   Retains GL activity guard; skips if 440500/440700 already posted.
+
+**Electric recovery/reclass always ties and always reverses** (both Mode a and b,
+regardless of source): the 440500 accrual, the 613115/613110 reclass, and the
+440500↔133110 tie-out adjustment (posted when catch-up or JLL-netting moves the
+reclass off the 440500 total) are ALL set `reverse_next_month=-1`. Every one of
+these JEs reverses out next month and gets recalculated fresh from that month's
+best-available data — same estimate/reverse/replace cycle Layer 2 already uses for
+the electricity expense side. Descriptions all lead with `Accr: Tenant Electric...`
+so the identifying text survives Yardi's 60-char DESC truncation. Confirmed with
+Ryan 2026-08-12.
 
 TUB entries appear in `GA_Accruals_JE.csv`.
 

@@ -2738,8 +2738,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', elec_amt,
                     tenant_name,
-                    f'Tenant electric billing — {tenant_name} '
-                    f'(per meter read) ${elec_amt:,.2f}',
+                    f'Accr: Tenant Electric — {tenant_name} (per meter read) '
+                    f'${elec_amt:,.2f}',
+                    reverse=True,
                 )
                 _tub_accounts.add('440500')
                 _total_elec_billed += elec_amt
@@ -2803,7 +2804,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     )
                     _cmpd_note = ''
                     _elec_je_id = f'TUB-{je_num:04d}'
-                    _elec_desc  = (f'Tenant electricity reclassification — '
+                    _elec_desc  = (f'Accr: Tenant Electric Reclass — '
                                    f'total billed ${_total_elec_billed:,.2f}'
                                    f'{_jll_note} '
                                    f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
@@ -2817,6 +2818,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         'vendor':         '[Tenant Electric Billing]',
                         'invoice_number': '',
                         'source':         'tenant_utility_billing', 'confidence': 'high',
+                        'reverse_next_month': -1,
                     })
                     je_lines.append({
                         'je_number':      _elec_je_id, 'line': 2, 'date': '',
@@ -2828,6 +2830,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         'vendor':         '[Tenant Electric Billing]',
                         'invoice_number': '',
                         'source':         'tenant_utility_billing', 'confidence': 'high',
+                        'reverse_next_month': -1,
                     })
                     je_num += 1
 
@@ -2840,8 +2843,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     if abs(_440500_tie_delta_a) >= 0.01:
                         _tie_je_id_a = f'TUB-{je_num:04d}'
                         _tie_desc_a  = (
-                            f'Tenant electric recovery — JLL-netting adjustment to tie '
-                            f'440500 to the 613115 reclass total (${_pipeline_reclass:,.2f}) '
+                            f'Accr: Tenant Electric — tie to 613115 reclass total '
+                            f'(${_pipeline_reclass:,.2f}) '
                             f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'
                         )
                         _tie_increase_a = _440500_tie_delta_a > 0
@@ -2855,6 +2858,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                             'vendor':         '[Tenant Electric Billing]',
                             'invoice_number': '',
                             'source':         'tenant_utility_billing', 'confidence': 'high',
+                            'reverse_next_month': -1,
                         })
                         je_lines.append({
                             'je_number':      _tie_je_id_a, 'line': 2, 'date': '',
@@ -2866,6 +2870,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                             'vendor':         '[Tenant Electric Billing]',
                             'invoice_number': '',
                             'source':         'tenant_utility_billing', 'confidence': 'high',
+                            'reverse_next_month': -1,
                         })
                         je_num += 1
 
@@ -2922,9 +2927,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     _post_tub_line(
                         '440500', 'Recovery - Electricity', _tenant_amt,
                         _tenant_name,
-                        (f'Tenant electric recovery — {_tenant_name} '
+                        (f'Accr: Tenant Electric — {_tenant_name} '
                          f'per Receivable Detail '
                          f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
+                        reverse=True,
                     )
                 _tub_accounts.add('440500')
                 _mode_b_elec_total = _rec_elec_amt
@@ -2933,9 +2939,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', _rec_elec_amt,
                     '[Receivable Detail]',
-                    (f'Tenant electric recovery accrual — ${_rec_elec_amt:,.2f} '
+                    (f'Accr: Tenant Electric — ${_rec_elec_amt:,.2f} '
                      f'per Receivable Detail electric charges '
                      f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'),
+                    reverse=True,
                 )
                 _tub_accounts.add('440500')
                 _mode_b_elec_total = _rec_elec_amt
@@ -2949,7 +2956,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     _post_tub_line(
                         '440500', 'Recovery - Electricity', cand['amount'],
                         '[Budget Accrual]',
-                        cand['description'],
+                        f"Accr: Tenant Electric — {cand['description']}",
+                        reverse=True,
                     )
                     _tub_accounts.add('440500')
                     _mode_b_elec_total += cand['amount']
@@ -2988,10 +2996,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', _fb_amt,
                     '[JLL Reclass Basis]',
-                    (f'Tenant electric recovery — derived from JLL 613115 reclass '
+                    (f'Accr: Tenant Electric — derived from JLL 613115 reclass '
                      f'${_fb_amt:,.2f} '
                      f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500). '
                      f'Upload Receivable Detail for per-tenant breakdown.'),
+                    reverse=True,
                 )
                 _tub_accounts.add('440500')
                 _mode_b_elec_total = _fb_amt
@@ -3015,7 +3024,7 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', _elec_carryforward,
                     '[Estimated — Carried Forward]',
-                    (f'Tenant electric recovery — estimated ${_elec_carryforward:,.2f} '
+                    (f'Accr: Tenant Electric — estimated ${_elec_carryforward:,.2f} '
                      f'(carried forward from last month\'s actual; no Receivable '
                      f'Detail or JLL reclass basis available this period). '
                      f'Auto-reverses next month and will be replaced once real '
@@ -3050,9 +3059,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440500', 'Recovery - Electricity', _613115_ptd_budget,
                     '[Budget Accrual]',
-                    (f'Tenant electric recovery accrual — ${_613115_ptd_budget:,.2f} '
+                    (f'Accr: Tenant Electric — ${_613115_ptd_budget:,.2f} '
                      f'derived from 613115 PTD budget (440500 not separately budgeted). '
                      f'Upload Receivable Detail or enter meter reads for actuals.'),
+                    reverse=True,
                 )
                 _tub_accounts.add('440500')
                 _mode_b_elec_total = _613115_ptd_budget
@@ -3159,7 +3169,6 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     pass  # JLL covered it fully; fall through without appending
                 else:
                     _elec_je_id  = f'TUB-{je_num:04d}'
-                    _is_estimate = _elec_source == 'carryforward_estimate'
                     _src_label   = {
                         'receivable_detail':     'Receivable Detail',
                         'gl_activity':           'GL activity — 440500 posted by JLL',
@@ -3181,13 +3190,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         f' (JLL posted ${_existing_reclass_b:,.2f}; pipeline posts ${_pipeline_reclass_b:,.2f} incremental)'
                         if _existing_reclass_b >= 0.01 else ''
                     )
-                    _est_b_note = (
-                        ' — auto-reverses next month, will be replaced once real '
-                        'meter-read billing is available' if _is_estimate else ''
-                    )
-                    _elec_desc   = (f'Tenant electricity reclassification — {_tenant_note} — '
+                    _elec_desc   = (f'Accr: Tenant Electric Reclass — {_tenant_note} — '
                                     f'${_mode_b_elec_total:,.2f}'
-                                    f'{_cmpd_b_note}{_jll_b_note}{_est_b_note} '
+                                    f'{_cmpd_b_note}{_jll_b_note} '
                                     f'(DR {ELEC_TENANT_REIMB_ACCOUNT} / CR {ELEC_EXPENSE_ACCOUNT})')
                     _elec_vendor = {
                         'receivable_detail':     '[Receivable Detail]',
@@ -3196,7 +3201,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                         'carryforward_estimate': '[Estimated — Carried Forward]',
                         'budget':                '[Budget Accrual]',
                     }.get(_elec_source, '[Budget Accrual]')
-                    _reclass_rev_flag = -1 if _is_estimate else 0
+                    # Always reverses next month — this month's reclass gets
+                    # recalculated fresh each period rather than sitting
+                    # permanently, same as the underlying 440500 accrual it
+                    # ties to. Confirmed with Ryan 2026-08-12.
+                    _reclass_rev_flag = -1
                     je_lines.append({
                         'je_number':      _elec_je_id, 'line': 1, 'date': '',
                         'account_code':   ELEC_TENANT_REIMB_ACCOUNT,
@@ -3236,9 +3245,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     if abs(_440500_tie_delta) >= 0.01:
                         _tie_je_id = f'TUB-{je_num:04d}'
                         _tie_desc  = (
-                            f'Tenant electric recovery — catch-up/JLL-netting adjustment '
-                            f'to tie 440500 to the 613115 reclass total '
-                            f'(${_pipeline_reclass_b:,.2f}){_est_b_note} '
+                            f'Accr: Tenant Electric — tie to 613115 reclass total '
+                            f'(${_pipeline_reclass_b:,.2f}) '
                             f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440500)'
                         )
                         _tie_increase = _440500_tie_delta > 0
