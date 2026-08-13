@@ -3946,7 +3946,20 @@ with tab1:
         # append only adds the new rows' ids/widget state and never touches
         # any existing row's key, so nothing in-progress can be clobbered.
         # Confirmed with Ryan 2026-08-12.
-        if _interco_detected:
+        #
+        # Only run once per actual "Generate JEs"/"Re-run Pass 1" click, not
+        # on every incidental rerun this section's OWN persistent
+        # pass1_complete gate lets through (e.g. adding a One-Off Accrual
+        # row elsewhere on the page, or clicking this table's own 🗑️ delete
+        # button) — otherwise deleting a row just triggers an immediate
+        # re-detect-and-re-add on the very same rerun (the account is still
+        # sitting in the GL, so it looks "missing" the instant its row is
+        # gone), and deleting only one leg of a CR/DR pair adds a second
+        # fresh pair on top of the now-orphaned leftover leg. Confirmed with
+        # Ryan 2026-08-13 — "when I try and remove a row it adds rows".
+        _interco_run_key = st.session_state.get('pass1_run_count', 0)
+        if _interco_detected and st.session_state.get('_interco_last_merged_run') != _interco_run_key:
+            st.session_state['_interco_last_merged_run'] = _interco_run_key
             _ic_row_ids_key_early = "ic_row_ids"
             # The live-append path is only safe when the row list is FRESH
             # for the current _interco_seed_gen. Right after Reset Pass 1 /
