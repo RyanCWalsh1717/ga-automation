@@ -3866,6 +3866,47 @@ def generate_bs_workpaper_from_template(
                 cell.alignment = alignment
                 cell.number_format = number_format
 
+    def _snapshot_and_unmerge_footer(ws, row_start: int, row_end: int) -> list:
+        """
+        Capture and remove any merged range fully inside [row_start, row_end]
+        before an insert_rows() shift, so _restore_footer_merges can re-create
+        it at the new row position afterward.
+
+        openpyxl's insert_rows() reliably shifts cell VALUES down but does NOT
+        relocate merged-cell ranges — a footer label merge (e.g. 'Ending
+        Balance per GL' spanning B:D, so the label isn't clipped) stays
+        parked at its OLD row coordinates after rows are inserted above it.
+        Those coordinates now belong to freshly-inserted DATA rows instead,
+        and openpyxl's writer silently drops the value of any cell whose
+        coordinate falls inside a merged range's non-anchor position when
+        saving — regardless of whether that merge still makes sense for
+        what's now sitting there. Confirmed on 213100 Accr Exp 2026-08-13:
+        this month needed 11 more rows than the template's 8 placeholder
+        rows provided; the footer's B15:D15/B16:D16/B17:D17 merges stayed at
+        rows 15-17 after insertion, silently deleting GL Account/Description
+        for the 3 new transaction rows that landed there on save (values
+        were correct right up until wb.save() — confirmed by inspecting the
+        in-memory cells immediately before saving, then again after
+        reopening the saved file). The same template pattern (a merged
+        footer label spanning past column B) exists on most account tabs,
+        not just 213100 — so this applies generally, not as a one-off.
+        """
+        captured = []
+        for _mr in list(ws.merged_cells.ranges):
+            if _mr.min_row >= row_start and _mr.max_row <= row_end:
+                captured.append((_mr.min_row - row_start, _mr.max_row - row_start,
+                                  _mr.min_col, _mr.max_col))
+                ws.unmerge_cells(str(_mr))
+        return captured
+
+    def _restore_footer_merges(ws, new_row_start: int, captured: list) -> None:
+        """Re-create merges captured by _snapshot_and_unmerge_footer at their new position."""
+        for _row_off_start, _row_off_end, _min_col, _max_col in captured:
+            ws.merge_cells(
+                start_row=new_row_start + _row_off_start, start_column=_min_col,
+                end_row=new_row_start + _row_off_end, end_column=_max_col,
+            )
+
     def _coerce_date(d):
         """
         Return a plain datetime.date from whatever the GL — or an existing
@@ -4159,12 +4200,14 @@ def generate_bs_workpaper_from_template(
         _last_col = max(_amt_cols)
         if _to_insert > 0:
             _footer_snap = _snapshot_row_styles(ws, _tieout, _tieout + 2, 2, _last_col)
+            _footer_merges = _snapshot_and_unmerge_footer(ws, _tieout, _tieout + 2)
             ws.insert_rows(_tieout, _to_insert)
             for _r in range(_tieout, _tieout + _to_insert):
                 _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
                 _copy_row_style(ws, _src, _r, 2, _last_col)
             _tieout += _to_insert
             _restore_row_styles(ws, _tieout, 2, _last_col, _footer_snap)
+            _restore_footer_merges(ws, _tieout, _footer_merges)
 
         _write_start = _last_row + 1
         _new_segment_start = _write_start
@@ -4513,9 +4556,11 @@ def generate_bs_workpaper_from_template(
                 _to_insert = len(_new_txns) - _rows_avail
                 _insert_at = _tieout
                 _footer_snap = _snapshot_row_styles(_ws, _tieout, _tieout + 2, 2, _amt_col)
+                _footer_merges = _snapshot_and_unmerge_footer(_ws, _tieout, _tieout + 2)
                 _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
                 _restore_row_styles(_ws, _tieout, 2, _amt_col, _footer_snap)
+                _restore_footer_merges(_ws, _tieout, _footer_merges)
                 for _r in range(_insert_at, _insert_at + _to_insert):
                     # Preserve alternating row-banding — copying from
                     # _data_start alone flattened every inserted row to
@@ -4561,9 +4606,11 @@ def generate_bs_workpaper_from_template(
                 _to_insert = len(_all_txns) - _cleared_rows
                 _insert_at = _tieout
                 _footer_snap = _snapshot_row_styles(_ws, _tieout, _tieout + 2, 2, _amt_col)
+                _footer_merges = _snapshot_and_unmerge_footer(_ws, _tieout, _tieout + 2)
                 _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
                 _restore_row_styles(_ws, _tieout, 2, _amt_col, _footer_snap)
+                _restore_footer_merges(_ws, _tieout, _footer_merges)
                 for _r in range(_insert_at, _insert_at + _to_insert):
                     _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
                     _copy_row_style(_ws, _src, _r, 2, _amt_col)
