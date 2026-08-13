@@ -3777,7 +3777,14 @@ def generate_bs_workpaper_from_template(
         return last
 
     def _update_row3_header(ws) -> None:
-        """Replace the period label and prepared date in the row-3 header cell."""
+        """Replace the period label and prepared date in the row-3 header cell,
+        and widen its merge to at least B3:D3 so the full text isn't clipped
+        at the column boundary. Several template tabs only merge B3:C3 —
+        too narrow for 'revlabs | Period: Jan-2026 | Prepared by: ... |
+        MM/DD/YYYY', which visibly cuts off the date. Confirmed with Ryan
+        2026-08-13. Tabs already merged wider than D (e.g. B3:E3) are left
+        as-is.
+        """
         v = ws.cell(3, 2).value
         if not (v and isinstance(v, str)):
             return
@@ -3788,6 +3795,12 @@ def generate_bs_workpaper_from_template(
         )
         new_v = _re.sub(r'\d{2}/\d{2}/\d{4}', _today_str, new_v)
         ws.cell(3, 2).value = new_v
+
+        for _mr in list(ws.merged_cells.ranges):
+            if _mr.min_row == 3 and _mr.max_row == 3 and _mr.min_col == 2 and _mr.max_col < 4:
+                ws.unmerge_cells(str(_mr))
+                ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=4)
+                break
 
     def _copy_row_style(ws, src_row: int, dst_row: int, col_start: int, col_end: int) -> None:
         """
