@@ -4095,6 +4095,27 @@ def generate_bs_workpaper_from_template(
         _last_period = (_coerce_period(ws.cell(_last_row, _date_col).value)
                          if _last_row >= _data_start else None)
 
+        # For 'mmyy' tabs (Loan Analysis) the Date column only ever stores a
+        # bare month/year ('01/26') — _coerce_period fills in day=1 for that
+        # cell, since there's no real day to read. A real GL transaction
+        # dated later in that same month (e.g. the 31st) would then compare
+        # as "after" that day-1 stand-in and look like new activity, even
+        # though its whole month is already the last one written to the
+        # tab — causing the exact same month's accrual to be re-appended as
+        # a duplicate on a second run against an updated GL. Confirmed
+        # against a real GL export 2026-08-13: Ryan re-ran January and the
+        # same Jan accrual (control J-22455/56/57, dated 1/31) reappeared as
+        # 4 duplicate rows because the template's last row was '01/26' (=
+        # Jan 1). Truncate both sides to month granularity before comparing
+        # so day-of-month never matters for this format. RE Tax Analysis
+        # ('full' date format) keeps exact-date comparison — its Date
+        # column stores real dates with no day precision lost, so no
+        # analogous gap exists there.
+        _mmyy = cfg['date_format'] == 'mmyy'
+
+        def _month_key(d):
+            return _date(d.year, d.month, 1) if _mmyy else d
+
         # Group every transaction across this tab's accounts by control code
         # (JE number) so same-JE legs land on one row.
         _groups: dict = {}  # control -> {'period': date, 'amounts': {col: amt}, 'txn': txn}
@@ -4104,7 +4125,7 @@ def generate_bs_workpaper_from_template(
                 _period = _coerce_period(getattr(_t, 'date', None))
                 if _period is None:
                     continue
-                if _last_period and _period <= _last_period:
+                if _last_period and _month_key(_period) <= _month_key(_last_period):
                     continue
                 _ctrl = str(getattr(_t, 'control', '') or '').strip() or f'_row{id(_t)}'
                 _amt = float(getattr(_t, 'net_amount', 0) or 0)
