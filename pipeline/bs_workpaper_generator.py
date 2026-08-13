@@ -4252,7 +4252,21 @@ def generate_bs_workpaper_from_template(
                     _copy_row_style(_ws, _src, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_new_txns):
-                _write_txn_row(_ws, _write_start + _i, _t, _layout, _amt_col)
+                _r = _write_start + _i
+                # Always (re)apply banding-consistent styling before writing
+                # the value, even for a row that already had enough slack
+                # space (no insert_rows() needed). _write_txn_row only ever
+                # sets .value — a slack row keeps whatever the template
+                # happened to have, which is not guaranteed to be the
+                # correct currency/date format. Confirmed on 115200 RET
+                # Escrow: the new period's row landed on a pre-existing
+                # slack row styled 'General' instead of the $ format every
+                # other row uses, while 115600 Loan Reserve's new row
+                # happened to land on a correctly-pre-styled slack row —
+                # same code path, different template row luck.
+                _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+                _copy_row_style(_ws, _src, _r, 2, _amt_col)
+                _write_txn_row(_ws, _r, _t, _layout, _amt_col)
 
             _last_written = _write_start + len(_new_txns) - 1
 
@@ -4280,7 +4294,14 @@ def generate_bs_workpaper_from_template(
                     _copy_row_style(_ws, _src, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_all_txns):
-                _write_txn_row(_ws, _data_start + _i, _t, _layout, _amt_col)
+                _r = _data_start + _i
+                # Same defensive re-styling as the cumulative branch above —
+                # confirmed on 213100 Accr Exp: one row (of many) in the
+                # cleared/refilled range came out 'General' instead of
+                # currency-formatted, with no insert_rows() involved at all.
+                _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+                _copy_row_style(_ws, _src, _r, 2, _amt_col)
+                _write_txn_row(_ws, _r, _t, _layout, _amt_col)
 
             _last_written = _data_start + len(_all_txns) - 1
 
