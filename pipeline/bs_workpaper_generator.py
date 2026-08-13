@@ -3810,6 +3810,49 @@ def generate_bs_workpaper_from_template(
             dst_cell.alignment = _copy_style(src_cell.alignment)
             dst_cell.number_format = src_cell.number_format
 
+    def _snapshot_row_styles(ws, row_start: int, row_end: int, col_start: int, col_end: int):
+        """
+        Capture font/border/fill/alignment/number_format for a row range
+        before an insert_rows() shift.
+
+        openpyxl's insert_rows() reliably shifts cell VALUES down, but does
+        not reliably carry the pushed-down rows' STYLES with them — confirmed
+        on the tieout footer (Ending Balance per GL / per TB / Variance):
+        after a new transaction forced rows to be inserted at the tieout
+        position, "Ending Balance per TB" came out with the dark-green
+        HEADER fill color instead of its own footer style, and "Ending
+        Balance per GL" picked up an unrelated theme-color fill — whatever
+        styling happened to already be sitting at the row number the footer
+        got shifted to, not the styling that moved down with it. Snapshot
+        the footer's real style here, before the shift, then restore it
+        with _restore_row_styles after re-pointing to the new row numbers.
+        """
+        from copy import copy as _copy_style
+        snapshot = []
+        for _r in range(row_start, row_end + 1):
+            row_styles = []
+            for _c in range(col_start, col_end + 1):
+                cell = ws.cell(_r, _c)
+                row_styles.append((
+                    _copy_style(cell.font), _copy_style(cell.border),
+                    _copy_style(cell.fill), _copy_style(cell.alignment),
+                    cell.number_format,
+                ))
+            snapshot.append(row_styles)
+        return snapshot
+
+    def _restore_row_styles(ws, row_start: int, col_start: int, col_end: int, snapshot) -> None:
+        """Re-apply a _snapshot_row_styles() capture starting at row_start."""
+        for _ri, row_styles in enumerate(snapshot):
+            _r = row_start + _ri
+            for _ci, (font, border, fill, alignment, number_format) in enumerate(row_styles):
+                cell = ws.cell(_r, col_start + _ci)
+                cell.font = font
+                cell.border = border
+                cell.fill = fill
+                cell.alignment = alignment
+                cell.number_format = number_format
+
     def _coerce_date(d):
         """
         Return a plain datetime.date from whatever the GL — or an existing
@@ -3838,6 +3881,52 @@ def generate_bs_workpaper_from_template(
                 except ValueError:
                     continue
         return None
+
+    def _coerce_period(d):
+        """
+        Like _coerce_date, but also handles the short 'MM/YY' period label
+        Loan Analysis uses in its Date column (e.g. '01/25') instead of a
+        full date. Returns day=1 of that month/year for comparison purposes.
+        """
+        _full = _coerce_date(d)
+        if _full is not None:
+            return _full
+        if isinstance(d, str):
+            m = _re.match(r'^(\d{1,2})/(\d{2})$', d.strip())
+            if m:
+                mm, yy = int(m.group(1)), int(m.group(2))
+                if 1 <= mm <= 12:
+                    return _date(2000 + yy, mm, 1)
+        return None
+
+    def _extend_trailing_sum_range(formula: str, col_letter: str, old_last_row: int,
+                                    new_last_row: int, new_segment_start: int | None = None) -> str:
+        """
+        Extend a footer =SUM(...) formula to cover newly-appended rows,
+        preserving whatever hand-curated range structure is already there.
+
+        RE Tax Analysis / Loan Analysis footer formulas are NOT simple
+        contiguous SUM(data_start:last) ranges like the escrow tabs — e.g.
+        real template: '=SUM(D72:D107,D8:D70)' (135120, non-contiguous,
+        reflecting manual history cleanup) and '=SUM(E106:E107)' for 641110
+        (already manually re-scoped to start at the current fiscal year).
+        Blindly replacing these with a fresh contiguous SUM would silently
+        change what Ryan already tied out. Instead, find the trailing
+        '{col}{old_last_row}' token and bump just that endpoint to
+        new_last_row — every other segment (including any exclusions)
+        stays exactly as-is.
+
+        If new_segment_start is given AND the trailing token can't be found
+        (e.g. the footer is a plain '=SUM(col_start:col_end)' with no
+        trailing-token match for some other reason), falls back to a fresh
+        contiguous SUM(new_segment_start:new_last_row) rather than silently
+        doing nothing.
+        """
+        pattern = rf'{col_letter}{old_last_row}(?=\D|$)'
+        new_formula, count = _re.subn(pattern, f'{col_letter}{new_last_row}', formula, count=1)
+        if count == 0 and new_segment_start is not None:
+            return f'=SUM({col_letter}{new_segment_start}:{col_letter}{new_last_row})'
+        return new_formula
 
     def _rewrite_tieout_formulas(ws, tieout_row: int, data_start: int,
                                   last_written: int, amount_col: int) -> None:
@@ -3935,6 +4024,154 @@ def generate_bs_workpaper_from_template(
             ws.cell(row, 4).value = desc
             ws.cell(row, 5).value = vendor
             ws.cell(row, amount_col).value = amt
+
+    _LOAN_NUM_RE = _re.compile(r'Loan\s*#\s*(\d{6,9})', _re.IGNORECASE)
+
+    def _extract_loan_number(txn) -> str:
+        """
+        Pull a loan number out of a transaction's remarks/description, e.g.
+        'Berkadia Loan #11159010 Mortgage Interest' -> '1159010'.
+
+        Confirmed against the real GL and the real template side by side:
+        the GL remarks consistently show one extra leading '1' compared to
+        the loan numbers already in the Loan Analysis template ('11159010'
+        in the GL vs '1159010' in the template, for all three loans) — an
+        entity/property digit Yardi prefixes that isn't part of the loan
+        number Ryan actually tracks. Stripping it when the extracted digits
+        are 8 long and start with '11' matches all three existing loans
+        exactly; anything else is returned as extracted, unmodified.
+        """
+        text = f"{getattr(txn, 'description', '') or ''} {getattr(txn, 'remarks', '') or ''}"
+        m = _LOAN_NUM_RE.search(text)
+        if not m:
+            return ''
+        num = m.group(1)
+        if len(num) == 8 and num.startswith('11'):
+            return num[1:]
+        return num
+
+    def _append_analysis_rows(ws, cfg: dict) -> None:
+        """
+        Append new-period transactions to a multi-column "Analysis" tab
+        (RE Tax Analysis, Loan Analysis) — these track SEVERAL GL accounts
+        side by side (e.g. 135120 Prepaid RE Taxes + 641110 RE Tax Expense),
+        pairing same-JE debit/credit legs onto one row when both land in
+        this tab's accounts, and writing single-account rows otherwise
+        (e.g. a real interest payment that debits 801110 but credits cash,
+        not 213200).
+
+        cfg keys:
+          date_col, desc_col          — 1-based column indices
+          loan_col                    — 1-based column index, or None
+          date_format                 — 'full' (real date object) or
+                                         'mmyy' (short 'MM/YY' text, matching
+                                         Loan Analysis's existing convention)
+          columns                     — {col_idx: account_code}
+          fy_scoped_cols               — set of col_idx whose footer SUM
+                                         should only cover the current
+                                         fiscal year (P&L/expense accounts),
+                                         vs. the full since-inception range
+                                         for balance-sheet accounts
+          data_start                  — first data row
+
+        Confirmed with Ryan 2026-08-13: RE Tax Analysis and Loan Analysis
+        were previously left completely frozen at template-creation
+        content — every subsequent close showed stale history and a
+        variance against the TB. Deliberately excluded from Layer-2-style
+        reversal filtering (_is_reversal_txn) — unlike the escrow/213100
+        tabs, these two tabs' whole point is to show the accrual-then-
+        reversal narrative month over month (the real template already has
+        rows literally labeled "Dec 2024 Accrual Reversal").
+        """
+        _tieout = _find_tieout_row(ws)
+        if _tieout is None:
+            return
+        _data_start = cfg['data_start']
+        _date_col, _desc_col, _loan_col = cfg['date_col'], cfg['desc_col'], cfg.get('loan_col')
+        _columns: dict = cfg['columns']
+        _fy_scoped: set = cfg.get('fy_scoped_cols', set())
+
+        _last_row = _last_nonempty_row(ws, _date_col, _data_start, _tieout)
+        _last_period = (_coerce_period(ws.cell(_last_row, _date_col).value)
+                         if _last_row >= _data_start else None)
+
+        # Group every transaction across this tab's accounts by control code
+        # (JE number) so same-JE legs land on one row.
+        _groups: dict = {}  # control -> {'period': date, 'amounts': {col: amt}, 'txn': txn}
+        for _col_idx, _acct_code in _columns.items():
+            _acct = gl_map.get(_acct_code)
+            for _t in (getattr(_acct, 'transactions', None) or []):
+                _period = _coerce_period(getattr(_t, 'date', None))
+                if _period is None:
+                    continue
+                if _last_period and _period <= _last_period:
+                    continue
+                _ctrl = str(getattr(_t, 'control', '') or '').strip() or f'_row{id(_t)}'
+                _amt = float(getattr(_t, 'net_amount', 0) or 0)
+                _grp = _groups.setdefault(_ctrl, {'period': _period, 'amounts': {}, 'txn': _t})
+                _grp['amounts'][_col_idx] = _grp['amounts'].get(_col_idx, 0.0) + _amt
+                if _period < _grp['period']:
+                    _grp['period'] = _period
+                    _grp['txn'] = _t
+
+        if not _groups:
+            return  # nothing new for any account this tab tracks
+
+        _new_groups = sorted(_groups.values(), key=lambda g: (g['period'], id(g)))
+
+        _rows_avail = _tieout - _last_row - 2  # leave 1 gap row before tieout
+        _to_insert = len(_new_groups) - _rows_avail
+        _amt_cols = sorted(_columns.keys())
+        _last_col = max(_amt_cols)
+        if _to_insert > 0:
+            _footer_snap = _snapshot_row_styles(ws, _tieout, _tieout + 2, 2, _last_col)
+            ws.insert_rows(_tieout, _to_insert)
+            for _r in range(_tieout, _tieout + _to_insert):
+                _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
+                _copy_row_style(ws, _src, _r, 2, _last_col)
+            _tieout += _to_insert
+            _restore_row_styles(ws, _tieout, 2, _last_col, _footer_snap)
+
+        _write_start = _last_row + 1
+        _new_segment_start = _write_start
+        for _i, _grp in enumerate(_new_groups):
+            _r = _write_start + _i
+            _txn = _grp['txn']
+            _desc = (str(getattr(_txn, 'description', '') or '').strip() or
+                     str(getattr(_txn, 'remarks', '') or '').strip()).lstrip(': –-').strip()
+            if cfg['date_format'] == 'mmyy':
+                ws.cell(_r, _date_col).value = _grp['period'].strftime('%m/%y')
+            else:
+                ws.cell(_r, _date_col).value = _grp['period']
+            ws.cell(_r, _desc_col).value = _desc
+            if _loan_col:
+                _loan_no = _extract_loan_number(_txn)
+                if _loan_no:
+                    ws.cell(_r, _loan_col).value = _loan_no
+            for _col_idx, _amt in _grp['amounts'].items():
+                if abs(_amt) >= 0.005:
+                    ws.cell(_r, _col_idx).value = round(_amt, 2)
+        _last_written = _write_start + len(_new_groups) - 1
+
+        # Rewrite each column's own footer SUM, extending its existing
+        # trailing range rather than replacing the whole formula.
+        for _col_idx in _amt_cols:
+            _col_ltr = _gcl(_col_idx)
+            _existing = ws.cell(_tieout, _col_idx).value
+            if isinstance(_existing, str) and _existing.startswith('=SUM('):
+                ws.cell(_tieout, _col_idx).value = _extend_trailing_sum_range(
+                    _existing, _col_ltr, _last_row, _last_written,
+                    new_segment_start=_new_segment_start if _col_idx in _fy_scoped else _data_start,
+                )
+            else:
+                # No pre-existing SUM to extend (e.g. this column had no
+                # activity at all in the template) — build a fresh one.
+                _seg_start = _new_segment_start if _col_idx in _fy_scoped else _data_start
+                ws.cell(_tieout, _col_idx).value = f'=SUM({_col_ltr}{_seg_start}:{_col_ltr}{_last_written})'
+            ws.cell(_tieout + 1, _col_idx).value = (
+                f"=VLOOKUP({_col_ltr}{cfg['acct_code_row']},'Trial Balance'!$A:$F,6,0)"
+            )
+            ws.cell(_tieout + 2, _col_idx).value = f'={_col_ltr}{_tieout}-{_col_ltr}{_tieout + 1}'
 
     def _fill_ppd_other_tab(ws) -> None:
         """
@@ -4241,8 +4478,10 @@ def generate_bs_workpaper_from_template(
             if len(_new_txns) > _rows_avail:
                 _to_insert = len(_new_txns) - _rows_avail
                 _insert_at = _tieout
+                _footer_snap = _snapshot_row_styles(_ws, _tieout, _tieout + 2, 2, _amt_col)
                 _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
+                _restore_row_styles(_ws, _tieout, 2, _amt_col, _footer_snap)
                 for _r in range(_insert_at, _insert_at + _to_insert):
                     # Preserve alternating row-banding — copying from
                     # _data_start alone flattened every inserted row to
@@ -4287,8 +4526,10 @@ def generate_bs_workpaper_from_template(
             if len(_all_txns) > _cleared_rows:
                 _to_insert = len(_all_txns) - _cleared_rows
                 _insert_at = _tieout
+                _footer_snap = _snapshot_row_styles(_ws, _tieout, _tieout + 2, 2, _amt_col)
                 _ws.insert_rows(_insert_at, _to_insert)
                 _tieout += _to_insert
+                _restore_row_styles(_ws, _tieout, 2, _amt_col, _footer_snap)
                 for _r in range(_insert_at, _insert_at + _to_insert):
                     _src = _data_start if (_r - _data_start) % 2 == 0 else _data_start + 1
                     _copy_row_style(_ws, _src, _r, 2, _amt_col)
@@ -4307,6 +4548,62 @@ def generate_bs_workpaper_from_template(
 
         # Rewrite tieout, VLOOKUP, and variance formula rows
         _rewrite_tieout_formulas(_ws, _tieout, _data_start, _last_written, _amt_col)
+
+    # ── 8b. Insurance Analysis: make 639110/639120 (expense) compound YTD ─────
+    # Confirmed with Ryan 2026-08-13: I{r}/J{r} (the P&L expense columns) were
+    # just "=G{r}" — one flat month's premium — while K{r} (135110, the
+    # balance-sheet prepaid asset) already correctly used H{r}, the real
+    # cumulative-amortized-to-date formula. Since the TB's expense-account
+    # balance resets to $0 every fiscal year (calendar year for this
+    # property — no per-property fiscal_year_start_month is threaded into
+    # this generator yet), I{r}/J{r} must ALSO compound within the current
+    # fiscal year (not stay pinned to one month) and reset each Jan 1, or the
+    # Ending Balance per GL vs per TB comparison can only ever tie in the
+    # month right after a real invoice happens to match a full YTD figure by
+    # coincidence. Computed as H{r} minus the SAME cumulative formula
+    # evaluated as of 12/31 of the prior year — i.e. "amortized to date minus
+    # whatever was already amortized before this fiscal year began" — reusing
+    # H{r}'s own live formula text (not the newer _boundary_prorated_formula
+    # helper) so this stays consistent with whatever DATEDIF convention this
+    # specific template's H column already uses, even if a future template
+    # revision changes that convention.
+    if 'Insurance Analysis' in wb.sheetnames:
+        _ws_ins = wb['Insurance Analysis']
+        _ins_tieout = _find_tieout_row(_ws_ins)
+        if _ins_tieout is not None:
+            _fy_start_ref = "DATE(YEAR('Summary Page'!$C$4)-1,12,31)"
+            for _r in range(7, _ins_tieout):
+                _h_formula = _ws_ins.cell(_r, 8).value  # column H
+                if not (isinstance(_h_formula, str) and _h_formula.startswith('=')):
+                    continue  # blank row — no policy entered here
+                _h_body = _h_formula[1:]
+                _h_as_of_fy_start = _h_body.replace("'Summary Page'!$C$4", _fy_start_ref)
+                _ytd_formula = f'=H{_r}-({_h_as_of_fy_start})'
+                for _col in (9, 10):  # I=639110, J=639120
+                    _cur = _ws_ins.cell(_r, _col).value
+                    if isinstance(_cur, str) and _cur.strip().upper() == f'=G{_r}'.upper():
+                        _ws_ins.cell(_r, _col).value = _ytd_formula
+
+    # ── 8c. RE Tax Analysis / Loan Analysis: append new-period activity ───────
+    # Confirmed with Ryan 2026-08-13: both tabs were previously left frozen
+    # at template-creation content (documented, deliberate design at the
+    # time) — every close after that showed stale history and a variance
+    # against the TB. See _append_analysis_rows for why these need different
+    # handling than the single-column cumulative tabs (115200/115300/115600).
+    if 'RE Tax Analysis' in wb.sheetnames:
+        _append_analysis_rows(wb['RE Tax Analysis'], {
+            'date_col': 3, 'desc_col': 2, 'loan_col': None,
+            'date_format': 'full', 'acct_code_row': 5, 'data_start': 8,
+            'columns': {4: '135120', 5: '641110'},
+            'fy_scoped_cols': {5},   # 641110 RE Tax Expense is P&L
+        })
+    if 'Loan Analysis' in wb.sheetnames:
+        _append_analysis_rows(wb['Loan Analysis'], {
+            'date_col': 2, 'desc_col': 4, 'loan_col': 3,
+            'date_format': 'mmyy', 'acct_code_row': 6, 'data_start': 8,
+            'columns': {5: '231100', 6: '213200', 7: '801110'},
+            'fy_scoped_cols': {7},   # 801110 Interest Expense is P&L
+        })
 
     # ── 9. Rebuild Trial Balance tab ──────────────────────────────────────────
     # The per-account tabs use =VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)

@@ -2749,8 +2749,9 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440700', 'Recovery - Misc Utilities', gas_amt,
                     tenant_name,
-                    f'Tenant gas billing — {tenant_name} '
+                    f'Accr: Tenant Gas — {tenant_name} '
                     f'(per meter read) ${gas_amt:,.2f}',
+                    reverse=True,
                 )
                 _tub_accounts.add('440700')
 
@@ -3034,9 +3035,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440700', 'Recovery - Misc Utilities', _ut_amt,
                     _ut_name,
-                    (f'Tenant misc utility recovery — {_ut_name} '
+                    (f'Accr: Tenant Gas — {_ut_name} '
                      f'per Receivable Detail '
                      f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440700)'),
+                    reverse=True,
                 )
             _tub_accounts.add('440700')
         elif (receivable_detail and hasattr(receivable_detail, 'charges_by_code')):
@@ -3049,9 +3051,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440700', 'Recovery - Misc Utilities', _utili_total,
                     '[Receivable Detail]',
-                    (f'Tenant misc utility recovery — ${_utili_total:,.2f} '
+                    (f'Accr: Tenant Gas — ${_utili_total:,.2f} '
                      f'per Receivable Detail UTILI charges '
                      f'(DR {TENANT_UTILITY_AR_ACCOUNT} / CR 440700)'),
+                    reverse=True,
                 )
                 _tub_accounts.add('440700')
         elif not _440700_already_posted and budget_data:
@@ -3062,7 +3065,8 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _post_tub_line(
                     '440700', 'Recovery - Misc Utilities', cand['amount'],
                     '[Budget Accrual]',
-                    cand['description'],
+                    f"Accr: Tenant Gas — {cand['description']}",
+                    reverse=True,
                 )
                 _tub_accounts.add('440700')
 
