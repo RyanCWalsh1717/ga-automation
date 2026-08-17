@@ -99,25 +99,40 @@ def _expand_line(
     Rounding: amounts are split to 2dp; the last building absorbs any
     remainder to ensure the sum equals the original amount exactly.
     """
-    import copy, decimal
+    import copy
 
-    orig_amount = float(line.get('amount', 0) or 0)
+    # Real JE line dicts throughout this codebase (accrual_entry_generator.py,
+    # management_fee.py, app.py's manual JEs) carry 'debit'/'credit' — never
+    # 'amount'. Reading/writing 'amount' here always read 0 and left every
+    # deep-copied line's real debit/credit unchanged, so a split JE came out
+    # as N full-amount copies (multiplying the JE by the building count)
+    # instead of N proportional shares. Split whichever side (debit or
+    # credit) the line actually carries; the other stays 0 through the same
+    # proportional math (0 * share_pct == 0, and the last split's "remainder"
+    # of 0 - 0 is still 0).
+    orig_debit  = float(line.get('debit', 0) or 0)
+    orig_credit = float(line.get('credit', 0) or 0)
     expanded: List[Dict] = []
 
-    total_allocated = 0.0
+    total_debit_allocated  = 0.0
+    total_credit_allocated = 0.0
     for idx, split in enumerate(splits):
         is_last = (idx == len(splits) - 1)
         bldg_code = split.yardi_code.strip() if split.yardi_code.strip() else parent_code
 
         if is_last:
             # Absorb rounding remainder
-            split_amount = round(orig_amount - total_allocated, 2)
+            split_debit  = round(orig_debit - total_debit_allocated, 2)
+            split_credit = round(orig_credit - total_credit_allocated, 2)
         else:
-            split_amount = round(orig_amount * split.share_pct, 2)
-            total_allocated += split_amount
+            split_debit  = round(orig_debit * split.share_pct, 2)
+            split_credit = round(orig_credit * split.share_pct, 2)
+            total_debit_allocated  += split_debit
+            total_credit_allocated += split_credit
 
         new_line = copy.deepcopy(line)
-        new_line['amount']   = split_amount
+        new_line['debit']    = split_debit
+        new_line['credit']   = split_credit
         new_line['property'] = bldg_code
 
         # Annotate remark / description with building label for traceability

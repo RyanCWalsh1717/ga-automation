@@ -313,6 +313,26 @@ def _j_debits(gl_acct) -> float:
     )
 
 
+def _pipeline_credits(gl_acct) -> float:
+    """
+    Sum of credit amounts on a GLAccount from transactions _is_pipeline_txn()
+    recognizes as THIS pipeline's own output (see that function's docstring).
+
+    A narrower, correct replacement for the "any J-type credit = an accrual
+    already posted" heuristic (_j_credits) used by the tenant-utility-billing
+    (440500/440700 recovery) "already posted" guards: a real JLL-posted
+    manual JE to a recovery account is also J-type control code, so
+    _j_credits can't distinguish "the pipeline already accrued this" from
+    "JLL posted something unrelated via the Journal Entry screen" — this can.
+    """
+    if gl_acct is None:
+        return 0.0
+    return sum(
+        float(t.credit or 0) for t in getattr(gl_acct, 'transactions', [])
+        if t.credit and t.credit > 0 and _is_pipeline_txn(t)
+    )
+
+
 def _reversal_j_debits(gl_acct) -> float:
     """
     Sum of J-type debit amounts that are specifically an auto-reversal of a
@@ -1038,10 +1058,13 @@ def detect_tenant_utility_billing(gl_data, budget_data) -> List[Dict[str, Any]]:
 
     for code, info in TENANT_UTILITY_ACCOUNTS.items():
         acct = gl_accounts_by_code.get(code)
-        # Only J-type (Journal) credits indicate a pipeline accrual already posted.
-        # C-type charges, R-type receipts, etc. are real billing transactions
-        # and must not suppress the monthly budget accrual candidate.
-        if _j_credits(acct) > 0.01:
+        # Only the pipeline's OWN prior J-type credits indicate an accrual it
+        # already posted (_pipeline_credits) — a real JLL-posted manual JE to
+        # this account is also J-type control code but isn't "already
+        # posted" from the pipeline's perspective. C-type charges, R-type
+        # receipts, etc. are real billing transactions and must not suppress
+        # the monthly budget accrual candidate either way.
+        if _pipeline_credits(acct) > 0.01:
             continue   # J-accrual already posted this period
 
         budget_amt = budget_by_code.get(code, 0.0)
@@ -1234,7 +1257,13 @@ def detect_invoice_proration_accruals(
 
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
-        if not code or code[0] not in ('5', '6', '7', '8'):
+        # is_expense_account() (property-level 6xxxxx/8xxxxx by default), not
+        # a raw first-digit check — the old ('5','6','7','8') set let 5xxxxx
+        # (entity-level company revenue) and 7xxxxx (corporate expense, a
+        # Pass 1 recode target) through as accrual candidates, contrary to
+        # the codebase's own COA convention used correctly elsewhere in this
+        # same file (e.g. Layer 3's main loop).
+        if not code or not is_expense_account(code):
             continue
 
         # ── VENDOR BILLING-PERIOD PRORATION ───────────────────────────────────
@@ -1466,9 +1495,19 @@ def detect_invoice_proration_accruals(
                 # Compound logic: add prior-month auto-reversal (J-credit) to monthly rate
                 # so the accrued liability builds each month until the real invoice arrives.
                 #
-                # Guard: if J-debits >= monthly_rate, a prior pipeline JE is already
-                # in the GL for this account — skip to avoid double-accrual.
-                _p1_j_dr = _j_debits(acct)
+                # Guard: if the pipeline's own prior JE is already in the GL for
+                # this account, skip to avoid double-accrual. Sums debits from
+                # transactions _is_pipeline_txn() recognizes as the pipeline's
+                # own output specifically — NOT a raw J-type-control-code sum
+                # (_j_debits), which would also count a JLL-posted manual JE to
+                # this account as "already accrued" and wrongly skip a real
+                # compounding need. This mirrors the _real_net_change fix
+                # already applied to the sibling guard just below, but for the
+                # opposite signal: "is MY OWN entry here" rather than "is REAL
+                # (non-pipeline) activity here."
+                _p1_j_dr = sum(float(_t.debit or 0)
+                               for _t in (getattr(acct, 'transactions', None) or [])
+                               if _is_pipeline_txn(_t))
                 if _p1_j_dr >= monthly_rate:
                     continue
 
@@ -1669,7 +1708,13 @@ def detect_invoice_proration_accruals(
 
     for acct in gl_data.accounts:
         code = str(acct.account_code).strip()
-        if not code or code[0] not in ('5', '6', '7', '8'):
+        # is_expense_account() (property-level 6xxxxx/8xxxxx by default), not
+        # a raw first-digit check — the old ('5','6','7','8') set let 5xxxxx
+        # (entity-level company revenue) and 7xxxxx (corporate expense, a
+        # Pass 1 recode target) through as accrual candidates, contrary to
+        # the codebase's own COA convention used correctly elsewhere in this
+        # same file (e.g. Layer 3's main loop).
+        if not code or not is_expense_account(code):
             continue
         if code in _already_coded:
             continue   # already handled by date-range or payroll path
@@ -2359,12 +2404,19 @@ def detect_payroll_bonus_accrual(
     if not gl_data or not kardin_records or not period_month:
         return results
 
-    # Build GL net_change lookup for payroll accounts
+    # Build GL net_change lookup for payroll accounts. Uses _real_net_change
+    # (excludes the pipeline's own reference-tagged transactions) rather than
+    # raw net_change — otherwise, if this layer is re-run against a GL that
+    # already has the pipeline's own prior BON- JE posted, that JE's own debit
+    # would count toward "the real bonus payment is already in the GL" and
+    # could fail to suppress a second, duplicate BON- accrual for the same
+    # month whenever real base payroll plus that differential still falls
+    # short of monthly_avg.
     gl_net: dict = {}
     for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
         code = str(acct.account_code).strip()
         if code in PAYROLL_BONUS_ACCOUNTS:
-            gl_net[code] = acct.net_change
+            gl_net[code] = _real_net_change(acct)
 
     for acct_code, config in PAYROLL_BONUS_ACCOUNTS.items():
         keywords = [k.lower() for k in config['kardin_keywords']]
@@ -2859,10 +2911,13 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         # ── Post 440500 electric recovery — one JE per tenant ─────────────────
         _mode_b_elec_total = 0.0
         _440500_gl = _tub_gl.get('440500')
-        # Only J-type (journal) credits indicate a pipeline accrual already posted.
-        # C-type charges (JLL billing transactions) and R-type receipts are NOT
-        # accruals and must not suppress the pipeline's monthly J-entry.
-        _440500_j_credits = _j_credits(_440500_gl)
+        # Only the pipeline's OWN prior J-type credits indicate an accrual it
+        # already posted. Raw J-type control code alone (_j_credits) can't
+        # tell that apart from a real JLL-posted manual JE to this account —
+        # C-type charges and R-type receipts are still excluded (real
+        # billing/payment, never an accrual) via _pipeline_credits' own
+        # _is_pipeline_txn check.
+        _440500_j_credits = _pipeline_credits(_440500_gl)
         _440500_already_posted = _440500_j_credits >= 0.01
 
         # Generate 440500 AR recovery JE whenever Receivable Detail has per-tenant
@@ -3019,7 +3074,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
 
         # ── Post 440700 gas/misc utility recovery ─────────────────────────────
         _440700_gl = _tub_gl.get('440700')
-        _440700_j_credits = _j_credits(_440700_gl)
+        # See the 440500 guard above — _pipeline_credits, not raw _j_credits,
+        # so a real JLL-posted manual JE to this account isn't misread as the
+        # pipeline's own prior accrual.
+        _440700_j_credits = _pipeline_credits(_440700_gl)
         _440700_already_posted = _440700_j_credits >= 0.01
 
         # Receivable Detail path: always generate when UTILI charges are present —
@@ -3169,9 +3227,15 @@ def build_accrual_entries(nexus_data: list, period: str = '',
         #
         # Putting 613110 on line=1 with source='tenant_utility_billing' ensures
         # the _covered seeding (see below) blocks budget_gap from double-accruing.
+        # Uses _real_net_change (excludes the pipeline's own reference-tagged
+        # transactions), not raw net_change — this account's own prior-month
+        # ELEC-ACCRUAL JE auto-reverses the following month (it touches
+        # 213100), and that reversal alone would satisfy a raw net_change
+        # check, wrongly reading "the real bill already posted" and skipping
+        # re-accrual for a month with zero real GL activity on this account.
         _elec_exp_gl = _tub_gl.get(ELEC_EXPENSE_ACCOUNT)
         _elec_exp_active = (
-            _elec_exp_gl is not None and abs(_elec_exp_gl.net_change) >= 1.0
+            _elec_exp_gl is not None and abs(_real_net_change(_elec_exp_gl)) >= 1.0
         )
         if not _elec_exp_active:
             # ── Derive months_elapsed from close period ────────────────────────
@@ -3707,6 +3771,18 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _t for _t in getattr(_gl_acct, 'transactions', [])
                 if (_t.control or '').upper().startswith('J')   # A-9: catches J/AJ/RJ codes
                 and abs(_t.debit - _t.credit) >= 0.01
+                # Exclude the pipeline's OWN prior entries (_is_pipeline_txn) —
+                # this gate exists to catch a manually-posted (real) JE that
+                # could double up with what the pipeline is about to generate.
+                # Without this exclusion, a still-unreversed pipeline JE from
+                # an earlier run gets misread as "real activity already here"
+                # and pre-emptively blocks Layer 3 for this account — even
+                # though Layer 3's own downstream guard (_real_net_change,
+                # already fixed to exclude pipeline transactions) would have
+                # correctly determined there's no real coverage and let Layer
+                # 3 fire. This upstream gate ran before that fix could ever
+                # take effect.
+                and not _is_pipeline_txn(_t)
             ]
             if not _j_txns:
                 continue

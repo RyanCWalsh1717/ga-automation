@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from property_config import is_expense_account
+
 
 # ── Period-label helpers ──────────────────────────────────────
 
@@ -85,8 +87,13 @@ def _extract_gl_metrics(gl_data) -> dict:
         if first == '4':
             # Revenue accounts: credits exceed debits → net_change is negative
             revenue += abs(net_ch)
-        elif first in ('5', '6', '7', '8'):
-            # Expense accounts: debits exceed credits → net_change is positive
+        elif is_expense_account(code):
+            # Property-level expense accounts only (6xxxxx/8xxxxx by default,
+            # per-property override via coa_expense_prefixes) — a raw
+            # first-digit check of ('5','6','7','8') let 5xxxxx (entity-level
+            # company revenue) and 7xxxxx (corporate expense) leak into NOI
+            # trending, contrary to the documented COA convention used
+            # correctly elsewhere in the pipeline.
             expenses += abs(net_ch)
             if code == '637130':
                 mgmt_fee += abs(net_ch)

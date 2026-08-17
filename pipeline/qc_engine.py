@@ -1473,9 +1473,15 @@ def _write_tab2(wb, report: QCReport, budget_rows):
             variance = round(actual - budget, 2)
             var_pct = variance / abs(budget) if abs(budget) > 1 else None
 
-            # Flag logic: |variance| >= 5000 AND (|pct| >= 75% OR |variance| >= 5000)
+            # Flag logic: this tab's own header documents the shared GRP Tier 1
+            # rule (>= TIER1_ABS OR >= TIER1_PCT of budget) — match it exactly
+            # rather than reimplementing a narrower absolute-only check. The
+            # prior code here checked only abs(variance) >= 5000, silently
+            # dropping the OR-percentage leg (e.g. a $4,000 variance on an
+            # $8,000 budget — 50% off — is Tier-1-worthy under the documented
+            # rule but was never flagged here).
             flag = ''
-            if abs(variance) >= 5000:
+            if abs(variance) >= TIER1_ABS or (var_pct is not None and abs(var_pct) >= TIER1_PCT):
                 if _is_revenue(code):
                     flag = 'UNDER' if variance > 0 else 'OVER'
                 else:
@@ -1799,7 +1805,12 @@ def _write_tab6(wb, report: QCReport, budget_rows, gl_parsed):
         var_pct = variance / abs(budget) if abs(budget) > 1 else None
         if actual == 0 and budget > 0:
             flag = 'FLAG'   # No accrual posted — may be missing
-        elif abs(variance) >= 5000 and abs(budget) > 1 and abs(variance / budget) >= 0.75:
+        # OR between the two legs, matching every other GRP materiality rule
+        # in this codebase (>= $5,000 OR >= a percentage) — this was
+        # previously an AND, the only threshold in the codebase combined
+        # that way, so a large-dollar accrual variance also had to be a huge
+        # percentage of budget to get flagged. Confirmed with Ryan 2026-08-17.
+        elif abs(variance) >= 5000 or (abs(budget) > 1 and abs(variance / budget) >= 0.75):
             # variance = actual - budget
             # expense: variance > 0  → actual > budget → OVER (unfavorable, may be over-accrued)
             # expense: variance < 0  → actual < budget → UNDER (favorable, may need review)

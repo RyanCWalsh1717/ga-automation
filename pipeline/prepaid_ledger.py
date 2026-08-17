@@ -204,10 +204,20 @@ def _count_service_days(service_start: date, service_end: date) -> int:
     end_month = date(service_end.year, service_end.month, 1)
     while cur <= end_month:
         _, days_in_month = monthrange(cur.year, cur.month)
-        if cur.year == service_start.year and cur.month == service_start.month:
+        _is_start_month = cur.year == service_start.year and cur.month == service_start.month
+        _is_end_month   = cur.year == service_end.year and cur.month == service_end.month
+        if _is_start_month and _is_end_month:
+            # Single-month service period — inclusive of both start and end day.
+            # Checked before the separate first/last branches below: those two
+            # branches each anchor to month-end/month-start respectively, so a
+            # same-month pair would otherwise take only the "first month"
+            # branch (days_in_month − start_day + 1) and silently extend past
+            # the true (earlier) end day.
+            total += service_end.day - service_start.day + 1
+        elif _is_start_month:
             # First month — inclusive of start day
             total += days_in_month - service_start.day + 1
-        elif cur.year == service_end.year and cur.month == service_end.month:
+        elif _is_end_month:
             # Last month — inclusive of end day
             total += service_end.day
         else:
@@ -235,35 +245,75 @@ def _month_amount(item: dict, amort_date: date) -> float:
     """
     monthly_amount = float(item.get('monthly_amount', 0) or 0)
     daily_rate     = float(item.get('daily_rate') or 0)
-    service_start  = _ensure_date(item.get('service_start'))
     service_end    = _ensure_date(item.get('service_end'))
     _, days_in_month = monthrange(amort_date.year, amort_date.month)
+
+    # merge_nexus() rebases service_start to day=1 of the discovery month so
+    # get_current_amortization()'s month-to-month scheduling stays aligned —
+    # correct for scheduling, but wrong for proration. For an on-time-
+    # discovered item (months_elapsed_at_add == 1) the anchor month IS
+    # genuinely the item's true first service month, so proration needs the
+    # REAL start day (true_service_start), not day=1 — otherwise a mid-month
+    # start whose Nexus accrual JE was suppressed gets a full, unprorated
+    # first-month release. For a late-discovered item the anchor month is
+    # just the tracking/discovery period, not the true first month (the true
+    # elapsed days are covered separately by a reclass JE — see
+    # merge_nexus()), so day=1 remains correct there. Seed items (no
+    # months_elapsed_at_add key, no separate true_service_start) are
+    # unaffected — their own service_start already holds the true date.
+    if int(item.get('months_elapsed_at_add', 1) or 1) == 1:
+        service_start = _ensure_date(item.get('true_service_start')) or _ensure_date(item.get('service_start'))
+    else:
+        service_start = _ensure_date(item.get('service_start'))
 
     if daily_rate > 0:
         # Legacy day-rate mode — kept for backward compatibility.
         # Inclusive convention: start day and end day both count as service days.
-        if service_start and amort_date.year == service_start.year \
-                and amort_date.month == service_start.month:
+        _is_start_month = bool(service_start and amort_date.year == service_start.year
+                                and amort_date.month == service_start.month)
+        _is_end_month = bool(service_end and amort_date.year == service_end.year
+                              and amort_date.month == service_end.month)
+        if _is_start_month and _is_end_month:
+            # Single-month service period — inclusive of both start and end day.
+            days = service_end.day - service_start.day + 1
+        elif _is_start_month:
             days = days_in_month - service_start.day + 1
-        elif service_end and amort_date.year == service_end.year \
-                and amort_date.month == service_end.month:
+        elif _is_end_month:
             days = service_end.day
         else:
             days = days_in_month
         return round(daily_rate * days, 2)
 
     # Standard monthly mode — prorate first and last months if mid-month
-    # First month of service (starts after day 1)
-    if service_start and amort_date.year == service_start.year \
-            and amort_date.month == service_start.month \
-            and service_start.day > 1:
+    _is_start_month = bool(service_start and amort_date.year == service_start.year
+                            and amort_date.month == service_start.month
+                            and service_start.day > 1)
+    _is_end_month = bool(service_end and amort_date.year == service_end.year
+                          and amort_date.month == service_end.month
+                          and service_end.day < days_in_month)
+
+    if _is_start_month and _is_end_month:
+        # Single-month service period (the only way both mid-month checks
+        # can match the SAME month is when total_months == 1, i.e. this
+        # bucket's monthly_amount already equals the full total_amount) —
+        # release it in full, not day-prorated. Day-fraction proration only
+        # makes sense to split a partial month's SHARE relative to other
+        # full-month buckets in a multi-month item; a single-bucket item has
+        # no other bucket to absorb the remainder, so prorating by days here
+        # (checked before the separate first/last branches below, which
+        # would otherwise take only the "first month" branch and truncate at
+        # month-end instead of the real, earlier end date) would silently
+        # and permanently lose the unprorated remainder once this item's
+        # one release completes it.
+        return monthly_amount
+
+    if _is_start_month:
+        # First month of service (starts after day 1)
         days_active = days_in_month - (service_start.day - 1)
         return round(monthly_amount * days_active / days_in_month, 2)
 
-    # Last month of service (ends before last day of month)
-    if service_end and amort_date.year == service_end.year \
-            and amort_date.month == service_end.month \
-            and service_end.day < days_in_month:
+    if _is_end_month:
+        # Last month of service (ends before last day of month)
         return round(monthly_amount * service_end.day / days_in_month, 2)
 
     return monthly_amount
@@ -1247,10 +1297,16 @@ def generate_seed(
         s_start = _ensure_date(raw.get('service_start'))
         s_end   = _ensure_date(raw.get('service_end'))
 
-        # Compute total_months from date range; fall back to caller-supplied value
+        # Compute total_months from date range; fall back to caller-supplied value.
+        # Count DISTINCT calendar-month buckets touched (year/month pairs), not a
+        # relativedelta month count — the relativedelta form only matches the
+        # bucket count when service_start falls on day 1. A mid-month start (e.g.
+        # Nov 15 - Feb 14, spanning partial Nov + full Dec + full Jan + partial
+        # Feb = 4 buckets) previously undercounted by one, overstating each
+        # monthly_amount and silently dropping the final month's amortization
+        # once the item completed a release early.
         if s_start and s_end and s_end >= s_start:
-            rd = relativedelta(s_end + relativedelta(days=1), s_start)
-            total_months = rd.years * 12 + rd.months
+            total_months = (s_end.year - s_start.year) * 12 + (s_end.month - s_start.month) + 1
             if total_months < 1:
                 total_months = 1
         else:

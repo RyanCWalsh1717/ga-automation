@@ -57,7 +57,8 @@ pipeline/
                                            rate × uncovered days; all other services: full
                                            prior invoice amount (flat monthly service rate)
                                   Layer 3: Historical recurring (BC YTD actual ÷ months elapsed;
-                                           $5,000 materiality floor; January uses annual÷12 fallback)
+                                           $2,500 materiality floor (property_config.accrual_materiality_floor);
+                                           January uses annual÷12 fallback)
                                   Layer 4: Payroll bonus accruals — user-entered annual ÷ 12
                                            (bonus_overrides) or Kardin-derived as fallback;
                                            suppressed in payment months (GL ≥ monthly avg)
@@ -169,7 +170,7 @@ Then: **Generate Reports** button
 2. User fills One-Off Accruals and/or Manual JEs tables
 3. `engine.run_pipeline()` parses all files, runs cross-source validation
 4. Bank reconciliation: Yardi Bank Rec PDF preferred; falls back to 3-pass PNC matching
-5. Accrual entries built via 5-layer detection (deduped against GL); $500 materiality floor
+5. Accrual entries built via 5-layer detection (deduped against GL); $2,500 materiality floor
 6. Management fee calculated (DACA → GL 111100 → revenue proxy → manual); catch-up detected
 7. One-Off Accrual table rows → supplement JEs (DR expense / CR 213100 or custom CR Account, labeled SUP-XXXX)
 8. Manual JE table rows → balanced Yardi-import JEs
@@ -253,7 +254,7 @@ Then: **Generate Reports** button
   - 2nd release month (Mar/Jun/Sep/Dec): back-calculates from `135120` beginning balance × 3.0
 - `detect_retax_escrow_je()` retained in codebase but no longer called (retired May 2026)
 
-**Materiality floor**: Layer 3 → $5,000
+**Materiality floor**: Layer 3 → $2,500 (`property_config.accrual_materiality_floor`; revlabspm runs the class default, no override in its config.yaml)
 
 **`_covered` exclusion set** seeds from: manual JEs + amortization entries (both DR and CR accounts) + Nexus invoices + TUB entries.
 TUB accounts included to prevent Layer 3 from double-accruing utility expense accounts

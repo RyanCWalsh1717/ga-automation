@@ -985,6 +985,13 @@ def _build_methodology(ws, property_config=None):
     _t1_pct = _qc_thr.get('tier1_pct', 0.05)
     _t2_min = _qc_thr.get('tier2_min', 2500.0)
     _mom_sw = _qc_thr.get('mom_swing', 10000.0)
+    # Read the REAL Layer 3 materiality floor from config rather than
+    # hardcoding a value — this page previously stated a literal "$5,000"
+    # regardless of what accrual_entry_generator.py actually applied
+    # (revlabspm runs the property_config default of $2,500, with no
+    # override in its config.yaml), a live discrepancy a reviewer reading
+    # this methodology page could catch. Confirmed with Ryan 2026-08-17.
+    _accrual_floor = getattr(property_config, 'accrual_materiality_floor', 2500.0)
 
     _write_section_header(ws, row, 'ACCRUAL DETECTION (4 LAYERS)', 2)
     row += 1
@@ -994,7 +1001,7 @@ def _build_methodology(ws, property_config=None):
                     'Utilities: daily rate x uncovered days. All other recurring services: full prior invoice amount.')
     row = _write_kv(ws, row, 'Layer 3 — Historical Recurring',
                     'Budget Comparison YTD actual / months elapsed. January uses annual budget / 12 as a fallback. '
-                    f'Materiality floor: $5,000 — accounts below this are not auto-accrued.')
+                    f'Materiality floor: ${_accrual_floor:,.0f} — accounts below this are not auto-accrued.')
     row = _write_kv(ws, row, 'Layer 4 — Payroll Bonus',
                     'User-entered annual amount / 12, or Kardin-derived if not entered. Suppressed in the month the '
                     'bonus is actually paid (GL activity already reflects it).')
