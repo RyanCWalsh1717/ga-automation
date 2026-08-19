@@ -3692,6 +3692,13 @@ def generate_bs_workpaper_from_template(
         '133100 Accounts Receivable - Ot': {
             'account': '133100', 'data_start': 6, 'amount_col': 5,
             'cumulative': False, 'layout': 'gl_acct',
+            # Unlike 213100 (accrue-this-month / reverse-next-month by
+            # design), 133100 items don't reliably reverse the following
+            # month — a "clear and refill with only this period's
+            # transactions" tab would then silently drop any prior-period
+            # item still sitting on the real GL balance. See
+            # 'carry_forward_balance' below.
+            'carry_forward_balance': True,
         },
         '133110 AR Billback': {
             'account': '133110', 'data_start': 6, 'amount_col': 5,
@@ -3700,6 +3707,7 @@ def generate_bs_workpaper_from_template(
         '211300 Accounts Payable - Other': {
             'account': '211300', 'data_start': 6, 'amount_col': 5,
             'cumulative': False, 'layout': 'gl_acct',
+            'carry_forward_balance': True,
         },
         '213100 Accr Exp': {
             'account': '213100', 'data_start': 6, 'amount_col': 6,
@@ -4595,13 +4603,35 @@ def generate_bs_workpaper_from_template(
                 for _c in range(2, _amt_col + 2):
                     _ws.cell(_r, _c).value = None
 
+            # A synthetic "Balance Forward" row for accounts that don't
+            # reliably auto-reverse every period (133100, 211300 — unlike
+            # 213100, whose whole design is accrue-this-month /
+            # reverse-next-month). Refilling with ONLY this period's
+            # transactions silently drops any prior-period item that never
+            # got its matching reversal, and the tab's SUM then misses
+            # exactly that outstanding amount — failing the tie-out to TB
+            # for every month it stays un-reversed. Writing the account's
+            # real GL beginning_balance here makes the tie-out hold by
+            # construction (ending_balance = beginning_balance + net_change
+            # is a GL invariant), regardless of whether any specific old
+            # item ever reverses. Confirmed with Ryan 2026-08-19.
+            _bal_fwd_row_used = False
+            if _cfg.get('carry_forward_balance') and _gl_acct is not None:
+                _bal_fwd_amt = round(float(getattr(_gl_acct, 'beginning_balance', 0) or 0), 2)
+                if abs(_bal_fwd_amt) >= 0.01:
+                    _ws.cell(_data_start, 3).value = 'Balance Forward'
+                    _ws.cell(_data_start, _amt_col).value = _bal_fwd_amt
+                    _bal_fwd_row_used = True
+            _txn_data_start = _data_start + 1 if _bal_fwd_row_used else _data_start
+
             if not _all_txns:
-                # No GL activity — leave blank; SUM over an empty-but-valid range
+                # No new GL activity — leave blank (plus Balance Forward, if
+                # any); SUM over an empty-but-valid range
                 _rewrite_tieout_formulas(_ws, _tieout, _data_start, _data_start, _amt_col)
                 continue
 
             # Check whether more rows are needed than the cleared region provides
-            _cleared_rows = _tieout - _data_start  # rows data_start … tieout-1
+            _cleared_rows = _tieout - _txn_data_start
             if len(_all_txns) > _cleared_rows:
                 _to_insert = len(_all_txns) - _cleared_rows
                 _insert_at = _tieout
@@ -4616,7 +4646,7 @@ def generate_bs_workpaper_from_template(
                     _copy_row_style(_ws, _src, _r, 2, _amt_col)
 
             for _i, _t in enumerate(_all_txns):
-                _r = _data_start + _i
+                _r = _txn_data_start + _i
                 # Same defensive re-styling as the cumulative branch above —
                 # confirmed on 213100 Accr Exp: one row (of many) in the
                 # cleared/refilled range came out 'General' instead of
@@ -4625,7 +4655,7 @@ def generate_bs_workpaper_from_template(
                 _copy_row_style(_ws, _src, _r, 2, _amt_col)
                 _write_txn_row(_ws, _r, _t, _layout, _amt_col)
 
-            _last_written = _data_start + len(_all_txns) - 1
+            _last_written = _txn_data_start + len(_all_txns) - 1
 
         # Rewrite tieout, VLOOKUP, and variance formula rows
         _rewrite_tieout_formulas(_ws, _tieout, _data_start, _last_written, _amt_col)
