@@ -383,6 +383,18 @@ _DATE_FULL = r'(\d{2})\.(\d{2})\.(\d{2})'   # MM.DD.YY
 _DATE_MONTH = r'(\d{2})\.(\d{2})'            # MM.YY
 
 _RE_FULL_RANGE = re.compile(rf'{_DATE_FULL}-{_DATE_FULL}')
+# Same MM.DD.YY-MM.DD.YY range, but with the last dot dropped in favor of a
+# dash before the final 2-digit year — a real data-entry typo seen in a Nexus
+# invoice description (e.g. '02.01.25-01.31-26', meant as '02.01.25-01.31.26').
+# Must be checked BEFORE _RE_MONTH_RANGE below: without this dedicated
+# pattern, _RE_FULL_RANGE fails to match (it requires a dot, not a dash,
+# before the final year), and the malformed text falls through to
+# _RE_MONTH_RANGE, which then wrongly matches a coincidental MM.YY-MM.YY-
+# shaped substring inside it (e.g. '01.25-01.31', reading the end DAY '31'
+# as an end YEAR 2031) — confirmed on this exact real invoice, corrupting a
+# 1-year service period into a 6-year one and understating its monthly
+# amortization by roughly 7x.
+_RE_FULL_RANGE_DASH_YEAR = re.compile(rf'{_DATE_FULL}-(\d{{2}})\.(\d{{2}})-(\d{{2}})(?!\d)')
 _RE_MONTH_RANGE = re.compile(r'(\d{2})\.(\d{2})-(\d{2})\.(\d{2})(?!\d)')
 
 # Slash-separated date ranges, e.g. '12/10/25 - 1/6/26', '11/20/25-12/22/25'.
@@ -444,6 +456,19 @@ def _parse_service_period(description: str) -> Tuple[Optional[date], Optional[da
     """
     # Try full date range first: MM.DD.YY-MM.DD.YY
     m = _RE_FULL_RANGE.search(description)
+    if m:
+        try:
+            sm, sd, sy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            em, ed, ey = int(m.group(4)), int(m.group(5)), int(m.group(6))
+            start = date(2000 + sy, sm, sd)
+            end = date(2000 + ey, em, ed)
+            return start, end
+        except ValueError:
+            pass
+
+    # Try the same full range with a dash typo'd in place of the final dot:
+    # MM.DD.YY-MM.DD-YY
+    m = _RE_FULL_RANGE_DASH_YEAR.search(description)
     if m:
         try:
             sm, sd, sy = int(m.group(1)), int(m.group(2)), int(m.group(3))
