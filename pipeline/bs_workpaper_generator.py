@@ -4238,12 +4238,37 @@ def generate_bs_workpaper_from_template(
                     ws.cell(_r, _col_idx).value = round(_amt, 2)
         _last_written = _write_start + len(_new_groups) - 1
 
+        # For fy_scoped_cols, find the first newly-written row that starts a
+        # calendar year later than the tab's existing last row. Loan
+        # Analysis's 801110 footer is already manually curated as
+        # '=SUM(G93:G99)' — starting exactly at January's first row, not
+        # accumulating December-and-earlier — because the TB resets P&L
+        # accounts to $0 every January; a footer that keeps extending the
+        # SAME segment across a fiscal-year boundary would tie out against
+        # last year's carried-over total instead of the TB's fresh-this-year
+        # balance. _extend_trailing_sum_range only ever bumps an existing
+        # segment's END, so nothing previously re-created this same reset
+        # once a new year's rows get appended in a later run — confirmed
+        # with Ryan 2026-08-20 before this ever hit a real Jan close. None
+        # when every new row stays within the year the tab already had (the
+        # normal case) or on the very first-ever append.
+        _fy_reset_row = None
+        if _last_period is not None:
+            for _i, _grp in enumerate(_new_groups):
+                if _grp['period'].year > _last_period.year:
+                    _fy_reset_row = _write_start + _i
+                    break
+
         # Rewrite each column's own footer SUM, extending its existing
-        # trailing range rather than replacing the whole formula.
+        # trailing range rather than replacing the whole formula — except
+        # for a fy_scoped column when a new fiscal year started in this
+        # batch, which gets a fresh SUM starting at the new year's first row.
         for _col_idx in _amt_cols:
             _col_ltr = _gcl(_col_idx)
             _existing = ws.cell(_tieout, _col_idx).value
-            if isinstance(_existing, str) and _existing.startswith('=SUM('):
+            if _col_idx in _fy_scoped and _fy_reset_row is not None:
+                ws.cell(_tieout, _col_idx).value = f'=SUM({_col_ltr}{_fy_reset_row}:{_col_ltr}{_last_written})'
+            elif isinstance(_existing, str) and _existing.startswith('=SUM('):
                 ws.cell(_tieout, _col_idx).value = _extend_trailing_sum_range(
                     _existing, _col_ltr, _last_row, _last_written,
                     new_segment_start=_new_segment_start if _col_idx in _fy_scoped else _data_start,

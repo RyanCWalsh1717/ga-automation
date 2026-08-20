@@ -1608,9 +1608,20 @@ with tab0:
         if _period_chosen != st.session_state.checklist_period_key:
             st.session_state.checklist_period_key = _period_chosen
             st.session_state.checklist_loaded    = False
+            # Full reset to match the property-switch reset pattern above —
+            # without clearing close_tracker/custom_checklist_items here, the
+            # loader block below only ADDS keys missing from close_tracker
+            # (never removes any), so a step completed in the PREVIOUS period
+            # stayed marked done after switching to a period where it isn't —
+            # and last_completed_step (not period-scoped at all) could still
+            # point at a step from the period just left, showing its "Step N
+            # Complete" banner for the wrong period entirely.
+            st.session_state.close_tracker       = {}
+            st.session_state.custom_checklist_items = []
             st.session_state.checklist_locked    = False
             st.session_state.checklist_locked_by = None
             st.session_state.checklist_locked_at = None
+            st.session_state.last_completed_step = None
             st.rerun()
 
     with _ck_col_prog:
@@ -1682,7 +1693,22 @@ with tab0:
 
     # ── Reviewer notification callout ──────────────────────────────────────────
     # Shown after a step is marked complete; cleared by Dismiss button.
+    #
+    # last_completed_step is a one-shot "you just did this" flag, set at the
+    # moment a step is marked complete — nothing clears it if that step later
+    # becomes un-done again (the ↩ Undo button below, an auto-step resetting
+    # on a later re-run, or switching close periods, none of which touch this
+    # variable). Without the close_tracker re-check here, the "Step 9
+    # Complete — Close complete!" banner can keep showing even after the
+    # live progress count has dropped back below 9/9 — confirmed with Ryan
+    # 2026-08-19 (banner said "all 9 confirmed" while the progress bar
+    # correctly showed 8/9). Re-validating against the CURRENT close_tracker
+    # state makes this self-healing regardless of what caused the step to
+    # become un-done.
     _last_step = st.session_state.get('last_completed_step')
+    if _last_step is not None and _last_step not in st.session_state.close_tracker:
+        _last_step = None
+        st.session_state.last_completed_step = None
     if _last_step is not None:
         # Per-step notification config
         _STEP_NOTIFS = {
@@ -5596,6 +5622,49 @@ with tab2:
                         _wp_template_path = _committed_path(
                             _selected_code, 'GA_Workpaper_Template.xlsx'
                         )
+                        # Roll forward from the uploaded Prior Month Workpaper when
+                        # available, instead of always restarting from the pristine
+                        # committed template. The committed template is a one-time
+                        # bootstrap (frozen at whatever month it was first created —
+                        # confirmed still frozen at Jan-2026 for revlabspm); every
+                        # month after that is supposed to build on the PREVIOUS
+                        # month's own output (that's the entire point of the
+                        # "_Workpaper_UPLOAD_NEXT_CLOSE.xlsx" hand-off file and its
+                        # warning below). Without this, generate_bs_workpaper_from_
+                        # template() silently ignored the uploaded prior workpaper
+                        # every single run, re-deriving "what's new" against the
+                        # SAME stale baseline each month — so e.g. March's run
+                        # never saw February's data at all, landed its own new rows
+                        # in the same row range February's had used, and produced a
+                        # workpaper that looked like "March replaced February"
+                        # instead of "February then March". Confirmed with Ryan
+                        # 2026-08-20. Only trusted when it actually looks like a
+                        # workpaper (has the tabs this generator expects) — a
+                        # wrong file in that upload slot falls back to the
+                        # committed template rather than producing garbage.
+                        if _prior_wp_path and os.path.exists(_prior_wp_path):
+                            try:
+                                from openpyxl import load_workbook as _lw_check
+                                _wp_check = _lw_check(_prior_wp_path, read_only=True)
+                                _wp_check_sheets = set(_wp_check.sheetnames)
+                                _wp_check.close()
+                                if {'Summary Page', 'Trial Balance'} <= _wp_check_sheets:
+                                    _wp_template_path = _prior_wp_path
+                                else:
+                                    st.warning(
+                                        "⚠️ The uploaded Prior Month Workpaper doesn't look like a "
+                                        "GA workpaper (missing expected tabs) — using the committed "
+                                        "template as the baseline instead. Double-check the file "
+                                        "uploaded in that slot.",
+                                        icon="⚠️",
+                                    )
+                            except Exception as _wp_check_err:
+                                st.warning(
+                                    f"⚠️ Could not read the uploaded Prior Month Workpaper "
+                                    f"({_wp_check_err}) — using the committed template as the "
+                                    f"baseline instead.",
+                                    icon="⚠️",
+                                )
                         if _wp_template_path:
                             # Template path preserves existing Excel formulas (VLOOKUP,
                             # DATEDIF, SUM) and only updates data rows + date anchors.
