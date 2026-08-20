@@ -580,11 +580,12 @@ if "prepaid_overrides_df" not in st.session_state:
         "_key": pd.Series([], dtype=str),
         "Vendor": pd.Series([], dtype=str),
         "Invoice #": pd.Series([], dtype=str),
+        "GL Account Number": pd.Series([], dtype=str),
+        "GL Account Name": pd.Series([], dtype=str),
         "Description": pd.Series([], dtype=str),
         "Total Amount ($)": pd.Series([], dtype=float),
         "Service Start": pd.Series([], dtype=str),
         "Service End": pd.Series([], dtype=str),
-        "GL Account": pd.Series([], dtype=str),
         # Hidden snapshot of what Nexus reported for this invoice the FIRST
         # time this row was tracked — used to detect whether the source data
         # has since changed (e.g. a corrected/re-exported Nexus file), so a
@@ -649,7 +650,7 @@ def _apply_prepaid_overrides(nexus_records: list, overrides_df) -> list:
                 _inv.get('service_start'), _inv.get('service_end')
             )
 
-        _gl_acct = str(_ov.get("GL Account", "") or "").strip()
+        _gl_acct = str(_ov.get("GL Account Number", "") or "").strip()
         if _gl_acct:
             _inv['gl_account_number'] = _gl_acct
 
@@ -3925,6 +3926,7 @@ with tab1:
         # engine.py's corp_7xxx_accounts summary key, which may be stale if
         # Streamlit Cloud cached the old engine module bytecode between deploys.
         _interco_detected = []
+        _interco_seen_codes: set = set()
         if _p1_er_ic:
             _ic_gl = _p1_er_ic.parsed.get('gl')
             if _ic_gl and hasattr(_ic_gl, 'accounts'):
@@ -3941,6 +3943,50 @@ with tab1:
                             'account_name': str(getattr(_ic_acct, 'account_name', '') or '').strip(),
                             'net_amount':   _ic_sig,
                         })
+                        _interco_seen_codes.add(_ic_code)
+
+            # A 7xxxxx account whose activity nets to $0 this period — invoiced
+            # in, then reclassed straight out to 135150 Prepaid Other, all in
+            # the same month — is invisible to the net/ending-balance check
+            # above, even though real (potentially miscoded) money flowed
+            # through it. Confirmed on a real Kardin Budgeting Software
+            # invoice: coded to 712210 (a 7xxxxx corporate account) on entry,
+            # reclassed out to 135150 three weeks later, net change exactly
+            # $0.00 — so it never appeared here for Ryan to correct, and the
+            # prepaid ledger kept citing 712210 for every future release with
+            # no way to catch it. Pair GL transactions by control (JE) number
+            # instead of by net: any 7xxxxx leg that moved money into 135150
+            # this period is worth surfacing for review regardless of net,
+            # since whatever account it reclassed FROM is exactly what the
+            # prepaid item will keep citing unless corrected here. Confirmed
+            # with Ryan 2026-08-20.
+            if _ic_gl:
+                _ic_by_control: dict = {}
+                for _ic_t in (getattr(_ic_gl, 'all_transactions', None) or []):
+                    _ic_ctrl = str(getattr(_ic_t, 'control', '') or '').strip()
+                    if _ic_ctrl:
+                        _ic_by_control.setdefault(_ic_ctrl, []).append(_ic_t)
+                for _ic_legs in _ic_by_control.values():
+                    _ic_135150_amt = next(
+                        (float(getattr(_lt, 'debit', 0) or 0) for _lt in _ic_legs
+                         if str(getattr(_lt, 'account_code', '') or '').strip() == '135150'
+                         and float(getattr(_lt, 'debit', 0) or 0) > 0.01),
+                        0.0,
+                    )
+                    if _ic_135150_amt < 0.01:
+                        continue
+                    for _lt in _ic_legs:
+                        _lt_code = str(getattr(_lt, 'account_code', '') or '').strip()
+                        if not _lt_code.startswith('7') or _lt_code in _interco_seen_codes:
+                            continue
+                        _lt_credit = float(getattr(_lt, 'credit', 0) or 0)
+                        if abs(_lt_credit - _ic_135150_amt) < 0.01:
+                            _interco_detected.append({
+                                'account_code': _lt_code,
+                                'account_name': str(getattr(_lt, 'account_name', '') or '').strip(),
+                                'net_amount':   _lt_credit,
+                            })
+                            _interco_seen_codes.add(_lt_code)
 
         # ── 5xxxxx company revenue warning ───────────────────────────────────
         _co_rev_detected = (_p1_er_ic.summary.get('co_rev_5xxx_accounts', [])
@@ -4245,9 +4291,14 @@ with tab1:
                 # "Re-run Pass 1" click, same as the One-Off Accruals table.
                 st.markdown("**Correct a misread invoice**")
                 st.caption(
-                    "Edit Total Amount, Service Start/End, or GL Account below, then "
-                    "click **Re-run Pass 1** to apply the correction to the ledger and JEs. "
-                    "Vendor / Invoice # are read-only — they're the match key."
+                    "Edit GL Account Number, Total Amount, or Service Start/End below, then "
+                    "click **Re-run Pass 1** to apply the correction to the ledger and JEs — "
+                    "this is exactly how a Kardin-style miscoding (e.g. a corporate 7xxxxx "
+                    "account instead of the right property expense account) gets fixed at the "
+                    "source, before it ever reaches the ledger. GL Account Name is looked up "
+                    "automatically from the number, same as the Intercompany Recode table, so "
+                    "a typo'd account reads as an obviously wrong name instead of just a "
+                    "number. Vendor / Invoice # are read-only — they're the match key."
                 )
                 _seen_keys = set()
                 _invoice_rows = []
@@ -4264,11 +4315,12 @@ with tab1:
                         "_key": _k,
                         "Vendor": l['vendor'],
                         "Invoice #": l['invoice_number'],
+                        "GL Account Number": _fresh_gl,
+                        "GL Account Name": _acct_name_lookup.get(_fresh_gl, ''),
                         "Description": l.get('description', ''),
                         "Total Amount ($)": _fresh_amt,
                         "Service Start": _fresh_start,
                         "Service End": _fresh_end,
-                        "GL Account": _fresh_gl,
                         "_orig_amount": _fresh_amt,
                         "_orig_service_start": _fresh_start,
                         "_orig_service_end": _fresh_end,
@@ -4313,20 +4365,35 @@ with tab1:
                     _base_ov_df,
                     use_container_width=True,
                     hide_index=True,
-                    disabled=["Vendor", "Invoice #"],
-                    column_order=["Vendor", "Invoice #", "Description",
-                                  "Total Amount ($)", "Service Start", "Service End", "GL Account"],
+                    # GL Account Name is read-only/derived — editing the Number
+                    # is what actually corrects the account; the Name column
+                    # exists only so a typo'd or miscoded number is instantly
+                    # recognizable (e.g. "725070 (Advertising & Marketing)"
+                    # next to a Kardin invoice reads as obviously wrong,
+                    # whereas the bare number alone didn't).
+                    disabled=["Vendor", "Invoice #", "GL Account Name"],
+                    column_order=["Vendor", "Invoice #", "GL Account Number", "GL Account Name",
+                                  "Description", "Total Amount ($)", "Service Start", "Service End"],
                     column_config={
                         "Vendor": st.column_config.TextColumn(width="medium"),
                         "Invoice #": st.column_config.TextColumn(width="small"),
+                        "GL Account Number": st.column_config.TextColumn(width="small"),
+                        "GL Account Name": st.column_config.TextColumn(width="medium"),
                         "Description": st.column_config.TextColumn(width="large"),
                         "Total Amount ($)": st.column_config.NumberColumn(format="$%,.2f", min_value=0.0),
                         "Service Start": st.column_config.TextColumn(width="small", help="YYYY-MM-DD"),
                         "Service End": st.column_config.TextColumn(width="small", help="YYYY-MM-DD"),
-                        "GL Account": st.column_config.TextColumn(width="small"),
                     },
                     key="prepaid_overrides_editor",
                 )
+                # Re-derive GL Account Name from whatever Number the user just
+                # typed, so it never shows a stale name next to an edited
+                # number — the editor's own row only knows what was there
+                # when this render started.
+                if "GL Account Number" in _ov_edited.columns:
+                    _ov_edited["GL Account Name"] = _ov_edited["GL Account Number"].apply(
+                        lambda _c: _acct_name_lookup.get(str(_c or '').strip(), '')
+                    )
                 st.session_state.prepaid_overrides_df = _ov_edited
 
                 st.markdown("**Full amortization schedule**")
