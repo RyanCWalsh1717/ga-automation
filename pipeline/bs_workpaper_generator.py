@@ -1670,6 +1670,26 @@ def _is_reversal_txn(txn) -> bool:
     return bool(_REVERSAL_ANYWHERE_RE.search(desc) or _REVERSAL_ANYWHERE_RE.search(remarks))
 
 
+def _capital_txn_desc(t) -> str:
+    """
+    Build a capital/equity ledger row's description from a GLTransaction.
+
+    Combines remarks + description when they differ (e.g. 'Penthouse Floor
+    Epoxy-Black Bear Coatings & Concrete') — the GL's own 'description'
+    field alone is usually just the vendor name, missing the actual work
+    description that lives in 'remarks'. Matches the template's own
+    established style. Used by _append_capital_asset_rows both to write
+    the row and to build its de-dup signature, so the two always agree.
+    """
+    _desc_field = str(getattr(t, 'description', '') or '').strip()
+    _remarks_field = str(getattr(t, 'remarks', '') or '').strip()
+    if _remarks_field and _desc_field and _remarks_field != _desc_field:
+        _desc = f'{_remarks_field}-{_desc_field}'
+    else:
+        _desc = _remarks_field or _desc_field
+    return _desc.lstrip(': –-').strip()
+
+
 _NO_DESC_FLAG = '[!] No Description - Review Required'
 
 
@@ -4355,8 +4375,30 @@ def generate_bs_workpaper_from_template(
         _total_col = 6   # F — confirmed consistent across these tabs
 
         _last_row = _last_nonempty_row(ws, 2, data_start, _tieout)
-        _last_period = (_coerce_period(ws.cell(_last_row, 2).value)
-                         if _last_row >= data_start else None)
+
+        # De-dup by (period label, description, amount) already written to
+        # the sheet — NOT by comparing each transaction's own date against
+        # the last-written date. Yardi lets an invoice post into a LATER
+        # close period than its own transaction date (e.g. a Feb-dated
+        # invoice first entered into Yardi during the April close) — a
+        # date-ordering check would wrongly treat that as "already
+        # captured" and silently drop it the first time it ever appears.
+        # Confirmed with a real case: Citywide Contracting's $22,500 (dated
+        # 2/26/2026, control P-20957) didn't hit the GL until the April
+        # export and was skipped by the old date-based check. Content
+        # matching still catches a genuine re-run of the same GL file
+        # (identical period/description/amount already present).
+        _existing_sigs = set()
+        for _er in range(data_start, _tieout):
+            _ed = str(ws.cell(_er, 2).value or '').strip()
+            _edesc = str(ws.cell(_er, 3).value or '').strip()
+            if not (_ed or _edesc):
+                continue
+            try:
+                _eamt = round(float(ws.cell(_er, _entity_col).value or 0), 2)
+            except (TypeError, ValueError):
+                _eamt = None
+            _existing_sigs.add((_ed, _edesc, _eamt))
 
         _acct = gl_map.get(account_code)
         _new_txns = []
@@ -4366,19 +4408,15 @@ def generate_bs_workpaper_from_template(
             _period = _coerce_date(getattr(_t, 'date', None))
             if _period is None:
                 continue
-            # Date column only ever stores 'MM/YYYY' (no day) — compare at
-            # month granularity, not exact date, or a transaction dated
-            # later in the SAME already-captured month (e.g. the 19th vs.
-            # the day-1 stand-in _coerce_period fills in) looks like new
-            # activity and gets re-appended as a duplicate on the next run.
-            # Confirmed while testing this fix: re-running against its own
-            # output doubled the newly-added row.
-            if _last_period and _date(_period.year, _period.month, 1) <= _last_period:
+            _desc = _capital_txn_desc(_t)
+            _amt = round(float(getattr(_t, 'net_amount', 0) or 0), 2)
+            _sig = (_period.strftime('%m/%Y'), _desc, _amt)
+            if _sig in _existing_sigs:
                 continue
-            _new_txns.append((_period, _t))
+            _new_txns.append((_period, _t, _desc, _amt))
         if not _new_txns:
             return
-        _new_txns.sort(key=lambda pair: pair[0])
+        _new_txns.sort(key=lambda tup: tup[0])
 
         _rows_avail = _tieout - _last_row - 2   # leave 1 gap row before tieout
         _to_insert = len(_new_txns) - _rows_avail
@@ -4394,22 +4432,8 @@ def generate_bs_workpaper_from_template(
             _restore_footer_merges(ws, _tieout, _footer_merges)
 
         _write_start = _last_row + 1
-        for _i, (_period, _t) in enumerate(_new_txns):
+        for _i, (_period, _t, _desc, _amt) in enumerate(_new_txns):
             _r = _write_start + _i
-            # Existing rows combine the work description and vendor (e.g.
-            # 'Penthouse Floor Epoxy-Black Bear Coatings & Concrete') — the
-            # GL's own 'description' field alone is usually just the vendor
-            # name, missing the actual work description that lives in
-            # 'remarks'. Combine both when they differ, matching the
-            # template's own established style as closely as reasonable.
-            _desc_field = str(getattr(_t, 'description', '') or '').strip()
-            _remarks_field = str(getattr(_t, 'remarks', '') or '').strip()
-            if _remarks_field and _desc_field and _remarks_field != _desc_field:
-                _desc = f'{_remarks_field}-{_desc_field}'
-            else:
-                _desc = _remarks_field or _desc_field
-            _desc = _desc.lstrip(': –-').strip()
-            _amt = round(float(getattr(_t, 'net_amount', 0) or 0), 2)
             ws.cell(_r, 2).value = _period.strftime('%m/%Y')
             ws.cell(_r, 3).value = _desc
             ws.cell(_r, _entity_col).value = _amt
@@ -4453,10 +4477,11 @@ def generate_bs_workpaper_from_template(
 
         The row is found by its Description (column C) text, not position —
         it may already exist from an earlier month. Column B (normally a
-        lease commencement date range for tenant rows) tracks "as of
-        MM/YYYY" for THIS row specifically, so repeat runs only pick up
-        genuinely new activity instead of re-adding what's already folded
-        into the row's running total.
+        lease commencement date range for tenant rows) tracks the CLOSE
+        PERIOD last folded into this row (not each transaction's own date —
+        see the gating logic below), so a genuine re-run of the same GL file
+        doesn't double-count, while a late-entered invoice dated in an
+        earlier month still gets picked up the first time it appears.
         """
         _tieout = _find_tieout_row(ws)
         if _tieout is None:
@@ -4473,38 +4498,51 @@ def generate_bs_workpaper_from_template(
         _total_col = 6
 
         _unalloc_row = None
-        _last_period = None
+        _last_marked_period = None
         for _r in range(data_start, _tieout):
             if str(ws.cell(_r, 3).value or '').strip().lower() == label.lower():
                 _unalloc_row = _r
-                _last_period = _coerce_period(ws.cell(_r, 2).value)
+                _last_marked_period = _coerce_period(ws.cell(_r, 2).value)
                 break
+
+        # Gate on the CLOSE PERIOD being processed, not each transaction's
+        # own date — Yardi lets an invoice post into a LATER close period
+        # than its own transaction date (e.g. a Feb-dated invoice first
+        # entered into Yardi during the April close). A date-ordering check
+        # would wrongly treat that as "already captured" and silently drop
+        # it the first time it ever appears (confirmed as a real case on
+        # _append_capital_asset_rows — see its comment). Since each GL
+        # upload already represents exactly one close period's activity by
+        # construction, the correct idempotency check is simply "has THIS
+        # close period already been folded into this row," not date math.
+        try:
+            _close_dt = _dt.strptime(period, '%b-%Y')
+            _close_period = _date(_close_dt.year, _close_dt.month, 1)
+        except Exception:
+            _close_period = None
+        if (_close_period is not None and _last_marked_period is not None
+                and _close_period <= _last_marked_period):
+            return  # this close period's activity was already folded in
 
         _acct = gl_map.get(account_code)
         _new_amt = 0.0
-        _new_max_period = None
         for _t in (getattr(_acct, 'transactions', None) or []):
             if _is_reversal_txn(_t):
                 continue
-            _period = _coerce_date(getattr(_t, 'date', None))
-            if _period is None:
-                continue
-            # Month granularity, not exact date — see the identical fix (and
-            # its comment) in _append_capital_asset_rows above; the tracking
-            # cell here only ever stores 'MM/YYYY' too.
-            if _last_period and _date(_period.year, _period.month, 1) <= _last_period:
+            if _coerce_date(getattr(_t, 'date', None)) is None:
                 continue
             _new_amt += float(getattr(_t, 'net_amount', 0) or 0)
-            if _new_max_period is None or _period > _new_max_period:
-                _new_max_period = _period
 
-        if _new_max_period is None or abs(_new_amt) < 0.005:
-            return  # nothing new since the last time this ran
+        if abs(_new_amt) < 0.005:
+            return  # nothing to add this period
+
+        _marker_period = _close_period or _last_marked_period
 
         if _unalloc_row is not None:
             _prior_amt = float(ws.cell(_unalloc_row, _entity_col).value or 0)
             ws.cell(_unalloc_row, _entity_col).value = round(_prior_amt + _new_amt, 2)
-            ws.cell(_unalloc_row, 2).value = _new_max_period.strftime('%m/%Y')
+            if _marker_period is not None:
+                ws.cell(_unalloc_row, 2).value = _marker_period.strftime('%m/%Y')
             return  # existing row's own cell — footer SUM range already covers it
 
         # No existing Unallocated row yet — insert one right before the
@@ -4522,7 +4560,8 @@ def generate_bs_workpaper_from_template(
             _restore_footer_merges(ws, _tieout, _footer_merges)
 
         _new_row = _last_row + 1
-        ws.cell(_new_row, 2).value = _new_max_period.strftime('%m/%Y')
+        if _marker_period is not None:
+            ws.cell(_new_row, 2).value = _marker_period.strftime('%m/%Y')
         ws.cell(_new_row, 3).value = label
         ws.cell(_new_row, _entity_col).value = round(_new_amt, 2)
         ws.cell(_new_row, _total_col).value = f'=SUM({_gcl(4)}{_new_row}:{_gcl(5)}{_new_row})'

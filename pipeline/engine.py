@@ -773,17 +773,13 @@ def _build_recon_from_yardi_rec(
             details=d,
         ))
 
-    for pnc_ck in prior_clears:
-        exceptions.append(Exception_(
-            severity='info', category='match',
-            source='grp_bank_recon',
-            description=(
-                f'PNC check #{pnc_ck["check_number"]} (${pnc_ck["amount"]:,.2f}) '
-                f'cleared this cycle but is not in the current-period GL — '
-                f'prior-period outstanding check, expected'
-            ),
-            details=pnc_ck,
-        ))
+    # prior_clears (checks that cleared PNC this cycle but weren't cut in this
+    # period's GL) are NOT surfaced as an exception — a check hits AP/Cash in
+    # the GL when it's CUT, then clears the bank whenever the payee deposits
+    # it, often the following period. That timing gap is normal on every
+    # outstanding check and isn't actionable, so listing it every cycle was
+    # pure noise in the Exception Report. The data itself isn't lost — it
+    # still flows into BankReconDetail.unmatched_bank_checks below.
 
     if abs(recon_diff) > 0.02:
         # recon_diff = GL - adjusted_bank
