@@ -3382,7 +3382,7 @@ with tab1:
                 st.metric(f"Total ({fee_result.total_rate:.2%})", f"${fee_result.total_fee:,.0f}")
             _prepay_amt = p1.get("rd_prepayment_amount", 0.0) or 0.0
             st.caption(f"Basis: {_src_label}"
-                       + (f"  ·  Prepayments excluded: ${_prepay_amt:,.2f}" if _prepay_amt > 0 else ""))
+                       + (f"  ·  Prepayments/Billbacks excluded: ${_prepay_amt:,.2f}" if _prepay_amt > 0 else ""))
 
             _catchup_amt = p1.get("catchup_amount")
             if _catchup_amt and _catchup_amt > 0:

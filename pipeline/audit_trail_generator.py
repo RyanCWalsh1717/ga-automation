@@ -474,7 +474,7 @@ def _build_mgmt_fee(ws, fee_result, period: str, property_name: str, property_co
                     getattr(fee_result, 'cash_source', '—'))
     prepay = getattr(fee_result, 'prepayment_excluded', 0) or 0
     if prepay:
-        row = _write_kv(ws, row, 'Less Prepayments Excluded',
+        row = _write_kv(ws, row, 'Less Prepayments/Billbacks Excluded',
                         f'({_money(prepay)})')
     row += 1
 

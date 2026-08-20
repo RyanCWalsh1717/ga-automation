@@ -25,8 +25,9 @@ Column indices (0-based):
   5  Ending Balance
 
 Management fee basis:
-  Grand Total Receipts (col 4, absolute value) minus Prepayment receipts that
-  are truly NEW cash received in the period (only negative Prepayment row receipts).
+  Grand Total Receipts (col 4, absolute value) minus Prepayment receipts and
+  Tenant Bill Back AR (TBBAR) receipts that are truly NEW cash received in
+  the period (only negative rows).
 
   Prepayment row interpretation:
     Positive receipt  = prior prepayment credit applied to a charge
@@ -34,8 +35,13 @@ Management fee basis:
     Negative receipt  = new prepayment cash received this period
                         (must exclude from management fee basis)
 
-  prepay_to_exclude = abs(min(0, prepayment_row_receipt))
-  net_receipts      = abs(grand_total_receipt) − prepay_to_exclude
+  Tenant Bill Back AR (TBBAR) row: excluded on the same logic — it's a
+  reimbursement passed through to the property, not fee-bearing revenue.
+  Confirmed with Ryan 2026-08-20.
+
+  prepay_to_exclude    = abs(min(0, prepayment_row_receipt))
+  billback_to_exclude  = abs(min(0, tbbar_row_receipt))
+  net_receipts         = abs(grand_total_receipt) − prepay_to_exclude − billback_to_exclude
 
 This parser provides the cleanest management fee basis because:
   1. Prepayment identification is explicit (a dedicated "Prepayment" row)
@@ -62,11 +68,12 @@ class ReceivableSummaryResult:
     total_charges:       float               # Grand Total Charges (absolute)
     total_receipts:      float               # Grand Total Receipts (absolute)
     prepayment_receipts: float               # New-cash prepayments excluded from fee basis
-    net_receipts:        float               # total_receipts − prepayment_receipts
+    net_receipts:        float               # total_receipts − prepayment_receipts − tenant_billback_receipts
     ending_balance:      float               # Grand Total ending AR balance
     charges_by_code:     Dict[str, float]   = field(default_factory=dict)
     # charges_by_code — upper-cased charge code → total charges billed (absolute).
     # e.g. {'BRLAB': 1006377.60, 'ELECT': 15354.18, 'UTILI': 1736.95}
+    tenant_billback_receipts: float          = 0.0   # New-cash TBBAR receipts excluded from fee basis
     _parse_error:        Optional[str]       = None
 
 
@@ -120,6 +127,15 @@ def _is_prepayment_label(label: str) -> bool:
     return any(kw in lo for kw in _PREPAYMENT_KEYWORDS)
 
 
+_TENANT_BILLBACK_KEYWORDS = ('tenant bill back', 'tenant billback', 'tbbar')
+
+
+def _is_tenant_billback_label(label: str) -> bool:
+    """True if the charge code label indicates a Tenant Bill Back AR row."""
+    lo = str(label or '').lower().strip()
+    return any(kw in lo for kw in _TENANT_BILLBACK_KEYWORDS)
+
+
 def _extract_code(label: str) -> str:
     """
     Extract the bare charge code from a Yardi label.
@@ -150,8 +166,9 @@ def _parse_rows(rows: list) -> ReceivableSummaryResult:
     # column header row (bare word 'Property' with no colon).
     period = ''
     property_code = 'revlabspm'
+    summary_by = ''
     for row in rows[:6]:
-        caption = str(row[0] or '') + ' ' + str(row[1] if len(row) > 1 else '')
+        caption = str(row[0] or '') + ' ' + (str(row[1] or '') if len(row) > 1 else '')
         m = re.search(r'Month\s+From[:\s]+(\d{2}/\d{4})', caption, re.IGNORECASE)
         if m:
             period = m.group(1)
@@ -159,6 +176,35 @@ def _parse_rows(rows: list) -> ReceivableSummaryResult:
         m2 = re.search(r'Property:\s*(\w+)', caption, re.IGNORECASE)
         if m2:
             property_code = m2.group(1).strip()
+        m3 = re.search(r'Summary\s+By:\s*([^\[]+)', caption, re.IGNORECASE)
+        if m3:
+            summary_by = m3.group(1).strip()
+
+    # Yardi's "Summary By: Tenant" layout inserts an extra Customer column
+    # that shifts Charge/Receipt/Ending Balance one column over from what
+    # this parser expects — it has no Charge Code column at all, so
+    # Prepayment/TBBAR rows can't be identified either way. Reading it with
+    # this parser silently misaligns columns and produces a plausible-looking
+    # but wrong number instead of failing. Confirmed as a real case
+    # 2026-08-20: the wrong file's Grand Total Charge value was misread as
+    # Receipt. Only "Summary By: Charge Code" is a valid layout for this
+    # parser — reject anything else instead of guessing.
+    if summary_by and 'charge code' not in summary_by.lower():
+        return ReceivableSummaryResult(
+            property_code=property_code,
+            period=period,
+            total_charges=0.0,
+            total_receipts=0.0,
+            prepayment_receipts=0.0,
+            net_receipts=0.0,
+            ending_balance=0.0,
+            _parse_error=(
+                f'Wrong Receivable Summary layout: "Summary By: {summary_by}". '
+                f'This parser requires "Summary By: Charge Code" — re-export the '
+                f'Receivable Summary from Yardi grouped by Charge Code, not '
+                f'{summary_by}.'
+            ),
+        )
 
     # ── Scan data rows ─────────────────────────────────────────────────────────
     grand_charges     = 0.0
@@ -166,6 +212,8 @@ def _parse_rows(rows: list) -> ReceivableSummaryResult:
     grand_balance     = 0.0
     prepay_raw        = 0.0   # raw (signed) Prepayment row receipt value
     prepay_found      = False
+    billback_raw      = 0.0   # raw (signed) Tenant Bill Back AR row receipt value
+    billback_found    = False
     charges_by_code: Dict[str, float] = {}
 
     for row in rows:
@@ -213,6 +261,19 @@ def _parse_rows(rows: list) -> ReceivableSummaryResult:
             )
             continue
 
+        # ── Tenant Bill Back AR row ─────────────────────────────────────────────
+        # Excluded from the fee basis the same way as Prepayment — it's a
+        # reimbursement passed through to the property, not fee-bearing
+        # revenue. Confirmed with Ryan 2026-08-20.
+        if _is_tenant_billback_label(charge_label):
+            billback_raw   = _safe_float(col4)   # signed: positive = applied; negative = new cash
+            billback_found = True
+            code_key = _extract_code(charge_label)
+            charges_by_code[code_key] = (
+                charges_by_code.get(code_key, 0.0) + abs(_safe_float(col3))
+            )
+            continue
+
         # ── Normal charge code row ─────────────────────────────────────────────
         code_key = _extract_code(charge_label)
         if col3 is not None:
@@ -220,11 +281,12 @@ def _parse_rows(rows: list) -> ReceivableSummaryResult:
                 charges_by_code.get(code_key, 0.0) + abs(_safe_float(col3))
             )
 
-    # ── Prepayment exclusion ───────────────────────────────────────────────────
-    # Only negative Prepayment receipts are NEW cash received this period.
-    # Positive values = prior credit applied — already washed into Grand Total.
-    prepay_to_exclude = abs(min(0.0, prepay_raw)) if prepay_found else 0.0
-    net_receipts = max(0.0, grand_receipts - prepay_to_exclude)
+    # ── Prepayment / Tenant Bill Back exclusion ────────────────────────────────
+    # Only negative receipts are NEW cash received this period. Positive
+    # values = prior credit applied — already washed into Grand Total.
+    prepay_to_exclude   = abs(min(0.0, prepay_raw))   if prepay_found   else 0.0
+    billback_to_exclude = abs(min(0.0, billback_raw)) if billback_found else 0.0
+    net_receipts = max(0.0, grand_receipts - prepay_to_exclude - billback_to_exclude)
 
     return ReceivableSummaryResult(
         property_code=property_code,
@@ -235,5 +297,6 @@ def _parse_rows(rows: list) -> ReceivableSummaryResult:
         net_receipts=round(net_receipts, 2),
         ending_balance=grand_balance,
         charges_by_code=charges_by_code,
+        tenant_billback_receipts=round(billback_to_exclude, 2),
         _parse_error=None,
     )

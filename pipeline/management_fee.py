@@ -65,7 +65,8 @@ class ManagementFeeResult:
     cash_received:       float          # Net cash receipts used as fee basis
     cash_source:         str            # 'receivable_detail+ar_aging' | 'receivable_detail' | 'daca_additions' | ...
                                        # Note: when AR Aging is uploaded, prepayment exclusion = max(ar_aging, scan)
-    prepayment_excluded: float = 0.0   # Amount subtracted as prepayments (from AR Aging or charge-code scan)
+    prepayment_excluded: float = 0.0   # Amount subtracted as prepayments (+ tenant billbacks, when sourced from
+                                       # Receivable Summary) — from AR Aging, charge-code scan, or Summary rows
 
     jll_rate: float = JLL_RATE
     grp_rate: float = GRP_RATE
@@ -123,30 +124,50 @@ def _cash_from_receivable_summary(rs_parsed) -> tuple:
     """
     Read net cash received from the Yardi Receivable Summary report.
 
-    Returns (net_cash: Optional[float], prepayment_excluded: float).
+    Returns (net_cash: Optional[float], amount_excluded: float) — the second
+    value combines both Prepayment and Tenant Bill Back AR (TBBAR) exclusions;
+    the parser's net_receipts already nets both out.
 
     Prepayment exclusion — uses the dedicated Prepayment row in the Summary:
       Negative Prepayment receipt = new cash received as a prepayment → exclude.
       Positive Prepayment receipt = prior credit applied to a charge → already
         washed into Grand Total, nothing to exclude.
 
-    This is the simplest and most reliable prepayment detection method because
-    Yardi isolates prepayments in their own charge-code row, so no charge-code
-    scanning or cross-tenant netting concerns apply.
+    Tenant Bill Back AR (TBBAR) exclusion — same logic, its own dedicated row:
+    it's a reimbursement passed through to the property, not fee-bearing
+    revenue. Confirmed with Ryan 2026-08-20.
+
+    This is the simplest and most reliable exclusion method because Yardi
+    isolates both in their own charge-code rows, so no charge-code scanning
+    or cross-tenant netting concerns apply.
 
     Returns (None, 0.0) if the report was not parsed or total receipts are zero.
     """
     if rs_parsed is None:
         return None, 0.0
 
+    _rs_error = getattr(rs_parsed, '_parse_error', None)
+    if _rs_error:
+        import warnings as _w
+        _w.warn(
+            f'Receivable Summary rejected: {_rs_error} Falling back to the next '
+            f'management fee basis source (Receivable Detail / DACA / GL / revenue '
+            f'proxy) — verify the fallback basis is reasonable before trusting the fee.',
+            UserWarning,
+            stacklevel=2,
+        )
+        return None, 0.0
+
     if hasattr(rs_parsed, 'total_receipts'):
-        total = float(rs_parsed.total_receipts or 0)
-        prepay = float(rs_parsed.prepayment_receipts or 0)
-        net = float(rs_parsed.net_receipts or 0)
+        total    = float(rs_parsed.total_receipts or 0)
+        prepay   = float(rs_parsed.prepayment_receipts or 0)
+        billback = float(getattr(rs_parsed, 'tenant_billback_receipts', 0) or 0)
+        net      = float(rs_parsed.net_receipts or 0)
     elif isinstance(rs_parsed, dict):
-        total = float(rs_parsed.get('total_receipts', 0) or 0)
-        prepay = float(rs_parsed.get('prepayment_receipts', 0) or 0)
-        net = float(rs_parsed.get('net_receipts', 0) or 0)
+        total    = float(rs_parsed.get('total_receipts', 0) or 0)
+        prepay   = float(rs_parsed.get('prepayment_receipts', 0) or 0)
+        billback = float(rs_parsed.get('tenant_billback_receipts', 0) or 0)
+        net      = float(rs_parsed.get('net_receipts', 0) or 0)
     else:
         return None, 0.0
 
@@ -154,9 +175,9 @@ def _cash_from_receivable_summary(rs_parsed) -> tuple:
         return None, 0.0
 
     # Return 0.0 (not None) when net==0 — cash was received but fully consumed by
-    # prepayments. Returning None would cause fallthrough to DACA/GL/revenue proxy
-    # and overstate the fee basis.
-    return (net if net > 0 else 0.0), prepay
+    # prepayments/billbacks. Returning None would cause fallthrough to DACA/GL/
+    # revenue proxy and overstate the fee basis.
+    return (net if net > 0 else 0.0), (prepay + billback)
 
 
 def _cash_from_receivable_detail(rd_parsed, ar_aging=None) -> tuple:
@@ -415,17 +436,18 @@ def calculate(
                     _already_posted_je = True
                 break
 
-    # 1. Receivable Summary — preferred (explicit Prepayment row, no scanning required)
+    # 1. Receivable Summary — preferred (explicit Prepayment/TBBAR rows, no scanning required)
     rs_cash, rs_prepay = _cash_from_receivable_summary(receivable_summary)
     if rs_cash is not None:
-        # L-7: warn when gross cash exists but is fully offset by prepayment exclusion
+        # L-7: warn when gross cash exists but is fully offset by prepayment/billback exclusion
         if rs_cash == 0.0 and rs_prepay > 0:
             import warnings as _w
             _w.warn(
-                f'Management fee basis is $0 after excluding ${rs_prepay:,.2f} prepayment '
-                f'from Receivable Summary. All cash collected this period was classified as '
-                f'prepayment. Verify the Receivable Summary Prepayment row is correct — '
-                f'if tenants paid regular rent this period, the fee should not be zero.',
+                f'Management fee basis is $0 after excluding ${rs_prepay:,.2f} in '
+                f'prepayments/tenant billbacks from Receivable Summary. All cash collected '
+                f'this period was classified as prepayment or tenant billback. Verify the '
+                f'Receivable Summary Prepayment and TBBAR rows are correct — if tenants paid '
+                f'regular rent this period, the fee should not be zero.',
                 UserWarning,
                 stacklevel=2,
             )
