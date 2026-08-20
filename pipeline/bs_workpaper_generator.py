@@ -3946,15 +3946,23 @@ def generate_bs_workpaper_from_template(
 
     def _coerce_period(d):
         """
-        Like _coerce_date, but also handles the short 'MM/YY' period label
-        Loan Analysis uses in its Date column (e.g. '01/25') instead of a
-        full date. Returns day=1 of that month/year for comparison purposes.
+        Like _coerce_date, but also handles short period labels used in
+        various tabs' Date columns instead of a full date: Loan Analysis's
+        'MM/YY' (e.g. '01/25') and the capital-asset tabs' 'MM/YYYY' (e.g.
+        '06/2024', '02/2025'). Returns day=1 of that month/year for
+        comparison purposes.
         """
         _full = _coerce_date(d)
         if _full is not None:
             return _full
         if isinstance(d, str):
-            m = _re.match(r'^(\d{1,2})/(\d{2})$', d.strip())
+            _s = d.strip()
+            m = _re.match(r'^(\d{1,2})/(\d{4})$', _s)
+            if m:
+                mm, yyyy = int(m.group(1)), int(m.group(2))
+                if 1 <= mm <= 12:
+                    return _date(yyyy, mm, 1)
+            m = _re.match(r'^(\d{1,2})/(\d{2})$', _s)
             if m:
                 mm, yy = int(m.group(1)), int(m.group(2))
                 if 1 <= mm <= 12:
@@ -3983,12 +3991,26 @@ def generate_bs_workpaper_from_template(
         trailing-token match for some other reason), falls back to a fresh
         contiguous SUM(new_segment_start:new_last_row) rather than silently
         doing nothing.
+
+        Finds the token to bump by its OWN highest row number in the
+        formula, not by matching old_last_row's digits against the
+        formula text — a short, not-yet-extended range can already
+        include a row past old_last_row (e.g. 152100 Land's template
+        ships '=SUM(F6:F7)' before any real data ever reached row 7),
+        and searching for the literal 'F6' text would then match the
+        range's START token instead of its trailing one, corrupting the
+        formula to '=SUM(F7:F7)' and silently dropping row 6 from the
+        tie-out. Confirmed 2026-08-20 while extending this same helper to
+        152100/311100/etc.
         """
-        pattern = rf'{col_letter}{old_last_row}(?=\D|$)'
-        new_formula, count = _re.subn(pattern, f'{col_letter}{new_last_row}', formula, count=1)
-        if count == 0 and new_segment_start is not None:
-            return f'=SUM({col_letter}{new_segment_start}:{col_letter}{new_last_row})'
-        return new_formula
+        matches = list(_re.finditer(rf'{col_letter}(\d+)', formula))
+        if not matches:
+            if new_segment_start is not None:
+                return f'=SUM({col_letter}{new_segment_start}:{col_letter}{new_last_row})'
+            return formula
+        _target = max(matches, key=lambda m: int(m.group(1)))
+        _start, _end = _target.span()
+        return formula[:_start] + f'{col_letter}{new_last_row}' + formula[_end:]
 
     def _rewrite_tieout_formulas(ws, tieout_row: int, data_start: int,
                                   last_written: int, amount_col: int) -> None:
@@ -4282,6 +4304,325 @@ def generate_bs_workpaper_from_template(
                 f"=VLOOKUP({_col_ltr}{cfg['acct_code_row']},'Trial Balance'!$A:$F,6,0)"
             )
             ws.cell(_tieout + 2, _col_idx).value = f'={_col_ltr}{_tieout}-{_col_ltr}{_tieout + 1}'
+
+    def _append_capital_asset_rows(ws, account_code: str, data_start: int) -> None:
+        """
+        Append new-period GL transactions to a capital-asset ledger tab —
+        154500 Building Improvements, and structurally identical tabs (152100
+        Land, 154100 Building, 187100 Finance Costs): one row per GL
+        transaction, split across whichever column the row-5 header
+        identifies as THIS property's own entity (its label contains 'pm',
+        e.g. 'Revlabspm'/'Revlabpm') — column order and exact spelling differ
+        between tabs (confirmed: 154500 has it in D, 152100/154100 have it in
+        E), so the column is found dynamically rather than assumed fixed.
+        Total column (F, confirmed consistent across all these tabs) keeps
+        its per-row '=SUM(D{r}:E{r})' formula, matching the template's own
+        convention exactly.
+
+        Like RE Tax Analysis / Loan Analysis before their own fix, these
+        tabs were previously left completely frozen at template-creation
+        content forever — confirmed on 154500 with a real March 2026 GL
+        transaction ($21,500, Black Bear Coatings & Concrete, P-20700) that
+        never appeared anywhere in the workpaper. Confirmed with Ryan
+        2026-08-20. Wired up for 154500, 152100, 154100, 187100, 311100, and
+        331100 — every capital/equity ledger tab sharing this same one-row-
+        per-transaction structure. 381100 Retained Earnings is deliberately
+        NOT included (see _append_annual_balance_forward_row — it only
+        moves via an annual closing entry, not discrete transactions).
+        181200/181300/181400 (Leasing Commissions, Legal Leasing Costs,
+        Tenant Improvement) are also NOT candidates for this function —
+        they're one row per TENANT with a lease-date-range label, not one
+        row per GL transaction, and need different per-tenant aggregation
+        logic (see _append_unallocated_row).
+
+        Only ever writes into the column matching this pipeline's own
+        property GL — the other entity column (the venture-side book) has
+        no GL feeding this pipeline yet (deferred per project scope) and is
+        left untouched.
+        """
+        _tieout = _find_tieout_row(ws)
+        if _tieout is None:
+            return
+
+        _entity_col = None
+        for _c in (4, 5):   # D, E — confirmed order varies by tab
+            _hdr = str(ws.cell(5, _c).value or '').strip().lower()
+            if 'pm' in _hdr:
+                _entity_col = _c
+                break
+        if _entity_col is None:
+            return
+        _total_col = 6   # F — confirmed consistent across these tabs
+
+        _last_row = _last_nonempty_row(ws, 2, data_start, _tieout)
+        _last_period = (_coerce_period(ws.cell(_last_row, 2).value)
+                         if _last_row >= data_start else None)
+
+        _acct = gl_map.get(account_code)
+        _new_txns = []
+        for _t in (getattr(_acct, 'transactions', None) or []):
+            if _is_reversal_txn(_t):
+                continue
+            _period = _coerce_date(getattr(_t, 'date', None))
+            if _period is None:
+                continue
+            # Date column only ever stores 'MM/YYYY' (no day) — compare at
+            # month granularity, not exact date, or a transaction dated
+            # later in the SAME already-captured month (e.g. the 19th vs.
+            # the day-1 stand-in _coerce_period fills in) looks like new
+            # activity and gets re-appended as a duplicate on the next run.
+            # Confirmed while testing this fix: re-running against its own
+            # output doubled the newly-added row.
+            if _last_period and _date(_period.year, _period.month, 1) <= _last_period:
+                continue
+            _new_txns.append((_period, _t))
+        if not _new_txns:
+            return
+        _new_txns.sort(key=lambda pair: pair[0])
+
+        _rows_avail = _tieout - _last_row - 2   # leave 1 gap row before tieout
+        _to_insert = len(_new_txns) - _rows_avail
+        if _to_insert > 0:
+            _footer_snap = _snapshot_row_styles(ws, _tieout, _tieout + 2, 2, _total_col)
+            _footer_merges = _snapshot_and_unmerge_footer(ws, _tieout, _tieout + 2)
+            ws.insert_rows(_tieout, _to_insert)
+            for _r in range(_tieout, _tieout + _to_insert):
+                _src = data_start if (_r - data_start) % 2 == 0 else data_start + 1
+                _copy_row_style(ws, _src, _r, 2, _total_col)
+            _tieout += _to_insert
+            _restore_row_styles(ws, _tieout, 2, _total_col, _footer_snap)
+            _restore_footer_merges(ws, _tieout, _footer_merges)
+
+        _write_start = _last_row + 1
+        for _i, (_period, _t) in enumerate(_new_txns):
+            _r = _write_start + _i
+            # Existing rows combine the work description and vendor (e.g.
+            # 'Penthouse Floor Epoxy-Black Bear Coatings & Concrete') — the
+            # GL's own 'description' field alone is usually just the vendor
+            # name, missing the actual work description that lives in
+            # 'remarks'. Combine both when they differ, matching the
+            # template's own established style as closely as reasonable.
+            _desc_field = str(getattr(_t, 'description', '') or '').strip()
+            _remarks_field = str(getattr(_t, 'remarks', '') or '').strip()
+            if _remarks_field and _desc_field and _remarks_field != _desc_field:
+                _desc = f'{_remarks_field}-{_desc_field}'
+            else:
+                _desc = _remarks_field or _desc_field
+            _desc = _desc.lstrip(': –-').strip()
+            _amt = round(float(getattr(_t, 'net_amount', 0) or 0), 2)
+            ws.cell(_r, 2).value = _period.strftime('%m/%Y')
+            ws.cell(_r, 3).value = _desc
+            ws.cell(_r, _entity_col).value = _amt
+            ws.cell(_r, _total_col).value = f'=SUM({_gcl(4)}{_r}:{_gcl(5)}{_r})'
+        _last_written = _write_start + len(_new_txns) - 1
+
+        _col_ltr = _gcl(_total_col)
+        _existing_total = ws.cell(_tieout, _total_col).value
+        if isinstance(_existing_total, str) and _existing_total.startswith('=SUM('):
+            ws.cell(_tieout, _total_col).value = _extend_trailing_sum_range(
+                _existing_total, _col_ltr, _last_row, _last_written,
+                new_segment_start=data_start,
+            )
+        else:
+            ws.cell(_tieout, _total_col).value = f'=SUM({_col_ltr}{data_start}:{_col_ltr}{_last_written})'
+        ws.cell(_tieout + 1, _total_col).value = (
+            f"=VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)"
+        )
+        ws.cell(_tieout + 2, _total_col).value = f'={_col_ltr}{_tieout}-{_col_ltr}{_tieout + 1}'
+
+    def _append_unallocated_row(ws, account_code: str, data_start: int,
+                                 label: str = 'Unallocated') -> None:
+        """
+        Accumulate new-period GL activity into a single 'Unallocated' row,
+        for per-tenant ledger tabs (Legal Leasing Costs, and structurally
+        identical Leasing Commissions / Tenant Improvement) where a new
+        charge can't be reliably attributed to a specific tenant from GL
+        data alone.
+
+        Unlike _append_capital_asset_rows (one NEW row per transaction),
+        these tabs are one row per TENANT — a professional-services invoice
+        (e.g. a law firm's lease-support fee) doesn't name which tenant's
+        lease it relates to anywhere in the GL, and guessing would risk
+        misattributing a real tenant's cost. Confirmed with Ryan
+        2026-08-20: land any such charge in one dedicated 'Unallocated' row
+        instead (reclassified to the correct tenant manually later, outside
+        this pipeline) — this keeps the tie-out correct without an
+        unreliable auto-match. Wired up for 181300 Legal Leasing Costs,
+        181200 Leasing Commissions, and 181400 Tenant Improvement — every
+        tab sharing this same per-tenant structure.
+
+        The row is found by its Description (column C) text, not position —
+        it may already exist from an earlier month. Column B (normally a
+        lease commencement date range for tenant rows) tracks "as of
+        MM/YYYY" for THIS row specifically, so repeat runs only pick up
+        genuinely new activity instead of re-adding what's already folded
+        into the row's running total.
+        """
+        _tieout = _find_tieout_row(ws)
+        if _tieout is None:
+            return
+
+        _entity_col = None
+        for _c in (4, 5):
+            _hdr = str(ws.cell(5, _c).value or '').strip().lower()
+            if 'pm' in _hdr:
+                _entity_col = _c
+                break
+        if _entity_col is None:
+            return
+        _total_col = 6
+
+        _unalloc_row = None
+        _last_period = None
+        for _r in range(data_start, _tieout):
+            if str(ws.cell(_r, 3).value or '').strip().lower() == label.lower():
+                _unalloc_row = _r
+                _last_period = _coerce_period(ws.cell(_r, 2).value)
+                break
+
+        _acct = gl_map.get(account_code)
+        _new_amt = 0.0
+        _new_max_period = None
+        for _t in (getattr(_acct, 'transactions', None) or []):
+            if _is_reversal_txn(_t):
+                continue
+            _period = _coerce_date(getattr(_t, 'date', None))
+            if _period is None:
+                continue
+            # Month granularity, not exact date — see the identical fix (and
+            # its comment) in _append_capital_asset_rows above; the tracking
+            # cell here only ever stores 'MM/YYYY' too.
+            if _last_period and _date(_period.year, _period.month, 1) <= _last_period:
+                continue
+            _new_amt += float(getattr(_t, 'net_amount', 0) or 0)
+            if _new_max_period is None or _period > _new_max_period:
+                _new_max_period = _period
+
+        if _new_max_period is None or abs(_new_amt) < 0.005:
+            return  # nothing new since the last time this ran
+
+        if _unalloc_row is not None:
+            _prior_amt = float(ws.cell(_unalloc_row, _entity_col).value or 0)
+            ws.cell(_unalloc_row, _entity_col).value = round(_prior_amt + _new_amt, 2)
+            ws.cell(_unalloc_row, 2).value = _new_max_period.strftime('%m/%Y')
+            return  # existing row's own cell — footer SUM range already covers it
+
+        # No existing Unallocated row yet — insert one right before the
+        # tieout, matching the other append functions' insert convention.
+        _last_row = _last_nonempty_row(ws, 3, data_start, _tieout)
+        _rows_avail = _tieout - _last_row - 2   # leave 1 gap row before tieout
+        if _rows_avail < 1:
+            _footer_snap = _snapshot_row_styles(ws, _tieout, _tieout + 2, 2, _total_col)
+            _footer_merges = _snapshot_and_unmerge_footer(ws, _tieout, _tieout + 2)
+            ws.insert_rows(_tieout, 1)
+            _src = data_start if (_tieout - data_start) % 2 == 0 else data_start + 1
+            _copy_row_style(ws, _src, _tieout, 2, _total_col)
+            _tieout += 1
+            _restore_row_styles(ws, _tieout, 2, _total_col, _footer_snap)
+            _restore_footer_merges(ws, _tieout, _footer_merges)
+
+        _new_row = _last_row + 1
+        ws.cell(_new_row, 2).value = _new_max_period.strftime('%m/%Y')
+        ws.cell(_new_row, 3).value = label
+        ws.cell(_new_row, _entity_col).value = round(_new_amt, 2)
+        ws.cell(_new_row, _total_col).value = f'=SUM({_gcl(4)}{_new_row}:{_gcl(5)}{_new_row})'
+
+        _col_ltr = _gcl(_total_col)
+        _existing_total = ws.cell(_tieout, _total_col).value
+        if isinstance(_existing_total, str) and _existing_total.startswith('=SUM('):
+            ws.cell(_tieout, _total_col).value = _extend_trailing_sum_range(
+                _existing_total, _col_ltr, _last_row, _new_row,
+                new_segment_start=data_start,
+            )
+        else:
+            ws.cell(_tieout, _total_col).value = f'=SUM({_col_ltr}{data_start}:{_col_ltr}{_new_row})'
+        ws.cell(_tieout + 1, _total_col).value = (
+            f"=VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)"
+        )
+        ws.cell(_tieout + 2, _total_col).value = f'={_col_ltr}{_tieout}-{_col_ltr}{_tieout + 1}'
+
+    def _append_annual_balance_forward_row(ws, account_code: str, data_start: int) -> None:
+        """
+        381100 Retained Earnings only moves via the annual closing entry
+        that rolls the prior year's net income into it — not discrete GL
+        transactions like the other capital/equity ledger tabs
+        (Land/Building/Contributions/Distributions). Confirmed with Ryan
+        2026-08-20: it should get exactly one new 'Balance Forward' row
+        each January, not an append-per-transaction treatment.
+
+        Only fires when the close period being processed is January. The
+        row's amount is the account's real GL beginning_balance for that
+        period — which, per Yardi's own year-end rollover, already reflects
+        the prior year's ending position plus its net income close — not a
+        transaction pulled from gl_map. A re-run of the same January is
+        idempotent: it checks for a Balance Forward row already dated that
+        same month before adding another.
+        """
+        try:
+            _period_dt = _dt.strptime(period, '%b-%Y')
+        except Exception:
+            return
+        if _period_dt.month != 1:
+            return
+
+        _tieout = _find_tieout_row(ws)
+        if _tieout is None:
+            return
+
+        _entity_col = None
+        for _c in (4, 5):
+            _hdr = str(ws.cell(5, _c).value or '').strip().lower()
+            if 'pm' in _hdr:
+                _entity_col = _c
+                break
+        if _entity_col is None:
+            return
+        _total_col = 6
+
+        _this_period_label = _period_dt.strftime('%m/%Y')
+        for _r in range(data_start, _tieout):
+            if (str(ws.cell(_r, 2).value or '').strip() == _this_period_label
+                    and str(ws.cell(_r, 3).value or '').strip().lower() == 'balance forward'):
+                return  # already added for this January — re-run, not a new year
+
+        _gl_acct = gl_map.get(account_code)
+        if _gl_acct is None:
+            return
+        _bal_fwd_amt = round(float(getattr(_gl_acct, 'beginning_balance', 0) or 0), 2)
+        if abs(_bal_fwd_amt) < 0.01:
+            return
+
+        _last_row = _last_nonempty_row(ws, 2, data_start, _tieout)
+        _rows_avail = _tieout - _last_row - 2   # leave 1 gap row before tieout
+        if _rows_avail < 1:
+            _footer_snap = _snapshot_row_styles(ws, _tieout, _tieout + 2, 2, _total_col)
+            _footer_merges = _snapshot_and_unmerge_footer(ws, _tieout, _tieout + 2)
+            ws.insert_rows(_tieout, 1)
+            _src = data_start if (_tieout - data_start) % 2 == 0 else data_start + 1
+            _copy_row_style(ws, _src, _tieout, 2, _total_col)
+            _tieout += 1
+            _restore_row_styles(ws, _tieout, 2, _total_col, _footer_snap)
+            _restore_footer_merges(ws, _tieout, _footer_merges)
+
+        _new_row = _last_row + 1
+        ws.cell(_new_row, 2).value = _this_period_label
+        ws.cell(_new_row, 3).value = 'Balance Forward'
+        ws.cell(_new_row, _entity_col).value = _bal_fwd_amt
+        ws.cell(_new_row, _total_col).value = f'=SUM({_gcl(4)}{_new_row}:{_gcl(5)}{_new_row})'
+
+        _col_ltr = _gcl(_total_col)
+        _existing_total = ws.cell(_tieout, _total_col).value
+        if isinstance(_existing_total, str) and _existing_total.startswith('=SUM('):
+            ws.cell(_tieout, _total_col).value = _extend_trailing_sum_range(
+                _existing_total, _col_ltr, _last_row, _new_row,
+                new_segment_start=data_start,
+            )
+        else:
+            ws.cell(_tieout, _total_col).value = f'=SUM({_col_ltr}{data_start}:{_col_ltr}{_new_row})'
+        ws.cell(_tieout + 1, _total_col).value = (
+            f"=VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)"
+        )
+        ws.cell(_tieout + 2, _total_col).value = f'={_col_ltr}{_tieout}-{_col_ltr}{_tieout + 1}'
 
     def _fill_ppd_other_tab(ws) -> None:
         """
@@ -4740,6 +5081,68 @@ def generate_bs_workpaper_from_template(
             'columns': {5: '231100', 6: '213200', 7: '801110'},
             'fy_scoped_cols': {7},   # 801110 Interest Expense is P&L
         })
+
+    # ── 8d. Capital/equity ledger tabs: append new-period transactions ───────
+    # Confirmed with Ryan 2026-08-20: these tabs were all left completely
+    # frozen at template-creation content forever — the same gap RE Tax/Loan
+    # Analysis had before their own fix. One row per GL transaction, split
+    # across whichever column is THIS property's own entity (found
+    # dynamically — column order/spelling isn't consistent across tabs).
+    # Extends beyond the originally-reported 154500 Building Improvements
+    # gap to every other tab sharing the identical structure: land/building
+    # basis, finance costs, and partner contributions/distributions/retained
+    # earnings all update the same way a capital addition does — one dated
+    # line item, no per-tenant attribution question.
+    for _cap_tab, _cap_acct in (
+        ('154500 Building Improvements',     '154500'),
+        ('152100 Land',                      '152100'),
+        ('154100 Building',                  '154100'),
+        ('187100 Finance Costs',             '187100'),
+        ('311100 Contributions-Partner A',   '311100'),
+        ('331100 Distributions - A',         '331100'),
+    ):
+        if _cap_tab in wb.sheetnames:
+            _append_capital_asset_rows(wb[_cap_tab], _cap_acct, data_start=6)
+
+    # 381100 Retained Earnings does NOT get individual transaction rows —
+    # confirmed with Ryan 2026-08-20: RE only moves via the annual closing
+    # entry that rolls the prior year's net income into it, so it gets one
+    # new 'Balance Forward' row each January (the account's real
+    # beginning_balance for that period, which already reflects the prior
+    # year's close) instead of appending discrete GL transactions like
+    # Land/Building/Contributions/Distributions above.
+    if '381100 Retained Earnings - C' in wb.sheetnames:
+        _append_annual_balance_forward_row(wb['381100 Retained Earnings - C'], '381100', data_start=6)
+
+    # 381100 Retained Earnings' TB/Variance footer cells were hardcoded
+    # literal numbers (a frozen snapshot from template creation) instead of
+    # the live VLOOKUP/formula pattern every other tab uses — so even once
+    # new activity is appended above, the tie-out itself would still compare
+    # against a stale number rather than the current period's real TB
+    # balance. Only touch this if it's still the old static form (a plain
+    # number), so a legitimate future formula here isn't clobbered.
+    if '381100 Retained Earnings - C' in wb.sheetnames:
+        _ws_re = wb['381100 Retained Earnings - C']
+        _re_tieout = _find_tieout_row(_ws_re)
+        if _re_tieout is not None and isinstance(_ws_re.cell(_re_tieout + 1, 6).value, (int, float)):
+            _ws_re.cell(_re_tieout + 1, 6).value = "=VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)"
+            _ws_re.cell(_re_tieout + 2, 6).value = f'=F{_re_tieout}-F{_re_tieout + 1}'
+
+    # ── 8e. Per-tenant ledger tabs: fold unattributable new activity in ──────
+    # Confirmed with Ryan 2026-08-20: same frozen-forever gap, but these tabs
+    # are one row per TENANT rather than one row per transaction — a new
+    # charge (e.g. a law firm's lease-support invoice, or a leasing
+    # commission payment) doesn't name which tenant's lease it belongs to
+    # anywhere in the GL. Rather than guess, new activity accumulates into a
+    # single 'Unallocated' row per tab; reclassify to the correct tenant
+    # manually if needed.
+    for _unalloc_tab, _unalloc_acct in (
+        ('181300 Legal Leasing Costs',   '181300'),
+        ('181200 Leasing Commissions',   '181200'),
+        ('181400 Tenant Improvement',    '181400'),
+    ):
+        if _unalloc_tab in wb.sheetnames:
+            _append_unallocated_row(wb[_unalloc_tab], _unalloc_acct, data_start=6)
 
     # ── 9. Rebuild Trial Balance tab ──────────────────────────────────────────
     # The per-account tabs use =VLOOKUP(B1,'Trial Balance'!$A:$F,6,0)
