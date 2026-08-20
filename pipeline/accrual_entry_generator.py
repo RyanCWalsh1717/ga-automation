@@ -4236,6 +4236,29 @@ def write_prepaid_amortization_tab(wb: Workbook, amort_lines: List[Dict],
 
 # ── Prepaid release JEs from ledger ─────────────────────────
 
+def _extract_gl_account_name(gl_account_str: str) -> str:
+    """Extract the human-readable account name from a combined GL field.
+
+    Handles both orderings the prepaid ledger's 'gl_account' field may hold
+    (mirrors nexus_accrual._extract_gl_account_number, inverted):
+      'Admin-Computer/Software (637370)'  — name first, code in trailing parens
+      '637150 (Admin-Tenant Relations)'   — code first, name in parens
+      'Management-Professional Fees'      — already a plain name
+
+    Returns '' for a bare numeric code with no name attached.
+    """
+    s = (gl_account_str or '').strip()
+    m = re.match(r'^\d+\s*\(([^)]+)\)\s*$', s)   # CODE (name)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r'^(.+?)\s*\(\d+\)\s*$', s)      # name (CODE)
+    if m:
+        return m.group(1).strip()
+    if re.match(r'^\d+$', s):                      # bare numeric code, no name
+        return ''
+    return s
+
+
 def build_prepaid_release_je(ledger_amort_lines: List[Dict],
                               period: str = '',
                               je_start: int = 1) -> List[Dict]:
@@ -4262,6 +4285,7 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
         inv_num     = str(item.get('invoice_number', '') or '')
         desc        = str(item.get('description', '') or '')
         gl_acct     = str(item.get('gl_account_number', '') or '')
+        gl_acct_nm  = _extract_gl_account_name(str(item.get('gl_account', '') or ''))
         amount      = item.get('monthly_amount', 0) or 0
         period_lbl  = item.get('period_label', period)
         month_idx   = item.get('month_index', '')
@@ -4292,7 +4316,7 @@ def build_prepaid_release_je(ledger_amort_lines: List[Dict],
             'line':           1,
             'date':           period_lbl,
             'account_code':   gl_acct,
-            'account_name':   desc[:40],
+            'account_name':   gl_acct_nm,
             'description':    je_desc,
             'reference':      inv_num,
             'debit':          abs(amount),

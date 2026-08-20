@@ -3531,12 +3531,14 @@ with tab1:
 
             # ── Description override state — keyed by run so fresh run resets ─
             if st.session_state.get('_je_desc_run') != _run_key:
-                st.session_state.je_desc_overrides   = {}
-                st.session_state.je_excluded_jes     = set()   # reset exclusions on new run
-                st.session_state.je_amount_overrides = {}       # reset amount edits on new run
+                st.session_state.je_desc_overrides    = {}
+                st.session_state.je_excluded_jes      = set()   # reset exclusions on new run
+                st.session_state.je_amount_overrides  = {}       # reset amount edits on new run
+                st.session_state.je_account_overrides = {}       # reset account-code edits on new run
                 st.session_state._je_desc_run = _run_key
             _all_desc_edits: dict = {}   # (je_num, acct_code) → edited description
             _all_amount_edits: dict = {}  # je_number → adjusted debit amount
+            _all_account_edits: dict = {}  # (je_num, acct_code) → corrected account code
             _all_excl_je_nums: set = set()  # je_numbers unchecked across all expanders
 
             # ── One expander per CR account ──────────────────────────────────
@@ -3558,24 +3560,29 @@ with tab1:
 
                     _excl_set    = st.session_state.get('je_excluded_jes', set())
                     _amt_ovr_set = st.session_state.get('je_amount_overrides', {})
+                    _acct_ovr_set = st.session_state.get('je_account_overrides', {})
                     _rows = []
                     for _l in _group_lines:
                         _okey = (_l.get('je_number', ''), _l.get('account_code', ''))
                         _je_num = _l.get('je_number', '')
                         _desc = (st.session_state.je_desc_overrides.get(_okey)
                                  or _clean_je_desc(_l.get('description') or ''))
-                        _acct_display = _l.get('account_code', '')
-                        if _l.get('account_name'):
-                            _acct_display = f"{_acct_display}  {_l['account_name']}"
+                        # Corrected account code (if edited) takes priority; name
+                        # always re-derived from the current code, not stored text,
+                        # so it stays in sync whichever code ends up in effect.
+                        _acct_num  = _acct_ovr_set.get(_okey, _l.get('account_code', ''))
+                        _acct_name = (_acct_name_lookup.get(str(_acct_num or '').strip(), '')
+                                      or _l.get('account_name') or '')
                         # Use amount override if present, else original debit
                         _amt = _amt_ovr_set.get(_je_num, _l.get('debit') or 0)
                         _rows.append({
-                            "Include":     _je_num not in _excl_set,
-                            "JE #":        _je_num,
-                            "File Source": _SOURCE_FILE_LABEL.get(_l.get('source', ''), _l.get('source', '')),
-                            "GL Account":  _acct_display,
-                            "Description": _desc,
-                            "Amount":      _amt,
+                            "Include":            _je_num not in _excl_set,
+                            "JE #":               _je_num,
+                            "File Source":        _SOURCE_FILE_LABEL.get(_l.get('source', ''), _l.get('source', '')),
+                            "GL Account Number":  _acct_num,
+                            "GL Account Name":    _acct_name,
+                            "Description":        _desc,
+                            "Amount":             _amt,
                         })
 
                     _edited = st.data_editor(
@@ -3583,14 +3590,19 @@ with tab1:
                         num_rows="fixed",
                         use_container_width=True,
                         column_config={
-                            "Include":     st.column_config.CheckboxColumn(
+                            "Include":            st.column_config.CheckboxColumn(
                                                "Include", width="small",
                                                help="Uncheck to exclude this JE from the CSV upload. Re-check to restore."),
-                            "JE #":        st.column_config.TextColumn(width="small",  disabled=True),
-                            "File Source": st.column_config.TextColumn(width="medium", disabled=True),
-                            "GL Account":  st.column_config.TextColumn(width="medium", disabled=True),
-                            "Description": st.column_config.TextColumn(width="large"),   # ← editable
-                            "Amount":      st.column_config.NumberColumn(
+                            "JE #":               st.column_config.TextColumn(width="small",  disabled=True),
+                            "File Source":        st.column_config.TextColumn(width="medium", disabled=True),
+                            "GL Account Number":  st.column_config.TextColumn(
+                                               width="small",
+                                               help="Edit to correct a miscoded account (e.g. a 7xxxxx "
+                                                    "corporate code that should be a 6xxxxx property "
+                                                    "expense). GL Account Name updates automatically."),
+                            "GL Account Name":    st.column_config.TextColumn(width="medium", disabled=True),
+                            "Description":        st.column_config.TextColumn(width="large"),   # ← editable
+                            "Amount":             st.column_config.NumberColumn(
                                                format="$%,.2f", width="small", min_value=0,
                                                help="Edit to override the pipeline's computed amount. "
                                                     "Both the DR and CR legs update automatically."),
@@ -3606,11 +3618,13 @@ with tab1:
                     for _orig, _edit in zip(_rows, _edit_rows):
                         _k = (
                             _orig['JE #'],
-                            # account_code is the first token of GL Account display string
-                            str(_orig['GL Account']).split()[0],
+                            str(_orig['GL Account Number']),
                         )
                         if _edit.get('Description', '') != _orig.get('Description', ''):
                             _all_desc_edits[_k] = _edit['Description']
+                        _new_acct = str(_edit.get('GL Account Number', '') or '').strip()
+                        if _new_acct and _new_acct != _k[1]:
+                            _all_account_edits[_k] = _new_acct
                         _new_amt = _edit.get('Amount')
                         _orig_amt = _orig.get('Amount', 0)
                         if _new_amt is not None and abs(float(_new_amt) - float(_orig_amt)) > 0.001:
@@ -3636,24 +3650,33 @@ with tab1:
                             unsafe_allow_html=True,
                         )
 
-            # ── Apply description edits, amount overrides, exclusions → update CSV ──
+            # ── Apply description/account edits, amount overrides, exclusions → update CSV ──
             _excl_changed   = _all_excl_je_nums   != st.session_state.get('je_excluded_jes', set())
             _amt_changed    = _all_amount_edits   != st.session_state.get('je_amount_overrides', {})
-            if _all_desc_edits or _excl_changed or _amt_changed:
+            _acct_changed   = _all_account_edits  != st.session_state.get('je_account_overrides', {})
+            if _all_desc_edits or _excl_changed or _amt_changed or _acct_changed:
                 if _all_desc_edits:
                     st.session_state.je_desc_overrides = _all_desc_edits
                 if _excl_changed:
                     st.session_state.je_excluded_jes = _all_excl_je_nums
                 if _amt_changed:
                     st.session_state.je_amount_overrides = _all_amount_edits
-                # Apply description and amount overrides to all_je_lines
+                if _acct_changed:
+                    st.session_state.je_account_overrides = _all_account_edits
+                # Apply description, account-code, and amount overrides to all_je_lines.
                 # Amount override updates both the DR leg (debit) and the CR leg (credit)
-                # so the JE remains balanced — both legs carry the same je_number.
+                # so the JE remains balanced — both legs carry the same je_number. Account-code
+                # correction only touches the DR (expense) leg — the CR leg is a different
+                # account by design and isn't part of what the user is correcting here.
                 _updated_lines = []
                 for _l in p1.get("all_je_lines", []):
                     _je_n = _l.get('je_number', '')
                     _k    = (_je_n, _l.get('account_code', ''))
                     _l    = dict(_l)   # shallow copy so we don't mutate the original
+                    if _k in _all_account_edits and (_l.get('debit') or 0) > 0:
+                        _new_code = _all_account_edits[_k]
+                        _l['account_code'] = _new_code
+                        _l['account_name'] = _acct_name_lookup.get(_new_code, '')
                     if _k in _all_desc_edits and (_l.get('debit') or 0) > 0:
                         _l['description'] = _all_desc_edits[_k]
                     if _je_n in _all_amount_edits:
