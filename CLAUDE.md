@@ -448,10 +448,16 @@ No upload is needed during the year — the app loads it automatically.
 5. Upload the new Kardin budget, name it `GA_Kardin_Budget_FY2026.xlsx` (keep same name) or update the filename in `app.py` (`_COMMITTED_BUDGET` line)
 6. Commit directly to `main` — Streamlit redeploys in ~2 minutes
 
-**To add a budget for a new property (e.g., Lex Labs):**
-1. Create folder `data/lexlabspm/` in GitHub (upload a file into it to create the folder)
-2. Upload `GA_Kardin_Budget_FY2026.xlsx` for that property
-3. The `_committed_path(prop_code, filename)` helper in `app.py` auto-loads it once the property selector is wired up
+**To add a budget for a new property (e.g., Lex Labs):** use the in-app upload —
+**⚙️ Properties → Current Year Budget (Kardin)** section, above the property
+form (Property Setup tab). Uploads under the file's own name to
+`data/{property_code}/`, both locally and to GitHub if configured. Enter that
+saved filename in the property's `Kardin Budget Filename` field (step 10) so
+`kardin_budget_file` in config.yaml matches — `_committed_path(prop_code,
+filename)` in `app.py` then auto-loads it every month with no re-upload
+needed. (Manually committing the file via the GitHub UI, per the steps above
+for an existing property's annual refresh, still works too — the in-app
+upload is just a faster path for onboarding a brand-new property.)
 
 ---
 

@@ -268,7 +268,9 @@ def _check_data_dir(repo_root: str) -> CheckResult:
         )
 
     issues = []
-    props = [d for d in data_dir.iterdir() if d.is_dir()]
+    # '_shared' holds cross-property reference files (e.g. the shared GRP
+    # Chart of Accounts) — not a property, so it has no config.yaml by design.
+    props = [d for d in data_dir.iterdir() if d.is_dir() and not d.name.startswith('_')]
     for prop in props:
         cfg = prop / 'config.yaml'
         if not cfg.exists():

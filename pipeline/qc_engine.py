@@ -15,6 +15,7 @@ Checks:
   5  BS Workpaper Tie-Out (GL ending vs Workpaper)
   6  Accruals vs Budget (missing accrual detection)
   7  Miscellaneous (mgmt fee, interest expense, insurance/prepaid)
+  8  Unknown Account Codes (GL accounts not on the Chart of Accounts on file)
 """
 
 from __future__ import annotations
@@ -102,7 +103,7 @@ class QCFinding:
 
 @dataclass
 class QCResult:
-    check_id: str           # "CHECK_1" … "CHECK_7"
+    check_id: str           # "CHECK_1" … "CHECK_8"
     check_name: str
     status: str             # "PASS" | "FLAG" | "FAIL"
     summary: str
@@ -995,6 +996,57 @@ def check_7_misc(budget_rows: List[dict],
     return QCResult('CHECK_7', 'Miscellaneous QC Items', status, summary, findings)
 
 
+def check_8_unknown_accounts(gl_parsed=None, coa_codes: Dict[str, str] = None) -> QCResult:
+    """
+    Flag any account code on this period's GL that isn't on the Chart of
+    Accounts on file for this property (shared GRP COA, or the property's
+    own uploaded COA — see property_config.uses_grp_coa).
+
+    Yardi occasionally adds a new GL account code over time; this catches
+    that the moment it shows up on a GL export rather than relying on
+    someone noticing an unfamiliar account name. Skipped entirely (not a
+    FLAG) when no COA is on file at all — nothing to check against yet.
+    """
+    findings: List[QCFinding] = []
+
+    if coa_codes is None:
+        return QCResult(
+            'CHECK_8', 'Unknown Account Codes (COA Coverage)', 'PASS',
+            'No Chart of Accounts on file for this property — check skipped. '
+            'Upload one in Property Setup to enable this check.',
+            findings,
+        )
+
+    _gl_accounts = getattr(gl_parsed, 'accounts', None) or []
+    for acct in _gl_accounts:
+        code = str(getattr(acct, 'account_code', '') or '').strip()
+        name = str(getattr(acct, 'account_name', '') or '').strip()
+        if code and code not in coa_codes:
+            findings.append(QCFinding(
+                account_code=code,
+                account_name=name or '(unnamed)',
+                value_a=0.0,
+                value_b=0.0,
+                difference=0.0,
+                flag='FLAG',
+                note=(
+                    f'Account {code} — {name or "(unnamed)"} appears on this GL but is not on '
+                    f'the Chart of Accounts on file. Likely a new Yardi account — upload an '
+                    f'updated COA in Property Setup so future runs recognize it.'
+                ),
+            ))
+
+    if not findings:
+        status  = 'PASS'
+        summary = f'All {len(_gl_accounts)} GL accounts this period are on the Chart of Accounts on file.'
+    else:
+        status  = 'FLAG'
+        items   = ', '.join(f.account_code for f in findings[:5])
+        summary = f'{len(findings)} account(s) on this GL not found on the Chart of Accounts: {items}.'
+
+    return QCResult('CHECK_8', 'Unknown Account Codes (COA Coverage)', status, summary, findings)
+
+
 # ══════════════════════════════════════════════════════════════
 # MAIN RUNNER
 # ══════════════════════════════════════════════════════════════
@@ -1012,9 +1064,10 @@ def run_qc(
     loan_data=None,
     property_config=None,
     t12_result=None,
+    coa_codes: Dict[str, str] = None,
 ) -> QCReport:
     """
-    Run all 7 QC checks and return a QCReport.
+    Run all 8 QC checks and return a QCReport.
 
     Args:
         budget_rows:     Parsed budget comparison rows.
@@ -1030,6 +1083,9 @@ def run_qc(
                          Used for Check 7e: GL 115300 vs lender insurance escrow balance.
         t12_result:      Parsed T12Result — powers Check 4's prior-month actuals
                          (same source used by the QC workbook's Tab 4).
+        coa_codes:       {account_code: account_name} from the Chart of Accounts on
+                         file for this property (shared GRP COA or a per-property
+                         upload) — powers Check 8. None if no COA is on file.
     """
     kardin_records = kardin_records or []
 
@@ -1068,6 +1124,7 @@ def run_qc(
         check_7_misc(budget_rows, gl_parsed, tb_result, kardin_records, cash_received,
                      loan_data=loan_data, period_month=period_month,
                      property_config=property_config),
+        check_8_unknown_accounts(gl_parsed, coa_codes=coa_codes),
     ]
 
     return QCReport(

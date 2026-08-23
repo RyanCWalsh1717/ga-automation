@@ -44,7 +44,6 @@ def build_config_dict(
     property_size_sf:       Optional[int],
     investor_name:          str,
     management_company:     str,
-    management_code:        str,
     invoice_prefix:         str,
     team_members:           list[str],
     tenants:                list[dict],   # [{'key','name'}]
@@ -64,6 +63,10 @@ def build_config_dict(
     file_prefix_deliverable: str,
     active:                 bool = True,
     property_system:        str = 'yardi',
+    uses_grp_coa:           bool = False,
+    consolidated_buildings: list[dict] = None,   # [{'name','yardi_code','size_sf'}]
+    investor_legal_name:    str = '',
+    yardi_subset_code:      str = '',
 ) -> dict:
     """Build the ordered dict that becomes the YAML config file."""
     banks = {}
@@ -102,13 +105,29 @@ def build_config_dict(
     # Always write property_system so the UI can detect it reliably.
     # 'yardi' is the default; MRI and future systems are stored explicitly.
     cfg['property_system'] = (property_system or 'yardi').lower()
+    if uses_grp_coa:         cfg['uses_grp_coa']     = True   # omit when False (defaults to False on load)
     if property_type:        cfg['property_type']    = property_type
     if property_size_sf:     cfg['property_size_sf'] = property_size_sf
     if not active:           cfg['active']           = False   # omit when True (defaults to True on load)
 
+    _clean_buildings = [
+        {
+            'name':       (b.get('name') or '').strip(),
+            'yardi_code': (b.get('yardi_code') or '').strip(),
+            'size_sf':    int(b.get('size_sf', 0) or 0),
+        }
+        for b in (consolidated_buildings or [])
+        if (b.get('name') or '').strip()
+    ]
+    if _clean_buildings:
+        cfg['consolidated_buildings'] = _clean_buildings
+    if yardi_subset_code.strip():
+        cfg['yardi_subset_code'] = yardi_subset_code.strip()
+
     cfg['investor_name']      = investor_name
+    if investor_legal_name.strip():
+        cfg['investor_legal_name'] = investor_legal_name.strip()
     cfg['management_company'] = management_company
-    cfg['management_code']    = management_code
     cfg['invoice_prefix']     = invoice_prefix
 
     _clean_members = [m.strip() for m in (team_members or []) if (m or '').strip()]
@@ -383,3 +402,102 @@ def deactivate_property(property_code: str, data_dir: str) -> tuple[bool, str]:
 def reactivate_property(property_code: str, data_dir: str) -> tuple[bool, str]:
     """Set active: true on a property config. Restores it to the selector."""
     return _set_active_flag(property_code, active=True, data_dir=data_dir)
+
+
+# ── Permanent delete ──────────────────────────────────────────────────────────
+
+def _delete_from_github(property_code: str) -> tuple[bool, str]:
+    """
+    Delete every file under data/{property_code}/ in the GitHub repo.
+
+    The Contents API has no recursive folder delete — list the directory,
+    then DELETE each file individually (each needs its own current SHA).
+    Returns (success, message). Success if the folder is gone or was already
+    absent on GitHub (e.g. a locally-created property never pushed).
+    """
+    import requests
+
+    token, repo = _github_credentials()
+    if not token or not repo:
+        return False, 'GitHub token/repo not configured in secrets'
+
+    dir_path = f'data/{property_code}'
+    url      = f'https://api.github.com/repos/{repo}/contents/{dir_path}'
+    headers  = {
+        'Authorization': f'token {token}',
+        'Accept': 'application/vnd.github.v3+json',
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+    except Exception as e:
+        return False, str(e)
+
+    if r.status_code == 404:
+        return True, 'Not present on GitHub (nothing to delete there).'
+    if r.status_code != 200:
+        return False, f'GitHub API returned {r.status_code} listing {dir_path}: {r.text[:200]}'
+
+    entries = r.json()
+    if not isinstance(entries, list):
+        return False, f'{dir_path} is not a folder on GitHub — refusing to delete.'
+
+    deleted, failed = [], []
+    for entry in entries:
+        file_path = entry.get('path')
+        sha       = entry.get('sha')
+        if not file_path or not sha:
+            continue
+        file_url = f'https://api.github.com/repos/{repo}/contents/{file_path}'
+        payload  = {
+            'message': f'Delete property: {property_code}',
+            'sha':     sha,
+        }
+        try:
+            dr = requests.delete(file_url, json=payload, headers=headers, timeout=15)
+        except Exception as e:
+            failed.append(f'{file_path} ({e})')
+            continue
+        if dr.status_code in (200, 201):
+            deleted.append(file_path)
+        else:
+            failed.append(f'{file_path} ({dr.status_code})')
+
+    if failed:
+        return False, f'Deleted {len(deleted)} file(s); failed: {", ".join(failed)}'
+    return True, f'Deleted {len(deleted)} file(s) from GitHub.'
+
+
+def delete_property(property_code: str, data_dir: str) -> tuple[bool, str]:
+    """
+    Permanently delete a property — removes data/{property_code}/ locally
+    (config, workpaper template, Kardin budget, hero photo, everything) and
+    every file under that path in the GitHub repo.
+
+    Unlike deactivate_property(), this is NOT reversible — intended for a
+    property that was entered by mistake, not a real property being wound
+    down (use deactivate for that instead).
+
+    Returns (success, message).
+    """
+    import shutil
+
+    if not property_code or '/' in property_code or '..' in property_code:
+        return False, f'Invalid property code: {property_code!r}'
+
+    local_ok, local_msg = True, 'Not present locally.'
+    folder = os.path.join(data_dir, property_code)
+    if os.path.isdir(folder):
+        try:
+            shutil.rmtree(folder)
+            local_ok, local_msg = True, f'Deleted local folder {folder}'
+        except Exception as e:
+            local_ok, local_msg = False, str(e)
+
+    gh_ok, gh_msg = True, 'GitHub not configured — skipped.'
+    if github_configured():
+        gh_ok, gh_msg = _delete_from_github(property_code)
+
+    if local_ok and gh_ok:
+        return True, f'{local_msg} {gh_msg}'
+    return False, f'Local: {local_msg} | GitHub: {gh_msg}'

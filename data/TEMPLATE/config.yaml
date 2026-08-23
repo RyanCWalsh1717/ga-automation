@@ -30,9 +30,9 @@ yardi_etl_code:         ''                # Yardi ETL FinJournals PROPERTY field
 
 # ── OWNERSHIP / BRANDING ──────────────────────────────────────────────────────
 
-investor_name:          ''                # Capital partner name, e.g. 'Blackstone Real Estate'
-management_company:     'Greatland Realty Partners'
-management_code:        'GRP'
+investor_name:          ''                # Capital partner short name, e.g. 'Blackstone Real Estate'
+investor_legal_name:    ''                # Full legal entity per the investor's W-9
+management_company:     'Greatland Realty Partners'   # always GRP — not user-configurable in the UI
 invoice_prefix:         ''                # Invoice number prefix, e.g. 'LexLabsPM'
 firm_name:              'Greatland Realty Partners (GRP)'
 

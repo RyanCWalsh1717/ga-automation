@@ -79,6 +79,32 @@ def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     p = _DATA_DIR / prop_code / filename
     return str(p) if p.exists() else None
 
+
+def _load_coa_codes(cfg) -> Optional[dict]:
+    """
+    Return {account_code: account_name} from whichever Chart of Accounts is
+    in effect for this property — the shared GRP COA if cfg.uses_grp_coa,
+    else this property's own uploaded chart_of_accounts.{xlsx,xls,csv}.
+    Returns None if no COA is on file (QC Check 8 skips itself in that case).
+    """
+    if getattr(cfg, 'uses_grp_coa', False):
+        _coa_path = _committed_path('_shared', 'GRP_Chart_of_Accounts.xlsx')
+    else:
+        _coa_path = None
+        for _ext in ('.xlsx', '.xls', '.csv'):
+            _coa_path = _committed_path(cfg.property_code, f'chart_of_accounts{_ext}')
+            if _coa_path:
+                break
+    if not _coa_path:
+        return None
+    try:
+        from parsers.yardi_chart_of_accounts import parse as _parse_coa
+        _coa_res = _parse_coa(_coa_path)
+        return _coa_res.accounts or None
+    except Exception:
+        return None
+
+
 def _build_accruals_seed_df(cfg=None):
     """
     Build the one-off accruals seed DataFrame from property config defaults.
@@ -539,13 +565,30 @@ if "post_close_je_df" not in st.session_state:
         "Line Description": ["", ""],
     })
 
-# Tenant list for TUB sidebar inputs — loaded from active property config.
-# Each entry is (key_slug, display_name).  Falls back to RevLabs defaults
-# only if the config has no tenants defined (backward compatibility).
+# Tenant list for TUB sidebar inputs. Prefers the LIVE tenant list from an
+# uploaded Tenancy Schedule (rent roll) this period — key = Yardi's own
+# tenant code (e.g. 't0000017'), so the list never goes stale as leases turn
+# over and never relies on anyone typing an arbitrary slug. Falls back to
+# this property's static config.yaml tenants list (backward-compat, e.g.
+# Revolution Labs, which doesn't upload a rent roll), or empty if neither
+# is available. Each entry is (key, display_name).
 def _build_tub_tenants(cfg) -> list:
+    _ts_path = st.session_state.get('uploaded_files', {}).get('tenancy_schedule')
+    if _ts_path and os.path.exists(_ts_path):
+        try:
+            from parsers.yardi_tenancy_schedule import parse as _parse_ts
+            _ts_result = _parse_ts(_ts_path)
+        except Exception:
+            _ts_result = None
+        if _ts_result and not _ts_result._parse_error and _ts_result.tenants:
+            _multi_building = len({t.building_code for t in _ts_result.tenants}) > 1
+            _seen: dict = {}
+            for t in _ts_result.tenants:
+                _label = f'{t.tenant_name} ({t.building_name})' if _multi_building else t.tenant_name
+                _seen.setdefault(t.tenant_code, _label)
+            return list(_seen.items())
     if getattr(cfg, 'tenants', None):
         return [(t['key'], t['name']) for t in cfg.tenants]
-    # No tenants in config — return empty (operator must populate config.yaml tenants)
     return []
 
 import pandas as pd  # needed for manual_accruals_df init and stale-session reset
@@ -1258,6 +1301,13 @@ FILE_CONFIG = {
         "Carry-forward from prior month for prepaid amortization tracking. "
         "Without it: ledger starts fresh — existing multi-period items won't be carried forward.",
     ),
+    "tenancy_schedule": (
+        "Tenancy Schedule / Rent Roll (.xlsx)", "xlsx", False, "ref",
+        "Current tenant list read live from this period's rent roll — drives the Tenant "
+        "Utility Billing table with Yardi's own tenant codes as the identifier, instead of "
+        "a static config list that goes stale as leases turn over. "
+        "Without it: falls back to this property's config.yaml tenants list, if any.",
+    ),
 }
 
 file_config = FILE_CONFIG
@@ -1274,7 +1324,7 @@ _P1_SLOT_KEYS = [
     "nexus_accrual", "bank_rec", "receivable_summary", "receivable_detail", "ar_aging",
     "bank_rec_dev", "bank_rec_xlsx", "bank_rec_dev_xlsx", "daca_bank_rec_xlsx",
     "capital_schedule", "capital_seed", "daca_bank", "loan",
-    "prepaid_ledger", "unknown",
+    "prepaid_ledger", "tenancy_schedule", "unknown",
 ]
 _P1_SLOT_LABELS = [_FILE_LABELS.get(k, k) for k in _P1_SLOT_KEYS]
 
@@ -2152,20 +2202,38 @@ with tab1:
             "Posts as: DR 133110 / CR 440500 (electric) and CR 440700 (gas). "
             "Leave at $0 to skip — pipeline auto-accrues budget amounts."
         )
+        _ts_uploaded = bool(st.session_state.uploaded_files.get('tenancy_schedule'))
         _tub_tenants = _build_tub_tenants(_active_cfg)
+        if _ts_uploaded and _tub_tenants:
+            st.success(
+                f"📋 {len(_tub_tenants)} tenant(s) auto-detected from the uploaded Rent Roll — "
+                f"confirm each is correct below. Uncheck any that shouldn't be billed this period.",
+                icon="📋",
+            )
         _tub_cols = st.columns(max(len(_tub_tenants), 1))
         for (_tkey, _tname), _tcol in zip(_tub_tenants, _tub_cols):
             with _tcol:
-                st.caption(f"**{_tname}**")
+                if _ts_uploaded:
+                    _tincluded = st.checkbox(
+                        _tname, value=True,
+                        key=f"tub_incl_{_tkey}_{st.session_state.tub_key}",
+                        help="Confirms this tenant from the Rent Roll should be billed this "
+                             "period. Uncheck to exclude — e.g. a lease that just ended.",
+                    )
+                else:
+                    st.caption(f"**{_tname}**")
+                    _tincluded = True
                 _telec = st.number_input(
                     "Electric ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
                     key=f"tub_elec_{_tkey}_{st.session_state.tub_key}",
+                    disabled=not _tincluded,
                 )
                 _tgas = st.number_input(
                     "Gas ($)", min_value=0.0, value=0.0, step=1.0, format="%.2f",
                     key=f"tub_gas_{_tkey}_{st.session_state.tub_key}",
+                    disabled=not _tincluded,
                 )
-            if _telec > 0 or _tgas > 0:
+            if _tincluded and (_telec > 0 or _tgas > 0):
                 _tenant_utility_rows.append({'tenant': _tname, 'electric': _telec, 'gas': _tgas})
                 _tu_elec_total += _telec
                 _tu_gas_total  += _tgas
@@ -5921,6 +5989,7 @@ with tab2:
                         loan_data=engine_result.parsed.get('loan'),
                         property_config=_active_cfg,
                         t12_result=t12_result,
+                        coa_codes=_load_coa_codes(_active_cfg),
                     )
                     st.session_state.pass2_output_files["qc_report"] = qc_report
                     qc_path = os.path.join(st.session_state.temp_dir, f"{_pfx_int}_QC_Workbook.xlsx")
@@ -7605,68 +7674,282 @@ with tab4:
             else:
                 st.caption("No photo yet")
 
-    # ── Chart of Accounts upload (outside form) ───────────────────────────────
+    # ── Chart of Accounts (outside form) ──────────────────────────────────────
     st.markdown("### 📊 Chart of Accounts")
     st.caption(
-        "Upload this property's Chart of Accounts file (Excel or CSV). "
-        "Stored as `data/{property_code}/chart_of_accounts.xlsx` and used for "
-        "account validation, mapping, and future integrations. "
-        "For Yardi properties the COA is standardised — upload once and it carries "
-        "forward. Required when onboarding an MRI property."
+        "Powers QC Check 8 — flags any GL account code that isn't on the chart "
+        "on file (e.g. a new account Yardi added since the last COA export)."
     )
-    _coa_col1, _coa_col2 = st.columns([2, 1])
-    with _coa_col1:
-        _coa_upload = st.file_uploader(
-            "Chart of Accounts (Excel / CSV)",
-            type=['xlsx', 'xls', 'csv'],
-            key='prop_coa_upload',
-            help="Saved to GitHub as data/{property_code}/chart_of_accounts.xlsx",
+    _uses_grp_coa = st.radio(
+        "Uses the standard GRP Yardi Chart of Accounts?",
+        options=["Yes", "No"],
+        index=0 if _ef('uses_grp_coa', False) or _is_new else 1,
+        horizontal=True,
+        key="prop_uses_grp_coa_radio",
+        help="Yes: no upload needed — uses data/_shared/GRP_Chart_of_Accounts.xlsx, "
+             "shared across every GRP Yardi property. No: upload this property's own "
+             "COA below (e.g. a partner running their own Yardi with different codes).",
+    ) == "Yes"
+
+    if _uses_grp_coa:
+        st.success(
+            "✅ Using the shared **GRP Yardi Chart of Accounts** — no upload needed. "
+            "Update it once (below) and every GRP-COA property picks it up.",
+            icon="📊",
         )
-        if _coa_upload is not None:
-            _coa_target = _photo_target_code  # same code as photo (empty for new properties)
-            if not _coa_target:
+        with st.expander("Update the shared GRP Chart of Accounts", expanded=False):
+            st.caption(
+                "Replaces `data/_shared/GRP_Chart_of_Accounts.xlsx` — affects every "
+                "property with 'Uses the standard GRP Yardi Chart of Accounts?' = Yes."
+            )
+            _grp_coa_upload = st.file_uploader(
+                "GRP Chart of Accounts (Excel)",
+                type=['xlsx', 'xls'],
+                key='prop_shared_coa_upload',
+            )
+            if _grp_coa_upload is not None:
+                from property_writer import save_image_to_github as _save_shared_gh, save_image_local as _save_shared_loc
+                _shared_bytes = _grp_coa_upload.read()
+                _shared_loc_ok, _shared_loc_msg = _save_shared_loc(
+                    '_shared', _shared_bytes, 'GRP_Chart_of_Accounts.xlsx', str(_DATA_DIR))
+                if github_configured():
+                    _shared_gh_ok, _shared_gh_msg = _save_shared_gh(
+                        '_shared', _shared_bytes, 'GRP_Chart_of_Accounts.xlsx')
+                    if _shared_gh_ok:
+                        st.success("✅ Shared GRP Chart of Accounts saved to GitHub.")
+                    else:
+                        st.warning(f"GitHub save failed: {_shared_gh_msg}. Saved locally.")
+                else:
+                    st.info("Shared GRP Chart of Accounts saved locally.")
+        st.markdown("---")
+
+    if not _uses_grp_coa:
+        st.caption(
+            "Upload this property's own Chart of Accounts (Excel or CSV) — e.g. a "
+            "partner running their own Yardi with different account codes. Stored as "
+            "`data/{property_code}/chart_of_accounts.xlsx`."
+        )
+        _coa_col1, _coa_col2 = st.columns([2, 1])
+        with _coa_col1:
+            _coa_upload = st.file_uploader(
+                "Chart of Accounts (Excel / CSV)",
+                type=['xlsx', 'xls', 'csv'],
+                key='prop_coa_upload',
+                help="Saved to GitHub as data/{property_code}/chart_of_accounts.xlsx",
+            )
+            if _coa_upload is not None:
+                _coa_target = _photo_target_code  # same code as photo (empty for new properties)
+                if not _coa_target:
+                    st.warning(
+                        "Enter the Property Code and save the config first, "
+                        "then re-upload the Chart of Accounts."
+                    )
+                else:
+                    from property_writer import save_image_to_github as _save_coa_gh, save_image_local as _save_coa_loc
+                    _coa_bytes = _coa_upload.read()
+                    _coa_ext   = _coa_upload.name.rsplit('.', 1)[-1].lower()
+                    _coa_fname = f'chart_of_accounts.{_coa_ext}'
+                    _cloc_ok, _cloc_msg = _save_coa_loc(_coa_target, _coa_bytes, _coa_fname, str(_DATA_DIR))
+                    if github_configured():
+                        _cgh_ok, _cgh_msg = _save_coa_gh(_coa_target, _coa_bytes, _coa_fname)
+                        if _cgh_ok:
+                            st.success("✅ Chart of Accounts saved to GitHub.")
+                        else:
+                            st.warning(f"GitHub save failed: {_cgh_msg}. Saved locally.")
+                    else:
+                        st.info("Chart of Accounts saved locally.")
+                    # Show a quick preview if it's an xlsx/csv
+                    try:
+                        import io as _coa_io
+                        import pandas as _coa_pd
+                        _coa_bytes_copy = bytes(_coa_bytes)
+                        if _coa_ext in ('xlsx', 'xls'):
+                            _coa_preview_df = _coa_pd.read_excel(_coa_io.BytesIO(_coa_bytes_copy), nrows=20)
+                        else:
+                            _coa_preview_df = _coa_pd.read_csv(_coa_io.BytesIO(_coa_bytes_copy), nrows=20)
+                        st.dataframe(_coa_preview_df, use_container_width=True, height=250)
+                        st.caption(f"Showing first 20 rows of {_coa_upload.name}")
+                    except Exception:
+                        st.caption(f"Saved: {_coa_upload.name}")
+        with _coa_col2:
+            # Show whether a COA is already on file for this property
+            if not _is_new and _photo_target_code:
+                _coa_on_disk = False
+                for _ext in ('.xlsx', '.xls', '.csv'):
+                    if (_DATA_DIR / _photo_target_code / f'chart_of_accounts{_ext}').exists():
+                        _coa_on_disk = True
+                        st.success(f"✅ COA on file: `chart_of_accounts{_ext}`", icon="📊")
+                        break
+                if not _coa_on_disk:
+                    st.caption("No COA on file yet")
+
+    # ── Current Year Budget (outside form) ────────────────────────────────────
+    st.markdown("### 💰 Current Year Budget (Kardin)")
+    st.caption(
+        "Upload this property's current-year Kardin annual budget. Drives QC "
+        "tie-out and the budget-based accrual detection (HVAC, Fire Life "
+        "Safety, Snow & Ice). Saved under its own filename — enter that exact "
+        "filename in 'Kardin Budget Filename' further down (step 10) once saved."
+    )
+    _budget_col1, _budget_col2 = st.columns([2, 1])
+    with _budget_col1:
+        _budget_upload = st.file_uploader(
+            "Current Year Budget (Excel)",
+            type=['xlsx', 'xls'],
+            key='prop_budget_upload',
+            help="Saved to GitHub as data/{property_code}/<filename you uploaded>",
+        )
+        if _budget_upload is not None:
+            _budget_target = _photo_target_code  # same code as photo (empty for new properties)
+            if not _budget_target:
                 st.warning(
                     "Enter the Property Code and save the config first, "
-                    "then re-upload the Chart of Accounts."
+                    "then re-upload the budget."
                 )
             else:
-                from property_writer import save_image_to_github as _save_coa_gh, save_image_local as _save_coa_loc
-                _coa_bytes = _coa_upload.read()
-                _coa_ext   = _coa_upload.name.rsplit('.', 1)[-1].lower()
-                _coa_fname = f'chart_of_accounts.{_coa_ext}'
-                _cloc_ok, _cloc_msg = _save_coa_loc(_coa_target, _coa_bytes, _coa_fname, str(_DATA_DIR))
+                from property_writer import save_image_to_github as _save_budget_gh, save_image_local as _save_budget_loc
+                _budget_bytes = _budget_upload.read()
+                _budget_fname = _budget_upload.name
+                _bloc_ok, _bloc_msg = _save_budget_loc(_budget_target, _budget_bytes, _budget_fname, str(_DATA_DIR))
                 if github_configured():
-                    _cgh_ok, _cgh_msg = _save_coa_gh(_coa_target, _coa_bytes, _coa_fname)
-                    if _cgh_ok:
-                        st.success("✅ Chart of Accounts saved to GitHub.")
+                    _bgh_ok, _bgh_msg = _save_budget_gh(_budget_target, _budget_bytes, _budget_fname)
+                    if _bgh_ok:
+                        st.success(f"✅ Budget saved to GitHub as `{_budget_fname}`.")
                     else:
-                        st.warning(f"GitHub save failed: {_cgh_msg}. Saved locally.")
+                        st.warning(f"GitHub save failed: {_bgh_msg}. Saved locally.")
                 else:
-                    st.info("Chart of Accounts saved locally.")
-                # Show a quick preview if it's an xlsx/csv
-                try:
-                    import io as _coa_io
-                    import pandas as _coa_pd
-                    _coa_bytes_copy = bytes(_coa_bytes)
-                    if _coa_ext in ('xlsx', 'xls'):
-                        _coa_preview_df = _coa_pd.read_excel(_coa_io.BytesIO(_coa_bytes_copy), nrows=20)
-                    else:
-                        _coa_preview_df = _coa_pd.read_csv(_coa_io.BytesIO(_coa_bytes_copy), nrows=20)
-                    st.dataframe(_coa_preview_df, use_container_width=True, height=250)
-                    st.caption(f"Showing first 20 rows of {_coa_upload.name}")
-                except Exception:
-                    st.caption(f"Saved: {_coa_upload.name}")
-    with _coa_col2:
-        # Show whether a COA is already on file for this property
+                    st.info(f"Budget saved locally as `{_budget_fname}`.")
+                st.caption(
+                    f"⬇️ Enter **{_budget_fname}** in 'Kardin Budget Filename' (step 10) "
+                    f"below so the pipeline knows to load it automatically."
+                )
+    with _budget_col2:
+        # Show whether a budget file matching the configured filename is on disk
         if not _is_new and _photo_target_code:
-            _coa_on_disk = False
-            for _ext in ('.xlsx', '.xls', '.csv'):
-                if (_DATA_DIR / _photo_target_code / f'chart_of_accounts{_ext}').exists():
-                    _coa_on_disk = True
-                    st.success(f"✅ COA on file: `chart_of_accounts{_ext}`", icon="📊")
-                    break
-            if not _coa_on_disk:
-                st.caption("No COA on file yet")
+            _cur_budget_fname = _ef('kardin_budget_file', 'GA_Kardin_Budget_FY2026.xlsx')
+            if (_DATA_DIR / _photo_target_code / _cur_budget_fname).exists():
+                st.success(f"✅ On file: `{_cur_budget_fname}`", icon="💰")
+            else:
+                st.caption(f"No file named `{_cur_budget_fname}` on disk yet")
+
+    # ── 12-Month GL History — onboarding review only (outside form) ───────────
+    st.markdown("### 📜 12-Month GL History (Onboarding Review)")
+    st.caption(
+        "Upload a full year of GL export to see which expense accounts/vendors "
+        "bill on a recurring-but-not-monthly cadence (quarterly, semi-annual, "
+        "annual) — useful context before your first close. **Informational "
+        "only** — nothing here auto-fills any config or accrual table; the One-"
+        "Off Accruals table always starts blank, on purpose. Not saved anywhere "
+        "— this is a one-time onboarding look, not a monthly upload."
+    )
+    st.caption(
+        "⚠️ Cadence classification is a best guess pending a real 12-month "
+        "sample to verify against — treat it as a starting point for review, "
+        "not a final answer."
+    )
+    _gl_hist_upload = st.file_uploader(
+        "12-Month GL Export (Excel)",
+        type=['xlsx'],
+        key='prop_gl_history_upload',
+    )
+    if _gl_hist_upload is not None:
+        try:
+            import tempfile as _gh_tempfile
+            with _gh_tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as _gh_tmp:
+                _gh_tmp.write(_gl_hist_upload.read())
+                _gh_tmp_path = _gh_tmp.name
+            from parsers.yardi_gl import parse_gl as _parse_gl_hist
+            from gl_history_analyzer import analyze_recurring_vendors as _analyze_vendors
+            _gl_hist_result = _parse_gl_hist(_gh_tmp_path)
+            _vendor_patterns = _analyze_vendors(_gl_hist_result)
+            os.remove(_gh_tmp_path)
+
+            if not _vendor_patterns:
+                st.info("No expense-account activity found to analyze in this file.")
+            else:
+                _cadence_order = {'Quarterly': 0, 'Semi-Annual': 1, 'Annual/One-time': 2,
+                                   'Irregular': 3, 'Monthly': 4}
+                _vendor_patterns.sort(key=lambda p: (_cadence_order.get(p.cadence, 9), p.account_code))
+                _vp_df = pd.DataFrame([{
+                    'Account Code': p.account_code,
+                    'Account Name': p.account_name,
+                    'Vendor':       p.vendor,
+                    'Cadence':      p.cadence,
+                    'Occurrences':  p.occurrences,
+                    'Avg Amount':   p.avg_amount,
+                    'Months Seen':  ', '.join(p.months_seen),
+                } for p in _vendor_patterns])
+                _non_monthly = _vp_df[_vp_df['Cadence'] != 'Monthly']
+                st.caption(
+                    f"{len(_vendor_patterns)} account/vendor pattern(s) found — "
+                    f"{len(_non_monthly)} non-monthly (the ones worth a second look)."
+                )
+                st.dataframe(
+                    _vp_df,
+                    use_container_width=True,
+                    height=min(400, 40 + 35 * len(_vp_df)),
+                    column_config={'Avg Amount': st.column_config.NumberColumn(format="$%,.2f")},
+                )
+        except Exception as _gh_exc:
+            st.warning(f"Could not analyze this GL export: {_gh_exc}")
+
+    # ── Bank Statement auto-extract (outside form) ─────────────────────────────
+    st.markdown("### 🏦 Bank Statement (Auto-Extract Account)")
+    st.caption(
+        "Upload a real statement instead of typing the account number blind — "
+        "extracts it automatically so you can confirm and copy it into the "
+        "Bank Accounts table (step 8) below. Upload one statement per account "
+        "(operating, development, DACA) — each appears as its own row here. "
+        "Only recognizes **PNC, Bank of America, and KeyBank** — a different "
+        "bank needs a new parser built first, same as a new lender does for "
+        "loan statements."
+    )
+    if 'prop_bank_detect_rows' not in st.session_state:
+        st.session_state.prop_bank_detect_rows = []
+    _bank_stmt_upload = st.file_uploader(
+        "Bank Statement (PDF)",
+        type=['pdf'],
+        key='prop_bank_stmt_upload',
+    )
+    if _bank_stmt_upload is not None:
+        try:
+            import tempfile as _bs_tempfile
+            with _bs_tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as _bs_tmp:
+                _bs_tmp.write(_bank_stmt_upload.read())
+                _bs_tmp_path = _bs_tmp.name
+            from bank_statement_detector import detect_and_extract as _detect_bank
+            _bs_result = _detect_bank(_bs_tmp_path)
+            os.remove(_bs_tmp_path)
+
+            if not _bs_result.recognized:
+                st.warning(f"⚠️ {_bs_result._parse_error}")
+            elif _bs_result._parse_error:
+                st.warning(f"⚠️ {_bs_result._parse_error}")
+            else:
+                st.success(
+                    f"✅ Detected **{_bs_result.bank_label}** — account number "
+                    f"`{_bs_result.account_number or '(not found)'}`",
+                    icon="🏦",
+                )
+                _already = any(
+                    r['Full Account'] == _bs_result.account_number
+                    for r in st.session_state.prop_bank_detect_rows
+                )
+                if not _already:
+                    st.session_state.prop_bank_detect_rows.append({
+                        'Slug': _bs_result.suggested_slug,
+                        'Bank Name': _bs_result.bank_label,
+                        'Full Account': _bs_result.account_number or '',
+                    })
+        except Exception as _bs_exc:
+            st.warning(f"Could not read this statement: {_bs_exc}")
+
+    if st.session_state.prop_bank_detect_rows:
+        st.caption("⬇️ Detected so far — copy into the Bank Accounts table (step 8) below:")
+        st.dataframe(pd.DataFrame(st.session_state.prop_bank_detect_rows), use_container_width=True)
+        if st.button("Clear detected accounts", key="clear_bank_detect"):
+            st.session_state.prop_bank_detect_rows = []
+            st.rerun()
 
     st.markdown("---")
 
@@ -7698,23 +7981,93 @@ with tab4:
                                      value=_ef('property_type'),
                                      placeholder="e.g. Life Science, Office, Industrial")
         _size_sf   = _c4.number_input("Size (SF)", min_value=0,
-                                       value=int(_ef('property_size_sf') or 0), step=1000)
+                                       value=int(_ef('property_size_sf') or 0), step=1000,
+                                       disabled=bool(_ef('consolidated_buildings', [])),
+                                       help="Auto-computed as the sum of building rows below "
+                                            "once any are entered.")
+
+        st.markdown("#### Buildings")
+        st.caption(
+            "Leave empty for a single-Yardi-code property (like Revolution Labs). "
+            "For a property consolidated from multiple Yardi property codes — one row "
+            "per building/entity. Size (SF) here rolls up into the Size field above."
+        )
+        _default_buildings = [
+            {'Building Name': b.name, 'Yardi Property Code': b.yardi_code,
+             'Size (SF)': int(b.size_sf or 0)}
+            for b in (_ef('consolidated_buildings', []) or [])
+        ]
+        _buildings_df = pd.DataFrame(
+            _default_buildings or
+            [{'Building Name': '', 'Yardi Property Code': '', 'Size (SF)': 0}]
+        )
+        _buildings_edited = st.data_editor(
+            _buildings_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                'Building Name':        st.column_config.TextColumn("Building Name", width="medium",
+                                             help="e.g. '25 Hartwell' or '40 Hartwell'"),
+                'Yardi Property Code':  st.column_config.TextColumn("Yardi Property Code", width="small",
+                                             help="This building's own Yardi property code."),
+                'Size (SF)':            st.column_config.NumberColumn("Size (SF)", min_value=0, step=1000),
+            },
+            key="prop_buildings_editor",
+        )
+        _buildings_list = [
+            {
+                'name':       str(r.get('Building Name', '') or '').strip(),
+                'yardi_code': str(r.get('Yardi Property Code', '') or '').strip(),
+                'size_sf':    int(r.get('Size (SF)', 0) or 0),
+            }
+            for _, r in _buildings_edited.iterrows()
+            if str(r.get('Building Name', '') or '').strip()
+        ]
+        if _buildings_list:
+            _missing_codes = [b['name'] for b in _buildings_list if not b['yardi_code']]
+            if _missing_codes:
+                st.warning(
+                    f"⚠️ Missing Yardi Property Code for: {', '.join(_missing_codes)}. "
+                    f"Every building needs its own Yardi code to be consolidated correctly.",
+                    icon="⚠️",
+                )
+            else:
+                _total_sf = sum(b['size_sf'] for b in _buildings_list)
+                st.success(
+                    f"✅ {len(_buildings_list)} building(s), {', '.join(b['yardi_code'] for b in _buildings_list)} "
+                    f"— {_total_sf:,} SF total.",
+                    icon="✅",
+                )
+
+        _yardi_subset_code = st.text_input(
+            "Yardi Report Subset Code",
+            value=_ef('yardi_subset_code'),
+            placeholder="e.g. .2540hart",
+            help="Yardi's own pre-built subset code for a report that already combines "
+                 "this property's buildings (e.g. '.2540hart' for 25 & 40 Hartwell) — use "
+                 "it directly for any report Yardi can export at the subset level. Leave "
+                 "blank for a single-entity property or if no such subset report exists.",
+        )
 
         st.markdown("### 2 · Ownership")
+        st.caption("Management Company is always Greatland Realty Partners — not asked here.")
         _c5, _c6 = st.columns(2)
-        _investor   = _c5.text_input("Investor / Capital Partner",
+        _investor_legal = _c5.text_input("Investor Legal Entity Name (per W-9)",
+                                      value=_ef('investor_legal_name'),
+                                      placeholder="e.g. Singerman Real Estate Fund III, LLC")
+        _investor   = _c6.text_input("Investor Short Name",
                                       value=_ef('investor_name'),
-                                      placeholder="e.g. Singerman Real Estate")
-        _mgmt_co    = _c6.text_input("Management Company",
-                                      value=_ef('management_company'),
-                                      placeholder="e.g. Greatland Realty Partners")
-        _c7, _c8 = st.columns(2)
-        _mgmt_code  = _c7.text_input("Management Code (short)",
-                                      value=_ef('management_code'),
-                                      placeholder="e.g. GRP")
-        _inv_prefix = _c8.text_input("Invoice Number Prefix",
-                                      value=_ef('invoice_prefix'),
-                                      placeholder="e.g. LexLabsPM  →  LexLabsPM012026")
+                                      placeholder="e.g. Singerman Real Estate",
+                                      help="Used in the dashboard header and variance commentary tone.")
+        # Invoice prefix is no longer manually entered — it defaults to the
+        # property code itself (already ends in 'pm' by convention), with
+        # month+year appended by mgmt_fee_invoice.py at invoice time (e.g.
+        # 'hartwellpm' -> invoice # 'hartwellpm042026' for Apr 2026).
+        # An existing property's already-saved prefix (e.g. RevLabs' historical
+        # 'RevLabsPM') is preserved as-is — this only supplies a default for a
+        # property that's never had one, so past invoice numbering never shifts
+        # underneath an already-operating property.
+        _inv_prefix = _ef('invoice_prefix') or (_prop_code or '').strip().lower().replace(' ', '')
 
         st.markdown("### 3 · Team Members")
         st.caption(
@@ -7734,63 +8087,23 @@ with tab4:
             label_visibility="collapsed",
         )
 
-        st.markdown("### 4 · Tenants (Utility Billing)")
-        st.caption(
-            "Tenants billed back for electric and gas each month. "
-            "These names populate the Tenant Utility Billing table in Pass 1. "
-            "Leave empty if this property has no tenant billbacks. "
-            "**Key** is a short slug used internally (lowercase, no spaces)."
-        )
-        _tenant_rows = (
-            [{'Key': t['key'], 'Tenant Name': t['name']}
-             for t in getattr(_edit_cfg, 'tenants', [])]
-            if _edit_cfg else []
-        )
-        # Always show at least 3 blank rows for input
-        while len(_tenant_rows) < 3:
-            _tenant_rows.append({'Key': '', 'Tenant Name': ''})
-        import pandas as _pd_props
-        _tenant_df = st.data_editor(
-            _pd_props.DataFrame(_tenant_rows),
-            column_config={
-                "Key":         st.column_config.TextColumn("Key (slug)", width="small",
-                                   help="e.g. 'keros_n' — used for widget IDs"),
-                "Tenant Name": st.column_config.TextColumn("Tenant Name", width="large",
-                                   help="e.g. 'Keros Therapeutics (North)'"),
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-            key="prop_tenants_editor",
-        )
+        # Tenants (Utility Billing) — no longer configured here. The tenant
+        # list for TUB is now read live from each period's uploaded Tenancy
+        # Schedule (rent roll) — see _build_tub_tenants() — so it can't go
+        # stale as leases turn over, and the tenant key is Yardi's own
+        # tenant code, not a slug someone has to type. Nothing to set up
+        # per property; a property's already-saved tenants list (if any,
+        # e.g. Revolution Labs pre-dating this change) is preserved as a
+        # fallback and just isn't editable from this form anymore.
 
-        st.markdown("### 5 · Default One-Off Accruals")
-        st.caption(
-            "Pre-seeded rows in the Pass 1 one-off accruals table — "
-            "recurring monthly items the team always reviews. "
-            "Amounts are left at $0 and filled in each month. "
-            "Leave empty to start with a blank table."
-        )
-        _accrual_rows = (
-            [{'Account Code': a['account_code'], 'Account Name': a['account_name'],
-              'Default Vendor': a.get('vendor', '')}
-             for a in getattr(_edit_cfg, 'default_accruals', [])]
-            if _edit_cfg else []
-        )
-        while len(_accrual_rows) < 3:
-            _accrual_rows.append({'Account Code': '', 'Account Name': '', 'Default Vendor': ''})
-        _daccrual_df = st.data_editor(
-            _pd_props.DataFrame(_accrual_rows),
-            column_config={
-                "Account Code":   st.column_config.TextColumn("Account Code", width="small",
-                                      help="6-digit GL account (DR expense side)"),
-                "Account Name":   st.column_config.TextColumn("Account Name", width="medium"),
-                "Default Vendor": st.column_config.TextColumn("Default Vendor", width="medium",
-                                      help="Optional — pre-fills the Vendor column"),
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-            key="prop_default_accruals_editor",
-        )
+        # Default One-Off Accruals — removed. Pre-populating rows/amounts here
+        # was overkill: most real accruals are already picked up by the 4-layer
+        # detection engine, and a genuine one-off accrual is something the PM
+        # or accounting team decides and types fresh each month — not something
+        # the config should be guessing at in advance. Confirmed with Ryan
+        # 2026-08-23. The One-Off Accruals table in Pass 1 now always starts
+        # blank; account-name auto-fill (when someone types a code) still
+        # works from the GL/Budget Comparison, just not from this config.
 
         st.markdown("### 6 · Building / Allocation Splits (Multi-Building Properties)")
         st.caption(
@@ -7811,6 +8124,57 @@ with tab4:
             }
             for bs in (_edit_cfg.building_splits if _edit_cfg else [])
         ]
+        # No splits configured yet, but the Buildings list (step 1) already
+        # has 2+ real entries — auto-suggest an Equal-share schedule and an
+        # SF-proportional schedule from that data instead of a blank row the
+        # user has to build (and do the SF percentage math for) by hand.
+        # Both generalize to any number of buildings, not just a pair —
+        # confirmed correct for Equal at 2 (50/50) and computed the same way
+        # for 3-5. Remainder from rounding is assigned to the last row so
+        # each schedule sums to exactly 100.00%, not 99.99/100.01.
+        # st.data_editor silently ignores a freshly-computed value on any
+        # rerun after its key already has established state (documented
+        # Streamlit quirk in this app — see the Prepaid Ledger Seed Builder's
+        # identical fix). Without forcing a fresh widget key, the auto-seeded
+        # rows below would only ever show up if the Buildings table already
+        # had 2+ rows on the very first render — as soon as the user adds a
+        # second building in a later rerun, this widget's state is already
+        # locked to whatever it rendered first (a blank row) and the
+        # newly-computed Equal/By-SF rows never appear. Tracked per-property
+        # (by _edit_code) and fired exactly once per property, so switching
+        # properties re-evaluates cleanly but a later manual edit to the
+        # splits table is never silently overwritten by this reseed.
+        if "_splits_auto_seeded_for" not in st.session_state:
+            st.session_state._splits_auto_seeded_for = set()
+        if "_splits_seed_gen" not in st.session_state:
+            st.session_state._splits_seed_gen = 0
+        if (not _default_splits and len(_buildings_list) >= 2
+                and _edit_code not in st.session_state._splits_auto_seeded_for):
+            st.session_state._splits_auto_seeded_for.add(_edit_code)
+            st.session_state._splits_seed_gen += 1
+        if not _default_splits and len(_buildings_list) >= 2:
+            _n_bldgs = len(_buildings_list)
+            _equal_pct = round(100.0 / _n_bldgs, 4)
+            for _i, _b in enumerate(_buildings_list):
+                _pct = _equal_pct if _i < _n_bldgs - 1 else round(100.0 - _equal_pct * (_n_bldgs - 1), 4)
+                _default_splits.append({
+                    'Schedule Name': 'Equal', 'Building Name': _b['name'],
+                    'Yardi Code': _b['yardi_code'], 'Share %': _pct, 'Notes': '',
+                })
+            _total_sf = sum(_b['size_sf'] for _b in _buildings_list)
+            if _total_sf > 0:
+                _running = 0.0
+                for _i, _b in enumerate(_buildings_list):
+                    if _i < _n_bldgs - 1:
+                        _pct = round(_b['size_sf'] / _total_sf * 100, 4)
+                        _running += _pct
+                    else:
+                        _pct = round(100.0 - _running, 4)
+                    _default_splits.append({
+                        'Schedule Name': 'By-SF', 'Building Name': _b['name'],
+                        'Yardi Code': _b['yardi_code'], 'Share %': _pct,
+                        'Notes': f"{_b['size_sf']:,} SF",
+                    })
         _splits_df = pd.DataFrame(
             _default_splits or [{'Schedule Name': '', 'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}]
         )
@@ -7829,7 +8193,7 @@ with tab4:
                                      help="Percentage, e.g. 50 for 50%. Each schedule group must total 100."),
                 'Notes':         st.column_config.TextColumn("Notes", width="medium"),
             },
-            key="prop_splits_editor",
+            key=f"prop_splits_editor_{st.session_state._splits_seed_gen}",
         )
         # Live validation — check each schedule group sums to 100%
         _split_rows_filled = [
@@ -7979,11 +8343,11 @@ with tab4:
                                           value=_ef('file_prefix_deliverable'),
                                           placeholder="e.g. LexLabs  → LexLabs_Jan2026_Workpapers.xlsx",
                                           help="Leave blank to auto-derive from display name.")
-        _c13, _c14 = st.columns(2)
-        _file_pfx_int = _c13.text_input("Internal File Prefix",
-                                          value=_ef('file_prefix_internal', 'GA'),
-                                          placeholder="e.g. GA",
-                                          help="Prefix for internal working files (e.g. GA_Accruals_JE.csv).")
+        # Internal File Prefix is always "GA" (GRP's own internal-file branding,
+        # not property-specific) — no longer asked here, matching Management
+        # Company. Kept as a real config field/param since output filenames
+        # (GA_Accruals_JE.csv, etc.) still read it — just not user-editable.
+        _file_pfx_int = 'GA'
 
         st.markdown("---")
         _submitted = st.form_submit_button("💾 Save Property Config", type="primary",
@@ -7992,10 +8356,25 @@ with tab4:
     # ── Handle form submission ────────────────────────────────────────────────
     if _submitted:
         _prop_code = (_prop_code or '').strip().lower().replace(' ', '')
+        # Guard against silently overwriting a DIFFERENT property that happens to
+        # already use this code — e.g. entering '12&24 Hartwell' but leaving/typing
+        # the code from an already-saved '25&40 Hartwell' by mistake. Editing the
+        # SAME property without changing its code is unaffected (_prop_code == _edit_code).
+        _code_collision = (
+            _prop_code in {p['code'] for p in _existing} and _prop_code != _edit_code
+        )
         if not _prop_code:
             st.error("Property Code is required.")
         elif not _display_name:
             st.error("Display Name is required.")
+        elif _code_collision:
+            _collision_name = next(
+                (p['display_name'] for p in _existing if p['code'] == _prop_code), _prop_code
+            )
+            st.error(
+                f"⚠️ Property Code '{_prop_code}' is already used by **{_collision_name}**. "
+                f"Saving would overwrite that property's config. Choose a different code."
+            )
         else:
             # Parse fee rows
             _fee_list = []
@@ -8057,25 +8436,15 @@ with tab4:
                 m.strip() for m in _team_text.splitlines() if m.strip()
             ]  # empty list is valid; config will have no team_members
 
-            # Parse tenants
-            _tenants_list = []
-            for _, _trow in _tenant_df.iterrows():
-                _tkey  = str(_trow.get('Key', '') or '').strip()
-                _tname = str(_trow.get('Tenant Name', '') or '').strip()
-                if _tkey and _tname:
-                    _tenants_list.append({'key': _tkey, 'name': _tname})
+            # Tenants — not edited from this form (see the note above step 5);
+            # preserve whatever this property already had saved, if anything,
+            # rather than wiping it out just because there's no UI for it here.
+            _tenants_list = list(getattr(_edit_cfg, 'tenants', []) or [])
 
-            # Parse default accruals
+            # Default accruals — removed (see the note above step 6); always
+            # empty going forward, including on re-save of a property that
+            # had rows from before this change.
             _daccruals_list = []
-            for _, _arow in _daccrual_df.iterrows():
-                _acode = str(_arow.get('Account Code', '') or '').strip()
-                if not _acode:
-                    continue
-                _daccruals_list.append({
-                    'account_code': _acode,
-                    'account_name': str(_arow.get('Account Name', '') or '').strip(),
-                    'vendor':       str(_arow.get('Default Vendor', '') or '').strip(),
-                })
 
             # Parse building splits
             _splits_list = []
@@ -8097,10 +8466,13 @@ with tab4:
                 property_display_name  = _display_name,
                 property_address       = _address,
                 property_type          = _prop_type,
-                property_size_sf       = int(_size_sf) if _size_sf else None,
+                property_size_sf       = (sum(b['size_sf'] for b in _buildings_list)
+                                           if _buildings_list else (int(_size_sf) if _size_sf else None)),
+                consolidated_buildings = _buildings_list,
+                yardi_subset_code      = _yardi_subset_code,
                 investor_name          = _investor,
-                management_company     = _mgmt_co,
-                management_code        = _mgmt_code,
+                investor_legal_name    = _investor_legal,
+                management_company     = 'Greatland Realty Partners',
                 invoice_prefix         = _inv_prefix,
                 team_members           = _team_members_parsed,
                 tenants                = _tenants_list,
@@ -8120,6 +8492,7 @@ with tab4:
                 file_prefix_deliverable = _file_pfx_del,
                 active                 = getattr(_edit_cfg, 'active', True) if not _is_new else True,
                 property_system        = _prop_system.lower(),
+                uses_grp_coa           = _uses_grp_coa,
             )
             _yaml_str = config_to_yaml(_cfg_dict)
 
@@ -8225,6 +8598,55 @@ with tab4:
                 else:
                     st.error(f"Reactivation failed: {_rmsg}")
 
+        # ── Permanently delete property (irreversible — for a property entered
+        # by mistake, not a real one being wound down; use Deactivate for that) ──
+        from property_writer import delete_property as _delete_prop
+        st.markdown("#### 🗑️ Permanently Delete Property")
+        st.caption(
+            "Removes this property's entire config, workpaper template, budget, and "
+            "photo — locally and from GitHub. **This cannot be undone.** Use this only "
+            "if the property was entered by mistake; use Deactivate above for a real "
+            "property that's just no longer active."
+        )
+        if "confirm_delete_code" not in st.session_state:
+            st.session_state.confirm_delete_code = ''
+
+        if not st.session_state.confirm_delete_code:
+            if st.button(f"Delete {_edit_cfg.display()}", type="secondary"):
+                st.session_state.confirm_delete_code = _edit_code
+                st.rerun()
+        else:
+            st.error(
+                f"⚠️ **This permanently deletes {_edit_cfg.display()} (`{_edit_code}`) "
+                f"and everything in its data folder — config, template, budget, photo.** "
+                f"Type the property code below to confirm."
+            )
+            _del_confirm_text = st.text_input(
+                f"Type `{_edit_code}` to confirm",
+                key="delete_confirm_input",
+            )
+            _dc3, _dc4 = st.columns(2)
+            _del_ready = _del_confirm_text.strip() == _edit_code
+            if _dc3.button("🗑️ Permanently Delete", use_container_width=True,
+                           type="primary", disabled=not _del_ready):
+                _delok, _delmsg = _delete_prop(_edit_code, str(_DATA_DIR))
+                st.session_state.confirm_delete_code = ''
+                if _delok:
+                    st.success(f"Property permanently deleted. {_delmsg}")
+                    # The "Edit existing or create new" selectbox still holds
+                    # the just-deleted code, which no longer exists in its
+                    # options list once _existing is rebuilt from disk on
+                    # rerun — Streamlit raises on a keyed widget whose stored
+                    # value isn't in `options`. Reset it to the sentinel
+                    # "create new" option first so the rerun is safe.
+                    st.session_state.prop_setup_edit_select = "➕ Create new property"
+                    st.rerun()
+                else:
+                    st.error(f"Deletion failed: {_delmsg}")
+            if _dc4.button("❌ Cancel", use_container_width=True, key="cancel_delete"):
+                st.session_state.confirm_delete_code = ''
+                st.rerun()
+
     # ── Archived properties ───────────────────────────────────────────────────
     from property_config import discover_all_properties as _disc_all
     _all_with_inactive = _disc_all(str(_DATA_DIR))
@@ -8295,7 +8717,67 @@ with tab4:
 
     import pandas as _pd_seed
 
-    _seed_default_rows = [
+    _SEED_COLUMNS = [
+        "Vendor", "Description", "GL Account #", "GL Account Name",
+        "Total Amount", "Monthly Amount", "Service Start", "Service End",
+        "Months Amortized", "Invoice #", "Invoice Date",
+    ]
+
+    # ── Download a blank template / upload it back filled in ──────────────────
+    # For a property with many prepaid items, filling this out in Excel (better
+    # copy-paste, no per-row web typing) and uploading it back is easier than
+    # typing every row into the table below. The table stays fully editable
+    # either way — this just changes how it gets pre-filled.
+    _seed_dl_col, _seed_ul_col = st.columns(2)
+    with _seed_dl_col:
+        import io as _seed_io
+        from openpyxl import Workbook as _SeedWorkbook
+        _blank_wb = _SeedWorkbook()
+        _blank_ws = _blank_wb.active
+        _blank_ws.title = 'Prepaid Seed'
+        for _ci, _colname in enumerate(_SEED_COLUMNS, start=1):
+            _blank_ws.cell(row=1, column=_ci, value=_colname)
+        for _ci in range(1, len(_SEED_COLUMNS) + 1):
+            _blank_ws.column_dimensions[_blank_ws.cell(row=1, column=_ci).column_letter].width = 18
+        _blank_buf = _seed_io.BytesIO()
+        _blank_wb.save(_blank_buf)
+        st.download_button(
+            "⬇️ Download Blank Template",
+            data=_blank_buf.getvalue(),
+            file_name="GA_Prepaid_Seed_Template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    with _seed_ul_col:
+        _seed_upload = st.file_uploader(
+            "⬆️ Upload Filled-In Template", type=['xlsx'], key='prepaid_seed_upload',
+        )
+
+    if "_prepaid_seed_gen" not in st.session_state:
+        st.session_state._prepaid_seed_gen = 0
+    if "_prepaid_seed_uploaded_rows" not in st.session_state:
+        st.session_state._prepaid_seed_uploaded_rows = None
+
+    if _seed_upload is not None:
+        try:
+            _seed_upload_df = _pd_seed.read_excel(_seed_upload)
+            _missing_cols = [c for c in _SEED_COLUMNS if c not in _seed_upload_df.columns]
+            if _missing_cols:
+                st.warning(
+                    f"⚠️ Uploaded file is missing column(s): {', '.join(_missing_cols)}. "
+                    f"Use the downloaded template's exact headers — nothing loaded."
+                )
+            else:
+                _uploaded_rows = _seed_upload_df[_SEED_COLUMNS].to_dict('records')
+                _uploaded_rows = [r for r in _uploaded_rows if str(r.get('Vendor', '') or '').strip()]
+                if _uploaded_rows != st.session_state._prepaid_seed_uploaded_rows:
+                    st.session_state._prepaid_seed_uploaded_rows = _uploaded_rows
+                    st.session_state._prepaid_seed_gen += 1
+                st.success(f"✅ Loaded {len(_uploaded_rows)} row(s) from the uploaded template below.")
+        except Exception as _seed_ul_exc:
+            st.warning(f"Could not read this file: {_seed_ul_exc}")
+
+    _seed_default_rows = st.session_state._prepaid_seed_uploaded_rows or [
         {"Vendor": "", "Description": "", "GL Account #": "", "GL Account Name": "",
          "Total Amount": 0.0, "Monthly Amount": 0.0,
          "Service Start": None, "Service End": None,
@@ -8323,7 +8805,7 @@ with tab4:
             "Invoice #":         st.column_config.TextColumn("Invoice #", width="small"),
             "Invoice Date":      st.column_config.DateColumn("Invoice Date", format="MM/DD/YYYY"),
         },
-        key="prepaid_seed_editor",
+        key=f"prepaid_seed_editor_{st.session_state._prepaid_seed_gen}",
     )
 
     # Preview calculated values
@@ -8421,20 +8903,31 @@ with tab4:
     if _chk_scenario == "Existing GRP Property":
         st.markdown("""
 ### Existing GRP Property — Before First Close
+(an acquisition, or a property moving from JLL/manual close onto this pipeline)
 
-**1. Property Config**
-- [ ] Create the property config in the **⚙️ Properties → Add/Edit** form above
-- [ ] Confirm `invoice_prefix`, `investor_name`, `management_fees` rates
-- [ ] Add `insurance_policies` entries (name, expense_account, monthly_amount) — this drives the insurance amortization JE each month
-- [ ] Set `re_tax_payment_months` to the correct quarterly billing months for this jurisdiction
+**1. Property Config — ⚙️ Properties → Add/Edit, section by section**
+- [ ] **Basic Information**: Property Code (e.g. `2540hartwellpm`), Display Name, Address, Type, Size
+- [ ] If this property consolidates 2+ Yardi property codes (e.g. two buildings, one workpaper): fill in the **Buildings** table (name, Yardi code, SF per building) — Size (SF) above auto-sums from it
+- [ ] **Ownership**: Investor Legal Name (per W-9) + Short Name, Invoice Prefix (leave blank to auto-derive from Display Name)
+- [ ] **Team Members**: everyone reviewing this property's close
+- [ ] **Chart of Accounts**: "Uses the standard GRP Yardi COA?" — Yes for any GRP-managed Yardi property (no upload needed); No only for a partner running their own Yardi with different codes
+- [ ] **Building / Allocation Splits**: only if this property allocates shared costs across buildings — auto-suggested (Equal + By-SF schedules) once the Buildings table above has 2+ rows
+- [ ] **Management Fee Lines**: one row per PM agreement (e.g. JLL 1.25% + GRP 1.75%, matching Rev Labs)
+- [ ] **Bank Accounts**: one row per account (operating/development/DACA) — Bank Name + Account Number drive monthly auto-classification of uploaded statements
+- [ ] **Payment Instructions**: ACH and/or check details for the management fee invoice
+- [ ] **RE Tax & Other**: `re_tax_payment_months` for this jurisdiction (typically Jan/Apr/Jul/Oct), Parcel IDs if relevant
 
-**2. Kardin Budget**
-- [ ] Upload the current-year Kardin budget to `data/{property_code}/` in GitHub (filename must match `kardin_budget_file` in config)
+**2. Files to drop in at onboarding (Property Setup page, above the form)**
+- [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 10)
+- [ ] **Tenancy Schedule / Rent Roll** — upload the current rent roll once to confirm Tenant Utility Billing picks up the right tenants (it re-reads this fresh every period going forward, so nothing to configure — just confirm it looks right)
+- [ ] **12-Month GL History** (if available) — informational only, flags which vendors bill quarterly/semi-annually so nothing gets missed as a one-off accrual later
+- [ ] **Bank Statement(s)** — upload one real statement per account to auto-extract the account number into step 8, instead of typing it blind (PNC / Bank of America / KeyBank only — a different bank needs a new parser first)
 
 **3. Prepaid Ledger Seed** ← most critical for acquisitions
-- [ ] Gather all active prepaid schedules from prior management (insurance is excluded; focus on service contracts, subscriptions, maintenance agreements)
-- [ ] Enter each item in the **Prepaid Ledger Seed Builder** above with the correct **Months Amortized** (= months already released by prior manager)
-- [ ] Download the seed file and upload it as the "Prior Month Prepaid Ledger" in the Pass 1 sidebar on the first close
+- [ ] Gather all active prepaid schedules from prior management (insurance and RE tax are excluded automatically; focus on service contracts, subscriptions, maintenance agreements)
+- [ ] Either type directly into the **Prepaid Ledger Seed Builder**, or download its blank template, fill it in Excel, and upload it back
+- [ ] Set the correct **Months Amortized** per item (= months already released by prior manager) — this is what makes an acquisition's carry-forward balance correct
+- [ ] Download the generated seed file and upload it as the "Prior Month Prepaid Ledger" in the Pass 1 sidebar on the first close
 - [ ] Verify the **Remaining** column in the preview — it determines how many more months the pipeline will amortize
 
 **4. T12 for Layer 3 Historical Accruals**
@@ -8455,18 +8948,26 @@ with tab4:
     else:
         st.markdown("""
 ### New Property — Before First Close
+(new construction / lease-up, no prior manager to carry anything forward from)
 
-**1. Property Config**
-- [ ] Create the property config in the **⚙️ Properties → Add/Edit** form above
-- [ ] Add any `insurance_policies` entries if insurance policies are active from day 1
-- [ ] Set `re_tax_payment_months` for this jurisdiction
+**1. Property Config — ⚙️ Properties → Add/Edit, section by section**
+- [ ] **Basic Information**: Property Code, Display Name, Address, Type, Size
+- [ ] If this property consolidates 2+ Yardi property codes: fill in the **Buildings** table (name, Yardi code, SF)
+- [ ] **Ownership**: Investor Legal Name (per W-9) + Short Name, Invoice Prefix (leave blank to auto-derive)
+- [ ] **Team Members**
+- [ ] **Chart of Accounts**: "Uses the standard GRP Yardi COA?" — Yes for a GRP-managed Yardi property
+- [ ] **Building / Allocation Splits**: only if multi-building — auto-suggested once the Buildings table has 2+ rows
+- [ ] **Management Fee Lines**, **Bank Accounts**, **Payment Instructions**, **RE Tax & Other** (re_tax_payment_months for this jurisdiction)
 
-**2. Kardin Budget**
-- [ ] Upload the current-year Kardin budget to `data/{property_code}/` in GitHub
+**2. Files to drop in at onboarding (Property Setup page, above the form)**
+- [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 10)
+- [ ] **Tenancy Schedule / Rent Roll** — upload once any leases exist, so Tenant Utility Billing has tenants to bill; safe to skip if there are none yet
+- [ ] **12-Month GL History** — not applicable yet, there's no history
+- [ ] **Bank Statement(s)** — upload one per account to auto-extract the account number into step 8, instead of typing it blind
 
 **3. Prepaid Ledger Seed**
 - [ ] If there are NO active prepaids at open: skip — the ledger starts empty
-- [ ] If prepaids exist from day 1 (e.g. insurance paid at inception): use the **Prepaid Ledger Seed Builder** above with `Months Amortized = 0`
+- [ ] If prepaids exist from day 1 (e.g. insurance paid at inception): use the **Prepaid Ledger Seed Builder** with `Months Amortized = 0`
 
 **4. On the First Close**
 - [ ] T12 upload is optional — there is no history, so Layer 3 will be silent (expected for month 1)

@@ -42,6 +42,7 @@ FILE_LABELS = {
     "loan":                  "Berkadia Loan Statement(s) — due 7th of following month",
     "prepaid_ledger":        "Prior Month Prepaid Ledger",
     "prior_workpaper":       "Prior Month Workpaper",
+    "tenancy_schedule":      "Yardi Tenancy Schedule (Rent Roll)",
     # Pass-2 overrides — same classifier routes here via pass2=True
     "gl_pass2":              "Final GL (Pass 2)",
     "budget_comparison_pass2": "Final Budget Comparison (Pass 2)",
@@ -302,6 +303,10 @@ def _classify_xlsx(file_bytes: bytes, signals: dict = None) -> Tuple[str, float]
         return "budget_comparison", 0.95
     if "ptd budget" in all_text and "ptd actual" in all_text:
         return "budget_comparison", 0.88
+
+    # ── Tenancy Schedule (Rent Roll) ────────────────────────────────────────
+    if "tenancy schedule" in all_text:
+        return "tenancy_schedule", 0.95
 
     # ── Receivable Summary / Detail / AR Aging ────────────────────────────
     # Must come before the revlabspm→GL fallback: Yardi receivable reports

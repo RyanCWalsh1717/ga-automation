@@ -77,6 +77,26 @@ class BuildingSplitConfig:
     notes:       str   = ''          # optional notes
 
 
+@dataclass
+class ConsolidatedBuildingConfig:
+    """
+    One building/entity consolidated under a single property in the app —
+    e.g. '25 Hartwell' and '40 Hartwell' rolled up into one 'hartwellpm'
+    workpaper. Distinct from BuildingSplitConfig: this is IDENTITY (which
+    Yardi property codes make up this consolidated property, and their
+    individual size), not a $ allocation — GL/TB/etc. for each yardi_code
+    here get merged together before the rest of the pipeline runs.
+
+    name:       Building label (e.g. '25 Hartwell').
+    yardi_code: This building's own Yardi property code — required.
+    size_sf:    This building's own square footage; property_size_sf on the
+                parent config becomes the sum across all buildings.
+    """
+    name:        str = ''
+    yardi_code:  str = ''
+    size_sf:     int = 0
+
+
 # ── Main PropertyConfig dataclass ─────────────────────────────────────────────
 
 @dataclass
@@ -93,11 +113,25 @@ class PropertyConfig:
     property_type:         str = ''  # e.g. 'Life Science', 'Office', 'Industrial'
     property_size_sf:      Optional[int] = None
 
+    # ── Consolidated buildings (multi-Yardi-code properties) ──────────────────
+    # Empty = single Yardi property code (the normal case, e.g. Revolution Labs).
+    # Populated = this property consolidates 2+ separate Yardi property codes
+    # (e.g. '25 Hartwell' + '40 Hartwell') into one workpaper/report set.
+    # property_size_sf is the sum of these rows' size_sf once any are entered.
+    consolidated_buildings: List['ConsolidatedBuildingConfig'] = field(default_factory=list)
+
+    # Yardi's own pre-built "subset" code for a report that already combines
+    # this property's buildings (e.g. '.2540hart' for 25 & 40 Hartwell) — use
+    # directly for any report Yardi can export at the subset level, instead of
+    # this pipeline merging separate per-building exports for that report type.
+    # Blank = no such subset report exists / single-entity property.
+    yardi_subset_code: str = ''
+
     # ── Ownership / branding ──────────────────────────────────────────────────
-    investor_name:      str = ''     # Capital partner name
-    management_company: str = ''     # e.g. 'Greatland Realty Partners'
-    management_code:    str = ''     # Short code for display (e.g. 'GRP')
-    invoice_prefix:     str = ''     # Invoice number prefix (e.g. 'RevLabsPM')
+    investor_name:       str = ''     # Capital partner short name (dashboard header, variance tone)
+    investor_legal_name: str = ''     # Full legal entity per the investor's W-9
+    management_company:  str = ''     # Always 'Greatland Realty Partners' — not user-configurable in the UI
+    invoice_prefix:       str = ''     # Invoice number prefix (e.g. 'RevLabsPM')
 
     # ── Team members ──────────────────────────────────────────────────────────
     # Names that appear in the dashboard name selector, close tracker reviewer
@@ -185,6 +219,14 @@ class PropertyConfig:
     # Stored so the UI can gate Yardi-specific features and display appropriate
     # instructions when an MRI property is selected.
     property_system: str = 'yardi'
+
+    # ── Chart of Accounts ──────────────────────────────────────────────────────
+    # True  — this property uses the standard GRP Yardi COA (data/_shared/
+    #         GRP_Chart_of_Accounts.xlsx). No per-property upload needed.
+    # False — a per-property chart_of_accounts.{xlsx,xls,csv} upload is used
+    #         instead (e.g. a partner running their own Yardi with different
+    #         account codes). Powers QC Check 8 (unknown account codes).
+    uses_grp_coa: bool = False
 
     # ── Active flag ───────────────────────────────────────────────────────────
     # Set active: false in config.yaml to hide a property from the selector
@@ -337,6 +379,18 @@ class PropertyConfig:
                 notes      = str(bs.get('notes', '')),
             ))
 
+        # Consolidated buildings — multiple Yardi property codes rolled into
+        # one property (identity, not $ allocation — see BuildingSplitConfig
+        # for that).
+        consolidated_buildings = [
+            ConsolidatedBuildingConfig(
+                name       = str(cb.get('name', '')),
+                yardi_code = str(cb.get('yardi_code', '')),
+                size_sf    = int(cb.get('size_sf', 0) or 0),
+            )
+            for cb in (d.get('consolidated_buildings') or [])
+        ]
+
         # Management fee lines
         fees = []
         for fl in (d.get('management_fees') or []):
@@ -374,10 +428,12 @@ class PropertyConfig:
             property_type         = str(d.get('property_type', '')),
             property_size_sf      = int(d['property_size_sf']) if d.get('property_size_sf') is not None else None,
             investor_name         = str(d.get('investor_name', '')),
-            management_company    = str(d.get('management_company', '')),
-            management_code       = str(d.get('management_code', '')),
+            investor_legal_name   = str(d.get('investor_legal_name', '')),
+            management_company    = str(d.get('management_company', '') or 'Greatland Realty Partners'),
             invoice_prefix        = str(d.get('invoice_prefix', '')),
             building_splits       = splits,
+            consolidated_buildings = consolidated_buildings,
+            yardi_subset_code     = str(d.get('yardi_subset_code', '')),
             management_fees       = fees,
             gl_accounts           = gl,
             bank_accounts         = banks,
@@ -424,6 +480,7 @@ class PropertyConfig:
                 if p.get('name') and float(p.get('monthly_amount', 0.0)) > 0
             ],
             property_system         = str(d.get('property_system', 'yardi')).lower(),
+            uses_grp_coa            = bool(d.get('uses_grp_coa', False)),
             qc_pl_accounts          = d.get('qc_pl_accounts') or None,
             qc_bs_accounts          = d.get('qc_bs_accounts') or None,
             # QC thresholds — empty dict = use module-level defaults.
@@ -484,6 +541,11 @@ class PropertyConfig:
         return len(self.building_splits) > 0
 
     @property
+    def is_consolidated(self) -> bool:
+        """True when this property consolidates 2+ separate Yardi property codes."""
+        return len(self.consolidated_buildings) > 1
+
+    @property
     def allocation_schedules(self) -> Dict[str, List['BuildingSplitConfig']]:
         """
         Return building_splits grouped by schedule name.
@@ -528,9 +590,20 @@ class PropertyConfig:
         """Display-name-derived prefix if file_prefix_deliverable not set."""
         if self.file_prefix_deliverable:
             return self.file_prefix_deliverable
-        # Derive from display name: 'Revolution Labs' → 'RevLabs'
-        parts = (self.property_display_name or self.property_code or 'Property').split()
-        return ''.join(p[:4].capitalize() for p in parts[:2])
+        # Derive from display name: 'Revolution Labs' -> 'RevoLabs'.
+        # Numeric tokens (building numbers, e.g. '25'/'40') are kept in full
+        # and joined first, separately from alphabetic tokens -- for a
+        # property named by building number ('25 & 40 Hartwell'), those
+        # numbers are exactly what distinguishes it from a similarly-named
+        # sibling property ('12 & 24 Hartwell'). The naive "first 2 words"
+        # approach used to split on whitespace and take literal tokens,
+        # which for '25 & 40 Hartwell' produced '25&' (the '&' survives,
+        # 'Hartwell' never gets reached) -- confirmed as a real onboarding
+        # case 2026-08-23. Bare punctuation tokens ('&', '-') are dropped.
+        raw = (self.property_display_name or self.property_code or 'Property')
+        numeric_parts = [p for p in raw.split() if p.isdigit()]
+        alpha_parts   = [p for p in raw.split() if any(c.isalpha() for c in p)]
+        return ''.join(numeric_parts) + ''.join(p[:4].capitalize() for p in alpha_parts[:2])
 
     @property
     def coa_bs_prefixes(self) -> tuple:
@@ -635,7 +708,6 @@ def _legacy_registry_fallback(property_code: str) -> PropertyConfig:
             property_address      = '1050 Waltham Street, Lexington, MA',
             investor_name         = 'Singerman Real Estate',
             management_company    = 'Greatland Realty Partners',
-            management_code       = 'GRP',
             invoice_prefix        = 'RevLabsPM',
             management_fees       = [
                 ManagementFeeLineConfig('JLL', 0.0125, 5000.0, '637130', '213100', 'MGMT-FEE-JLL'),

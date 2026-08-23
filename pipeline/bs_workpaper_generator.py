@@ -1660,6 +1660,18 @@ _REVERSAL_PREFIX_RE = re.compile(
 # after an empty vendor/memo field (e.g. ": Reversal of J-18456", where the
 # leading ": " is the blank field's own separator) which _REVERSAL_PREFIX_RE's
 # start anchor misses entirely.
+#
+# Deliberately does NOT match "Reversed by J-XXXXX" — confirmed on a real GL
+# export that phrasing appears on the ORIGINAL transaction, annotating that a
+# LATER JE went on to reverse it (e.g. "Eversource :Reversed by J-22800" is
+# a real, distinct charge, not the reversal itself). _is_reversal_txn() below
+# is used to SKIP a transaction from workpaper generation entirely — matching
+# "reversed by" would wrongly drop the real original transaction, not just
+# the harmless auto-reversal line. A first attempt at this fix widened the
+# regex to catch both phrasings and shipped that bug; caught by review before
+# push 2026-08-23. Vendor-name text cleanup for this same annotation lives
+# separately in gl_history_analyzer.py's _extract_vendor() — that's cosmetic
+# display cleanup, not a decision about whether the transaction counts.
 _REVERSAL_ANYWHERE_RE = re.compile(r'reversal\s+of\s+[Jj]-\d+', re.IGNORECASE)
 
 
