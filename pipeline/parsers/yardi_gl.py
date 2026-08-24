@@ -194,9 +194,18 @@ def parse_metadata(ws) -> GLMetadata:
     raw_book = _safe_str(ws.cell(row=4, column=1).value)
 
     # Parse property code and name from the header row.
-    # Two formats observed in the wild:
+    # Three formats observed in the wild:
     #   Format A: "Property = revlabspm Revolution Labs Owner, LLC"
     #   Format B: "Revolution Labs Owner, LLC (revlabspm)"
+    #   Format C: "25 and 40 Hartwell (.2540hrt)" -- a Yardi REPORT SUBSET
+    #             code (combines multiple properties into one export), which
+    #             always starts with a literal '.'. \w+ alone doesn't match
+    #             that leading dot, so Format B's original regex silently
+    #             failed on this header and left property_code/property_name
+    #             blank. Confirmed on a real 25 & 40 Hartwell 12-month GL
+    #             export 2026-08-24. This does not affect transaction parsing
+    #             at all -- multi-entity detection (entity per row from column
+    #             A) is separate and already worked correctly on this file.
     property_code = ""
     property_name = ""
     if "=" in raw_property:
@@ -206,8 +215,8 @@ def parse_metadata(ws) -> GLMetadata:
         property_code = parts[0] if parts else ""
         property_name = parts[1] if len(parts) > 1 else ""
     else:
-        # Format B: "Some Name (code)"
-        m = re.match(r'^(.+?)\s*\((\w+)\)\s*$', raw_property)
+        # Format B or C: "Some Name (code)" -- code may start with '.' (subset code)
+        m = re.match(r'^(.+?)\s*\((\.?\w+)\)\s*$', raw_property)
         if m:
             property_name = m.group(1).strip()
             property_code = m.group(2).strip()

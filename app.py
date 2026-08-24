@@ -7560,6 +7560,22 @@ with tab4:
         "Add or edit properties here. Each property is stored as a YAML config file — "
         "no GitHub access or code changes required."
     )
+    with st.expander("📖 New here? How to onboard a property", expanded=False):
+        st.markdown(
+            "**1. Files first, config second.** The sections above the Add/Edit form "
+            "below — Current Year Budget, Tenancy Schedule / Rent Roll, 12-Month GL "
+            "History, Bank Statement — read a real document instead of asking you to "
+            "type something blind. Drop those in before filling out the form so a few "
+            "of its fields (Bank Accounts, Kardin Budget Filename) can be copied "
+            "straight from what gets detected.\n\n"
+            "**2. Then the Add/Edit form**, section by section — pick "
+            "**➕ Create new property** below, or select an existing one to edit.\n\n"
+            "**3. Full step-by-step checklist further down this page** — "
+            "**📝 First-Close Checklist**, near the bottom — covers exactly what to do "
+            "before a property's very first close, split into *Existing GRP Property* "
+            "(an acquisition, carrying prior history forward) vs. *New Property* "
+            "(ground-up, nothing to carry forward). Start there once the config is saved."
+        )
 
     if github_configured():
         st.success("✅ GitHub connected — saved configs deploy automatically in ~2 min.", icon="🔗")
@@ -7649,7 +7665,7 @@ with tab4:
         )
         if _hero_upload is not None:
             if not _photo_target_code:
-                st.warning("Enter the Property Code above and save the config first, then re-upload the photo.")
+                st.warning("Enter the GA Property ID above and save the config first, then re-upload the photo.")
             else:
                 from property_writer import save_image_to_github as _save_img_gh, save_image_local as _save_img_loc
                 _img_bytes = _hero_upload.read()
@@ -7741,7 +7757,7 @@ with tab4:
                 _coa_target = _photo_target_code  # same code as photo (empty for new properties)
                 if not _coa_target:
                     st.warning(
-                        "Enter the Property Code and save the config first, "
+                        "Enter the GA Property ID and save the config first, "
                         "then re-upload the Chart of Accounts."
                     )
                 else:
@@ -7789,7 +7805,7 @@ with tab4:
         "Upload this property's current-year Kardin annual budget. Drives QC "
         "tie-out and the budget-based accrual detection (HVAC, Fire Life "
         "Safety, Snow & Ice). Saved under its own filename — enter that exact "
-        "filename in 'Kardin Budget Filename' further down (step 10) once saved."
+        "filename in 'Kardin Budget Filename' further down (step 8) once saved."
     )
     _budget_col1, _budget_col2 = st.columns([2, 1])
     with _budget_col1:
@@ -7803,7 +7819,7 @@ with tab4:
             _budget_target = _photo_target_code  # same code as photo (empty for new properties)
             if not _budget_target:
                 st.warning(
-                    "Enter the Property Code and save the config first, "
+                    "Enter the GA Property ID and save the config first, "
                     "then re-upload the budget."
                 )
             else:
@@ -7820,7 +7836,7 @@ with tab4:
                 else:
                     st.info(f"Budget saved locally as `{_budget_fname}`.")
                 st.caption(
-                    f"⬇️ Enter **{_budget_fname}** in 'Kardin Budget Filename' (step 10) "
+                    f"⬇️ Enter **{_budget_fname}** in 'Kardin Budget Filename' (step 8) "
                     f"below so the pipeline knows to load it automatically."
                 )
     with _budget_col2:
@@ -7898,7 +7914,7 @@ with tab4:
     st.caption(
         "Upload a real statement instead of typing the account number blind — "
         "extracts it automatically so you can confirm and copy it into the "
-        "Bank Accounts table (step 8) below. Upload one statement per account "
+        "Bank Accounts table (step 6) below. Upload one statement per account "
         "(operating, development, DACA) — each appears as its own row here. "
         "Only recognizes **PNC, Bank of America, and KeyBank** — a different "
         "bank needs a new parser built first, same as a new lender does for "
@@ -7945,7 +7961,7 @@ with tab4:
             st.warning(f"Could not read this statement: {_bs_exc}")
 
     if st.session_state.prop_bank_detect_rows:
-        st.caption("⬇️ Detected so far — copy into the Bank Accounts table (step 8) below:")
+        st.caption("⬇️ Detected so far — copy into the Bank Accounts table (step 6) below:")
         st.dataframe(pd.DataFrame(st.session_state.prop_bank_detect_rows), use_container_width=True)
         if st.button("Clear detected accounts", key="clear_bank_detect"):
             st.session_state.prop_bank_detect_rows = []
@@ -7963,10 +7979,14 @@ with tab4:
             )
         st.markdown("### 1 · Basic Information")
         _c1, _c2 = st.columns(2)
-        _prop_code    = _c1.text_input("Property Code *",
+        _prop_code    = _c1.text_input("GA Property ID *",
                                         value='' if _is_new else _edit_cfg.property_code,
                                         placeholder="e.g. lexlabspm" if not _is_mri else "e.g. metropark01",
-                                        help="Short unique code for this property. Lowercase, no spaces.")
+                                        help="This pipeline's OWN internal identifier — not a Yardi property "
+                                             "code. It's the storage key for everything in this app (folder "
+                                             "name, property selector). For a consolidated property, each "
+                                             "building's real Yardi code (e.g. 25hart, 40hart) goes in the "
+                                             "Buildings table below instead — not here. Lowercase, no spaces.")
         _display_name = _c2.text_input("Display Name *",
                                         value=_ef('property_display_name'),
                                         placeholder="e.g. Lex Labs")
@@ -8105,7 +8125,7 @@ with tab4:
         # blank; account-name auto-fill (when someone types a code) still
         # works from the GL/Budget Comparison, just not from this config.
 
-        st.markdown("### 6 · Building / Allocation Splits (Multi-Building Properties)")
+        st.markdown("### 4 · Building / Allocation Splits (Multi-Building Properties)")
         st.caption(
             "Leave empty for single-building properties. "
             "For multi-building properties, add one row per building per schedule. "
@@ -8250,7 +8270,7 @@ with tab4:
         else:
             _default_split_schedule = ''
 
-        st.markdown("### 7 · Management Fee Lines")
+        st.markdown("### 5 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
         _default_fees = [
             {'Name': fl.name, 'Rate (decimal)': fl.rate, 'Minimum ($)': fl.minimum,
@@ -8276,7 +8296,7 @@ with tab4:
             key="prop_fees_editor",
         )
 
-        st.markdown("### 8 · Bank Accounts")
+        st.markdown("### 6 · Bank Accounts")
         st.caption(
             "One row per bank account. **Slug** = unique key (lowercase, underscores). "
             "**Bank Name** = text that appears in PDF statements. "
@@ -8307,7 +8327,7 @@ with tab4:
             key="prop_banks_editor",
         )
 
-        st.markdown("### 9 · Payment Instructions (Invoice PDF)")
+        st.markdown("### 7 · Payment Instructions (Invoice PDF)")
         _ca, _cb = st.columns(2)
         with _ca:
             st.markdown("**ACH / Wire**")
@@ -8325,7 +8345,7 @@ with tab4:
             _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''), key="chk_addr2")
             _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''),     key="chk_attn")
 
-        st.markdown("### 10 · RE Tax & Other")
+        st.markdown("### 8 · RE Tax & Other")
         _c9, _c10 = st.columns(2)
         _retax_months_str = _c9.text_input(
             "RE Tax Payment Months (comma-separated)",
@@ -8364,7 +8384,7 @@ with tab4:
             _prop_code in {p['code'] for p in _existing} and _prop_code != _edit_code
         )
         if not _prop_code:
-            st.error("Property Code is required.")
+            st.error("GA Property ID is required.")
         elif not _display_name:
             st.error("Display Name is required.")
         elif _code_collision:
@@ -8372,7 +8392,7 @@ with tab4:
                 (p['display_name'] for p in _existing if p['code'] == _prop_code), _prop_code
             )
             st.error(
-                f"⚠️ Property Code '{_prop_code}' is already used by **{_collision_name}**. "
+                f"⚠️ GA Property ID '{_prop_code}' is already used by **{_collision_name}**. "
                 f"Saving would overwrite that property's config. Choose a different code."
             )
         else:
@@ -8436,13 +8456,15 @@ with tab4:
                 m.strip() for m in _team_text.splitlines() if m.strip()
             ]  # empty list is valid; config will have no team_members
 
-            # Tenants — not edited from this form (see the note above step 5);
-            # preserve whatever this property already had saved, if anything,
-            # rather than wiping it out just because there's no UI for it here.
+            # Tenants — not edited from this form (see the "Tenants (Utility
+            # Billing)" removal note above); preserve whatever this property
+            # already had saved, if anything, rather than wiping it out just
+            # because there's no UI for it here.
             _tenants_list = list(getattr(_edit_cfg, 'tenants', []) or [])
 
-            # Default accruals — removed (see the note above step 6); always
-            # empty going forward, including on re-save of a property that
+            # Default accruals — removed (see the "Default One-Off Accruals"
+            # removal note above); always empty going forward, including on
+            # re-save of a property that
             # had rows from before this change.
             _daccruals_list = []
 
@@ -8906,7 +8928,7 @@ with tab4:
 (an acquisition, or a property moving from JLL/manual close onto this pipeline)
 
 **1. Property Config — ⚙️ Properties → Add/Edit, section by section**
-- [ ] **Basic Information**: Property Code (e.g. `2540hartwellpm`), Display Name, Address, Type, Size
+- [ ] **Basic Information**: GA Property ID (e.g. `2540hartwellpm`), Display Name, Address, Type, Size
 - [ ] If this property consolidates 2+ Yardi property codes (e.g. two buildings, one workpaper): fill in the **Buildings** table (name, Yardi code, SF per building) — Size (SF) above auto-sums from it
 - [ ] **Ownership**: Investor Legal Name (per W-9) + Short Name, Invoice Prefix (leave blank to auto-derive from Display Name)
 - [ ] **Team Members**: everyone reviewing this property's close
@@ -8918,10 +8940,10 @@ with tab4:
 - [ ] **RE Tax & Other**: `re_tax_payment_months` for this jurisdiction (typically Jan/Apr/Jul/Oct), Parcel IDs if relevant
 
 **2. Files to drop in at onboarding (Property Setup page, above the form)**
-- [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 10)
+- [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 8)
 - [ ] **Tenancy Schedule / Rent Roll** — upload the current rent roll once to confirm Tenant Utility Billing picks up the right tenants (it re-reads this fresh every period going forward, so nothing to configure — just confirm it looks right)
 - [ ] **12-Month GL History** (if available) — informational only, flags which vendors bill quarterly/semi-annually so nothing gets missed as a one-off accrual later
-- [ ] **Bank Statement(s)** — upload one real statement per account to auto-extract the account number into step 8, instead of typing it blind (PNC / Bank of America / KeyBank only — a different bank needs a new parser first)
+- [ ] **Bank Statement(s)** — upload one real statement per account to auto-extract the account number into step 6, instead of typing it blind (PNC / Bank of America / KeyBank only — a different bank needs a new parser first)
 
 **3. Prepaid Ledger Seed** ← most critical for acquisitions
 - [ ] Gather all active prepaid schedules from prior management (insurance and RE tax are excluded automatically; focus on service contracts, subscriptions, maintenance agreements)
@@ -8951,7 +8973,7 @@ with tab4:
 (new construction / lease-up, no prior manager to carry anything forward from)
 
 **1. Property Config — ⚙️ Properties → Add/Edit, section by section**
-- [ ] **Basic Information**: Property Code, Display Name, Address, Type, Size
+- [ ] **Basic Information**: GA Property ID, Display Name, Address, Type, Size
 - [ ] If this property consolidates 2+ Yardi property codes: fill in the **Buildings** table (name, Yardi code, SF)
 - [ ] **Ownership**: Investor Legal Name (per W-9) + Short Name, Invoice Prefix (leave blank to auto-derive)
 - [ ] **Team Members**
@@ -8960,10 +8982,10 @@ with tab4:
 - [ ] **Management Fee Lines**, **Bank Accounts**, **Payment Instructions**, **RE Tax & Other** (re_tax_payment_months for this jurisdiction)
 
 **2. Files to drop in at onboarding (Property Setup page, above the form)**
-- [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 10)
+- [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 8)
 - [ ] **Tenancy Schedule / Rent Roll** — upload once any leases exist, so Tenant Utility Billing has tenants to bill; safe to skip if there are none yet
 - [ ] **12-Month GL History** — not applicable yet, there's no history
-- [ ] **Bank Statement(s)** — upload one per account to auto-extract the account number into step 8, instead of typing it blind
+- [ ] **Bank Statement(s)** — upload one per account to auto-extract the account number into step 6, instead of typing it blind
 
 **3. Prepaid Ledger Seed**
 - [ ] If there are NO active prepaids at open: skip — the ledger starts empty
@@ -8976,145 +8998,13 @@ with tab4:
 - [ ] The BS Workpaper starts fresh — do not upload a prior workpaper (leave that slot blank)
 """)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # WORKPAPER SEED BUILDER  (Existing GRP Property only)
-    # ══════════════════════════════════════════════════════════════════════════
-    st.divider()
-    st.markdown("## 📊 Workpaper Seed Builder")
-    st.markdown(
-        "For **Existing GRP Properties** being transitioned to the pipeline: enter prior "
-        "period GL ending balances for the specific BS accounts you want to carry forward. "
-        "The tool generates a starter `GA_Workpapers.xlsx` in the pipeline's rolling-table "
-        "format — upload it as the 'Prior Month Workpaper' on the first Pass 2 close and "
-        "history carries forward automatically every month after that.\n\n"
-        "You don't need to enter every account — just the ones where historical continuity "
-        "matters (e.g. 111100 Operating Cash, 115100 DACA, 213100 Accrued Expenses, "
-        "135150 Prepaid Other)."
-    )
-
-    _wp_col1, _wp_col2 = st.columns([2, 1])
-    with _wp_col1:
-        _wp_prop_name = st.text_input(
-            "Property Name (for workpaper headers)",
-            value=_edit_cfg.display() if ('_edit_cfg' in dir() and _edit_cfg) else '',
-            placeholder="e.g. Revolution Labs",
-            key="wp_seed_property_name",
-        )
-    with _wp_col2:
-        _wp_as_of = st.text_input(
-            "Last Period of Historical Data",
-            value="",
-            placeholder="e.g. Apr-2026",
-            help="The most recent period included in the seed — becomes the 'prior period' "
-                 "label on the first pipeline close.",
-            key="wp_seed_as_of_period",
-        )
-
-    st.caption(
-        "Enter one row per **account per period**. You can enter multiple periods for the "
-        "same account (e.g., Jan-2026 through Apr-2026) — the tool builds the full rolling "
-        "history table for each account automatically."
-    )
-
-    import pandas as _pd_wp
-    _wp_default = [
-        {"Account Code": "111100", "Account Name": "PNC Operating Cash",   "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
-        {"Account Code": "115100", "Account Name": "DACA KeyBank x5132",   "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
-        {"Account Code": "213100", "Account Name": "Accrued Expenses",      "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
-        {"Account Code": "135150", "Account Name": "Prepaid Other",         "Period": "", "GL Ending Balance": 0.0, "TB Ending Balance": 0.0},
-    ]
-    _wp_df = st.data_editor(
-        _pd_wp.DataFrame(_wp_default),
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "Account Code":      st.column_config.TextColumn("Account Code *",  width="small"),
-            "Account Name":      st.column_config.TextColumn("Account Name *",  width="medium"),
-            "Period":            st.column_config.TextColumn("Period *",         width="small",
-                                    help="Format: Jan-2026, Feb-2026, etc."),
-            "GL Ending Balance": st.column_config.NumberColumn("GL Ending Balance", format="$%.2f"),
-            "TB Ending Balance": st.column_config.NumberColumn("TB Ending Balance", format="$%.2f",
-                                    help="Leave 0 to default to GL ending balance."),
-        },
-        key="wp_seed_editor",
-    )
-
-    # Compute preview — group by account, show period count and latest balance
-    _wp_preview = {}
-    for _, _wr in _wp_df.iterrows():
-        _wc = str(_wr.get("Account Code", "") or "").strip()
-        _wn = str(_wr.get("Account Name", "") or "").strip()
-        _wp = str(_wr.get("Period", "") or "").strip()
-        if not _wc or not _wp:
-            continue
-        _wg = float(_wr.get("GL Ending Balance", 0) or 0)
-        _wt = float(_wr.get("TB Ending Balance", 0) or 0) or _wg
-        key = (_wc, _wn)
-        if key not in _wp_preview:
-            _wp_preview[key] = []
-        _wp_preview[key].append({"period": _wp, "gl": _wg, "tb": _wt})
-
-    if _wp_preview:
-        _prev_rows = []
-        for (_wc, _wn), periods in sorted(_wp_preview.items()):
-            try:
-                from bs_workpaper_generator import _seed_period_sort as _sps
-                periods_sorted = sorted(periods, key=lambda r: _sps(r['period']))
-            except Exception:
-                periods_sorted = periods
-            latest = periods_sorted[-1]
-            _prev_rows.append({
-                "Account": f"{_wc} {_wn}",
-                "Periods": len(periods_sorted),
-                "Earliest": periods_sorted[0]['period'],
-                "Latest": latest['period'],
-                "Latest GL Balance": f"${latest['gl']:,.2f}",
-            })
-        st.markdown("**Preview:**")
-        st.dataframe(_pd_wp.DataFrame(_prev_rows), use_container_width=True, hide_index=True)
-
-    _wp_entries = [
-        {
-            "account_code": str(r.get("Account Code", "") or "").strip(),
-            "account_name": str(r.get("Account Name", "") or "").strip(),
-            "period":       str(r.get("Period", "") or "").strip(),
-            "gl_ending":    float(r.get("GL Ending Balance", 0) or 0),
-            "tb_ending":    float(r.get("TB Ending Balance", 0) or 0),
-        }
-        for _, r in _wp_df.iterrows()
-        if str(r.get("Account Code", "") or "").strip()
-        and str(r.get("Period", "") or "").strip()
-    ]
-
-    if _wp_entries and _wp_as_of:
-        try:
-            from bs_workpaper_generator import generate_workpaper_seed as _gen_wp_seed
-            _wp_bytes = _gen_wp_seed(
-                entries=_wp_entries,
-                property_name=_wp_prop_name or '',
-                as_of_period=_wp_as_of,
-            )
-            st.download_button(
-                label="⬇️ Download Workpaper Seed",
-                data=_wp_bytes,
-                file_name=f"GA_Workpapers_Seed_{_wp_as_of.replace('-', '')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                help="Upload this as the 'Prior Month Workpaper' in Pass 2 on the first close.",
-            )
-            _acct_count  = len({e['account_code'] for e in _wp_entries})
-            _period_count = len({e['period'] for e in _wp_entries})
-            st.caption(
-                f"✅ {_acct_count} account(s) × {_period_count} period(s) — "
-                f"the pipeline will carry this history forward from {_wp_as_of} onward."
-            )
-        except Exception as _wpe:
-            st.error(f"Workpaper seed generation failed: {_wpe}")
-    else:
-        st.caption(
-            "Fill in Account Code, Account Name, Period, and GL Ending Balance for at least "
-            "one row, and set the 'Last Period of Historical Data' field above."
-        )
+    # Workpaper Seed Builder removed 2026-08-24 — workpapers are never part of
+    # property config; the real BS Workpaper is generated by the pipeline
+    # itself and carried forward by uploading the prior month's file as
+    # "Prior Month Workpaper" in the Pass 2 sidebar each period. This tool's
+    # output (pipeline/bs_workpaper_generator.py: generate_workpaper_seed(),
+    # _seed_period_sort()) is left in place in case it's useful again later,
+    # just no longer surfaced here.
 
 # ── Feedback Inbox (bottom of Properties tab) ──────────────────────────────────
 with tab4:
