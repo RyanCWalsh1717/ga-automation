@@ -7604,6 +7604,11 @@ with tab4:
     st.markdown("---")
 
     # ── Add / Edit property form ──────────────────────────────────────────────
+    # Apply a pending reset (set by the Delete flow further down, after a
+    # property is removed) BEFORE this widget is instantiated — writing to
+    # its session_state value is only safe here, not after it's rendered.
+    if st.session_state.pop('_prop_select_reset_pending', False):
+        st.session_state['prop_setup_edit_select'] = "➕ Create new property"
     _edit_code = st.selectbox(
         "Edit existing or create new",
         options=["➕ Create new property"] + [p['code'] for p in _existing],
@@ -8658,10 +8663,17 @@ with tab4:
                     # The "Edit existing or create new" selectbox still holds
                     # the just-deleted code, which no longer exists in its
                     # options list once _existing is rebuilt from disk on
-                    # rerun — Streamlit raises on a keyed widget whose stored
-                    # value isn't in `options`. Reset it to the sentinel
-                    # "create new" option first so the rerun is safe.
-                    st.session_state.prop_setup_edit_select = "➕ Create new property"
+                    # rerun. Can't reset its session_state value directly
+                    # here — Streamlit forbids writing to a widget-backed key
+                    # in the SAME script run after that widget has already
+                    # been drawn (the selectbox renders long before this
+                    # button's handler, even though st.rerun() follows right
+                    # away). Confirmed as a real crash 2026-08-24. Instead,
+                    # set a plain (non-widget) pending flag and apply the
+                    # reset at the top of the next run, before the selectbox
+                    # is instantiated — see the check right above where that
+                    # selectbox is created.
+                    st.session_state._prop_select_reset_pending = True
                     st.rerun()
                 else:
                     st.error(f"Deletion failed: {_delmsg}")
