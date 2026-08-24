@@ -8153,30 +8153,10 @@ with tab4:
         # has 2+ real entries — auto-suggest an Equal-share schedule and an
         # SF-proportional schedule from that data instead of a blank row the
         # user has to build (and do the SF percentage math for) by hand.
-        # Both generalize to any number of buildings, not just a pair —
-        # confirmed correct for Equal at 2 (50/50) and computed the same way
-        # for 3-5. Remainder from rounding is assigned to the last row so
-        # each schedule sums to exactly 100.00%, not 99.99/100.01.
-        # st.data_editor silently ignores a freshly-computed value on any
-        # rerun after its key already has established state (documented
-        # Streamlit quirk in this app — see the Prepaid Ledger Seed Builder's
-        # identical fix). Without forcing a fresh widget key, the auto-seeded
-        # rows below would only ever show up if the Buildings table already
-        # had 2+ rows on the very first render — as soon as the user adds a
-        # second building in a later rerun, this widget's state is already
-        # locked to whatever it rendered first (a blank row) and the
-        # newly-computed Equal/By-SF rows never appear. Tracked per-property
-        # (by _edit_code) and fired exactly once per property, so switching
-        # properties re-evaluates cleanly but a later manual edit to the
-        # splits table is never silently overwritten by this reseed.
-        if "_splits_auto_seeded_for" not in st.session_state:
-            st.session_state._splits_auto_seeded_for = set()
-        if "_splits_seed_gen" not in st.session_state:
-            st.session_state._splits_seed_gen = 0
-        if (not _default_splits and len(_buildings_list) >= 2
-                and _edit_code not in st.session_state._splits_auto_seeded_for):
-            st.session_state._splits_auto_seeded_for.add(_edit_code)
-            st.session_state._splits_seed_gen += 1
+        # Generalizes to any number of buildings, not just a pair —
+        # correct for Equal at 2 (50/50) and computed the same way for 3-5.
+        # Remainder from rounding is assigned to the last row so each
+        # schedule sums to exactly 100.00%, not 99.99/100.01.
         if not _default_splits and len(_buildings_list) >= 2:
             _n_bldgs = len(_buildings_list)
             _equal_pct = round(100.0 / _n_bldgs, 4)
@@ -8200,31 +8180,81 @@ with tab4:
                         'Yardi Code': _b['yardi_code'], 'Share %': _pct,
                         'Notes': f"{_b['size_sf']:,} SF",
                     })
-        _splits_df = pd.DataFrame(
-            _default_splits or [{'Schedule Name': '', 'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}]
+
+        # Plain widgets (text_input/number_input) per row, not st.data_editor.
+        # Confirmed with Ryan 2026-08-24: a typed custom Share % (e.g. 67/33
+        # overriding the SF-prorated default) was silently lost on save,
+        # reverting to the auto-computed By-SF percentages every time.
+        # st.data_editor already has two other confirmed failure modes in
+        # this app (see Development Notes in CLAUDE.md) — same root-cause
+        # class, fixed the same way elsewhere (One-Off Accruals, Intercompany
+        # Recode): independently-keyed plain widgets per row instead of a
+        # canvas grid, which never re-merges/discards edits against a
+        # freshly-computed default on rerun. Since this table lives inside
+        # st.form (which disallows a plain st.button() for add/remove), row
+        # count is a number_input instead of an Add/Remove row button.
+        _SPLITS_NROWS_KEY = "splits_nrows"
+
+        def _splits_seed_widget(_i: int, _seed: dict) -> None:
+            st.session_state[f"splits_sched_{_i}"] = _seed['Schedule Name']
+            st.session_state[f"splits_name_{_i}"]  = _seed['Building Name']
+            st.session_state[f"splits_code_{_i}"]  = _seed['Yardi Code']
+            st.session_state[f"splits_pct_{_i}"]   = _seed['Share %']
+            st.session_state[f"splits_notes_{_i}"] = _seed['Notes']
+
+        # (Re)seed row widgets only when this property hasn't been seeded
+        # yet in this session (switch, first load, Reset All) — never on an
+        # ordinary rerun, so this block's own widgets below never clobber
+        # a user's in-progress edit.
+        if st.session_state.get("_splits_seeded_for") != _edit_code:
+            _seed_rows = _default_splits or [
+                {'Schedule Name': '', 'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}
+            ]
+            for _i, _seed in enumerate(_seed_rows):
+                _splits_seed_widget(_i, _seed)
+            st.session_state[_SPLITS_NROWS_KEY] = len(_seed_rows)
+            st.session_state["_splits_seeded_for"] = _edit_code
+
+        _splits_nrows = st.number_input(
+            "Number of split rows", min_value=1, max_value=50,
+            key=_SPLITS_NROWS_KEY, step=1,
+            help="Increase to add more rows — e.g. 2 schedules × 2 buildings = 4 rows; "
+                 "add more for a 3-5 building property or an extra schedule.",
         )
-        _splits_edited = st.data_editor(
-            _splits_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                'Schedule Name': st.column_config.TextColumn("Schedule Name", width="small",
-                                     help="Groups rows into allocation pools, e.g. '2-Bldg' or '4-Bldg'. Each schedule must sum to 100%."),
-                'Building Name': st.column_config.TextColumn("Building Name", width="medium"),
-                'Yardi Code':    st.column_config.TextColumn("Yardi Code", width="small",
-                                     help="Only if this building has its own Yardi property code. Leave blank to use the parent code."),
-                'Share %':       st.column_config.NumberColumn("Share %", format="%.2f",
-                                     min_value=0.0, max_value=100.0,
-                                     help="Percentage, e.g. 50 for 50%. Each schedule group must total 100."),
-                'Notes':         st.column_config.TextColumn("Notes", width="medium"),
-            },
-            key=f"prop_splits_editor_{st.session_state._splits_seed_gen}",
-        )
+        _sh0, _sh1, _sh2, _sh3, _sh4 = st.columns([1.3, 2.0, 1.3, 1.0, 2.0])
+        _sh0.markdown("**Schedule Name**")
+        _sh1.markdown("**Building Name**")
+        _sh2.markdown("**Yardi Code**")
+        _sh3.markdown("**Share %**")
+        _sh4.markdown("**Notes**")
+        for _i in range(int(_splits_nrows)):
+            _sr0, _sr1, _sr2, _sr3, _sr4 = st.columns([1.3, 2.0, 1.3, 1.0, 2.0])
+            _sr0.text_input("Schedule Name", key=f"splits_sched_{_i}", label_visibility="collapsed")
+            _sr1.text_input("Building Name", key=f"splits_name_{_i}", label_visibility="collapsed")
+            _sr2.text_input("Yardi Code", key=f"splits_code_{_i}", label_visibility="collapsed")
+            _sr3.number_input("Share %", key=f"splits_pct_{_i}", label_visibility="collapsed",
+                               min_value=0.0, max_value=100.0, step=0.01, format="%.2f")
+            _sr4.text_input("Notes", key=f"splits_notes_{_i}", label_visibility="collapsed")
+
+        def _splits_current_rows() -> list:
+            _rows = []
+            for _i in range(int(st.session_state.get(_SPLITS_NROWS_KEY, 0))):
+                _bname = str(st.session_state.get(f"splits_name_{_i}", '') or '').strip()
+                if not _bname:
+                    continue
+                _rows.append({
+                    'Schedule Name': str(st.session_state.get(f"splits_sched_{_i}", '') or '').strip(),
+                    'Building Name': _bname,
+                    'Yardi Code':    str(st.session_state.get(f"splits_code_{_i}", '') or '').strip(),
+                    'Share %':       float(st.session_state.get(f"splits_pct_{_i}", 0.0) or 0.0),
+                    'Notes':         str(st.session_state.get(f"splits_notes_{_i}", '') or '').strip(),
+                })
+            return _rows
+
+        _splits_edited_rows = _splits_current_rows()
+
         # Live validation — check each schedule group sums to 100%
-        _split_rows_filled = [
-            r for _, r in _splits_edited.iterrows()
-            if str(r.get('Building Name', '') or '').strip()
-        ]
+        _split_rows_filled = _splits_edited_rows
         if _split_rows_filled:
             # Group by schedule name
             _sched_totals: dict = {}
@@ -8250,9 +8280,8 @@ with tab4:
         # Default split schedule selector (only shown when splits are defined)
         _avail_schedules = list(dict.fromkeys(
             str(r.get('Schedule Name', '') or '').strip()
-            for _, r in _splits_edited.iterrows()
-            if str(r.get('Building Name', '') or '').strip()
-               and str(r.get('Schedule Name', '') or '').strip()
+            for r in _splits_edited_rows
+            if str(r.get('Schedule Name', '') or '').strip()
         ))
         _cur_default_sch = _ef('default_split_schedule', '')
         if _avail_schedules:
@@ -8474,18 +8503,16 @@ with tab4:
             _daccruals_list = []
 
             # Parse building splits
-            _splits_list = []
-            for _, _srow in _splits_edited.iterrows():
-                _sname = str(_srow.get('Building Name', '') or '').strip()
-                if not _sname:
-                    continue
-                _splits_list.append({
-                    'schedule':   str(_srow.get('Schedule Name', '') or '').strip() or 'default',
-                    'name':       _sname,
-                    'yardi_code': str(_srow.get('Yardi Code', '') or '').strip(),
-                    'share_pct':  float(_srow.get('Share %', 0) or 0) / 100.0,
-                    'notes':      str(_srow.get('Notes', '') or '').strip(),
-                })
+            _splits_list = [
+                {
+                    'schedule':   _srow['Schedule Name'] or 'default',
+                    'name':       _srow['Building Name'],
+                    'yardi_code': _srow['Yardi Code'],
+                    'share_pct':  _srow['Share %'] / 100.0,
+                    'notes':      _srow['Notes'],
+                }
+                for _srow in _splits_edited_rows
+            ]
 
             _cfg_dict = build_config_dict(
                 property_code          = _prop_code,

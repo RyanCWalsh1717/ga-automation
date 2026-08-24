@@ -13,10 +13,10 @@ the discovery step that produces them — so detection here is simpler and
 self-contained: which bank does this statement's own text say it's from.
 
 Only recognizes the banks this pipeline already has a parser for (PNC, Bank
-of America, KeyBank). Any other bank is correctly reported as unrecognized —
-a new bank statement FORMAT needs a new parser, same as a new lender does for
-loan statements (see berkadia_loan.py). This never guesses at a format it
-can't actually parse.
+of America, KeyBank, Eastern Bank). Any other bank is correctly reported as
+unrecognized — a new bank statement FORMAT needs a new parser, same as a new
+lender does for loan statements (see berkadia_loan.py). This never guesses
+at a format it can't actually parse.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from typing import Optional
 
 @dataclass
 class BankStatementDetectResult:
-    bank_type:      str = ''            # 'pnc' | 'bofa' | 'keybank' | ''
-    bank_label:     str = ''            # e.g. 'PNC', 'Bank of America', 'KeyBank'
+    bank_type:      str = ''            # 'pnc' | 'bofa' | 'keybank' | 'eastern' | ''
+    bank_label:     str = ''            # e.g. 'PNC', 'Bank of America', 'KeyBank', 'Eastern Bank'
     account_number: Optional[str] = None
     suggested_slug: str = ''            # e.g. 'pnc_operating' (type only — dev/operating/daca guess needs a human)
     recognized:     bool = False
@@ -40,11 +40,16 @@ def detect_and_extract(filepath: str) -> BankStatementDetectResult:
     try:
         import pdfplumber
         with pdfplumber.open(filepath) as pdf:
-            first_page_text = pdf.pages[0].extract_text() if pdf.pages else ''
+            # Scan every page, not just page 1 — confirmed on a real Eastern
+            # Bank "Customer Statement" that the bank's own name never
+            # appears on page 1 at all (only from page 2 onward, in the
+            # electronic-transfer disclosure boilerplate). Page-1-only
+            # detection silently failed to recognize a real file.
+            full_text = '\n'.join((p.extract_text() or '') for p in pdf.pages)
     except Exception as exc:
         return BankStatementDetectResult(_parse_error=str(exc))
 
-    text_lower = (first_page_text or '').lower()
+    text_lower = full_text.lower()
 
     if 'keybank' in text_lower:
         bank_type, bank_label, slug = 'keybank', 'KeyBank', 'keybank_daca'
@@ -55,13 +60,17 @@ def detect_and_extract(filepath: str) -> BankStatementDetectResult:
     elif 'pnc' in text_lower:
         bank_type, bank_label, slug = 'pnc', 'PNC', 'pnc_operating'
         parser_module = 'pnc_bank_statement'
+    elif 'eastern bank' in text_lower or 'intrafi' in text_lower:
+        bank_type, bank_label, slug = 'eastern', 'Eastern Bank', 'eastern_operating'
+        parser_module = 'eastern_bank'
     else:
         return BankStatementDetectResult(
             recognized=False,
             _parse_error=(
                 "Bank not recognized — this pipeline only has a parser for PNC, "
-                "Bank of America, and KeyBank statements. A new bank needs a new "
-                "parser built first (same as a new lender does for loan statements)."
+                "Bank of America, KeyBank, and Eastern Bank statements. A new bank "
+                "needs a new parser built first (same as a new lender does for "
+                "loan statements)."
             ),
         )
 
