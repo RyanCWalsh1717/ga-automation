@@ -7653,6 +7653,31 @@ with tab4:
         )
         st.markdown("---")
 
+    # ── Onboarding uploaders: clear after a successful save ───────────────────
+    # st.file_uploader keeps returning the SAME UploadedFile on every rerun
+    # until the user manually removes it from the widget — there's no form
+    # here to reset it (file_uploader can't live in st.form). Confirmed bug
+    # 2026-08-24: upload a photo/COA/budget for Property A, then switch to
+    # Property B without clicking the uploader's own "x" — the next rerun
+    # (e.g. Property B's own Save click) re-saves Property A's stale file
+    # under Property B's code, since these targets follow whatever _edit_code
+    # currently is. Fix: bump this uploader's own generation counter right
+    # after a save attempt, which changes its widget key on the next render —
+    # a fresh, empty file_uploader, same as bumping key= elsewhere in this
+    # app forces a genuine reseed (see Development Notes in CLAUDE.md).
+    def _uploader_key(_name: str) -> str:
+        return f"{_name}_{st.session_state.get(f'_{_name}_gen', 0)}"
+
+    def _bump_uploader(_name: str) -> None:
+        st.session_state[f'_{_name}_gen'] = st.session_state.get(f'_{_name}_gen', 0) + 1
+
+    # Reset per-property onboarding scratch state when the property being
+    # edited changes, so a previous property's detected bank accounts don't
+    # linger as suggestions for the next one.
+    if st.session_state.get('_prop_setup_last_edit_code') != _edit_code:
+        st.session_state.prop_bank_detect_rows = []
+        st.session_state['_prop_setup_last_edit_code'] = _edit_code
+
     # ── Building photo upload (outside form — file_uploader can't live in st.form) ──
     st.markdown("### 🏙️ Building Photo")
     st.caption(
@@ -7665,7 +7690,7 @@ with tab4:
         _hero_upload = st.file_uploader(
             "Building photo (JPG / PNG)",
             type=['jpg', 'jpeg', 'png', 'webp'],
-            key='prop_hero_photo_upload',
+            key=_uploader_key('prop_hero_photo_upload'),
             help="Saved to GitHub as data/{property_code}/hero.jpg — updates hero banner after ~2 min redeploy.",
         )
         if _hero_upload is not None:
@@ -7686,6 +7711,8 @@ with tab4:
                         st.warning(f"GitHub save failed: {_gh_msg}. Saved locally.")
                 else:
                     st.info("Photo saved locally. Set up GitHub secrets to persist to Streamlit Cloud.")
+                _bump_uploader('prop_hero_photo_upload')
+                st.rerun()
     with _photo_col2:
         # Preview current photo for this property
         if not _is_new and _photo_target_code:
@@ -7726,7 +7753,7 @@ with tab4:
             _grp_coa_upload = st.file_uploader(
                 "GRP Chart of Accounts (Excel)",
                 type=['xlsx', 'xls'],
-                key='prop_shared_coa_upload',
+                key=_uploader_key('prop_shared_coa_upload'),
             )
             if _grp_coa_upload is not None:
                 from property_writer import save_image_to_github as _save_shared_gh, save_image_local as _save_shared_loc
@@ -7742,6 +7769,8 @@ with tab4:
                         st.warning(f"GitHub save failed: {_shared_gh_msg}. Saved locally.")
                 else:
                     st.info("Shared GRP Chart of Accounts saved locally.")
+                _bump_uploader('prop_shared_coa_upload')
+                st.rerun()
         st.markdown("---")
 
     if not _uses_grp_coa:
@@ -7755,7 +7784,7 @@ with tab4:
             _coa_upload = st.file_uploader(
                 "Chart of Accounts (Excel / CSV)",
                 type=['xlsx', 'xls', 'csv'],
-                key='prop_coa_upload',
+                key=_uploader_key('prop_coa_upload'),
                 help="Saved to GitHub as data/{property_code}/chart_of_accounts.xlsx",
             )
             if _coa_upload is not None:
@@ -7792,6 +7821,8 @@ with tab4:
                         st.caption(f"Showing first 20 rows of {_coa_upload.name}")
                     except Exception:
                         st.caption(f"Saved: {_coa_upload.name}")
+                    _bump_uploader('prop_coa_upload')
+                    st.rerun()
         with _coa_col2:
             # Show whether a COA is already on file for this property
             if not _is_new and _photo_target_code:
@@ -7817,7 +7848,7 @@ with tab4:
         _budget_upload = st.file_uploader(
             "Current Year Budget (Excel)",
             type=['xlsx', 'xls'],
-            key='prop_budget_upload',
+            key=_uploader_key('prop_budget_upload'),
             help="Saved to GitHub as data/{property_code}/<filename you uploaded>",
         )
         if _budget_upload is not None:
@@ -7844,6 +7875,8 @@ with tab4:
                     f"⬇️ Enter **{_budget_fname}** in 'Kardin Budget Filename' (step 8) "
                     f"below so the pipeline knows to load it automatically."
                 )
+                _bump_uploader('prop_budget_upload')
+                st.rerun()
     with _budget_col2:
         # Show whether a budget file matching the configured filename is on disk
         if not _is_new and _photo_target_code:
@@ -7921,16 +7954,16 @@ with tab4:
         "extracts it automatically so you can confirm and copy it into the "
         "Bank Accounts table (step 6) below. Upload one statement per account "
         "(operating, development, DACA) — each appears as its own row here. "
-        "Only recognizes **PNC, Bank of America, and KeyBank** — a different "
-        "bank needs a new parser built first, same as a new lender does for "
-        "loan statements."
+        "Only recognizes **PNC, Bank of America, KeyBank, and Eastern Bank** — a "
+        "different bank needs a new parser built first, same as a new lender "
+        "does for loan statements."
     )
     if 'prop_bank_detect_rows' not in st.session_state:
         st.session_state.prop_bank_detect_rows = []
     _bank_stmt_upload = st.file_uploader(
         "Bank Statement (PDF)",
         type=['pdf'],
-        key='prop_bank_stmt_upload',
+        key=_uploader_key('prop_bank_stmt_upload'),
     )
     if _bank_stmt_upload is not None:
         try:
@@ -7964,6 +7997,8 @@ with tab4:
                     })
         except Exception as _bs_exc:
             st.warning(f"Could not read this statement: {_bs_exc}")
+        _bump_uploader('prop_bank_stmt_upload')
+        st.rerun()
 
     if st.session_state.prop_bank_detect_rows:
         st.caption("⬇️ Detected so far — copy into the Bank Accounts table (step 6) below:")
