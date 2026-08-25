@@ -759,10 +759,28 @@ def _prop_hero_src(property_code: str) -> Optional[str]:
 
     return None
 
-_HERO_SRC = _prop_hero_src(st.session_state.get('active_property_code', ''))
+# Resolve the active property code from the selector widget's own live state
+# first, falling back to active_property_code. The "🏢 Active Property"
+# selectbox (below, near line 1340) is the thing that actually updates
+# active_property_code — but Streamlit applies a widget's new value to its
+# own session_state key BEFORE the script starts running, regardless of
+# where in the script the widget itself is instantiated. Reading
+# active_property_code here (computed too early, before the selector has
+# run this same rerun) meant the hero banner rendered the PREVIOUS property
+# on switch, relying on the selector's own follow-up st.rerun() to correct
+# it a moment later — and that extra forced rerun could race with
+# st.components.v1.html()'s iframe update, leaving the old photo on screen.
+# Confirmed with Ryan 2026-08-24 (photo stuck on Revolution Labs after
+# switching properties). Reading the widget's key directly resolves the
+# correct property on the very first render, no follow-up rerun needed.
+_active_prop_code = (
+    st.session_state.get('active_property_selectbox')
+    or st.session_state.get('active_property_code', '')
+)
+_HERO_SRC = _prop_hero_src(_active_prop_code)
 
 # ── Hero banner ───────────────────────────────────────────────
-_hero_alt = st.session_state.get('active_property_code', 'Property')
+_hero_alt = _active_prop_code or 'Property'
 _photo_html = (
     f'<img src="{_HERO_SRC}" class="grp-hero-photo" alt="{_hero_alt}"/>'
     if _HERO_SRC else ''
@@ -777,7 +795,7 @@ _logo_html = (
 # (_active_cfg is set in the sidebar section below, but on first render we
 # need it here too — load it again; it's cheap and cached by the YAML file.)
 from property_config import load_property_config as _lpc_hero
-_hero_cfg = _lpc_hero(st.session_state.get('active_property_code', ''), str(_DATA_DIR))
+_hero_cfg = _lpc_hero(_active_prop_code, str(_DATA_DIR))
 
 _hero_title = f"{_hero_cfg.display()} Monthly Close"
 _hero_sub   = ' &nbsp;|&nbsp; '.join(filter(None, [

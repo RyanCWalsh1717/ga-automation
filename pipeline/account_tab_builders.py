@@ -1460,16 +1460,12 @@ def build_111100_tab(wb, period: str, property_name: str,
     gl_beg    = float(getattr(gl_acct, 'beginning_balance', 0) or 0)
     tb_ending = float(getattr(tb_entry, 'ending_balance', 0) or 0) if tb_entry else gl_ending
 
-    ws = wb.create_sheet('111100 PNC Cash'[:31])
-    ws.sheet_properties.tabColor = '2D6F50'
-
-    RCPT_COL  = 4   # D — Receipts
-    DISB_COL  = 5   # E — Disbursements
-    BAL_COL   = 6   # F — Running Balance
-    NCOLS     = 5   # B-F
-
-    # Derive the operating bank account label from config if available.
-    # Falls back to the generic label when no bank_accounts config is present.
+    # Derive the operating bank account name/label from config if available —
+    # was hardcoded 'PNC Cash' in the sheet title regardless of which bank
+    # the property actually uses (the tab's own content already did this
+    # correctly for the label, just not the sheet name itself). Confirmed
+    # wrong for Hartwell (Eastern Bank, not PNC) 2026-08-24.
+    _bank_short = 'Operating'
     _bank_label = 'Cash - Operating Account'
     if property_config:
         _bank_accounts = getattr(property_config, 'bank_accounts', {}) or {}
@@ -1479,11 +1475,21 @@ def build_111100_tab(wb, period: str, property_name: str,
             None,
         )
         if _op_acct:
-            _label_parts = [getattr(_op_acct, 'bank_name', '') or '',
-                             getattr(_op_acct, 'last4', '') or '']
+            _bank_name = getattr(_op_acct, 'bank_name', '') or ''
+            if _bank_name:
+                _bank_short = _bank_name
+            _label_parts = [_bank_name, getattr(_op_acct, 'last4', '') or '']
             _suffix = ' '.join(p for p in _label_parts if p)
             if _suffix:
                 _bank_label = f'Cash - Operating Account ({_suffix})'
+
+    ws = wb.create_sheet(f'111100 {_bank_short} Cash'[:31])
+    ws.sheet_properties.tabColor = '2D6F50'
+
+    RCPT_COL  = 4   # D — Receipts
+    DISB_COL  = 5   # E — Disbursements
+    BAL_COL   = 6   # F — Running Balance
+    NCOLS     = 5   # B-F
 
     next_row = _write_tab_header(ws, '111100', _bank_label,
                                  period, property_name, ncols=NCOLS)
