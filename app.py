@@ -796,7 +796,31 @@ if not _prop_codes:
 
 if st.session_state.active_property_code not in _prop_codes:
     st.session_state.active_property_code = _prop_codes[0]
-_selected_code = st.session_state.active_property_code
+
+# Prefer the "🏢 Active Property" selectbox's own live widget value over
+# active_property_code when the two disagree. Streamlit applies a widget's
+# new value to its own session_state key BEFORE the script starts running,
+# regardless of where the widget itself is instantiated (the selectbox
+# lives further down, near the sidebar) -- so on the very rerun triggered by
+# the user picking a new property, the widget's key already reflects that
+# pick while active_property_code (updated by our own code, further down,
+# AFTER this point) is still one step behind. Without this, that rerun
+# renders the OLD property here, and only self-corrects via THAT code's own
+# follow-up st.rerun() a moment later -- a second forced rerun that could
+# race with how st.components.v1.html() updates the hero banner's iframe,
+# leaving the wrong property's photo on screen even after everything
+# settles. Confirmed with Ryan 2026-08-24 (both directions: Hartwell's photo
+# stuck showing on Rev Labs, and vice versa). Falls back to
+# active_property_code when the widget hasn't rendered yet this session, and
+# is validated against _prop_codes either way since a widget value can also
+# refer to a property that's since been renamed/deleted.
+_selectbox_val = st.session_state.get('active_property_selectbox')
+if _selectbox_val in _prop_codes:
+    _selected_code = _selectbox_val
+else:
+    _selected_code = st.session_state.active_property_code
+if _selected_code != st.session_state.active_property_code:
+    st.session_state.active_property_code = _selected_code
 
 _HERO_SRC = _prop_hero_src(_selected_code)
 
