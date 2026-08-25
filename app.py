@@ -8275,18 +8275,38 @@ with tab4:
             st.session_state[f"splits_pct_{_i}"]   = _seed['Share %']
             st.session_state[f"splits_notes_{_i}"] = _seed['Notes']
 
-        # (Re)seed row widgets only when this property hasn't been seeded
-        # yet in this session (switch, first load, Reset All) — never on an
-        # ordinary rerun, so this block's own widgets below never clobber
-        # a user's in-progress edit.
-        if st.session_state.get("_splits_seeded_for") != _edit_code:
+        # (Re)seed row widgets whenever the property's ACTUAL SAVED splits
+        # (from config.yaml, not the auto-computed Equal/By-SF suggestion)
+        # differ from what was last seeded — not just "have we seeded this
+        # property code before in this session". Confirmed as a real data-
+        # loss bug 2026-08-25: on Hartwell, an early render caught the
+        # Buildings table (step 1) with fewer than 2 rows — before the user
+        # had finished re-entering it after a delete/recreate — so the
+        # auto-seed's "2+ buildings" condition was false and this fell back
+        # to a single blank row, which then got marked as "seeded for
+        # 2540hartwellpm" for the rest of the session. Once Buildings
+        # reached 2 rows moments later, the guard (keyed on property code
+        # alone) blocked re-seeding from ever picking up the real 4 saved
+        # splits — the widgets stayed stuck at 1 row, and the next Save
+        # silently overwrote 4 real rows (including the ACH/Check payment
+        # blocks entered in the same save) down to 1. Signing on the saved
+        # data itself means a reseed fires the moment real data actually
+        # differs from what's in the widgets, while a user's own in-progress
+        # edits are untouched — they never change _edit_cfg (loaded once
+        # from disk), only what gets written back on the next Save.
+        _saved_splits_sig = tuple(
+            (bs.schedule, bs.name, bs.yardi_code, round(bs.share_pct, 6), bs.notes)
+            for bs in (_edit_cfg.building_splits if _edit_cfg else [])
+        )
+        _splits_seed_key = (_edit_code, _saved_splits_sig)
+        if st.session_state.get("_splits_seeded_for") != _splits_seed_key:
             _seed_rows = _default_splits or [
                 {'Schedule Name': '', 'Building Name': '', 'Yardi Code': '', 'Share %': 0.0, 'Notes': ''}
             ]
             for _i, _seed in enumerate(_seed_rows):
                 _splits_seed_widget(_i, _seed)
             st.session_state[_SPLITS_NROWS_KEY] = len(_seed_rows)
-            st.session_state["_splits_seeded_for"] = _edit_code
+            st.session_state["_splits_seeded_for"] = _splits_seed_key
 
         _splits_nrows = st.number_input(
             "Number of split rows", min_value=1, max_value=50,

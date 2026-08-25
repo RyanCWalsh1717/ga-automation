@@ -26,6 +26,20 @@ building_splits:
   name: 25 Hartwell
   share_pct: 0.5
   yardi_code: 25hart
+- schedule: Equal
+  name: 40 Hartwell
+  share_pct: 0.5
+  yardi_code: 40hart
+- schedule: By-SF
+  name: 25 Hartwell
+  share_pct: 0.523055
+  yardi_code: 25hart
+  notes: 33,339 SF
+- schedule: By-SF
+  name: 40 Hartwell
+  share_pct: 0.476945
+  yardi_code: 40hart
+  notes: 30,400 SF
 management_fees:
 - name: GRP
   rate: 0.0175
@@ -48,6 +62,16 @@ bank_accounts:
     label: Eastern Bank Sweep
     bank_name: Eastern Bank
     gl_account: '111250'
+payment_ach:
+  account_name: Greatland Realty Partners LLC
+  bank_name: Bank of America
+  account_number: '466007913255'
+  routing_number: 026009593
+  bank_address: 1 Federal St Boston, MA, 02110
+payment_check:
+  payable_to: Greatland Realty Partners LLC
+  address_line1: 1 Federal Street, 28th Floor Boston, MA 02110
+  attention: Lauren Sullivan
 re_tax_payment_months:
 - 1
 - 4
