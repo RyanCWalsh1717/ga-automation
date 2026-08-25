@@ -759,28 +759,49 @@ def _prop_hero_src(property_code: str) -> Optional[str]:
 
     return None
 
-# Resolve the active property code from the selector widget's own live state
-# first, falling back to active_property_code. The "🏢 Active Property"
-# selectbox (below, near line 1340) is the thing that actually updates
-# active_property_code — but Streamlit applies a widget's new value to its
-# own session_state key BEFORE the script starts running, regardless of
-# where in the script the widget itself is instantiated. Reading
-# active_property_code here (computed too early, before the selector has
-# run this same rerun) meant the hero banner rendered the PREVIOUS property
-# on switch, relying on the selector's own follow-up st.rerun() to correct
-# it a moment later — and that extra forced rerun could race with
-# st.components.v1.html()'s iframe update, leaving the old photo on screen.
-# Confirmed with Ryan 2026-08-24 (photo stuck on Revolution Labs after
-# switching properties). Reading the widget's key directly resolves the
-# correct property on the very first render, no follow-up rerun needed.
-_active_prop_code = (
-    st.session_state.get('active_property_selectbox')
-    or st.session_state.get('active_property_code', '')
-)
-_HERO_SRC = _prop_hero_src(_active_prop_code)
+# ── Property discovery (used by hero banner + main-page selector + sidebar) ──
+# Moved here, before the hero banner: this used to run down near the sidebar
+# (after the hero banner), so the banner always rendered with whatever stale
+# active_property_code was already in session_state — including right after
+# a property is renamed/deleted, when the old code is no longer valid. The
+# validation below (resetting to a real property if the current code isn't
+# one) needs to happen before anything reads active_property_code, not after.
+# A prior fix here tried reading the "🏢 Active Property" selectbox's own
+# widget state instead, on the theory that Streamlit applies a widget's new
+# value to session_state before the script reruns — true when the WIDGET
+# itself changes, but active_property_code is also set directly in several
+# other places (initial default, this same validation block, the
+# single-property fallback) that never touch the widget's key at all, so it
+# went stale independently and showed the WRONG property (confirmed with
+# Ryan 2026-08-24 — Hartwell's banner appeared on Rev Labs after Hartwell
+# was renamed). Validating active_property_code itself, this early, is the
+# actual fix — every downstream reader (hero banner, selector, sidebar,
+# tabs) then sees the same correct value.
+_all_props   = _discover_properties()
+_prop_codes  = [p['code'] for p in _all_props]
+_prop_labels = {p['code']: f"{p['display_name']}  ({p['code']})" for p in _all_props}
+
+if not _prop_codes:
+    st.warning(
+        "⚠️ **No properties configured.** "
+        "Go to the **Properties** tab to add your first property.",
+        icon="🏗️",
+    )
+    st.info(
+        "Create a `data/{property_code}/config.yaml` file or use the Properties form "
+        "to get started. See the How To Use tab for a full walkthrough.",
+        icon="ℹ️",
+    )
+    st.stop()
+
+if st.session_state.active_property_code not in _prop_codes:
+    st.session_state.active_property_code = _prop_codes[0]
+_selected_code = st.session_state.active_property_code
+
+_HERO_SRC = _prop_hero_src(_selected_code)
 
 # ── Hero banner ───────────────────────────────────────────────
-_hero_alt = _active_prop_code or 'Property'
+_hero_alt = _selected_code or 'Property'
 _photo_html = (
     f'<img src="{_HERO_SRC}" class="grp-hero-photo" alt="{_hero_alt}"/>'
     if _HERO_SRC else ''
@@ -795,7 +816,7 @@ _logo_html = (
 # (_active_cfg is set in the sidebar section below, but on first render we
 # need it here too — load it again; it's cheap and cached by the YAML file.)
 from property_config import load_property_config as _lpc_hero
-_hero_cfg = _lpc_hero(_active_prop_code, str(_DATA_DIR))
+_hero_cfg = _lpc_hero(_selected_code, str(_DATA_DIR))
 
 _hero_title = f"{_hero_cfg.display()} Monthly Close"
 _hero_sub   = ' &nbsp;|&nbsp; '.join(filter(None, [
@@ -914,31 +935,6 @@ _stc.html(f"""<!DOCTYPE html>
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
-
-# ── Property discovery (used by main-page selector + sidebar card) ───────────
-_all_props   = _discover_properties()
-_prop_codes  = [p['code'] for p in _all_props]
-_prop_labels = {p['code']: f"{p['display_name']}  ({p['code']})" for p in _all_props}
-
-# Guard: no properties configured yet — show a one-time setup prompt and stop
-if not _prop_codes:
-    st.warning(
-        "⚠️ **No properties configured.** "
-        "Go to the **Properties** tab to add your first property.",
-        icon="🏗️",
-    )
-    st.info(
-        "Create a `data/{property_code}/config.yaml` file or use the Properties form "
-        "to get started. See the How To Use tab for a full walkthrough.",
-        icon="ℹ️",
-    )
-    st.stop()
-
-# _selected_code is set by the main-page selector below (after the hero banner).
-# Here we just ensure session_state has a valid value for the hero render.
-if st.session_state.active_property_code not in _prop_codes and _prop_codes:
-    st.session_state.active_property_code = _prop_codes[0]
-_selected_code = st.session_state.active_property_code or (_prop_codes[0] if _prop_codes else '')
 
 # Detect property change — reset pipeline state so stale results don't carry over
 if st.session_state.get('_prev_active_property_code') != _selected_code:
