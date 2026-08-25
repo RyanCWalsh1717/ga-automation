@@ -1,6 +1,6 @@
-property_code: 2540hartwell
+property_code: 2540hartwellpm
 property_name: GRP LWC Hartwell JV
-property_display_name: 2540 Hartwell
+property_display_name: 25-40 Hartwell
 property_address: 25 & 40 Hartwell Ave
 property_system: yardi
 uses_grp_coa: true
