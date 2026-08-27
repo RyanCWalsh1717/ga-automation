@@ -40,7 +40,18 @@ def save_snapshot(session_state: Any) -> bytes:
         'active_property_code': session_state.get('active_property_code', '') or '',
         'prepared_by': session_state.get('prepared_by', '') or '',
         'checklist_period_key': session_state.get('checklist_period_key', '') or '',
-        'je_desc_overrides': dict(session_state.get('je_desc_overrides', {}) or {}),
+        # je_desc_overrides is keyed by (je_number, account_code) tuples (see
+        # app.py's Pass 1 JE description editor) -- json.dumps rejects
+        # non-string dict keys even with default=str (that only rescues
+        # values, not keys), so this crashed with a TypeError as soon as
+        # anyone actually had an override to save. Encoded here as
+        # "je_number||account_code" strings (same "||" convention already
+        # used by prepaid_ledger.py's _invoice_key) and decoded back to
+        # tuples in restore_snapshot() below.
+        'je_desc_overrides': {
+            (f"{k[0]}||{k[1]}" if isinstance(k, tuple) else str(k)): v
+            for k, v in (session_state.get('je_desc_overrides', {}) or {}).items()
+        },
     }
 
     # One-Off Accruals table (manual_accruals_df is a pandas DataFrame)
@@ -114,9 +125,21 @@ def restore_snapshot(data: dict, session_state: Any) -> list[str]:
             restored.append(label)
 
     # ── JE description overrides ───────────────────────────────
+    # Decode "je_number||account_code" strings back to the (je_number,
+    # account_code) tuple keys app.py's JE description editor looks up by
+    # (see save_snapshot() above) -- a JSON round-trip always produces
+    # string keys, so without this the restored dict would silently never
+    # match any lookup instead of erroring.
     overrides = data.get('je_desc_overrides')
     if isinstance(overrides, dict) and overrides:
-        session_state['je_desc_overrides'] = overrides
+        _decoded_overrides = {}
+        for _k, _v in overrides.items():
+            if isinstance(_k, str) and '||' in _k:
+                _je_num, _acct = _k.split('||', 1)
+                _decoded_overrides[(_je_num, _acct)] = _v
+            else:
+                _decoded_overrides[_k] = _v
+        session_state['je_desc_overrides'] = _decoded_overrides
         restored.append('JE description overrides')
 
     # ── One-Off Accruals table ─────────────────────────────────
