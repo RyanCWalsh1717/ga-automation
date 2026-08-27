@@ -826,10 +826,24 @@ _HERO_SRC = _prop_hero_src(_selected_code)
 
 # ── Hero banner ───────────────────────────────────────────────
 _hero_alt = _selected_code or 'Property'
-_photo_html = (
-    f'<img src="{_HERO_SRC}" class="grp-hero-photo" alt="{_hero_alt}"/>'
-    if _HERO_SRC else ''
-)
+# The photo renders via a separate, native st.image() call below -- NOT
+# embedded in the st.components.v1.html() iframe with the rest of the
+# banner. Confirmed with Ryan 2026-08-24/25: embedding it in the iframe
+# left the PREVIOUS property's photo on screen after switching, even with
+# active_property_code resolving correctly (verified) -- this Streamlit
+# version's components.v1.html() has no `key=` param to force a fresh
+# iframe on content change, and its update-in-place mechanism doesn't
+# reliably swap a data-URI <img> src between two real photos. st.image()
+# goes through Streamlit's own native rendering pipeline instead, which
+# doesn't have this failure mode. Decoded back to raw bytes from the same
+# data URI _prop_hero_src() already builds, rather than duplicating its
+# file-search logic.
+_hero_photo_bytes = None
+if _HERO_SRC:
+    try:
+        _hero_photo_bytes = _b64.b64decode(_HERO_SRC.split(',', 1)[1])
+    except Exception:
+        _hero_photo_bytes = None
 _logo_html = (
     f'<img src="{_LOGO_SRC}" style="max-width:140px;max-height:60px;" alt="GRP Logo"/>'
     if _LOGO_SRC else
@@ -856,12 +870,16 @@ if _hero_cfg.property_type:
     _hero_badges.append(f"🔬 {_hero_cfg.property_type}")
 _hero_badge_html = " ".join(f'<span class="grp-badge">{b}</span>' for b in _hero_badges)
 
-# Use st.components.v1.html() for the hero banner — it creates a true sandboxed
-# iframe that always renders HTML correctly, unlike st.markdown(unsafe_allow_html)
-# or st.html() which have both been broken in recent Streamlit versions.
+# Use st.components.v1.html() for the styled title/badges box — it creates
+# a true sandboxed iframe that always renders HTML correctly, unlike
+# st.markdown(unsafe_allow_html) or st.html() which have both been broken
+# in recent Streamlit versions. The photo itself is NOT part of this HTML —
+# see the st.image() call and the comment above it.
 # All hero CSS is inlined here so the component is self-contained.
 import streamlit.components.v1 as _stc
-_stc.html(f"""<!DOCTYPE html>
+
+def _render_hero_box():
+    _stc.html(f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -881,12 +899,6 @@ _stc.html(f"""<!DOCTYPE html>
     align-items: stretch;
     min-height: 130px;
     margin: 0;
-  }}
-  .grp-hero-photo {{
-    width: 240px; min-width: 240px;
-    object-fit: cover;
-    border-radius: 10px 0 0 10px;
-    display: block;
   }}
   .grp-hero-body {{
     padding: 18px 24px;
@@ -945,7 +957,6 @@ _stc.html(f"""<!DOCTYPE html>
 </head>
 <body>
 <div class="grp-hero">
-  {_photo_html}
   <div class="grp-hero-body">
     <div class="grp-hero-title">{_hero_title}</div>
     <div class="grp-hero-sub">{_hero_sub}</div>
@@ -956,6 +967,15 @@ _stc.html(f"""<!DOCTYPE html>
 </body>
 </html>
 """, height=160, scrolling=False)
+
+if _hero_photo_bytes:
+    _hero_c1, _hero_c2 = st.columns([1, 4])
+    with _hero_c1:
+        st.image(_hero_photo_bytes, use_container_width=True)
+    with _hero_c2:
+        _render_hero_box()
+else:
+    _render_hero_box()
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
