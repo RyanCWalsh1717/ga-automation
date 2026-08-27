@@ -1,192 +1,70 @@
-# ── Revolution Labs — Property Configuration ──────────────────────────────────
-# data/revlabspm/config.yaml
-#
-# To onboard a new property:
-#   1. Create data/{property_code}/ folder
-#   2. Copy this file, rename to config.yaml, update every field
-#   3. The property selector in the sidebar will auto-discover it
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Yardi identifiers
-property_system:       yardi       # yardi | mri (MRI onboarding coming soon)
-uses_grp_coa:          true        # standard GRP Yardi COA — data/_shared/GRP_Chart_of_Accounts.xlsx
-property_code:         revlabspm
-yardi_etl_code:        revlabpm    # ETL FinJournals PROPERTY field (max 8 chars)
-property_name:         Revolution Labs Owner, LLC
+property_code: revlabspm
+property_name: Revolution Labs Owner, LLC
 property_display_name: Revolution Labs
-property_address:      1050 Waltham Street, Lexington, MA
-property_type:         Life Science
-property_size_sf:      180000
-
-# Capital / investment
-investor_name:         Singerman Real Estate
-# investor_legal_name:   # full legal entity per Singerman's W-9 — fill in when available
-
-# Management
-management_company:    Greatland Realty Partners
-invoice_prefix:        RevLabsPM      # invoice numbers become RevLabsPM{MM}{YYYY}
-
-# ── Team members ──────────────────────────────────────────────────────────────
-# Names shown in the Dashboard name selector, close tracker, and sign-off sheet.
+property_address: 1050 Waltham Street, Lexington, MA
+property_system: yardi
+uses_grp_coa: true
+property_type: Life Science
+property_size_sf: 180000
+investor_name: Singerman Real Estate
+management_company: Greatland Realty Partners
+invoice_prefix: RevLabsPM
 team_members:
-  - Ryan Walsh
-  - Natasha Parker
-  - Lauren Sullivan
-
-# ── Tenants (Utility Billing) ─────────────────────────────────────────────────
-# Tenants billed back for electric/gas each month.
-# key: short slug for widget IDs (no spaces, lowercase)
-# name: display name shown in the TUB table
+- Ryan Walsh
+- Natasha Parker
+- Lauren Sullivan
 tenants:
-  - key: accent
-    name: Accent Therapeutics
-  - key: keros_n
-    name: Keros Therapeutics (N)
-  - key: keros_s
-    name: Keros Therapeutics (S)
-  - key: orum
-    name: Orum Therapeutics
-  - key: santi
-    name: Santi Therapeutics
-
-# Default one-off accruals (Pass 1 seed table) removed 2026-08-23 -- pre-
-# populating rows/amounts was overkill; most real accruals are already
-# picked up by the 4-layer detection engine (see accrual_entry_generator.py),
-# and a genuine one-off accrual is something the PM or accounting team
-# decides and types fresh each month. Note this is unrelated to HVAC (617110),
-# Fire Life Safety (627230), and Snow & Ice (635110), which were never in
-# this list -- those are accrued automatically from the Kardin monthly
-# budget by build_budget_based_accruals() (BUDGET_BASED_ACCOUNTS dict).
-
-# ── Management fee structure ──────────────────────────────────────────────────
-# Each entry produces one DR/CR pair in the JE and one line on the invoice.
-# For a single-PM property, list only one entry (set minimum: 0).
+- key: accent
+  name: Accent Therapeutics
+- key: keros_n
+  name: Keros Therapeutics (N)
+- key: keros_s
+  name: Keros Therapeutics (S)
+- key: orum
+  name: Orum Therapeutics
+- key: santi
+  name: Santi Therapeutics
 management_fees:
-  - name:       JLL
-    rate:       0.0125          # 1.25%
-    minimum:    5000.00         # greater of 1.25% or $5,000
-    dr_account: "637130"        # Admin-Management Fees
-    cr_account: "213100"        # Accrued Expenses
-    ref_prefix: MGMT-FEE-JLL
-  - name:       GRP
-    rate:       0.0175          # 1.75%
-    minimum:    0.00
-    dr_account: "637130"
-    cr_account: "213100"
-    ref_prefix: MGMT-FEE-GRP
-
-# ── Key GL accounts ───────────────────────────────────────────────────────────
-gl_accounts:
-  cash_operating:    "111100"   # PNC Operating
-  daca:              "115100"   # KeyBank DACA
-  re_tax_escrow:     "115200"
-  insurance_escrow:  "115300"
-  ar_billback:       "133110"   # Tenant Utility Billback
-  prepaids:          "135150"
-  accrued_expenses:  "213100"
-  accrued_interest:  "213200"
-  mgmt_fee_expense:  "637130"
-
-# ── Bank accounts ─────────────────────────────────────────────────────────────
-# Used by file_classifier.py to identify uploaded bank statements, and
-# by workpaper generators for tab labels and account reconciliation.
+- name: JLL
+  rate: 0.0125
+  minimum: 5000.0
+  dr_account: '637130'
+  cr_account: '213100'
+  ref_prefix: MGMT-FEE-JLL
+- name: GRP
+  rate: 0.0175
+  minimum: 0.0
+  dr_account: '637130'
+  cr_account: '213100'
+  ref_prefix: MGMT-FEE-GRP
 bank_accounts:
   pnc_operating:
-    label:        PNC Operating
-    bank_name:    PNC                 # must match text in bank statement PDFs
-    last4:        x3993
-    full_account: "1092223993"
-    gl_account:   "111100"
+    label: PNC Operating
+    bank_name: PNC
+    last4: x3993
+    full_account: '1092223993'
+    gl_account: '111100'
   bofa_development:
-    label:        BofA Development
-    bank_name:    Bank of America     # must match text in bank statement PDFs
-    last4:        x3132
-    full_account: "466007913132"
-    gl_account:   "111210"
+    label: BofA Development
+    bank_name: Bank of America
+    last4: x3132
+    full_account: '466007913132'
+    gl_account: '111210'
   keybank_daca:
-    label:        KeyBank DACA
-    bank_name:    KeyBank             # must match text in bank statement PDFs
-    last4:        x5132
-    full_account: "329681415132"
-    gl_account:   "115100"
-
-# ── Invoice payment instructions ──────────────────────────────────────────────
-payment_ach:
-  account_name:   Greatland Realty Partners LLC
-  bank_name:      Bank of America
-  account_number: "466007913255"
-  routing_number: "026009593"
-  bank_address:   1 Federal St, Boston, MA 02110
-
-payment_check:
-  payable_to:    Greatland Realty Partners LLC
-  address_line1: One Federal Street, 28th Floor
-  address_line2: Boston, MA 02110
-  attention:     Lauren Sullivan
-
-# ── Real estate tax ───────────────────────────────────────────────────────────
-# Months in which the full quarterly RE tax bill is paid (Berkadia auto-posts).
-# Lexington, MA: payments due Feb/May/Aug/Nov → pipeline defers in Jan/Apr/Jul/Oct.
-re_tax_payment_months: [1, 4, 7, 10]
-
-# ── Property identifiers ──────────────────────────────────────────────────────
+    label: KeyBank DACA
+    bank_name: KeyBank
+    last4: x5132
+    full_account: '329681415132'
+    gl_account: '115100'
+re_tax_payment_months:
+- 1
+- 4
+- 7
+- 10
 parcel_ids:
-  - "00011619"
-  - "R0140050002"
-
-# ── Output file naming ────────────────────────────────────────────────────────
-file_prefix_internal:     GA         # e.g. GA_Accruals_JE.csv
-file_prefix_deliverable:  RevLabs    # e.g. RevLabs_Jan2026_Workpapers.xlsx
-
-# ── Reference files (in this folder) ─────────────────────────────────────────
+- 00011619
+- R0140050002
 kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
-
-# ── Fiscal year ───────────────────────────────────────────────────────────────
-fiscal_year_start_month: 1     # January
-
-# ── Utility account routing overrides ────────────────────────────────────────
-# RevLabs posts gas expense to 613120 (not the COA-default 613210).
-# Adding 613120 here routes it through the same per-invoice daily-rate proration
-# as electricity — one accrual line per meter/invoice (Tygen, NatGrid, NRG, etc.).
-# No code changes needed to onboard other properties with different gas accounts.
-metered_utility_accounts:
-  - "613120"
-per_invoice_utility_accounts:
-  - "613120"
-
-# ── Layer 2 Pass 2 — individual vs combined accrual mode ─────────────────────
-# Accounts listed here emit one accrual JE line *per invoice* rather than
-# one combined line. Use for vendors whose invoices represent distinct service
-# types that reviewers need to see itemised (e.g. Casella: compactor, recycling,
-# trash each get their own JE row). All other Pass 2 accounts default to combined
-# mode (multiple invoices collapsed into one JE with '|' separated description).
-per_invoice_accrual_accounts:
-  - "610160"   # Cleaning-Trash Removal (Casella — separate lines per service type)
-
-# ── Layer 3 exclusions ───────────────────────────────────────────────────────
-# Accounts blocked from Layer 3 (historical recurring) auto-accrual.
-# Use for discretionary or irregular spend that Layer 3 would mis-classify as
-# a recurring contract. Layer 2 invoice proration and one-off accruals are unaffected.
-layer3_exclude_accounts:
-  - "637170"   # Admin-Food Service Amenities (discretionary spend, not a standing contract)
-  - "637150"   # Admin-Tenant Relations — never gets a real invoice, so Layer 3's
-               # compound-with-prior-reversal logic never resets and grows
-               # unbounded month over month (confirmed: $173,142.10 by Jan-2026).
-               # Use the One-Off Accruals table for a flat monthly estimate instead.
-
-# ── Insurance policies (prepaid amortization breakdown) ───────────────────────
-# Each policy gets its own JE line: DR expense_account / CR 135110.
-# Both general property insurance and the umbrella policy post to 639110.
-# Set the correct monthly_amount for each policy (annual premium ÷ 12).
-# Leave this section absent or set monthly_amount: 0 to revert to the single
-# combined budget-PTD line (old behavior).
-insurance_policies:
-  - name:            "Property Insurance"
-    expense_account: "639110"
-    monthly_amount:  4037.78
-  - name:            "Umbrella Policy"
-    expense_account: "639110"
-    monthly_amount:  666.90
-  - name:            "General Liability"
-    expense_account: "639120"
-    monthly_amount:  871.39
+fiscal_year_start_month: 1
+file_prefix_internal: GA
+file_prefix_deliverable: RevLabs

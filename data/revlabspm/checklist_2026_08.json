@@ -1,0 +1,15 @@
+{
+  "period": "2026_08",
+  "property_code": "revlabspm",
+  "steps": {
+    "1": {
+      "completed_by": "Ryan Walsh",
+      "timestamp": "08/27/2026 14:17",
+      "auto": true
+    }
+  },
+  "custom_items": [],
+  "locked": false,
+  "locked_by": null,
+  "locked_at": null
+}
