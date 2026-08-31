@@ -8478,19 +8478,31 @@ with tab4:
         _ca, _cb = st.columns(2)
         with _ca:
             st.markdown("**ACH / Wire**")
+            # No explicit key= on these 9 fields (matches every other plain
+            # text_input in this form) -- they were the ONLY fields here with
+            # a fixed, property-independent key, which meant Streamlit kept
+            # whatever was first typed into them (even blank, from viewing
+            # "Create new property") and silently ignored the freshly-loaded
+            # value= on every later property selection. Every other field in
+            # this form is safe specifically BECAUSE it has no explicit key --
+            # changing value= between renders naturally changes Streamlit's
+            # auto-derived widget identity too, so the display always follows
+            # the current property. Confirmed as a real data-loss bug
+            # 2026-08-27: Rev Labs' real ACH/Check info was silently blanked
+            # out and overwritten on an ordinary property-info save.
             _ach = _ef('payment_ach') or {}
-            _ach_acct_name  = st.text_input("Account Name",  value=_ach.get('account_name', ''), key="ach_acct_name")
-            _ach_bank       = st.text_input("Bank Name",      value=_ach.get('bank_name', ''),    key="ach_bank")
-            _ach_acct_num   = st.text_input("Account Number", value=_ach.get('account_number', ''), key="ach_acct_num")
-            _ach_routing    = st.text_input("Routing (ABA)",  value=_ach.get('routing_number', ''), key="ach_routing")
-            _ach_addr       = st.text_input("Bank Address",   value=_ach.get('bank_address', ''), key="ach_addr")
+            _ach_acct_name  = st.text_input("Account Name",  value=_ach.get('account_name', ''))
+            _ach_bank       = st.text_input("Bank Name",      value=_ach.get('bank_name', ''))
+            _ach_acct_num   = st.text_input("Account Number", value=_ach.get('account_number', ''))
+            _ach_routing    = st.text_input("Routing (ABA)",  value=_ach.get('routing_number', ''))
+            _ach_addr       = st.text_input("Bank Address",   value=_ach.get('bank_address', ''))
         with _cb:
             st.markdown("**Check**")
             _chk = _ef('payment_check') or {}
-            _chk_payable    = st.text_input("Payable To",      value=_chk.get('payable_to', ''),    key="chk_payable")
-            _chk_addr1      = st.text_input("Address Line 1",  value=_chk.get('address_line1', ''), key="chk_addr1")
-            _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''), key="chk_addr2")
-            _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''),     key="chk_attn")
+            _chk_payable    = st.text_input("Payable To",      value=_chk.get('payable_to', ''))
+            _chk_addr1      = st.text_input("Address Line 1",  value=_chk.get('address_line1', ''))
+            _chk_addr2      = st.text_input("Address Line 2",  value=_chk.get('address_line2', ''))
+            _chk_attn       = st.text_input("Attention",       value=_chk.get('attention', ''))
 
         st.markdown("### 8 · RE Tax & Other")
         _c9, _c10 = st.columns(2)
@@ -8647,7 +8659,11 @@ with tab4:
                 building_splits        = _splits_list,
                 default_split_schedule = _default_split_schedule if '_default_split_schedule' in dir() else '',
                 management_fees        = _fee_list,
-                gl_accounts            = {},
+                # No form UI exists to edit this — round-trip whatever is
+                # already saved rather than hardcoding {} (see the
+                # preserve-unmanaged-fields block right after this call for
+                # why that hardcoding was a real data-loss bug).
+                gl_accounts            = (getattr(_edit_cfg, 'gl_accounts', None) or {}),
                 bank_accounts          = _bank_list,
                 payment_ach            = _payment_ach,
                 payment_check          = _payment_check,
@@ -8661,6 +8677,35 @@ with tab4:
                 property_system        = _prop_system.lower(),
                 uses_grp_coa           = _uses_grp_coa,
             )
+
+            # Preserve advanced fields this form has no UI for at all, so
+            # saving the form never silently deletes them. build_config_dict()
+            # fully REGENERATES config.yaml from form inputs -- any field it
+            # doesn't know about just doesn't make it into the new file.
+            # Confirmed as a real data-loss bug 2026-08-27: yardi_etl_code,
+            # metered_utility_accounts, per_invoice_utility_accounts,
+            # per_invoice_accrual_accounts, layer3_exclude_accounts, and
+            # insurance_policies were all silently dropped from Rev Labs'
+            # saved config on an ordinary property-info save -- including the
+            # layer3_exclude_accounts entry that specifically stops 637150
+            # from re-accruing unbounded (see CLAUDE.md's Layer 3 exclusions
+            # note; confirmed $173,142.10 before that exclusion was added).
+            # These are the ONLY fields handled this way (rather than a
+            # generic "preserve anything the writer omitted" merge) because
+            # build_config_dict() legitimately omits OTHER fields on purpose
+            # when a form table is left empty (e.g. management_fees,
+            # tenants) -- blindly preserving those would make it impossible
+            # to ever actually clear one via the form.
+            if _edit_cfg is not None:
+                for _preserve_field in (
+                    'yardi_etl_code', 'metered_utility_accounts',
+                    'per_invoice_utility_accounts', 'per_invoice_accrual_accounts',
+                    'layer3_exclude_accounts', 'insurance_policies',
+                ):
+                    _preserve_val = getattr(_edit_cfg, _preserve_field, None)
+                    if _preserve_val:
+                        _cfg_dict[_preserve_field] = _preserve_val
+
             _yaml_str = config_to_yaml(_cfg_dict)
 
             # Save local

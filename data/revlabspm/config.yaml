@@ -37,6 +37,16 @@ management_fees:
   dr_account: '637130'
   cr_account: '213100'
   ref_prefix: MGMT-FEE-GRP
+gl_accounts:
+  cash_operating: '111100'
+  daca: '115100'
+  re_tax_escrow: '115200'
+  insurance_escrow: '115300'
+  ar_billback: '133110'
+  prepaids: '135150'
+  accrued_expenses: '213100'
+  accrued_interest: '213200'
+  mgmt_fee_expense: '637130'
 bank_accounts:
   pnc_operating:
     label: PNC Operating
@@ -56,6 +66,17 @@ bank_accounts:
     last4: x5132
     full_account: '329681415132'
     gl_account: '115100'
+payment_ach:
+  account_name: Greatland Realty Partners LLC
+  bank_name: Bank of America
+  account_number: '466007913255'
+  routing_number: 026009593
+  bank_address: 1 Federal St, Boston, MA 02110
+payment_check:
+  payable_to: Greatland Realty Partners LLC
+  address_line1: One Federal Street, 28th Floor
+  address_line2: Boston, MA 02110
+  attention: Lauren Sullivan
 re_tax_payment_months:
 - 1
 - 4
@@ -68,3 +89,23 @@ kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
 fiscal_year_start_month: 1
 file_prefix_internal: GA
 file_prefix_deliverable: RevLabs
+yardi_etl_code: revlabpm
+metered_utility_accounts:
+- '613120'
+per_invoice_utility_accounts:
+- '613120'
+per_invoice_accrual_accounts:
+- '610160'
+layer3_exclude_accounts:
+- '637170'
+- '637150'
+insurance_policies:
+- name: Property Insurance
+  expense_account: '639110'
+  monthly_amount: 4037.78
+- name: Umbrella Policy
+  expense_account: '639110'
+  monthly_amount: 666.9
+- name: General Liability
+  expense_account: '639120'
+  monthly_amount: 871.39
