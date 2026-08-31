@@ -1,0 +1,25 @@
+{
+  "period": "2026_06",
+  "property_code": "revlabspm",
+  "steps": {
+    "1": {
+      "completed_by": "Natasha Parker",
+      "timestamp": "08/27/2026 20:09",
+      "auto": true
+    },
+    "5": {
+      "completed_by": "Natasha Parker",
+      "timestamp": "08/27/2026 20:29",
+      "auto": true
+    },
+    "6": {
+      "completed_by": "Natasha Parker",
+      "timestamp": "08/27/2026 20:29",
+      "auto": true
+    }
+  },
+  "custom_items": [],
+  "locked": false,
+  "locked_by": null,
+  "locked_at": null
+}
