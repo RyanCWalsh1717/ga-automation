@@ -46,6 +46,7 @@ from openpyxl.styles import (
     Font, PatternFill, Alignment, Border, Side
 )
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
 
 try:
     from analysis_tab_builder import build_all_analysis_tabs as _build_analysis_tabs
@@ -3947,6 +3948,42 @@ def generate_bs_workpaper_from_template(
                 end_row=new_row_start + _row_off_end, end_column=_max_col,
             )
 
+    _ROLE_MARKER_PREFIX = 'GA_ROLE:'
+
+    def _set_cell_role(cell, role: str) -> None:
+        """
+        Tag a cell with an invisible role marker (an Excel comment) so a
+        synthetic accumulator row -- Balance Forward, Unallocated, and any
+        future one built the same way -- can be found again next period
+        by WHAT IT IS, not by matching its current visible text. Comments
+        are a separate cell attribute from .value in openpyxl, so clearing
+        or rewriting a cell's value never touches its role marker.
+
+        Confirmed as a real gap 2026-09-01: these rows were previously
+        found by literal description-text matching ('Balance Forward',
+        'Unallocated'), so renaming one to something more specific either
+        got silently overwritten back to the default (Balance Forward,
+        which is unconditionally rewritten every period on 133100/211300)
+        or stopped being recognized at all (Unallocated, which starts a
+        stray duplicate row instead of continuing to accumulate into the
+        renamed one on 181200/181300/181400).
+        """
+        cell.comment = Comment(f'{_ROLE_MARKER_PREFIX}{role}', 'GA Automation')
+
+    def _get_cell_role(cell) -> Optional[str]:
+        """Read back a role marker set by _set_cell_role, if any."""
+        c = cell.comment
+        if c and c.text and c.text.startswith(_ROLE_MARKER_PREFIX):
+            return c.text[len(_ROLE_MARKER_PREFIX):]
+        return None
+
+    def _find_row_by_role(ws, role: str, row_start: int, row_end: int, col: int = 3) -> Optional[int]:
+        """Scan col in [row_start, row_end) for a cell tagged with role; return its row, or None."""
+        for r in range(row_start, row_end):
+            if _get_cell_role(ws.cell(r, col)) == role:
+                return r
+        return None
+
     def _coerce_date(d):
         """
         Return a plain datetime.date from whatever the GL — or an existing
@@ -4509,13 +4546,21 @@ def generate_bs_workpaper_from_template(
             return
         _total_col = 6
 
-        _unalloc_row = None
-        _last_marked_period = None
-        for _r in range(data_start, _tieout):
-            if str(ws.cell(_r, 3).value or '').strip().lower() == label.lower():
-                _unalloc_row = _r
-                _last_marked_period = _coerce_period(ws.cell(_r, 2).value)
-                break
+        _unalloc_row = _find_row_by_role(ws, 'unallocated', data_start, _tieout, col=3)
+        if _unalloc_row is None:
+            # Backward compat: a workpaper already carrying an Unallocated
+            # row from before this fix won't have the marker yet -- fall
+            # back to the old text match so it's recognized (not
+            # duplicated), then tag it so every later run finds it by
+            # marker even if it's since been renamed.
+            for _r in range(data_start, _tieout):
+                if str(ws.cell(_r, 3).value or '').strip().lower() == label.lower():
+                    _unalloc_row = _r
+                    _set_cell_role(ws.cell(_r, 3), 'unallocated')
+                    break
+        _last_marked_period = (
+            _coerce_period(ws.cell(_unalloc_row, 2).value) if _unalloc_row is not None else None
+        )
 
         # Gate on the CLOSE PERIOD being processed, not each transaction's
         # own date — Yardi lets an invoice post into a LATER close period
@@ -4575,6 +4620,7 @@ def generate_bs_workpaper_from_template(
         if _marker_period is not None:
             ws.cell(_new_row, 2).value = _marker_period.strftime('%m/%Y')
         ws.cell(_new_row, 3).value = label
+        _set_cell_role(ws.cell(_new_row, 3), 'unallocated')
         ws.cell(_new_row, _entity_col).value = round(_new_amt, 2)
         ws.cell(_new_row, _total_col).value = f'=SUM({_gcl(4)}{_new_row}:{_gcl(5)}{_new_row})'
 
@@ -5015,6 +5061,32 @@ def generate_bs_workpaper_from_template(
 
         # ── CURRENT-PERIOD tab: clear placeholder rows and write fresh GL data ──
         else:
+            # Capture any user-renamed label for the synthetic Balance
+            # Forward row BEFORE the region gets wiped below, so a rename
+            # (e.g. describing what's actually still outstanding) survives
+            # every future regeneration instead of reverting to the
+            # hardcoded default. Found by an invisible role marker (an
+            # Excel cell comment), not by position or literal text -- that's
+            # what makes the rename safe to make in the first place.
+            # Falls back to whatever text is at _data_start (this row's
+            # fixed position) for a workpaper saved before this fix existed,
+            # when nothing carries the marker yet -- picking up a rename
+            # made under the old behavior instead of treating it as if it
+            # were still the untouched default. Confirmed as a real gap
+            # 2026-09-01: Natasha renamed this row's text during testing
+            # and it silently reverted the next time this tab regenerated.
+            _bal_fwd_label = None
+            if _cfg.get('carry_forward_balance'):
+                _bf_row = _find_row_by_role(_ws, 'balance_forward', _data_start, _tieout, col=3)
+                if _bf_row is None:
+                    _existing_label = str(_ws.cell(_data_start, 3).value or '').strip()
+                    if _existing_label:
+                        _bf_row = _data_start
+                if _bf_row is not None:
+                    _existing_label = str(_ws.cell(_bf_row, 3).value or '').strip()
+                    if _existing_label:
+                        _bal_fwd_label = _existing_label
+
             # Clear everything from data_start up to (but not including) tieout row
             for _r in range(_data_start, _tieout):
                 for _c in range(2, _amt_col + 2):
@@ -5036,7 +5108,8 @@ def generate_bs_workpaper_from_template(
             if _cfg.get('carry_forward_balance') and _gl_acct is not None:
                 _bal_fwd_amt = round(float(getattr(_gl_acct, 'beginning_balance', 0) or 0), 2)
                 if abs(_bal_fwd_amt) >= 0.01:
-                    _ws.cell(_data_start, 3).value = 'Balance Forward'
+                    _ws.cell(_data_start, 3).value = _bal_fwd_label or 'Balance Forward'
+                    _set_cell_role(_ws.cell(_data_start, 3), 'balance_forward')
                     _ws.cell(_data_start, _amt_col).value = _bal_fwd_amt
                     _bal_fwd_row_used = True
             _txn_data_start = _data_start + 1 if _bal_fwd_row_used else _data_start

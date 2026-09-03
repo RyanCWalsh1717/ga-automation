@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
@@ -954,6 +954,54 @@ def check_7_misc(budget_rows: List[dict],
             _na_name = str(getattr(_na_acct, 'account_name', '') or '').strip() or _na_code
 
             if _na_code.startswith('7'):
+                _note = (
+                    f'Corporate expense account {_na_code} has ${abs(_na_nc):,.2f} net PTD '
+                    f'activity in the final GL — recode JE (DR 6/8xxxxx / CR {_na_code}) '
+                    f'may not have been posted, or a new corporate charge appeared post-close.'
+                )
+                # A NEGATIVE balance means the account was credited MORE than
+                # it was ever debited -- the signature of an over-correction,
+                # not a missed one. Trace it to our own prior INTERCO-RECODE
+                # entries (tagged in the 'reference' field, which survives
+                # the Yardi import -- confirmed on a real posted JE) before
+                # guessing at a fix: if our own recode credit(s) fully
+                # explain the negative amount, we know exactly what to
+                # reverse. If not, this is something else entirely (a JLL
+                # adjustment, a genuine corporate credit) and guessing at a
+                # correction would be worse than just flagging it. Confirmed
+                # as a real case 2026-09-01: 703010 Legal was recoded to
+                # Prepaid by the property manager, then recoded AGAIN by our
+                # own Intercompany Recode table for the same $622.98 --
+                # leaving -$622.98 instead of $0.00.
+                if _na_nc < -0.01:
+                    _own_recode_txns = [
+                        _t for _t in (getattr(_na_acct, 'transactions', None) or [])
+                        if str(getattr(_t, 'reference', '') or '').strip() == 'INTERCO-RECODE'
+                        and float(getattr(_t, 'credit', 0) or 0) > 0.01
+                    ]
+                    _own_recode_credit = sum(float(getattr(_t, 'credit', 0) or 0) for _t in _own_recode_txns)
+                    if _own_recode_credit >= abs(_na_nc) - 0.01:
+                        # Reverse the most recent one -- if there were
+                        # several, whichever posted last is the one most
+                        # likely to be the accidental duplicate.
+                        _dupe = max(_own_recode_txns, key=lambda t: getattr(t, 'date', None) or date.min)
+                        _dupe_ctrl = str(getattr(_dupe, 'control', '') or '').strip()
+                        _note = (
+                            f'Corporate expense account {_na_code} is OVER-corrected by '
+                            f'${abs(_na_nc):,.2f} — traced to our own Intercompany Recode entry '
+                            f'{_dupe_ctrl or "(control # unknown)"} crediting ${_dupe.credit:,.2f} to '
+                            f'this account. Likely a duplicate of a reclass the property manager '
+                            f'already posted. Suggested correcting entry (confirm before entering): '
+                            f'DR {_na_code} {_na_name} ${abs(_na_nc):,.2f} / CR [same account the '
+                            f'original recode debited] ${abs(_na_nc):,.2f}.'
+                        )
+                    else:
+                        _note = (
+                            f'Corporate expense account {_na_code} is OVER-corrected by '
+                            f'${abs(_na_nc):,.2f} (credited more than it was ever debited), but this '
+                            f'is not explained by one of our own Intercompany Recode entries — '
+                            f'review manually before assuming a cause.'
+                        )
                 findings.append(QCFinding(
                     account_code=_na_code,
                     account_name=f'Corporate Expense: {_na_name}',
@@ -961,11 +1009,7 @@ def check_7_misc(budget_rows: List[dict],
                     value_b=0.0,
                     difference=_na_nc,
                     flag='FLAG',
-                    note=(
-                        f'Corporate expense account {_na_code} has ${abs(_na_nc):,.2f} net PTD '
-                        f'activity in the final GL — recode JE (DR 6/8xxxxx / CR {_na_code}) '
-                        f'may not have been posted, or a new corporate charge appeared post-close.'
-                    ),
+                    note=_note,
                 ))
 
             elif _na_code.startswith('5'):

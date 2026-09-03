@@ -3295,6 +3295,7 @@ with tab1:
                 if _recode_tbl is not None and not _recode_tbl.empty:
                     _recode_base = _sup_base + _sup_counter
                     _recode_ri   = 0
+                    _recode_skipped_zero: list = []
                     _pending_cr  = None   # CR row waiting for its DR partner
                     for _, _row in _recode_tbl.iterrows():
                         _row_leg = str(_row.get("Leg", "") or "").strip()
@@ -3307,6 +3308,31 @@ with tab1:
                                 continue     # DR account not filled in yet — skip
                             _cr_acct = str(_pending_cr.get("Account", "") or "").strip()
                             _cr_name = str(_pending_cr.get("Account Name", "") or "").strip() or _cr_acct
+
+                            # Never generate a recode JE for a 7xxxxx account
+                            # that already nets to $0 in the parsed GL --
+                            # some rows in this table are auto-detected purely
+                            # so the PREPAID LEDGER learns the correct
+                            # originating account for future releases (see
+                            # the "same-period reclass into 135150" detection
+                            # above this table), not because there's any
+                            # actual residual left to recode. Confirmed as a
+                            # real double-count 2026-09-01: 703010 Legal was
+                            # invoiced in and reclassed straight to Prepaid by
+                            # JLL in the same May period (net already $0),
+                            # but a recode JE was generated for it anyway --
+                            # crediting the account a second time and leaving
+                            # a -$622.98 balance CHECK_7g then had to flag.
+                            # Filling in a DR account here still corrects the
+                            # ledger's account reference (via the early-recode
+                            # map above); it just can no longer also silently
+                            # create a duplicate JE.
+                            _cr_gl_acct = _sup_gl_accts.get(_cr_acct)
+                            if _cr_gl_acct is not None and abs(float(getattr(_cr_gl_acct, 'net_change', 0) or 0)) < 0.01:
+                                _recode_skipped_zero.append(f"{_cr_acct} ({_cr_name})")
+                                _pending_cr = None
+                                continue
+
                             _cr_amt  = float(_pending_cr.get("Credit ($)", 0) or 0)
                             _dr_amt  = float(_row.get("Debit ($)", 0) or 0) or _cr_amt
                             _r_desc  = (str(_row.get("Description", "") or "").strip()
@@ -3336,6 +3362,15 @@ with tab1:
                             ])
                             _recode_ri  += 1
                             _pending_cr  = None   # consumed
+
+                    if _recode_skipped_zero:
+                        st.info(
+                            f"↳ No recode JE generated for {', '.join(_recode_skipped_zero)} — "
+                            f"already nets to $0.00 this period (reclassed directly by the "
+                            f"property manager). The prepaid ledger's account reference has "
+                            f"still been updated to the account you entered here.",
+                            icon="ℹ️",
+                        )
 
                 # Step 6: Assemble all JEs, apply building splits, export 3 CSVs
                 status_text.text("Step 6/6: Exporting JE CSVs...")
