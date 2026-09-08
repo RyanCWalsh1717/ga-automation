@@ -2422,13 +2422,16 @@ def detect_payroll_bonus_accrual(
     Monthly bonus accrual = (Kardin annual ÷ 12) − standard_month
       where standard_month = min(M1..M12) for the bonus-inclusive row.
 
-    The accrual is suppressed if the GL's BONUS-SPECIFIC activity for the
-    period already equals or exceeds the monthly average (the actual bonus
-    payment is in the GL — no separate accrual needed). Uses
-    _real_bonus_net_change(), not the account's whole net_change — see that
-    function's docstring for the real Jan-Jun 2026 case that exposed the bug
-    (regular payroll activity, not the bonus itself, was triggering
-    suppression in nearly every month).
+    Returns each account's BASE monthly slice only — compounding across
+    unpaid months and the real-payment true-up check both live in
+    build_accrual_entries (see the "Layer 4: Payroll bonus accruals" block),
+    same split as Mode (a)'s bonus_overrides path, so both modes share one
+    compounding/true-up implementation instead of two. Confirmed with Ryan
+    2026-09-09: the bonus is paid once a year (March) and should compound
+    monthly until then — same pattern as Water/Sewer's semi-annual
+    compounding — not reset-and-reverse every month, which is what an
+    earlier version of this function did via its own internal suppression
+    check (removed 2026-09-09).
 
     Args:
         gl_data:        GLParseResult from yardi_gl parser
@@ -2443,18 +2446,6 @@ def detect_payroll_bonus_accrual(
 
     if not gl_data or not kardin_records or not period_month:
         return results
-
-    # Build a bonus-specific GL net-change lookup for payroll accounts. Uses
-    # _real_bonus_net_change() — excludes the pipeline's own reference-tagged
-    # transactions (same reason as _real_net_change: a re-run shouldn't count
-    # its own prior BON- JE as "the real payment") AND isolates bonus-tagged
-    # activity from the much larger regular base-payroll/OT activity that
-    # shares the same account code (see that function's docstring).
-    gl_net: dict = {}
-    for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
-        code = str(acct.account_code).strip()
-        if code in PAYROLL_BONUS_ACCOUNTS:
-            gl_net[code] = _real_bonus_net_change(acct)
 
     for acct_code, config in PAYROLL_BONUS_ACCOUNTS.items():
         keywords = [k.lower() for k in config['kardin_keywords']]
@@ -2490,14 +2481,6 @@ def detect_payroll_bonus_accrual(
 
         # Skip if not material (< $100)
         if monthly_bonus < 100.0:
-            continue
-
-        # Check current-period GL activity
-        net = gl_net.get(acct_code, 0.0)
-
-        # Suppress in payment months: GL already ≥ monthly average
-        # (the actual bonus payment is in the GL — no accrual needed)
-        if net >= monthly_avg:
             continue
 
         results.append({
@@ -4082,8 +4065,43 @@ def build_accrual_entries(nexus_data: list, period: str = '',
     #   b) Kardin-derived amounts (when kardin_records provided, no override):
     #      Uses detect_payroll_bonus_accrual() — monthly avg minus standard month.
     #
-    # In both modes the accrual is suppressed when the GL already shows a net
-    # debit ≥ the monthly average (the actual bonus payment hit the GL).
+    # Compounds monthly rather than resetting/reversing flat each month —
+    # confirmed with Ryan 2026-09-09: the bonus is paid once a year (March)
+    # and should build up a growing balance until then, the same pattern
+    # Water/Sewer already uses for its own semi-annual billing (compound with
+    # prior-period J-credits). When a real bonus payment lands in the GL
+    # (detected the same bonus-tagged, non-pipeline-transaction way
+    # _real_bonus_net_change does), the accrual stops and the accumulated
+    # balance is compared against what was actually paid — a material
+    # mismatch is flagged via a UserWarning for manual review, NOT
+    # auto-corrected (confirmed with Ryan: flag, don't auto-post). This is
+    # exactly the safeguard against a budgeted-but-unfilled hire silently
+    # overstating the bonus accrual all year — reality wins the moment a
+    # real payment posts, not the budget.
+    def _bonus_compound_or_flag(label: str, monthly_base: float, gl_acct) -> Optional[float]:
+        _real_debit, _pipeline_credit = (
+            _subline_item_activity(gl_acct, 'bonus') if gl_acct is not None else (0.0, 0.0)
+        )
+        if _real_debit > 100.0:
+            _diff = abs(_pipeline_credit - _real_debit)
+            if _diff > max(500.0, 0.10 * _real_debit):
+                import warnings as _warnings
+                _warnings.warn(
+                    f'Bonus payment detected for {label} — real payment ${_real_debit:,.2f} vs. '
+                    f'accrued balance ${_pipeline_credit:,.2f} (${_diff:,.2f} difference). '
+                    f'Review before posting — a budgeted hire that never happened (or started '
+                    f'later than planned) would overstate the accrued balance exactly like this. '
+                    f'A manual true-up entry may be needed; the pipeline does not auto-correct it.',
+                    UserWarning, stacklevel=3,
+                )
+            return None   # real payment covers this period — cycle resets, no new accrual
+        return _round(monthly_base + _pipeline_credit)
+
+    _gl_acct_by_code_bonus: Dict[str, Any] = {
+        str(_ba.account_code).strip(): _ba
+        for _ba in (gl_data.accounts if gl_data and hasattr(gl_data, 'accounts') else [])
+    }
+
     _bonus_month_map = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
         'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
@@ -4136,14 +4154,19 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 _monthly = _round(_annual / 12.0)
                 if _monthly < 100:
                     continue
-                # Note: Mode (a) does NOT suppress based on GL net because the user
-                # entered only the BONUS portion of payroll — not total payroll.
-                # Comparing GL total payroll to bonus/12 would always suppress incorrectly.
-                # The _covered set (checked above) handles the main suppression case.
+
+                _total = _bonus_compound_or_flag(
+                    _ba_cfg['label'], _monthly, _gl_acct_by_code_bonus.get(_ba_code)
+                )
+                _covered.add(_ba_code)   # either way, no other layer should also claim this account
+                if _total is None:
+                    continue
+
                 _bon_id = f"BON-{je_num:04d}"
                 _bon_desc = (
                     f'Accrual {_fmt_period(period)} — {_ba_cfg["label"]} '
-                    f'(bonus ${_annual:,.2f}/yr ÷ 12 = ${_monthly:,.2f}/mo)'
+                    f'(bonus ${_annual:,.2f}/yr ÷ 12 = ${_monthly:,.2f}/mo, compounded to '
+                    f'${_total:,.2f} — carries forward unpaid until the annual payment lands)'
                 )
                 je_lines.append({
                     'je_number': _bon_id, 'line': 1, 'date': '',
@@ -4151,9 +4174,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name': _ba_cfg['label'],
                     'description': _bon_desc,
                     'reference': 'BONUS',
-                    'debit': _monthly, 'credit': 0,
+                    'debit': _total, 'credit': 0,
                     'vendor': '[Bonus Accrual]', 'invoice_number': '',
                     'source': 'bonus_accrual', 'confidence': 'high',
+                    'reverse_next_month': -1,
                 })
                 _cr_acct, _cr_name = _cr_for(_ba_code)
                 je_lines.append({
@@ -4161,11 +4185,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_code': _cr_acct, 'account_name': _cr_name,
                     'description': _bon_desc,
                     'reference': 'BONUS',
-                    'debit': 0, 'credit': _monthly,
+                    'debit': 0, 'credit': _total,
                     'vendor': '[Bonus Accrual]', 'invoice_number': '',
                     'source': 'bonus_accrual', 'confidence': 'high',
+                    'reverse_next_month': -1,
                 })
-                _covered.add(_ba_code)
                 je_num += 1
 
         elif kardin_records:
@@ -4175,10 +4199,20 @@ def build_accrual_entries(nexus_data: list, period: str = '',
             ):
                 if _bon['account_code'] in _covered:
                     continue
+
+                _total = _bonus_compound_or_flag(
+                    _bon['account_name'], _bon['estimated_amount'],
+                    _gl_acct_by_code_bonus.get(_bon['account_code']),
+                )
+                _covered.add(_bon['account_code'])
+                if _total is None:
+                    continue
+
                 _bon_id = f"BON-{je_num:04d}"
                 _bon_desc_b = (
                     f'Accrual {_fmt_period(period)} — {_bon["account_name"]} '
-                    f'(bonus: {_bon["description"]})'
+                    f'(bonus: {_bon["description"]}, compounded to ${_total:,.2f} — carries '
+                    f'forward unpaid until the annual payment lands)'
                 )
                 je_lines.append({
                     'je_number': _bon_id, 'line': 1, 'date': '',
@@ -4186,9 +4220,10 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_name': _bon['account_name'],
                     'description': _bon_desc_b,
                     'reference': 'BONUS',
-                    'debit': _bon['estimated_amount'], 'credit': 0,
+                    'debit': _total, 'credit': 0,
                     'vendor': '[Bonus Accrual]', 'invoice_number': '',
                     'source': 'bonus_accrual', 'confidence': 'high',
+                    'reverse_next_month': -1,
                 })
                 _cr_acct, _cr_name = _cr_for(_bon['account_code'])
                 je_lines.append({
@@ -4196,11 +4231,11 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                     'account_code': _cr_acct, 'account_name': _cr_name,
                     'description': _bon_desc_b,
                     'reference': 'BONUS',
-                    'debit': 0, 'credit': _bon['estimated_amount'],
+                    'debit': 0, 'credit': _total,
                     'vendor': '[Bonus Accrual]', 'invoice_number': '',
                     'source': 'bonus_accrual', 'confidence': 'high',
+                    'reverse_next_month': -1,
                 })
-                _covered.add(_bon['account_code'])
                 je_num += 1
 
     # ── Named sub-line accruals (e.g. 637150 Reimbursable Payroll) ──────────
