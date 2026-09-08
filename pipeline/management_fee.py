@@ -830,7 +830,7 @@ def build_catchup_je(
 
     _period_label = _fmt_period(period)
     desc = (
-        f'Accrual {_period_label} — Management Fee Catch-Up '
+        f'Accrual {_period_label} — Prior Month Re-accrual (Management Fee) '
         f'(prior month auto-reversal; reinstating ${catchup_amount:,.2f})'
     )
 
@@ -845,7 +845,7 @@ def build_catchup_je(
             'reference':      'MGMT-CATCHUP',
             'debit':          _round(catchup_amount),
             'credit':         0.0,
-            'vendor':         'Management Fee Catch-up',
+            'vendor':         'Prior Month Re-accrual',
             'invoice_number': '',
             'source':         'management_fee_catchup',
         },
@@ -859,7 +859,7 @@ def build_catchup_je(
             'reference':      'MGMT-CATCHUP',
             'debit':          0.0,
             'credit':         _round(catchup_amount),
-            'vendor':         'Management Fee Catch-up',
+            'vendor':         'Prior Month Re-accrual',
             'invoice_number': '',
             'source':         'management_fee_catchup',
         },

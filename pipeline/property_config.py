@@ -254,6 +254,13 @@ class PropertyConfig:
     # Override in config.yaml as:  payroll_accounts: ['615110', '637110', '615120']
     payroll_accounts: List[str] = field(default_factory=lambda: ['615110', '637110'])
 
+    # ── Payroll bonus annual budget (persisted so it's entered once, not monthly) ──
+    # Maps a payroll_accounts code to its annual bonus budget, e.g.
+    # {'615110': 48000.0, '637110': 24000.0}. Set once in Property Setup;
+    # Layer 4 (bonus accrual) accrues annual/12 each month from this value and
+    # skips the Kardin-derived fallback entirely for any account present here.
+    payroll_bonus_annual: Dict[str, float] = field(default_factory=dict)
+
     # ── Periodic contract accounts ────────────────────────────────────────────
     # GL accounts treated as periodic (quarterly / semi-annual) service contracts
     # for Layer 2 invoice proration and supplement seed-row purposes.
@@ -450,6 +457,7 @@ class PropertyConfig:
             team_members            = list(d.get('team_members') or []),
             active                  = bool(d.get('active', True)),
             payroll_accounts        = list(d.get('payroll_accounts') or ['615110', '637110']),
+            payroll_bonus_annual    = {str(k): float(v) for k, v in (d.get('payroll_bonus_annual') or {}).items()},
             coa_revenue_prefixes    = tuple(d['coa_revenue_prefixes'])    if d.get('coa_revenue_prefixes')    else ('4',),
             coa_expense_prefixes    = tuple(d['coa_expense_prefixes'])    if d.get('coa_expense_prefixes')    else ('6', '8'),
             coa_bs_asset_prefixes   = tuple(d['coa_bs_asset_prefixes'])   if d.get('coa_bs_asset_prefixes')   else ('1',),

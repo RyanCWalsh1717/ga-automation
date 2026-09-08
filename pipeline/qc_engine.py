@@ -971,7 +971,7 @@ def check_7_misc(budget_rows: List[dict],
                 # correction would be worse than just flagging it. Confirmed
                 # as a real case 2026-09-01: 703010 Legal was recoded to
                 # Prepaid by the property manager, then recoded AGAIN by our
-                # own Intercompany Recode table for the same $622.98 --
+                # own Corporate Recode table for the same $622.98 --
                 # leaving -$622.98 instead of $0.00.
                 if _na_nc < -0.01:
                     _own_recode_txns = [
@@ -988,7 +988,7 @@ def check_7_misc(budget_rows: List[dict],
                         _dupe_ctrl = str(getattr(_dupe, 'control', '') or '').strip()
                         _note = (
                             f'Corporate expense account {_na_code} is OVER-corrected by '
-                            f'${abs(_na_nc):,.2f} — traced to our own Intercompany Recode entry '
+                            f'${abs(_na_nc):,.2f} — traced to our own Corporate Recode entry '
                             f'{_dupe_ctrl or "(control # unknown)"} crediting ${_dupe.credit:,.2f} to '
                             f'this account. Likely a duplicate of a reclass the property manager '
                             f'already posted. Suggested correcting entry (confirm before entering): '
@@ -999,7 +999,7 @@ def check_7_misc(budget_rows: List[dict],
                         _note = (
                             f'Corporate expense account {_na_code} is OVER-corrected by '
                             f'${abs(_na_nc):,.2f} (credited more than it was ever debited), but this '
-                            f'is not explained by one of our own Intercompany Recode entries — '
+                            f'is not explained by one of our own Corporate Recode entries — '
                             f'review manually before assuming a cause.'
                         )
                 findings.append(QCFinding(

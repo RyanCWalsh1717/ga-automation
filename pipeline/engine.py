@@ -1351,7 +1351,6 @@ def run_pipeline(files: dict) -> EngineResult:
                 "pnc_bank": "/path/to/PNC.pdf",
                 "loan": "/path/to/Loan.xlsx",
                 "kardin_budget": "/path/to/Kardin.xlsx",
-                "monthly_report": "/path/to/Report.xlsx",
             }
 
     Returns:
@@ -1371,7 +1370,6 @@ def run_pipeline(files: dict) -> EngineResult:
     from parsers.yardi_bank_rec import parse as parse_yardi_bank_rec
     from parsers.berkadia_loan import parse as parse_loan
     from parsers.kardin_budget import parse as parse_kardin
-    from parsers.monthly_report_template import parse_monthly_report
 
     result = EngineResult(
         run_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
@@ -1608,14 +1606,6 @@ def run_pipeline(files: dict) -> EngineResult:
             _warn_empty("Kardin Budget", kardin_data, "kardin")
         except Exception as e:
             result.add_exception("error", "parse", "kardin", f"Kardin parse failed: {e}")
-
-    template_data = None
-    if "monthly_report" in files and files["monthly_report"]:
-        try:
-            template_data = parse_monthly_report(files["monthly_report"])
-            result.parsed["monthly_report"] = template_data
-        except Exception as e:
-            result.add_exception("error", "parse", "template", f"Template parse failed: {e}")
 
     # ── Step 2: Validate GL ──────────────────────────────────
     if gl:

@@ -19,6 +19,9 @@ Workbook tabs:
   9.  Reconciling Aging — Outstanding bank-rec items aged as of period end; flags 60+ days
   10. Close & Signoff   — Close tracker completion status and sign-off record, cross-referenced
                          into the audit trail itself
+  11. Run Log           — Full historical run-log record (every Pass 1/Pass 2 run for this
+                         property), the same history GA_Run_Log.csv carries — folded in here
+                         so an auditor or Lauren never needs a separate file for it
 
 Usage:
     from audit_trail_generator import generate_audit_trail
@@ -74,7 +77,7 @@ _SOURCE_META: Dict[str, tuple] = {
     'prepaid_amortization':   ('Prepaid Amort.',     'E0F2F1'),   # teal
     'prepaid_ledger':         ('Prepaid Release',    'E0F7FA'),   # cyan
     'management_fee':         ('Management Fee',     'C8E6C9'),   # green
-    'management_fee_catchup': ('Mgmt Fee Catch-up',  'FFCCBC'),   # orange
+    'management_fee_catchup': ('Prior Mo. Re-accrual', 'FFCCBC'),   # orange
     'contract_supplement':    ('One-Off Accrual',    'FFE0B2'),   # light orange
     'tenant_utility_billing': ('Tenant Utility',     'E1F5FE'),   # light cyan
     'bonus_accrual':          ('Bonus Accrual',      'FCE4EC'),   # pink
@@ -1282,6 +1285,60 @@ def _build_close_signoff(ws, close_tracker: Optional[Dict[int, dict]],
         row += 1
 
 
+# ── Tab 11: Run Log ────────────────────────────────────────────────────────────
+
+_RUN_LOG_COLUMNS = [
+    ('timestamp',               'Timestamp',      22),
+    ('pass_number',             'Pass',           6),
+    ('prepared_by',             'Prepared By',    18),
+    ('property',                'Property',       16),
+    ('period',                  'Period',         12),
+    ('files_generated',         'Files Generated', 14),
+    ('qc_checks_passed',        'QC Passed',      10),
+    ('qc_checks_failed',        'QC Failed',      10),
+    ('je_count',                'JE Count',       10),
+    ('je_total_dollars',        'JE Total $',     14),
+    ('close_tracker_complete',  'Close Complete', 14),
+]
+
+
+def _build_run_log(ws, run_log_rows: Optional[List[Dict[str, Any]]]):
+    """
+    Folds the full GA_Run_Log.csv history into the audit trail itself — every
+    Pass 1/Pass 2 run ever logged for this property, not just this period's —
+    so an auditor or Lauren reviewing this one workbook never needs a
+    separate Run Log file (added 2026-09-08, Lauren's request via Ryan: the
+    Sign-off Record, Close Tracker, and Run Log should all be included in
+    the audit trail itself).
+    """
+    ws.title = '11 - Run Log'
+    ws.sheet_properties.tabColor = '283593'
+
+    for idx, (_key, _label, _width) in enumerate(_RUN_LOG_COLUMNS, 1):
+        ws.column_dimensions[get_column_letter(idx)].width = _width
+
+    ws.merge_cells(f'A1:{get_column_letter(len(_RUN_LOG_COLUMNS))}1')
+    c = ws.cell(row=1, column=1, value='RUN LOG — FULL HISTORY')
+    c.font      = _font(bold=True, size=12, color=_WHITE)
+    c.fill      = _fill('283593')
+    c.alignment = _align('center')
+    ws.row_dimensions[1].height = 20
+
+    row = 3
+    if not run_log_rows:
+        ws.cell(row=row, column=1, value='No run log history available for this run.').font = _font(italic=True)
+        return
+
+    _write_header_row(ws, row, [label for _, label, _ in _RUN_LOG_COLUMNS], fill_hex='283593', font_size=9)
+    row += 1
+    for entry in run_log_rows:
+        for col, (key, _label, _width) in enumerate(_RUN_LOG_COLUMNS, 1):
+            cell = ws.cell(row=row, column=col, value=entry.get(key, ''))
+            cell.font = _font(size=9)
+            cell.alignment = _align('left')
+        row += 1
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def generate_audit_trail(
@@ -1299,6 +1356,7 @@ def generate_audit_trail(
     close_tracker: Optional[Dict[int, dict]] = None,
     signoff_state: Optional[Dict[int, dict]] = None,
     signoff_items: Optional[List[str]] = None,
+    run_log_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Generate the GA Pipeline Audit Trail workbook.
@@ -1321,6 +1379,8 @@ def generate_audit_trail(
         close_tracker:       st.session_state.close_tracker dict — powers Tab 10.
         signoff_state:       st.session_state.signoff_state dict — powers Tab 10.
         signoff_items:       Ordered list of sign-off checklist item labels — powers Tab 10.
+        run_log_rows:        Rows read from GA_Run_Log.csv (list of dicts, _RUN_LOG_COLUMNS
+                             keys) — powers Tab 11, the full run-log history.
 
     Returns:
         output_path (for chaining).
@@ -1370,6 +1430,9 @@ def generate_audit_trail(
 
     ws10 = wb.create_sheet()
     _build_close_signoff(ws10, close_tracker, signoff_state, signoff_items)
+
+    ws11 = wb.create_sheet()
+    _build_run_log(ws11, run_log_rows)
 
     wb.save(output_path)
     return output_path

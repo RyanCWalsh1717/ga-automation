@@ -127,7 +127,6 @@ pipeline/
     berkadia_loan.py            ← Berkadia Loan Statement (.xlsx) — 3 loans.
     kardin_budget.py            ← Kardin Annual Budget (.xlsx) — used for QC tie-out
                                   and Kardin-driven payroll bonus accruals.
-    monthly_report_template.py  ← Monthly Report Template (.xlsx) — Singerman format map.
     bofa_statement.py           ← Bank of America Full Analysis Business Checking PDF —
                                   Development account (revlabs entity). Dormant account;
                                   returns ending balance, no outstanding items.
@@ -144,7 +143,7 @@ pipeline/
 - Reset All button
 
 ### Pass 1 Tab — Generate JEs (Pre-Close)
-1. **One-Off Accruals table** (plain widgets — text_input/number_input/checkbox/selectbox in a dynamic row list, not `st.data_editor`; see Development Notes) — DR expense / CR 213100 auto (or custom CR Account for AR Other / AP Other / Prepaid entries). Pre-seeded with common monthly items (637150 Tenant Relations, 617110 HVAC quarterly, 619120 PPM, 627230 Fire Life Safety, 635110 Snow & Ice, 610140 Durkin, 610160 Casella extra, 637230 BlueTriton, 613310 Water/Sewer). Split Schedule is a dropdown (`(use property default)` / named schedules from `config.yaml` / `No Split`) for multi-building properties — disabled/no-op for single-building properties.
+1. **One-Off Accruals table** (plain widgets — text_input/number_input/checkbox/selectbox in a dynamic row list, not `st.data_editor`; see Development Notes) — DR expense / CR 213100 auto (or custom CR Account for AR Other / AP Other / Prepaid entries). Pre-seeded rows come from `property_config.default_accruals` (config.yaml) — empty for revlabspm as of 2026-09-08, so the table starts blank; a property can list its own recurring one-off items there. Split Schedule is a dropdown (`(use property default)` / named schedules from `config.yaml` / `No Split`) for multi-building properties — disabled/no-op for single-building properties.
 2. **Manual JEs & Reclasses table** (`st.data_editor`) — fully balanced JEs (positive = DR, negative = CR, must net to $0 per JE#).
 3. **Generate JEs** button
 
@@ -243,6 +242,9 @@ Then: **Generate Reports** button
 | 2 | GL recurring invoices — all other accounts | Full last invoice amount (flat monthly rate) |
 | 3 | Historical (BC YTD) | Average of prior months actual; January fallback uses annual÷12 |
 | 4 | Payroll bonus | User-entered annual ÷ 12; Kardin-derived as fallback; suppressed in payment months |
+| Named sub-line | Specific items within an account excluded from Layer 3 | Kardin budget line ÷ 12; suppressed only when that item's own text appears in a real GL transaction this period |
+
+**Named sub-line accruals** (`NAMED_SUBLINE_ACCRUALS` / `detect_named_subline_accruals`, added 2026-09-08): a targeted alternative to Layer 3 for accounts where the whole-account YTD average is the wrong tool — e.g. 637150 Admin-Tenant Relations, excluded from Layer 3 after a documented $173,142.10 runaway accrual (see `layer3_exclude_accounts`), because it bundles several unrelated items (prepaid annual contracts, one-off tenant event spend, and a lagged JLL reimbursement) with very different billing patterns. Rather than re-enabling the blunt average, specific named items get their own accrual sourced from a named Kardin budget line, matched only against that item's own description text on that item's own transactions — not the account's broader activity (the same mistake that broke Layer 4's bonus suppression before it was fixed). Includes catch-up compounding, same pattern as the management fee's MGT-002: if a prior period's accrual for this item auto-reversed with no real invoice to replace it, that unmatched amount adds onto the current period's regular estimate (2 missed months = 3x, etc.) — mirrors JLL's own confirmed real practice of carrying a growing cumulative estimate ("02/26-05/26"-style date ranges) until their invoice finally catches up. Currently covers: 637150 Reimbursable Payroll (Kardin "JLL XM" line, confirmed with Ryan 2026-09-08 — replaces the old manual One-Off Accruals entry PMs used to make for this, no longer needed now that PMs don't use the app).
 
 **RE Tax quarterly cycle (Jan/Apr/Jul/Oct billing months):**
 - Berkadia/Yardi auto-posts the full quarterly bill: `DR 641110 / CR 115200` (NOT by pipeline)
@@ -371,7 +373,7 @@ TUB entries appear in `GA_Accruals_JE.csv`.
 ## Development Notes
 
 - **Plain-widget tables (not `st.data_editor`)**: One-Off Accruals, Add Missed Entries,
-  and the 7xxxxx Intercompany Recode table are all built from a dynamic list of
+  and the 7xxxxx Corporate Recode table are all built from a dynamic list of
   plain `st.text_input`/`st.number_input`/`st.checkbox`/`st.selectbox` widgets keyed
   per row (`{prefix}_{field}_{row_id}`), not `st.data_editor`. `st.data_editor` had
   two confirmed, unrelated failure modes in this app: (1) canvas-based cell editing
@@ -418,8 +420,8 @@ TUB entries appear in `GA_Accruals_JE.csv`.
 ## Testing
 
 ```bash
-# Full integration test (requires local file paths)
-python generate_phil_outputs.py
+# Full regression suite
+python pipeline/health_check.py
 
 # Unit tests (if present)
 python -m pytest pipeline/tests/ -v

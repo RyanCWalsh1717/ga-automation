@@ -378,7 +378,7 @@ def _net_j_credit(gl_acct) -> float:
 _PIPELINE_JE_REFERENCES = frozenset({
     'MGMT-FEE-JLL', 'MGMT-FEE-GRP', 'MGMT-CATCHUP',
     'INV-PRORATION', 'RECURRING', 'BONUS', 'INS-ESCROW',
-    'ELEC-ACCRUAL', 'ELEC-REIMB', 'METER-READ',
+    'ELEC-ACCRUAL', 'ELEC-REIMB', 'METER-READ', 'NAMED-ACCR',
 })
 
 
@@ -426,6 +426,38 @@ def _real_net_change(gl_acct) -> float:
     txns = getattr(gl_acct, 'transactions', [])
     debits  = sum(float(t.debit  or 0) for t in txns if not _is_pipeline_txn(t))
     credits = sum(float(t.credit or 0) for t in txns if not _is_pipeline_txn(t))
+    return round(debits - credits, 2)
+
+
+def _real_bonus_net_change(gl_acct) -> float:
+    """
+    Net change on a GLAccount from BONUS-SPECIFIC transactions only —
+    excludes the pipeline's own transactions (like _real_net_change) AND
+    excludes regular base-payroll/OT lines that share the same account code.
+
+    Confirmed bug (2026-09-03, real Jan-Jun 2026 GL): the Layer 4 bonus
+    suppression check previously compared the account's WHOLE net_change
+    (base pay + OT + bonus combined, routinely tens of thousands of dollars)
+    against the much smaller bonus-only monthly average, so it suppressed
+    the bonus accrual in nearly every month with normal payroll activity —
+    i.e. almost always. Isolating bonus-tagged transactions (JLL's own
+    entries consistently include the word "bonus", e.g. "Admin Pay/Wages
+    Bonus", "R&M Wages (Eng BONUS)") gives the correct, narrow signal:
+    "has the actual bonus payment hit the GL this period," not "has any
+    payroll activity hit the GL this period."
+    """
+    if gl_acct is None:
+        return 0.0
+    txns = getattr(gl_acct, 'transactions', [])
+    debits, credits = 0.0, 0.0
+    for t in txns:
+        if _is_pipeline_txn(t):
+            continue
+        combined = ((getattr(t, 'remarks', '') or '') + ' ' + (getattr(t, 'description', '') or '')).lower()
+        if not any(kw in combined for kw in _BONUS_DESC_KW):
+            continue
+        debits  += float(getattr(t, 'debit', 0) or 0)
+        credits += float(getattr(t, 'credit', 0) or 0)
     return round(debits - credits, 2)
 
 
@@ -1102,6 +1134,10 @@ _SINGLE_DATE_RE = re.compile(r'(\d{2})\.(\d{2})\.(\d{2})')
 _PAYROLL_NAME_KW  = ('pay/wages', 'pay wages', 'payroll')
 # Transaction description fragments that confirm a payroll entry
 _PAYROLL_DESC_KW  = ('payroll', 'eng payroll', 'admin payroll', 'pay/wages')
+# Transaction description fragment that confirms a bonus-specific entry —
+# used to isolate the bonus payment from regular payroll (see
+# _real_bonus_net_change / the Layer 4 suppression fix below).
+_BONUS_DESC_KW    = ('bonus',)
 
 
 
@@ -2386,9 +2422,13 @@ def detect_payroll_bonus_accrual(
     Monthly bonus accrual = (Kardin annual ÷ 12) − standard_month
       where standard_month = min(M1..M12) for the bonus-inclusive row.
 
-    The accrual is suppressed if the GL net_change for the period already
-    equals or exceeds the monthly average (the actual bonus payment is in
-    the GL — no separate accrual needed).
+    The accrual is suppressed if the GL's BONUS-SPECIFIC activity for the
+    period already equals or exceeds the monthly average (the actual bonus
+    payment is in the GL — no separate accrual needed). Uses
+    _real_bonus_net_change(), not the account's whole net_change — see that
+    function's docstring for the real Jan-Jun 2026 case that exposed the bug
+    (regular payroll activity, not the bonus itself, was triggering
+    suppression in nearly every month).
 
     Args:
         gl_data:        GLParseResult from yardi_gl parser
@@ -2404,19 +2444,17 @@ def detect_payroll_bonus_accrual(
     if not gl_data or not kardin_records or not period_month:
         return results
 
-    # Build GL net_change lookup for payroll accounts. Uses _real_net_change
-    # (excludes the pipeline's own reference-tagged transactions) rather than
-    # raw net_change — otherwise, if this layer is re-run against a GL that
-    # already has the pipeline's own prior BON- JE posted, that JE's own debit
-    # would count toward "the real bonus payment is already in the GL" and
-    # could fail to suppress a second, duplicate BON- accrual for the same
-    # month whenever real base payroll plus that differential still falls
-    # short of monthly_avg.
+    # Build a bonus-specific GL net-change lookup for payroll accounts. Uses
+    # _real_bonus_net_change() — excludes the pipeline's own reference-tagged
+    # transactions (same reason as _real_net_change: a re-run shouldn't count
+    # its own prior BON- JE as "the real payment") AND isolates bonus-tagged
+    # activity from the much larger regular base-payroll/OT activity that
+    # shares the same account code (see that function's docstring).
     gl_net: dict = {}
     for acct in (gl_data.accounts if hasattr(gl_data, 'accounts') else []):
         code = str(acct.account_code).strip()
         if code in PAYROLL_BONUS_ACCOUNTS:
-            gl_net[code] = _real_net_change(acct)
+            gl_net[code] = _real_bonus_net_change(acct)
 
     for acct_code, config in PAYROLL_BONUS_ACCOUNTS.items():
         keywords = [k.lower() for k in config['kardin_keywords']]
@@ -2475,6 +2513,146 @@ def detect_payroll_bonus_accrual(
                 f'bonus component ${monthly_bonus:,.2f}/mo'
             ),
         })
+
+    return results
+
+
+# Named sub-line accruals within an account excluded from real Layer 3 ───────
+# 637150 Admin-Tenant Relations was excluded from detect_historical_recurring
+# (layer3_exclude_accounts) after a documented $173,142.10 runaway accrual —
+# a blind whole-account YTD/months-elapsed average is the wrong tool for an
+# account that bundles several unrelated vendors/items with very different
+# billing patterns (prepaid annual contracts, a lagged JLL reimbursement,
+# one-off tenant event spend). Rather than re-enabling that blunt average,
+# specific NAMED items with a real Kardin budget line and a reliable
+# description-based real-activity signal get their own narrow accrual here.
+NAMED_SUBLINE_ACCRUALS: dict = {
+    '637150': [
+        {
+            'label':            'Reimbursable Payroll',
+            'kardin_keyword':   'jll xm',
+            'real_activity_kw': 'reimbursable payroll',
+        },
+    ],
+}
+
+
+def _subline_item_activity(acct, keyword: str) -> tuple:
+    """
+    Sum this period's transactions on *acct* whose own description/remarks
+    contain *keyword*, split into (real_debit, pipeline_credit):
+      real_debit      — a real (non-pipeline) invoice/JE covering this item
+                         this period (JLL's own billing caught up).
+      pipeline_credit — this pipeline's own prior-period accrual reversing
+                         out this period (Yardi auto-reversal), still unmatched
+                         if no real_debit replaced it.
+    Uses _is_pipeline_txn(), not raw control code — a JLL-posted manual JE is
+    also Yardi control code 'J', so "starts with J" would misread it as our
+    own entry (same reasoning as management_fee.detect_prior_period_catchup).
+    """
+    real_debit = 0.0
+    pipeline_credit = 0.0
+    kw = keyword.lower()
+    for t in (getattr(acct, 'transactions', None) or []):
+        combined = ((getattr(t, 'remarks', '') or '') + ' ' +
+                    (getattr(t, 'description', '') or '')).lower()
+        if kw not in combined:
+            continue
+        if _is_pipeline_txn(t):
+            pipeline_credit += float(getattr(t, 'credit', 0) or 0)
+        else:
+            real_debit += float(getattr(t, 'debit', 0) or 0)
+    return real_debit, pipeline_credit
+
+
+def detect_named_subline_accruals(gl_data, kardin_records: List[Dict]) -> List[Dict[str, Any]]:
+    """
+    Accrue specific named sub-items within accounts listed in
+    NAMED_SUBLINE_ACCRUALS, using a Kardin budget line (not the whole
+    account's GL activity) as the estimate.
+
+    Confirmed on real Jan-Jun 2026 GL data (2026-09-03): JLL invoices
+    Reimbursable Payroll to 637150 with a real ~1-2 month lag, always as its
+    own distinctly-described line item on JLL's periodic invoice (e.g. "01.26
+    Reimbursable Payroll" posted alongside "01.26 Experience Mgt" and
+    "01.26 Recoverable Expenses" on the same invoice, all to the same
+    account). Kardin's "JLL XM" budget row is the confirmed source for this
+    specific cost (confirmed with Ryan 2026-09-08).
+
+    Matching is scoped to THIS item's own description text on THIS item's
+    own transactions — not the account's broader net change, which was the
+    exact mistake that broke the payroll bonus suppression check (see
+    _real_bonus_net_change's docstring). Using the whole-account net here
+    would suppress this accrual almost every month, since 637150 carries
+    several other large, unrelated real charges.
+
+    Catch-up (added 2026-09-08, same pattern as management_fee's MGT-002 —
+    Ryan's own question: "if there's no invoice, shouldn't it accrue twice,
+    like the management fee?"): if last period's accrual for this item
+    reversed (a pipeline-tagged credit) and no real invoice replaced it this
+    period, that unmatched amount is added on top of this period's regular
+    monthly estimate — so a second missed month accrues 2x, a third 3x, and
+    so on, compounding exactly like JLL's own real "02/26-05/26"-style
+    cumulative catch-up language confirms they do it. The moment a real
+    invoice for this item posts, covering the accumulated shortfall, this
+    stops accruing until the next reversal goes unmatched again.
+    """
+    results: List[Dict[str, Any]] = []
+    if not gl_data or not kardin_records:
+        return results
+
+    _gl_accts = {
+        str(getattr(a, 'account_code', '') or '').strip(): a
+        for a in (getattr(gl_data, 'accounts', None) or [])
+    }
+
+    for acct_code, items in NAMED_SUBLINE_ACCRUALS.items():
+        _acct = _gl_accts.get(acct_code)
+        for item in items:
+            _kw = item['kardin_keyword'].lower()
+            _rows = [
+                r for r in kardin_records
+                if str(r.get('account_code', '') or '').strip() == acct_code
+                and _kw in (r.get('description', '') or '').lower()
+            ]
+            if not _rows:
+                continue
+            annual = sum(float(r.get('m_total', 0) or 0) for r in _rows)
+            if annual < 1:
+                continue
+            monthly = _round(annual / 12.0)
+            if monthly < 100:
+                continue
+
+            _real_debit, _pipeline_credit = (0.0, 0.0)
+            if _acct is not None:
+                _real_debit, _pipeline_credit = _subline_item_activity(
+                    _acct, item['real_activity_kw']
+                )
+
+            # A real invoice for THIS item posted this period — JLL's own
+            # billing caught up, so skip entirely (it already reflects the
+            # true cost, whatever accumulated backlog that invoice covers).
+            if _real_debit > 0.01:
+                continue
+
+            catchup = round(_pipeline_credit, 2) if _pipeline_credit > 100.0 else 0.0
+            _total = _round(monthly + catchup)
+
+            _desc = (
+                f'{item["label"]} (Kardin "{item["kardin_keyword"].upper()}" budget '
+                f'${annual:,.2f}/yr ÷ 12 = ${monthly:,.2f}/mo'
+            )
+            _desc += f'; + ${catchup:,.2f} catch-up, prior accrual unmatched by a real invoice)' if catchup else ')'
+
+            results.append({
+                'account_code':    acct_code,
+                'account_name':    (getattr(_acct, 'account_name', '') if _acct else '') or item['label'],
+                'estimated_amount': _total,
+                'source':          'named_subline',
+                'confidence':      'high',
+                'description':     _desc,
+            })
 
     return results
 
@@ -4024,6 +4202,42 @@ def build_accrual_entries(nexus_data: list, period: str = '',
                 })
                 _covered.add(_bon['account_code'])
                 je_num += 1
+
+    # ── Named sub-line accruals (e.g. 637150 Reimbursable Payroll) ──────────
+    # See NAMED_SUBLINE_ACCRUALS / detect_named_subline_accruals — targeted,
+    # Kardin-budget-driven accruals for specific items within an account
+    # excluded from the real Layer 3 whole-account average. Skips an item
+    # already covered by a manual JE/amortization/Nexus/TUB entry for the
+    # same account, same as every other layer.
+    if gl_data and kardin_records:
+        for _ns in detect_named_subline_accruals(gl_data, kardin_records):
+            if _ns['account_code'] in _covered:
+                continue
+            _ns_id = f"NAMED-{je_num:04d}"
+            _ns_desc = f'Accrual {_fmt_period(period)} — {_ns["description"]}'
+            je_lines.append({
+                'je_number': _ns_id, 'line': 1, 'date': '',
+                'account_code': _ns['account_code'],
+                'account_name': _ns['account_name'],
+                'description': _ns_desc,
+                'reference': 'NAMED-ACCR',
+                'debit': _ns['estimated_amount'], 'credit': 0,
+                'vendor': '[Named Sub-line Accrual]', 'invoice_number': '',
+                'source': 'named_subline', 'confidence': 'high',
+                'reverse_next_month': -1,
+            })
+            _cr_acct, _cr_name = _cr_for(_ns['account_code'])
+            je_lines.append({
+                'je_number': _ns_id, 'line': 2, 'date': '',
+                'account_code': _cr_acct, 'account_name': _cr_name,
+                'description': _ns_desc,
+                'reference': 'NAMED-ACCR',
+                'debit': 0, 'credit': _ns['estimated_amount'],
+                'vendor': '[Named Sub-line Accrual]', 'invoice_number': '',
+                'source': 'named_subline', 'confidence': 'high',
+                'reverse_next_month': -1,
+            })
+            je_num += 1
 
     # ── Apply multi-layer review flags ──────────────────────────────────────
     # When multiple layers detected the same account, we kept only the first-

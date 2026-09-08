@@ -1,5 +1,5 @@
 """
-GA Automation — Monthly Report Pipeline (Two-Pass)
+GreatCLOSE — Monthly Report Pipeline (Two-Pass)
 ====================================================
 Pass 1 (Pre-Close):  Upload pre-close Yardi GL + supporting files → detect
                      accruals → export 3 JE CSVs for Yardi upload.
@@ -78,6 +78,19 @@ def _committed_path(prop_code: str, filename: str) -> Optional[str]:
     """Return path to a committed reference file if it exists, else None."""
     p = _DATA_DIR / prop_code / filename
     return str(p) if p.exists() else None
+
+
+def _operating_bank_name(cfg, gl_account: str = '111100') -> str:
+    """
+    Return the operating bank's name for *cfg*, looked up from
+    property_config.bank_accounts (the entry whose gl_account matches).
+    Falls back to 'PNC' — Revolution Labs' actual bank — if not found, so
+    revlabspm's output is unaffected even if bank_accounts is incomplete.
+    """
+    for _ba in (getattr(cfg, 'bank_accounts', None) or {}).values():
+        if str(getattr(_ba, 'gl_account', '') or '').strip() == gl_account:
+            return (getattr(_ba, 'bank_name', '') or '').strip() or 'PNC'
+    return 'PNC'
 
 
 def _load_coa_codes(cfg) -> Optional[dict]:
@@ -223,7 +236,7 @@ def _df_to_ic_rows(df) -> list:
 def _read_interco_df_from_widgets():
     """
     Rebuild the interco_recode_df-shaped DataFrame directly from the live
-    plain-widget row state (see the 7xxxxx Intercompany Recode Table block).
+    plain-widget row state (see the 7xxxxx Corporate Recode Table block).
     Reads st.session_state[f"ic_*_{rid}"] rather than st.session_state.interco_recode_df
     so callers upstream of that block's own render/write-back (e.g. the Pass 1
     JE-build step, which runs earlier in script order) still see the user's
@@ -281,7 +294,7 @@ def _discover_properties() -> list[dict]:
 
 # ── Page configuration ───────────────────────────────────────
 st.set_page_config(
-    page_title="Close Pipeline",
+    page_title="GreatCLOSE",
     page_icon="🏢",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -550,7 +563,7 @@ if "interco_recode_df" not in st.session_state:
     })
 # Bumped whenever interco_recode_df is externally replaced (property switch,
 # Reset All, Reset Pass 1) or newly-detected 7xxxxx accounts are auto-merged
-# into it — the Intercompany Recode plain-widget row list re-seeds from the
+# into it — the Corporate Recode plain-widget row list re-seeds from the
 # DataFrame only when this counter changes, same pattern as
 # _accruals_seed_gen for One-Off Accruals.
 if "_interco_seed_gen" not in st.session_state:
@@ -1280,7 +1293,7 @@ FILE_CONFIG = {
         "Yardi Bank Rec PDF — Operating (.pdf)", "pdf", False, "bank",
         "PREFERRED bank source. Reads Yardi's pre-computed reconciliation: bank balance, "
         "outstanding checks, reconciled balance, and $0 difference. Enables Operating bank "
-        "rec tab in the BS workpaper (PNC x3993 vs GL 111100). Without it: no bank rec tab.",
+        "rec tab in the BS workpaper (Operating bank statement vs GL 111100). Without it: no bank rec tab.",
     ),
     "receivable_summary": (
         "Yardi Receivable Summary (.xlsx)", "xlsx", False, "bank",
@@ -1310,13 +1323,13 @@ FILE_CONFIG = {
         "Yardi Development Bank Rec — 111210 (.xlsx)", "xlsx", False, "bank",
         "Yardi Bank Reconciliation Report for the BofA development account (x3132). "
         "Copies the raw Yardi export directly into the '111210 Cash - Development' tab "
-        "in the workpaper — matching the exact format of the 111100 PNC and 115100 DACA tabs. "
+        "in the workpaper — matching the exact format of the 111100 Operating and 115100 DACA tabs. "
         "Without it: tab is generated from the BofA PDF (ending balance only, no detail).",
     ),
     "bank_rec_xlsx": (
         "Yardi Operating Bank Rec — 111100 (.xlsx, optional)", "xlsx", False, "bank",
-        "OPTIONAL Excel export for the PNC Operating account — copies the raw Yardi "
-        "sheet directly into the '111100 PNC Cash' tab. Not required: if you only have "
+        "OPTIONAL Excel export for the Operating bank account — copies the raw Yardi "
+        "sheet directly into the '111100 Operating Cash' tab. Not required: if you only have "
         "the 'Yardi Bank Rec PDF — Operating' uploaded above ('bank_rec'), the tab is "
         "filled from that PDF's own GL-detail pages instead — real transaction detail, "
         "just not a byte-for-byte copy of the raw sheet. Without either: placeholder.",
@@ -1678,7 +1691,7 @@ with tab0:
     with _ck_col_name:
         _team_names = (_active_cfg.team_members
                        if _active_cfg.team_members
-                       else ['[Property Accountant]', '[Property Manager]', '[Accounting Manager/Controller]'])
+                       else ['[Property Controller]', '[Property Manager]', '[Accounting Manager/Controller]'])
         _cur_name   = st.session_state.get('prepared_by', _team_names[0])
         _name_idx   = _team_names.index(_cur_name) if _cur_name in _team_names else 0
         _chosen_name = st.selectbox(
@@ -1886,7 +1899,7 @@ with tab0:
                          'Upload the deliverables and mark Step 9 complete.'),
                 'draft': True,
                 'draft_label': '📋 Suggested message for the Accounting Manager/Controller:',
-                # team_members convention: [Property Accountant, Property Manager, Accounting Manager/Controller] —
+                # team_members convention: [Property Controller, Property Manager, Accounting Manager/Controller] —
                 # Accounting Manager/Controller is the 3rd entry by position, not matched by name.
                 'draft_fn': lambda period, prop, team, user: (
                     f"Hi {(team[2].split()[0] if len(team) > 2 and team[2] else 'there')},\n\n"
@@ -1908,7 +1921,7 @@ with tab0:
         if _ni:
             _period_lbl  = period_key_to_label(_ck_pkey) if '_ck_pkey' in dir() else period_key_to_label(st.session_state.get('checklist_period_key', current_period_key()))
             _team_members = list(getattr(_active_cfg, 'team_members', None) or
-                                 ['[Property Accountant]', '[Property Manager]', '[Accounting Manager/Controller]'])
+                                 ['[Property Controller]', '[Property Manager]', '[Accounting Manager/Controller]'])
             _prepared_by  = st.session_state.get('prepared_by', 'GRP')
             _body_text = _ni['body'].format(
                 period=_period_lbl,
@@ -2310,25 +2323,31 @@ with tab1:
                 )
 
     # ── Payroll Bonus Accrual ─────────────────────────────────────────────────
+    # Annual figures are persisted in config.yaml (payroll_bonus_annual) so
+    # they're set once for the year, not retyped every month -- the widgets
+    # below just default from that saved value and still allow an in-session
+    # override if the budget changes mid-year.
+    _cfg_bonus_annual = getattr(_active_cfg, 'payroll_bonus_annual', None) or {}
     with st.expander("💰 Payroll Bonus Accrual — Monthly (optional)", expanded=False):
         st.caption(
-            "Enter the annual bonus budget for engineering and/or admin payroll. "
-            "The pipeline accrues 1/12 each month and suppresses automatically "
-            "in months when the actual bonus payment hits the GL."
+            "Annual bonus budget for engineering and/or admin payroll — set once in "
+            "config.yaml (`payroll_bonus_annual`) and it carries forward every month. "
+            "The pipeline accrues 1/12 each month; this does NOT suppress based on "
+            "regular payroll GL activity, only on a manual JE already covering it."
         )
         _bonus_col1, _bonus_col2 = st.columns(2)
         with _bonus_col1:
             _bonus_rm = st.number_input(
                 "RM-Pay/Wages (615110) — Annual Bonus ($)",
-                min_value=0.0, value=0.0, step=1000.0, format="%.2f",
-                key="widget_bonus_rm",
+                min_value=0.0, value=float(_cfg_bonus_annual.get('615110', 0.0)), step=1000.0, format="%.2f",
+                key=f"widget_bonus_rm_{_active_cfg.property_code}",
                 help="Engineering/RM annual bonus budget. Monthly accrual = annual ÷ 12.",
             )
         with _bonus_col2:
             _bonus_admin = st.number_input(
                 "Admin-Pay/Wages (637110) — Annual Bonus ($)",
-                min_value=0.0, value=0.0, step=1000.0, format="%.2f",
-                key="widget_bonus_admin",
+                min_value=0.0, value=float(_cfg_bonus_annual.get('637110', 0.0)), step=1000.0, format="%.2f",
+                key=f"widget_bonus_admin_{_active_cfg.property_code}",
                 help="Administrative/office annual bonus budget. Monthly accrual = annual ÷ 12.",
             )
         _bonus_overrides: dict = {}
@@ -2862,7 +2881,7 @@ with tab1:
                     ledger_active, nexus_data or [], close_period
                 )
 
-                # Apply the 7xxxxx Intercompany Recode table to ledger items whose
+                # Apply the 7xxxxx Corporate Recode table to ledger items whose
                 # gl_account_number was just recoded — otherwise every future
                 # release keeps debiting the original (miscoded) account even
                 # though this period's recode JE already moved the balance
@@ -2907,7 +2926,7 @@ with tab1:
                     if _recoded_items:
                         st.info(
                             f"↳ Prepaid ledger: {_recoded_items} item(s) updated to the recoded "
-                            f"GL account per the Intercompany Recode table — future releases will "
+                            f"GL account per the Corporate Recode table — future releases will "
                             f"debit the corrected account.",
                             icon="ℹ️",
                         )
@@ -3283,7 +3302,7 @@ with tab1:
                         },
                     ])
 
-                # ── 7xxxxx Intercompany Recode JEs ────────────────────────────
+                # ── 7xxxxx Corporate Recode JEs ────────────────────────────
                 # Walks the recode table in order: CR row → DR row pairs.
                 # DR [target 6/8xxxxx expense account] / CR [7xxxxx account]
                 # Permanent (no auto-reverse) — the recode is a permanent reclassification.
@@ -3548,9 +3567,9 @@ with tab1:
             _catchup_amt = p1.get("catchup_amount")
             if _catchup_amt and _catchup_amt > 0:
                 st.warning(
-                    f"**Management Fee Catch-up Detected — ${_catchup_amt:,.2f}**\n\n"
+                    f"**Prior Month Re-accrual Detected — ${_catchup_amt:,.2f}**\n\n"
                     f"Account 637130 shows a net credit (auto-reversal of prior month accrual with "
-                    f"no matching invoice). A catch-up entry **(MGT-002)** has been included in the "
+                    f"no matching invoice). A re-accrual entry **(MGT-002)** has been included in the "
                     f"Accruals CSV. **Verify before posting:** confirm the prior month check is still "
                     f"outstanding in AP (213100) before uploading.",
                 )
@@ -3579,7 +3598,7 @@ with tab1:
                 'prepaid_amortization':   'Prior Month Prepaid Ledger',
                 'prepaid_ledger':         'Prior Month Prepaid Ledger',
                 'management_fee':         'Management Fee',
-                'management_fee_catchup': 'Management Fee (Catch-up)',
+                'management_fee_catchup': 'Prior Month Re-accrual',
                 'contract_supplement':    'One-Off Accrual Table',
                 'tenant_utility_billing': 'Tenant Utility Billing',
                 'bonus_accrual':          'Kardin Budget',
@@ -4100,7 +4119,7 @@ with tab1:
             st.info("No accrual entries generated. Upload a Nexus file, Budget Comparison, "
                     "or Prepaid Ledger to enable additional accrual detection layers.", icon="ℹ️")
 
-        # ── 7xxxxx Intercompany Recode Table ─────────────────────────────────
+        # ── 7xxxxx Corporate Recode Table ─────────────────────────────────
         # Shown after the accruals/missed-entry section because the GL must be
         # parsed first to detect 7xxxxx accounts.  Fill in the DR account and
         # re-run Generate JEs to include the recode entries in the CSV.
@@ -4307,7 +4326,7 @@ with tab1:
         _ic_badge = (f"  ⚠️ {len(_interco_detected)} account(s) detected"
                      if _interco_detected else "")
         with st.expander(
-            f"🔄 7xxxxx Intercompany Recode  (DR expense → CR 7xxxxx){_ic_badge}",
+            f"🔄 7xxxxx Corporate Recode  (DR expense → CR 7xxxxx){_ic_badge}",
             expanded=bool(_interco_detected),
         ):
             st.caption(
@@ -4480,7 +4499,7 @@ with tab1:
                     "this is exactly how a Kardin-style miscoding (e.g. a corporate 7xxxxx "
                     "account instead of the right property expense account) gets fixed at the "
                     "source, before it ever reaches the ledger. GL Account Name is looked up "
-                    "automatically from the number, same as the Intercompany Recode table, so "
+                    "automatically from the number, same as the Corporate Recode table, so "
                     "a typo'd account reads as an obviously wrong name instead of just a "
                     "number. Vendor / Invoice # are read-only — they're the match key."
                 )
@@ -4726,7 +4745,7 @@ with tab1:
             'prepaid_ledger':         'Prepaid Release',
             'prepaid_reclass':        'Prepaid Reclass',
             'management_fee':         'Management Fee',
-            'management_fee_catchup': 'Mgmt Fee Catch-up',
+            'management_fee_catchup': 'Prior Mo. Re-accrual',
             'contract_supplement':    'One-Off Accrual',
             'tenant_utility_billing': 'Tenant Utility',
             'bonus_accrual':          'Bonus Accrual',
@@ -5203,7 +5222,7 @@ with tab2:
         _WP_SLOT_LABELS = [
             "AR Aging Detail — 133100 AR Control",
             "AP Aging Detail — 211300 AP Control",
-            "Bank Rec Excel — 111100 PNC Operating",
+            f"Bank Rec Excel — 111100 {_operating_bank_name(_active_cfg)} Operating",
             "Bank Rec Excel — 115100 DACA",
             "Capital Accounts Schedule",
             "Prepaid Ledger Updated",
@@ -5218,7 +5237,7 @@ with tab2:
         # unusable — narrow the dropdown instead of letting that happen.
         _WP_PDF_SLOT_KEYS = ["bank_rec_xlsx", "daca_bank_rec_xlsx", "unknown"]
         _WP_PDF_SLOT_LABELS = [
-            "Bank Rec PDF — 111100 PNC Operating",
+            f"Bank Rec PDF — 111100 {_operating_bank_name(_active_cfg)} Operating",
             "Bank Rec PDF — 115100 DACA",
             "Unknown — select type",
         ]
@@ -5940,10 +5959,11 @@ with tab2:
                                 prepaid_ledger_active=_prepaid_active,
                                 bank_rec_data=_effective_bank_rec_data,
                                 daca_bank_data=_effective_daca_bank_data,
+                                bank_name=_operating_bank_name(_active_cfg),
                             )
                             st.caption(
-                                "↳ Workpaper: generated from template — PNC Cash, DACA, AR Aging, "
-                                "Prepaid Rent, AP, and BofA Dev tabs are refreshed each period from "
+                                f"↳ Workpaper: generated from template — {_operating_bank_name(_active_cfg)} Cash, "
+                                "DACA, AR Aging, Prepaid Rent, AP, and BofA Dev tabs are refreshed each period from "
                                 "whatever raw file is uploaded in the Workpaper raw report overrides "
                                 "section; a tab shows a placeholder if its file wasn't uploaded this period."
                             )
@@ -6232,6 +6252,26 @@ with tab2:
                     _gl_for_at = engine_result.parsed.get('gl') if engine_result.parsed else None
                     _at_prior  = check_prior_accrual_vs_actual(_gl_for_at) if _gl_for_at else []
 
+                    # Run log history for Tab 11 — read whatever prior log is on
+                    # file (same source the Run Log step below uses as its own
+                    # "prior" input). This run's own row isn't in it yet: the
+                    # Run Log step appends AFTER audit trail generation, because
+                    # its own "files_generated" list needs to already include
+                    # "audit_trail" — reordering would break that. Missing only
+                    # the current run itself (which the reviewer is looking at
+                    # right now anyway) is an acceptable trade-off for keeping
+                    # that dependency intact.
+                    _at_run_log_rows = []
+                    try:
+                        from run_log import _read_prior as _rl_read_prior
+                        _at_rl_path = (
+                            st.session_state.pass1_output_files.get('run_log')
+                            or st.session_state.uploaded_files.get('run_log')
+                        )
+                        _at_run_log_rows = _rl_read_prior(_at_rl_path)
+                    except Exception:
+                        pass
+
                     generate_audit_trail(
                         output_path         = _at_path,
                         period              = close_period,
@@ -6248,6 +6288,7 @@ with tab2:
                         close_tracker       = st.session_state.get('close_tracker', {}),
                         signoff_state       = st.session_state.get('signoff_state', {}),
                         signoff_items       = _SIGNOFF_ITEMS,
+                        run_log_rows        = _at_run_log_rows,
                     )
                     st.session_state.pass2_output_files["audit_trail"] = _at_path
                 except Exception as _ate:
@@ -6773,7 +6814,7 @@ with tab2:
             f"{_pfx_del}_{period_label}_Workpapers.xlsx":      p2.get("bs_workpaper"),
             f"{_pfx_del}_{period_label}_QC_Workbook.xlsx":     p2.get("qc_workbook"),
             f"{_pfx_del}_{period_label}_Exceptions.xlsx":      p2.get("exception_report"),
-            f"{_pfx_del}_{period_label}_BC_Internal.xlsx":     p2.get("annotated_bc"),
+            f"{_pfx_del}_{period_label}_Budget_Comparison.xlsx": p2.get("annotated_bc"),
             f"{_pfx_del}_{period_label}_Audit_Trail.xlsx":     p2.get("audit_trail"),
             f"{_inv_pfx}_Invoice_{period_label}.pdf":          p2.get("fee_invoice"),
             f"{_pfx_del}_{period_label}_Run_Log.csv":          p2.get("run_log"),
@@ -6842,7 +6883,7 @@ with tab2:
             ("exception_report","⚠️ Exception Report",
              f"{_pfx_int}_Exceptions_{_ts_p2}.xlsx",      None),
             ("annotated_bc",    "💬 Budget Comparison",
-             f"{_pfx_int}_BC_Internal_{_ts_p2}.xlsx",     None),
+             f"{_pfx_int}_Budget_Comparison_{_ts_p2}.xlsx",     None),
             ("audit_trail",     "🔍 Audit Trail",
              f"{_pfx_int}_Audit_Trail_{_ts_p2}.xlsx",     None),
             ("fee_invoice",     "🧾 Management Fee Invoice",
@@ -6985,7 +7026,7 @@ with tab2:
 
         _SIGNOFF_REVIEWERS = (_active_cfg.team_members
                               if _active_cfg.team_members
-                              else ["[Property Accountant]", "[Property Manager]", "[Accounting Manager/Controller]"])
+                              else ["[Property Controller]", "[Property Manager]", "[Accounting Manager/Controller]"])
 
         for _so_idx, _so_item in enumerate(_SIGNOFF_ITEMS):
             _so_existing = st.session_state.signoff_state.get(_so_idx)
@@ -7188,6 +7229,11 @@ with tab2:
                             'invoice_number': '',
                             'source':         'post_close',
                             'confidence':     'high',
+                            # Post-close JEs are permanent corrections — force no
+                            # reversal even if a line hits 213100/213200/133110,
+                            # which generate_etl_csv's batch heuristic would
+                            # otherwise auto-reverse next month.
+                            'reverse_next_month': 0,
                         })
                         _line_seq += 1
                 _pcje_num += 1
@@ -7217,7 +7263,9 @@ with tab2:
                     _pcje_csv_path,
                     period=_pcje_period,
                     property_code=_pcje_etl_code,
-                    auto_reverse=False,  # post-close JEs are permanent — no reversal
+                    auto_reverse=False,  # deprecated/ignored by generate_etl_csv — the real
+                                         # safeguard is 'reverse_next_month': 0 forced on every
+                                         # post-close line above
                 )
                 st.session_state.pass2_output_files["post_close_je_csv"] = _pcje_csv_path
             except Exception as _pcje_err:
@@ -7248,17 +7296,17 @@ with tab3:
         "when something needs review."
     )
     st.info(
-        "**Roles referenced throughout:** the **Property Accountant** runs Pass 1 and Pass 2 "
+        "**Roles referenced throughout:** the **Property Controller** runs Pass 1 and Pass 2 "
         "(this may be GRP staff or an outsourced team member). The **Property Manager** "
         "reviews outputs before release. The **Accounting Manager/Controller** is the final reviewer — sees the package "
-        "only after the Property Accountant and Property Manager have both signed off. "
+        "only after the Property Controller and Property Manager have both signed off. "
         "Actual names for each role are configured per property in the Properties tab.",
         icon="👥",
     )
 
     # ── Quick-reference flow ──────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### At a Glance")
+    st.markdown("### Process Steps")
     st.markdown("""
 | Step | Who | Action |
 |------|-----|--------|
@@ -7306,7 +7354,7 @@ with tab3:
         st.markdown("""
 | File | Where to get it | Notes |
 |------|-----------------|-------|
-| **Yardi / PNC Bank Rec** | Yardi Reports → Bank Reconciliation → export as PDF | Preferred source — pipeline reads the pre-computed reconciled balance |
+| **Yardi / Bank Rec** | Yardi Reports → Bank Reconciliation → export as PDF | Preferred source — pipeline reads the pre-computed reconciled balance |
 | **KeyBank DACA Statement** | KeyBank online → account x5132 → monthly statement PDF | Used as management fee cash-received basis |
 | **BofA Development Statement** | BofA online → development account → monthly PDF | Balance only; development account is dormant |
 | **Berkadia Loan Statement(s)** | Berkadia portal → monthly loan statements → PDF (all 3 loans) | ⚠️ Upload the statement **due the 7th of the following month** — e.g. for the January close, upload the Feb 7 statement. Interest is paid in arrears: the Feb 7 payment covers January's interest. |
@@ -7347,7 +7395,7 @@ Each JE line has:
 - **Description** — editable inline; edits apply immediately.
 - **Amount** — editable inline; both the DR and CR leg update together so the JE stays balanced.
 
-**7xxxxx Intercompany Recode** — if the GL has any corporate-expense (7xxxxx) activity miscoded
+**7xxxxx Corporate Recode** — if the GL has any corporate-expense (7xxxxx) activity miscoded
 onto the property, a recode table appears automatically. Enter the correct 6xxxxx or 8xxxxx
 target account on each DR row, then click **Re-run Pass 1** (a second copy of this button sits
 directly below the recode table, so you don't need to scroll back to the top) to include the
@@ -7383,21 +7431,33 @@ After clicking **Generate JEs**, download either the full zip package or individ
     # ── Yardi Upload Step ─────────────────────────────────────────────────────
     with st.expander("⬆️  Step 5 — Post to Yardi & Run the Close"):
         st.markdown(f"""
-**In Yardi, before running the final close:**
+**In Yardi, before running the final close — repeat for each of the 3 JE CSVs (Accruals, Prepaid, Manual):**
 
-1. Go to **Journals → Import Journal Entries**
-2. Import `{_pfx_int}_Accruals_JE.csv` → review the batch → post
-3. Verify the journal batch posted cleanly (no errors)
-4. Run the **month-end close** in Yardi (locks the period)
+1. Go to **ETL Virtual FTP**
+2. In **ForeignDb**, type `etl`
+3. In **Group**, type `ETL`
+4. Choose the JE file (e.g. `{_pfx_int}_Accruals_JE.csv`) and click **Submit**
+5. Go to **ETL Import**
+6. In **ForeignDb**, type `etl`
+7. Go to **GL → Find Journal Batch**
+8. Search by the Yardi username that ran the ETL import to locate the batch
+9. Review the JE batch in Yardi for accuracy
+10. Once it looks right, click **Submit** to post it
+
+Repeat for `{_pfx_int}_Prepaid_JE.csv` and `{_pfx_int}_Manual_JE.csv`.
+
+Once all three batches are posted, run the **month-end close** in Yardi (locks the period).
 
 **What Yardi auto-reverses on the 1st of next month:**
 All accrual and management fee entries auto-reverse on the first day of the following period.
 This is standard accrual accounting — no manual reversal needed.
-
-> **Note:** The Singerman 8-tab monthly report (Balance Sheet, Income Statement, T12,
-> Trial Balance MTD/YTD, GL MTD/YTD, Tenancy) is downloaded directly from Yardi
-> after the close — it is **not** generated by this pipeline.
 """)
+        _step5_investor = (getattr(_active_cfg, 'investor_name', '') or '').strip()
+        if _step5_investor:
+            st.markdown(
+                f"> **Note:** {_step5_investor}'s monthly report is downloaded directly from "
+                f"Yardi after the close — it is **not** generated by this pipeline."
+            )
 
     # ── Pass 2 ────────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -7424,9 +7484,10 @@ This is standard accrual accounting — no manual reversal needed.
 
     # ── Workpaper Raw Report Overrides ─────────────────────────────────────────
     with st.expander("🗂️  Step 6b — Workpaper Raw Report Overrides"):
-        st.markdown("""
+        _wp_bank_name = _operating_bank_name(_active_cfg)
+        st.markdown(f"""
 Six workpaper tabs are sourced from raw Yardi/bank reports rather than computed from the GL:
-**111100 PNC Cash, 115100 DACA, 131100 AR Aging, 221100 Prepaid Rent, 211100 AP,** and
+**111100 {_wp_bank_name} Cash, 115100 DACA, 131100 AR Aging, 221100 Prepaid Rent, 211100 AP,** and
 **111210 BofA Development**. Upload the corresponding raw file each period in the
 **"Workpaper raw report overrides"** section (Pass 2 tab) so these tabs refresh with current
 data instead of staying frozen:
@@ -7435,7 +7496,7 @@ data instead of staying frozen:
 |-------------|-----------|
 | AR Aging Detail — 133100 AR Control | 131100 AR Aging **and** 221100 Prepaid Rent (one Yardi report covers both — same file, both tabs) |
 | AP Aging Detail — 211300 AP Control | 211100 Accounts Payable |
-| Bank Rec — 111100 PNC Operating | 111100 PNC Cash |
+| Bank Rec — 111100 {_wp_bank_name} Operating | 111100 {_wp_bank_name} Cash |
 | Bank Rec — 115100 DACA | 115100 DACA |
 
 > **If a file isn't uploaded for one of these tabs**, that tab shows an explicit
@@ -7456,10 +7517,10 @@ After clicking **Generate Reports**, download the full package or individual fil
 
 | File | Contents | Audience |
 |------|----------|----------|
-| **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Accountant / Property Manager |
-| **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist — see Step 8 below | Property Accountant |
-| **{_pfx_int}_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Accountant |
-| **{_pfx_int}_BC_Internal.xlsx** | Annotated Budget Comparison with variance commentary in columns L/M — GRP internal use only | Property Accountant / Property Manager |
+| **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Controller / Property Manager |
+| **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist — see Step 8 below | Property Controller |
+| **{_pfx_int}_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Controller |
+| **{_pfx_int}_Budget_Comparison.xlsx** | Budget Comparison with variance commentary in columns L/M | Property Controller / Property Manager |
 | **{_pfx_int}_Audit_Trail.xlsx** | Every JE's math, the exact Yardi ETL import rows, management fee calculation detail, and QC results in one file — the record an auditor would review | Property Manager / Auditor |
 | **{_pfx_int}_Signoff_Record.xlsx** | Who reviewed and approved each section of the close package, and when | Property Manager / Accounting Manager/Controller |
 | **{_pfx_int}_Close_Tracker.xlsx** | The 9-step close lifecycle record, from JLL handoff through Accounting Manager/Controller release | Property Manager |
@@ -7525,7 +7586,7 @@ through the Accounting Manager/Controller's final release:
 
 `0` JLL Completes Bank Rec & Payments · `1` Pass 1 Files Uploaded & JEs Generated ·
 `2` JEs Uploaded to Yardi · `3` Final Close Run in Yardi · `4` Final Files Re-Exported from Yardi ·
-`5` Pass 2 Files Uploaded · `6` Reports Generated · `7` QC Review Complete (Property Accountant /
+`5` Pass 2 Files Uploaded · `6` Reports Generated · `7` QC Review Complete (Property Controller /
 Property Manager) · `8` Final Package Released to Accounting Manager/Controller
 
 Steps 1, 5, and 6 auto-complete when you run Pass 1 / upload Pass 2 files / generate reports.
@@ -7546,8 +7607,6 @@ off to produce the permanent record.
 | Item | Source |
 |------|--------|
 | Workpapers (GL ↔ TB tie-out) | `{_pfx_int}_Workpapers.xlsx` from Pass 2 |
-| Annotated Budget Comparison | `{_pfx_int}_BC_Internal.xlsx` from Pass 2 |
-| Audit Trail | `{_pfx_int}_Audit_Trail.xlsx` from Pass 2 |
 | Singerman 8-Tab Monthly Report | Downloaded directly from Yardi |
 
 #### To Singerman (Capital Partner)
@@ -7560,6 +7619,8 @@ off to produce the permanent record.
 |------|---------|
 | `{_pfx_int}_QC_Workbook.xlsx` | GRP internal QC sign-off |
 | `{_pfx_int}_Exceptions_Report.xlsx` | Audit trail of all flagged items |
+| `{_pfx_int}_Budget_Comparison.xlsx` | Variance commentary for internal review |
+| `{_pfx_int}_Audit_Trail.xlsx` | Full audit trail package |
 | `{_pfx_int}_Signoff_Record.xlsx` | Reviewer sign-off record |
 | `{_pfx_int}_Close_Tracker.xlsx` | Close lifecycle record |
 | `{_pfx_int}_Run_Log.csv` | Historical run log |
@@ -7598,7 +7659,7 @@ was uploaded. If both are missing, the fee will be $0 and will need a manual One
 → Upload the prior month's `{_pfx_int}_Workpapers.xlsx` in the Pass 2 upload zone (see the
 Carry-Forward section above). Leave blank only for a property's genuinely first close.
 
-**A raw-report workpaper tab (PNC Cash, DACA, AR Aging, Prepaid Rent, AP, BofA Dev) shows
+**A raw-report workpaper tab ({_operating_bank_name(_active_cfg)} Cash, DACA, AR Aging, Prepaid Rent, AP, BofA Dev) shows
 "No data uploaded this period"**
 → Upload the matching file in "Workpaper raw report overrides" (Step 6b) and re-run.
 
@@ -7979,15 +8040,17 @@ with tab4:
             else:
                 st.caption(f"No file named `{_cur_budget_fname}` on disk yet")
 
-    # ── 12-Month GL History — onboarding review only (outside form) ───────────
-    st.markdown("### 📜 12-Month GL History (Onboarding Review)")
+    # ── 12-Month GL History — reusable review, not a one-time gate ────────────
+    st.markdown("### 📜 12-Month GL History Review")
     st.caption(
         "Upload a full year of GL export to see which expense accounts/vendors "
         "bill on a recurring-but-not-monthly cadence (quarterly, semi-annual, "
-        "annual) — useful context before your first close. **Informational "
-        "only** — nothing here auto-fills any config or accrual table; the One-"
-        "Off Accruals table always starts blank, on purpose. Not saved anywhere "
-        "— this is a one-time onboarding look, not a monthly upload."
+        "annual), and — for accounts with no automated Layer 3 fallback — "
+        "whether real activity is running materially short of budget. "
+        "**Informational only** — nothing here auto-fills any config or accrual "
+        "table; the One-Off Accruals table always starts blank, on purpose. "
+        "Not saved anywhere — re-upload anytime you want a fresh look, this "
+        "isn't limited to onboarding."
     )
     st.caption(
         "⚠️ Cadence classification is a best guess pending a real 12-month "
@@ -8037,6 +8100,77 @@ with tab4:
                     height=min(400, 40 + 35 * len(_vp_df)),
                     column_config={'Avg Amount': st.column_config.NumberColumn(format="$%,.2f")},
                 )
+
+            # ── Budget-vs-12mo-actual gap, Layer3-excluded accounts only ──────
+            # Scoped to layer3_exclude_accounts on purpose (confirmed with
+            # Ryan 2026-09-08: "we do not want duplicates") — accounts Layer
+            # 1-4 already handle correctly every month have no business being
+            # re-flagged here.
+            _l3_excl = list(getattr(_edit_cfg, 'layer3_exclude_accounts', None) or [])
+            _kardin_fname = _ef('kardin_budget_file', 'GA_Kardin_Budget_FY2026.xlsx')
+            _kardin_path = _committed_path(_photo_target_code, _kardin_fname) if _photo_target_code else None
+            if _l3_excl and _kardin_path:
+                from gl_history_analyzer import compare_budget_to_history as _compare_budget
+                from parsers.kardin_budget import parse as _parse_kardin_hist
+                from accrual_entry_generator import NAMED_SUBLINE_ACCRUALS as _named_sublines
+
+                _kardin_hist_recs = _parse_kardin_hist(_kardin_path)
+                _covered_kw = {
+                    _code: [_item['kardin_keyword'] for _item in _items]
+                    for _code, _items in _named_sublines.items()
+                }
+                _gap_candidates = _compare_budget(
+                    _gl_hist_result, _kardin_hist_recs, _l3_excl,
+                    already_covered_keywords=_covered_kw,
+                )
+                st.markdown("#### Budget vs. 12-Month Actual — Layer 3-Excluded Accounts")
+                st.caption(
+                    f"Checked against: {', '.join(_l3_excl)} (from this property's "
+                    "`layer3_exclude_accounts`) — these have no automated monthly "
+                    "fallback today, so a real gap here means the account may need "
+                    "its own targeted named sub-line accrual, the way "
+                    "637150 Reimbursable Payroll works."
+                )
+                if not _gap_candidates:
+                    st.success("No material budget-vs-actual gap found on these accounts.")
+                else:
+                    for _cand in _gap_candidates:
+                        with st.expander(
+                            f"⚠️ {_cand.account_code} {_cand.account_name} — "
+                            f"${_cand.gap:,.0f} short of budget"
+                        ):
+                            st.markdown(
+                                f"Kardin budget: **${_cand.budget_prorated:,.2f}** "
+                                f"(prorated to the {_cand.months_covered} month(s) this file covers) "
+                                f"— real net GL activity: **${_cand.actual_net:,.2f}** "
+                                f"— gap: **${_cand.gap:,.2f}**"
+                            )
+                            st.markdown("**Budgeted for (Kardin):**")
+                            for _kl in _cand.kardin_lines:
+                                st.markdown(
+                                    f"- {_kl.get('description', '(no description)')} — "
+                                    f"${float(_kl.get('m_total', 0) or 0):,.2f}/yr"
+                                )
+                            if _cand.vendor_patterns:
+                                st.markdown("**Real GL activity found (this account):**")
+                                st.dataframe(
+                                    pd.DataFrame([{
+                                        'Vendor': p.vendor, 'Cadence': p.cadence,
+                                        'Occurrences': p.occurrences,
+                                        'Total': p.total_amount,
+                                        'Months Seen': ', '.join(p.months_seen),
+                                    } for p in _cand.vendor_patterns]),
+                                    use_container_width=True,
+                                    column_config={'Total': st.column_config.NumberColumn(format="$%,.2f")},
+                                )
+                            else:
+                                st.caption("No real GL activity found for this account in the uploaded file.")
+                            st.caption(
+                                "Your call: does a Kardin line above map to real activity that's "
+                                "arriving late/irregularly? If so, it may be worth a targeted named "
+                                "sub-line accrual (see NAMED_SUBLINE_ACCRUALS in "
+                                "accrual_entry_generator.py) rather than typing it in by hand each month."
+                            )
         except Exception as _gh_exc:
             st.warning(f"Could not analyze this GL export: {_gh_exc}")
 
@@ -8345,7 +8479,7 @@ with tab4:
             "Team members (one per line)",
             value=_default_members,
             height=120,
-            placeholder="Jane Smith (Property Accountant)\nJohn Doe (Property Manager)\nAlex Lee (Accounting Manager/Controller)",
+            placeholder="Jane Smith (Property Controller)\nJohn Doe (Property Manager)\nAlex Lee (Accounting Manager/Controller)",
             label_visibility="collapsed",
         )
 
@@ -8845,6 +8979,7 @@ with tab4:
                     'yardi_etl_code', 'metered_utility_accounts',
                     'per_invoice_utility_accounts', 'per_invoice_accrual_accounts',
                     'layer3_exclude_accounts', 'insurance_policies',
+                    'payroll_accounts', 'payroll_bonus_annual',
                 ):
                     _preserve_val = getattr(_edit_cfg, _preserve_field, None)
                     if _preserve_val:
@@ -9275,7 +9410,7 @@ with tab4:
 - [ ] **Team Members**: everyone reviewing this property's close
 - [ ] **Chart of Accounts**: "Uses the standard GRP Yardi COA?" — Yes for any GRP-managed Yardi property (no upload needed); No only for a partner running their own Yardi with different codes
 - [ ] **Building / Allocation Splits**: only if this property allocates shared costs across buildings — auto-suggested (Equal + By-SF schedules) once the Buildings table above has 2+ rows
-- [ ] **Management Fee Lines**: one row per PM agreement (e.g. JLL 1.25% + GRP 1.75%, matching Rev Labs)
+- [ ] **Management Fee Lines**: one row per PM agreement (e.g. a third-party PM % + GRP %)
 - [ ] **Bank Accounts**: one row per account (operating/development/DACA) — Bank Name + Account Number drive monthly auto-classification of uploaded statements
 - [ ] **Payment Instructions**: ACH and/or check details for the management fee invoice
 - [ ] **RE Tax & Other**: `re_tax_payment_months` for this jurisdiction (typically Jan/Apr/Jul/Oct), Parcel IDs if relevant
@@ -9284,7 +9419,7 @@ with tab4:
 - [ ] **Current Year Budget (Kardin)** — upload the annual budget; enter the saved filename in `Kardin Budget Filename` (step 8)
 - [ ] **Tenancy Schedule / Rent Roll** — upload the current rent roll once to confirm Tenant Utility Billing picks up the right tenants (it re-reads this fresh every period going forward, so nothing to configure — just confirm it looks right)
 - [ ] **12-Month GL History** (if available) — informational only, flags which vendors bill quarterly/semi-annually so nothing gets missed as a one-off accrual later
-- [ ] **Bank Statement(s)** — upload one real statement per account to auto-extract the account number into step 6, instead of typing it blind (PNC / Bank of America / KeyBank only — a different bank needs a new parser first)
+- [ ] **Bank Statement(s)** — upload one real statement per account to auto-extract the account number into step 6, instead of typing it blind (PNC / Bank of America / KeyBank / Eastern Bank only — a different bank needs a new parser first)
 
 **3. Prepaid Ledger Seed** ← most critical for acquisitions
 - [ ] Gather all active prepaid schedules from prior management (insurance and RE tax are excluded automatically; focus on service contracts, subscriptions, maintenance agreements)

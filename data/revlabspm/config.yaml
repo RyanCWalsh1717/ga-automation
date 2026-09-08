@@ -99,6 +99,7 @@ per_invoice_accrual_accounts:
 layer3_exclude_accounts:
 - '637170'
 - '637150'
+- '617120'
 insurance_policies:
 - name: Property Insurance
   expense_account: '639110'

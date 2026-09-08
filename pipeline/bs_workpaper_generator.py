@@ -364,6 +364,18 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
     _entity_label  = _ENTITY_DISPLAY.get(_entity_label, _entity_label) or property_name or '[Property]'
     _gl_entities   = [_ENTITY_DISPLAY.get(e.lower(), e) for e in _gl_entities]
 
+    # Operating bank name — looked up from property_config.bank_accounts (the
+    # entry whose gl_account == '111100'), which already carries this per
+    # property (e.g. Eastern Bank for 2540hartwellpm). Falls back to 'PNC' —
+    # Revolution Labs' actual bank, and the literal string its historical
+    # workpaper tabs already carry forward by name — so nothing changes for
+    # revlabspm even if bank_accounts is ever missing/incomplete.
+    _bank_name = 'PNC'
+    for _ba in (getattr(property_config, 'bank_accounts', None) or {}).values():
+        if str(getattr(_ba, 'gl_account', '') or '').strip() == '111100':
+            _bank_name = (getattr(_ba, 'bank_name', '') or '').strip() or 'PNC'
+            break
+
     # Build TB lookup: account_code -> TBAccount
     tb_map = {}
     if tb_result and hasattr(tb_result, 'accounts'):
@@ -559,7 +571,8 @@ def generate_bs_workpaper(gl_result, tb_result, output_path: str,
         _gl_cash = _gl_cash or 0.0
         _write_bank_rec_tab(
             wb, bank_rec_data, _gl_cash, period, property_name,
-            account_label='PNC Operating (x3993)',
+            account_label=(f'{_bank_name} Operating (x3993)' if _bank_name == 'PNC'
+                           else f'{_bank_name} Operating'),
             gl_account_code='111100',
             tab_prefix=_tab_pfx,
             prepared_by=prepared_by,
@@ -3582,6 +3595,7 @@ def generate_bs_workpaper_from_template(
     prepaid_ledger_active: list = None,
     bank_rec_data: dict = None,
     daca_bank_data: dict = None,
+    bank_name: str = 'PNC',
 ) -> str:
     """
     Template-based monthly close workpaper generator.
@@ -3632,6 +3646,13 @@ def generate_bs_workpaper_from_template(
                          report is uploaded. The PDF's GL-detail pages carry the
                          same transaction-level data an Excel export would.
         daca_bank_data:  Same, for the DACA account → '115100 DACA'.
+        bank_name:       Operating bank's name, used to label the 111100 tab
+                         (e.g. '111100 PNC Cash'). Callers derive this from
+                         property_config.bank_accounts (the entry whose
+                         gl_account == '111100') and pass it in as a plain
+                         string. Defaults to 'PNC' so Revolution Labs'
+                         existing tab name — and its historical carry-forward,
+                         which matches tabs by name — is unaffected.
 
     Returns:
         output_path
@@ -3762,10 +3783,11 @@ def generate_bs_workpaper_from_template(
     #                   identical copy rather than a split.
     #   missing_label : human-readable name of the file to upload, shown in
     #                   the placeholder when nothing is available
+    _bank_name = (bank_name or 'PNC').strip() or 'PNC'
     _REGEN_TABS: dict = {
-        '111100 PNC Cash': {
+        f'111100 {_bank_name} Cash': {
             'account': '111100', 'raw_filepath': bank_rec_xlsx_filepath,
-            'missing_label': 'Bank Reconciliation Excel (PNC Operating)',
+            'missing_label': f'Bank Reconciliation Excel ({_bank_name} Operating)',
             # Fallback when no Excel export is uploaded — the Yardi Bank Rec
             # PDF (already parsed elsewhere for the reconciliation itself)
             # carries the same GL transaction detail on its later pages.
