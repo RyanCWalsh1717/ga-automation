@@ -1,0 +1,37 @@
+property_code: lexlabspm
+property_name: ''
+property_display_name: Lex Labs
+property_address: ''
+property_system: yardi
+uses_grp_coa: true
+investor_name: ''
+management_company: Greatland Realty Partners
+invoice_prefix: lexlabspm
+management_fees:
+- name: PM
+  rate: 0.03
+  minimum: 0.0
+  dr_account: '637130'
+  cr_account: '213100'
+  ref_prefix: MGMT-FEE-PM
+bank_accounts:
+  pnc_operating:
+    label: PNC Operating
+    bank_name: PNC
+    gl_account: '111100'
+  bofa_development:
+    label: BofA Development
+    bank_name: Bank of America
+    gl_account: '111210'
+  keybank_daca:
+    label: KeyBank DACA
+    bank_name: KeyBank
+    gl_account: '115100'
+re_tax_payment_months:
+- 1
+- 4
+- 7
+- 10
+kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
+fiscal_year_start_month: 1
+file_prefix_internal: GA
