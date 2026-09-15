@@ -1118,21 +1118,34 @@ def check_debt_service(gl_result, loan_result,
             # much larger YTD figure.
             _pi = loan.get('payment_interest')
             interest_ptd = _pi if _pi is not None else loan.get('interest_paid_ytd', 0)
+            interest_ytd = loan.get('interest_paid_ytd', 0)
             principal = loan.get('principal_balance', 0)
             name = loan.get('property_name', loan.get('name', 'Unknown'))
         else:
             _pi = getattr(loan, 'payment_interest', None)
             interest_ptd = _pi if _pi is not None else getattr(loan, 'interest_paid_ytd', 0)
+            interest_ytd = getattr(loan, 'interest_paid_ytd', 0)
             principal = getattr(loan, 'principal_balance', 0)
             name = getattr(loan, 'property_name', getattr(loan, 'name', 'Unknown'))
 
         interest_ptd = float(interest_ptd) if isinstance(interest_ptd, (int, float)) else 0.0
+        interest_ytd = float(interest_ytd) if isinstance(interest_ytd, (int, float)) else 0.0
         principal = float(principal) if isinstance(principal, (int, float)) else 0.0
         total_loan_interest += interest_ptd
         result["loans"].append({
             "name": name,
             "principal_balance": principal,
             "interest_paid_ptd": interest_ptd,
+            # True cumulative year-to-date interest straight from the Berkadia
+            # statement — separate from interest_paid_ptd above (this period's
+            # interest, used for the GL reconciliation below). Confirmed real
+            # bug 2026-09-15: app.py's Debt Service Summary table read a key
+            # ("interest_paid_ytd") that was never actually stored here (only
+            # "interest_paid_ptd" was) -- a one-letter typo that silently
+            # displayed $0 for every loan regardless of what the parser
+            # correctly extracted. Storing the real YTD value under its own
+            # correctly-named key so that display can show a genuine figure.
+            "interest_paid_ytd": interest_ytd,
         })
 
     result["loan_interest_total"] = total_loan_interest
@@ -1368,6 +1381,7 @@ def run_pipeline(files: dict) -> EngineResult:
     from parsers.nexus_accrual import parse as parse_nexus
     from parsers.pnc_bank_statement import parse as parse_pnc
     from parsers.yardi_bank_rec import parse as parse_yardi_bank_rec
+    from parsers.yardi_bank_rec import parse_excel as parse_yardi_bank_rec_excel
     from parsers.berkadia_loan import parse as parse_loan
     from parsers.kardin_budget import parse as parse_kardin
 
@@ -1540,12 +1554,28 @@ def run_pipeline(files: dict) -> EngineResult:
     # uploaded.  The Yardi rec is pre-computed by Yardi and always reconciles
     # cleanly; using it avoids spurious reconciling-difference warnings that
     # arise from incomplete transaction-level matching against the raw PNC PDF.
-    if "bank_rec" in files and files["bank_rec"]:
+    #
+    # Excel alternate confirmed against real files 2026-09-15 — Yardi can
+    # export the exact same "Bank Reconciliation Report" data as either a
+    # combined PDF (files['bank_rec']) or a standalone Excel. That Excel
+    # normally lands in files['bank_rec_xlsx'] instead, via the file
+    # classifier's existing (and deliberate) routing to the workpaper
+    # raw-copy slot — see file_classifier.py's "Yardi Bank Rec —
+    # account-specific matching" comment. Rather than changing that routing,
+    # the SAME uploaded file now also feeds the reconciliation here as a
+    # fallback when no PDF/manually-placed bank_rec file exists — one
+    # upload, both uses, no change to the existing raw-copy behavior
+    # (confirmed with Ryan 2026-09-15: option 1, not a routing change).
+    _bank_rec_source = files.get("bank_rec") or files.get("bank_rec_xlsx")
+    if _bank_rec_source:
         try:
             # Pass property_code so the GL-section parser can identify transaction lines
             _prop_code = (result.parsed.get('gl') and
                           result.parsed['gl'].metadata.property_code) or ''
-            yardi_rec = parse_yardi_bank_rec(files["bank_rec"], property_code=_prop_code)
+            if str(_bank_rec_source).lower().endswith(('.xlsx', '.xls')):
+                yardi_rec = parse_yardi_bank_rec_excel(_bank_rec_source, property_code=_prop_code)
+            else:
+                yardi_rec = parse_yardi_bank_rec(_bank_rec_source, property_code=_prop_code)
             result.parsed["bank_rec"] = yardi_rec
             # parse_yardi_bank_rec() swallows its own exceptions and always returns
             # a dict (never raises) — a failed parse sets _parse_error and leaves

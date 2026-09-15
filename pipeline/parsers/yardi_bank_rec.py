@@ -728,3 +728,296 @@ def _f(s: str) -> float:
         return float(str(s).replace(',', ''))
     except (ValueError, TypeError):
         return 0.0
+
+
+# ── Excel alternate parser ────────────────────────────────────────────────────
+# Yardi's own "Bank Reconciliation Report" Excel export -- a direct alternate
+# to the combined PDF this module otherwise parses. Confirmed against three
+# real January 2026 exports covering all three of Rev Labs' bank accounts
+# (2026-09-15): PNC Operating (has Outstanding Checks + Cleared Checks),
+# KeyBank DACA (a deposit-only sweep account -- no outstanding checks,
+# "Cleared Deposits" instead of "Cleared Checks"), and BofA Development
+# (dormant -- summary only, no outstanding/cleared items section at all).
+#
+# Column positions for the SAME labels differ across these three real files
+# (e.g. "Balance Per Bank Statement" sits in column D for PNC/DACA but
+# column C for BofA) -- so parsing here is label-text-driven and shape-driven
+# (how many non-empty cells a data row has), never a fixed column index.
+#
+# This Excel format only contains what Yardi's own Bank Reconciliation
+# Report shows -- unlike the combined PDF, it has no actual bank-statement
+# pages and no separate Yardi GL detail pages, so beginning_balance and the
+# checks/ach_debits/deposits keys (sourced from the bank's own statement in
+# the PDF path) are never populated here. gl_transactions is instead
+# synthesized directly from this file's own Cleared Checks/Deposits +
+# Cleared Other Items + Outstanding Checks sections -- real, already-
+# structured transaction detail, arguably more reliable than PDF text
+# extraction.
+
+_EXCEL_SHEET_NAME = 'Bank_Rec'
+
+
+def is_yardi_bank_rec_excel(filepath: str) -> bool:
+    """Return True if this looks like a Yardi Bank Reconciliation Report Excel export."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, data_only=True)
+        try:
+            if _EXCEL_SHEET_NAME not in wb.sheetnames:
+                return False
+            ws = wb[_EXCEL_SHEET_NAME]
+            for i, row in enumerate(ws.iter_rows(max_row=5, values_only=True)):
+                if any('bank reconciliation report' in str(v).lower() for v in row if v is not None):
+                    return True
+            return False
+        finally:
+            wb.close()
+    except Exception:
+        return False
+
+
+def _excel_row_values(row) -> list:
+    """Non-None values from a row, in column order."""
+    return [v for v in row if v is not None]
+
+
+def _excel_row_text(row) -> str:
+    return ' '.join(str(v) for v in row if v is not None).lower()
+
+
+def _excel_last_number(row) -> Optional[float]:
+    """Last numeric (int/float) value in a row, or None."""
+    nums = [v for v in row if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return float(nums[-1]) if nums else None
+
+
+def _excel_find_row(rows: list, label: str, start: int = 0) -> Optional[int]:
+    label = label.lower()
+    for i in range(start, len(rows)):
+        if label in _excel_row_text(rows[i]):
+            return i
+    return None
+
+
+def _parse_excel_item_rows(rows: list, start: int, stop_label_prefix: str) -> Tuple[List[dict], int]:
+    """
+    Parse data rows starting at *start* until a row whose text starts with
+    *stop_label_prefix* (e.g. 'total cleared', 'less:') is hit. Each data row
+    has either 4 non-None values (date, tran/check #, notes/payee, amount --
+    not yet cleared) or 5 (the same plus date_cleared). Returns (items, index
+    of the stop row) so the caller can continue scanning from there.
+    """
+    items: List[dict] = []
+    i = start
+    while i < len(rows):
+        text = _excel_row_text(rows[i])
+        if text.startswith(stop_label_prefix):
+            return items, i
+        vals = _excel_row_values(rows[i])
+        if len(vals) == 4:
+            _date, _num, _notes, _amt = vals
+            if isinstance(_amt, (int, float)):
+                items.append({
+                    'date': _date, 'tran_number': str(_num).strip(),
+                    'notes': str(_notes).strip(), 'amount': float(_amt),
+                    'date_cleared': None,
+                })
+        elif len(vals) == 5:
+            _date, _num, _notes, _amt, _cleared = vals
+            if isinstance(_amt, (int, float)):
+                items.append({
+                    'date': _date, 'tran_number': str(_num).strip(),
+                    'notes': str(_notes).strip(), 'amount': float(_amt),
+                    'date_cleared': _cleared,
+                })
+        i += 1
+    return items, i   # stop label never found — ran off the end
+
+
+def parse_excel(filepath: str, property_code: str = 'revlabspm') -> Dict[str, Any]:
+    """
+    Parse a Yardi Bank Reconciliation Report Excel export. See the module-
+    level comment above for format notes and real-file confirmation.
+
+    Returns the same dict shape as parse() (the PDF parser), with fields
+    this Excel format doesn't contain left at their default (None / empty
+    list) — see that function's docstring for the full key list.
+    """
+    result: Dict[str, Any] = {
+        'bank_type': 'YardiBankRec',
+        'account_number': None,
+        'property_name': None,
+        'report_date': None,
+        'statement_date': None,
+        'statement_period': {},
+        'beginning_balance': None,
+        'ending_balance': None,
+        'bank_statement_balance': None,
+        'reconciled_bank_balance': None,
+        'gl_balance': None,
+        'reconciling_difference': None,
+        'outstanding_checks': [],
+        'total_outstanding_checks': 0.0,
+        'cleared_checks': [],
+        'cleared_other_items': [],
+        'checks': [],
+        'ach_debits': [],
+        'deposits': [],
+        'transactions': [],
+        'gl_transactions': [],
+    }
+
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, data_only=True)
+        try:
+            if _EXCEL_SHEET_NAME in wb.sheetnames:
+                ws = wb[_EXCEL_SHEET_NAME]
+            else:
+                ws = wb[wb.sheetnames[0]]
+            # Confirmed on all three real files (2026-09-15): this export has
+            # blank spacer rows scattered between every logical content row
+            # (property name, then a blank row or two, then the title, etc.)
+            # — inconsistent even, sometimes one blank row and sometimes two.
+            # Every downstream lookup here assumes rows are compacted to only
+            # the ones with actual content, so do that once, up front.
+            rows = [
+                list(r) for r in ws.iter_rows(values_only=True)
+                if any(v is not None for v in r)
+            ]
+        finally:
+            wb.close()
+    except Exception:
+        return result
+
+    # ── Header block (property name, as-of date, account number) ────────────
+    title_idx = _excel_find_row(rows, 'bank reconciliation report')
+    if title_idx is None:
+        return result   # doesn't look like this format at all
+
+    if title_idx > 0:
+        for v in rows[title_idx - 1]:
+            if isinstance(v, str) and v.strip():
+                result['property_name'] = v.strip()
+                break
+
+    # As-of date: first datetime found after the title row, before the account number row.
+    from datetime import datetime as _dt, date as _date_cls
+    for i in range(title_idx + 1, min(title_idx + 4, len(rows))):
+        for v in rows[i]:
+            if isinstance(v, (_dt, _date_cls)):
+                result['statement_date'] = v.strftime('%m/%d/%Y')
+                result['report_date'] = result['statement_date']
+                break
+        if result['statement_date']:
+            break
+
+    # Account number: first purely-numeric-looking string in the few rows
+    # after the as-of date row (not a date, not the "Posted by" text row).
+    for i in range(title_idx + 1, min(title_idx + 5, len(rows))):
+        for v in rows[i]:
+            if isinstance(v, str) and v.strip().isdigit():
+                result['account_number'] = v.strip()
+                break
+        if result['account_number']:
+            break
+
+    # ── Summary block ─────────────────────────────────────────────────────
+    idx = _excel_find_row(rows, 'balance per bank statement', title_idx)
+    if idx is not None:
+        result['bank_statement_balance'] = _excel_last_number(rows[idx])
+        result['ending_balance'] = result['bank_statement_balance']
+
+    idx = _excel_find_row(rows, 'reconciled bank balance', title_idx)
+    if idx is not None:
+        result['reconciled_bank_balance'] = _excel_last_number(rows[idx])
+
+    idx = _excel_find_row(rows, 'balance per gl', title_idx)
+    if idx is not None:
+        result['gl_balance'] = _excel_last_number(rows[idx])
+
+    idx = _excel_find_row(rows, 'difference', title_idx)
+    if idx is not None:
+        result['reconciling_difference'] = _excel_last_number(rows[idx])
+
+    # ── Outstanding Checks (optional — absent for a deposit-only account) ───
+    hdr_idx = _excel_find_row(rows, 'outstanding checks', title_idx)
+    if hdr_idx is not None:
+        # The section HEADER row just says "Outstanding Checks" with nothing
+        # else; the very next "Outstanding Checks" match is the column-
+        # header row ("Check Date | Check Number | Payee | Amount"). Data
+        # starts the row after that.
+        col_hdr_idx = _excel_find_row(rows, 'check date', hdr_idx)
+        if col_hdr_idx is not None:
+            items, stop_idx = _parse_excel_item_rows(rows, col_hdr_idx + 1, 'less:')
+            for it in items:
+                result['outstanding_checks'].append({
+                    'date': it['date'], 'check_number': it['tran_number'],
+                    'payee': it['notes'], 'amount': it['amount'],
+                })
+            result['total_outstanding_checks'] = round(
+                sum(c['amount'] for c in result['outstanding_checks']), 2
+            )
+            # Prefer the report's own printed total over our re-sum, if present.
+            if stop_idx < len(rows):
+                _printed_total = _excel_last_number(rows[stop_idx])
+                if _printed_total is not None:
+                    result['total_outstanding_checks'] = _printed_total
+
+    # ── Cleared Checks / Cleared Deposits (whichever this account has) ──────
+    hdr_idx = _excel_find_row(rows, 'cleared checks', title_idx)
+    if hdr_idx is None:
+        hdr_idx = _excel_find_row(rows, 'cleared deposits', title_idx)
+    if hdr_idx is not None:
+        col_hdr_idx = _excel_find_row(rows, 'date cleared', hdr_idx)
+        if col_hdr_idx is not None:
+            items, _ = _parse_excel_item_rows(rows, col_hdr_idx + 1, 'total cleared')
+            for it in items:
+                result['cleared_checks'].append({
+                    'date': it['date'], 'tran_number': it['tran_number'],
+                    'notes': it['notes'], 'amount': it['amount'],
+                    'date_cleared': it['date_cleared'],
+                })
+
+    # ── Cleared Other Items (sweeps, wires, fees, etc.) ─────────────────────
+    hdr_idx = _excel_find_row(rows, 'cleared other items', title_idx)
+    if hdr_idx is not None:
+        col_hdr_idx = _excel_find_row(rows, 'date cleared', hdr_idx)
+        if col_hdr_idx is not None:
+            items, _ = _parse_excel_item_rows(rows, col_hdr_idx + 1, 'total cleared')
+            for it in items:
+                result['cleared_other_items'].append({
+                    'date': it['date'], 'tran_number': it['tran_number'],
+                    'notes': it['notes'], 'amount': it['amount'],
+                    'date_cleared': it['date_cleared'],
+                })
+
+    # ── Synthesize gl_transactions from the cleared-items detail above ──────
+    # Real, already-structured transaction-level data from this same file —
+    # used the same way the PDF parser's GL-detail-page transactions are
+    # used downstream (e.g. bs_workpaper_generator's raw-report tab fallback).
+    for c in result['cleared_checks']:
+        result['gl_transactions'].append({
+            'date': c['date'], 'period': None, 'description': c['notes'],
+            'vendor': c['notes'], 'control': c['tran_number'], 'reference': '',
+            'debit': c['amount'] if c['amount'] >= 0 else 0.0,
+            'credit': -c['amount'] if c['amount'] < 0 else 0.0,
+            'remarks': c['notes'],
+            'is_check': str(c['tran_number']).strip().isdigit(),
+            'is_sweep': False, 'is_mortgage': False, 'is_rent': False,
+        })
+    for o in result['cleared_other_items']:
+        _notes_l = o['notes'].lower()
+        result['gl_transactions'].append({
+            'date': o['date'], 'period': None, 'description': o['notes'],
+            'vendor': o['notes'], 'control': o['tran_number'], 'reference': '',
+            'debit': o['amount'] if o['amount'] >= 0 else 0.0,
+            'credit': -o['amount'] if o['amount'] < 0 else 0.0,
+            'remarks': o['notes'],
+            'is_check': False,
+            'is_sweep': 'sweep' in _notes_l,
+            'is_mortgage': 'mortgage' in _notes_l,
+            'is_rent': False,
+        })
+
+    return result

@@ -18,6 +18,12 @@ lagged-billing patterns can surface well after a property is onboarded, as
     question: "is there a way for this to read the 12 month prior GL to see
     if the app should accrue based on budget for certain line items?").
 
+  find_unreversed_accruals() — always-reversing pipeline accruals (see
+    _ALWAYS_REVERSING_REFERENCES) with no matching reversal anywhere else in
+    the file, excluding the file's own most recent period (normal timing,
+    not a problem yet) — added 2026-09-15 at Ryan's request, a candidate for
+    a stuck/orphaned balance that should have cleared but didn't.
+
 Neither function auto-fills anything (default_accruals pre-population was
 removed 2026-08-23 for exactly that reason — this is read-only review
 material, not a seed list, and never a trigger to re-enable a whole-account
@@ -371,3 +377,136 @@ def compare_budget_to_history(
 
     candidates.sort(key=lambda c: c.gap, reverse=True)
     return candidates
+
+
+# ── Unreversed accrual check ────────────────────────────────────────────────
+
+# Reference tags the pipeline generates as ALWAYS-reversing monthly accruals
+# (reverse_next_month = -1, either explicitly or via generate_etl_csv's
+# batch-level heuristic — every one of these credits 213100 Accrued Expenses
+# by design). Confirmed by reading accrual_entry_generator.py and
+# management_fee.py directly rather than assuming (2026-09-15) — deliberately
+# excludes reference tags that are intentionally PERMANENT (prepaid_
+# amortization, PPD-RECLASS, INS-ESCROW — credits 135110, not 213100, so the
+# batch heuristic already makes it permanent, INTERCO-RECODE, Post-Close JEs)
+# or user-controlled (MANUAL — the One-Off Accruals table's own Auto-Reverse
+# checkbox decides that one, not this check). Getting this list wrong in
+# either direction defeats the point: too broad flags correctly-permanent
+# entries and trains a reviewer to ignore it; too narrow misses real stuck
+# balances.
+_ALWAYS_REVERSING_REFERENCES = frozenset({
+    'RECURRING', 'INV-PRORATION', 'BONUS', 'NAMED-ACCR',
+    'ELEC-REIMB', 'ELEC-ACCRUAL', 'METER-READ',
+    'MGMT-FEE-JLL', 'MGMT-FEE-GRP', 'MGMT-CATCHUP',
+})
+
+_REVERSAL_TEXT_RE = re.compile(r'reversal\s+of\s+([Jj]-\d+)', re.IGNORECASE)
+
+
+@dataclass
+class UnreversedAccrual:
+    """One pipeline-generated accrual that should have auto-reversed by now
+    (per its reference tag) but no matching reversal was found anywhere else
+    in the uploaded file — a candidate for a stuck/orphaned balance, not
+    just normal accrual timing."""
+    account_code:  str
+    account_name:  str
+    je_number:     str      # Yardi control number, e.g. 'J-22545'
+    reference:     str      # the pipeline reference tag, e.g. 'RECURRING'
+    period:        str      # the accrual's own accounting period
+    amount:        float
+    description:   str
+
+
+def find_unreversed_accruals(gl_result) -> List[UnreversedAccrual]:
+    """
+    Flags always-reversing pipeline accruals (see _ALWAYS_REVERSING_REFERENCES)
+    with no matching reversal anywhere else in the uploaded GL history —
+    added 2026-09-15 at Ryan's request. Excludes accruals from the file's
+    OWN most recent accounting period, since those haven't had a chance to
+    reverse yet (Yardi reverses on the 1st of the FOLLOWING period, which may
+    be outside the file's window) — that's normal timing, not a problem.
+    Anything older that never found its reversal has run out of legitimate
+    timing excuses.
+
+    Matching works the same way _reversal_j_debits() and
+    _subline_item_activity() already do elsewhere in this codebase: Yardi's
+    own auto-reversal doesn't carry the pipeline's reference tag (it's
+    Yardi-generated, not pipeline-generated) — it carries ":Reversal of
+    J-####" in its own description/remarks instead. So this searches for
+    that text referencing the specific accrual's control number, not for a
+    second occurrence of the same reference tag.
+
+    Informational only — same read-only philosophy as the other two
+    functions in this module. Does not attempt to auto-correct anything.
+    """
+    results: List[UnreversedAccrual] = []
+    if not gl_result or not hasattr(gl_result, 'accounts'):
+        return results
+
+    # Determine the file's most recent accounting period so its own accruals
+    # (not yet due to reverse) are excluded — same period-based approach as
+    # compare_budget_to_history's months_covered, not raw transaction dates.
+    _latest_period: Optional[datetime] = None
+    for _acct in gl_result.accounts:
+        for _t in (getattr(_acct, 'transactions', None) or []):
+            _per = str(getattr(_t, 'period', '') or '').strip()
+            try:
+                _pm = datetime.strptime(_per, '%b-%Y')
+            except ValueError:
+                continue
+            if _latest_period is None or _pm > _latest_period:
+                _latest_period = _pm
+
+    for acct in gl_result.accounts:
+        code = str(getattr(acct, 'account_code', '') or '').strip()
+        name = str(getattr(acct, 'account_name', '') or '').strip()
+        txns = getattr(acct, 'transactions', None) or []
+
+        # Build the full account-level text blob once so each candidate's
+        # reversal search doesn't re-scan the transaction list from scratch.
+        _all_text = ' '.join(
+            f"{getattr(t, 'description', '') or ''} {getattr(t, 'remarks', '') or ''}"
+            for t in txns
+        ).lower()
+
+        for t in txns:
+            ref = str(getattr(t, 'reference', '') or '').strip().upper()
+            if ref not in _ALWAYS_REVERSING_REFERENCES:
+                continue
+            debit = float(getattr(t, 'debit', 0) or 0)
+            if debit <= 0.01:
+                continue
+            control = str(getattr(t, 'control', '') or '').strip()
+            if not control:
+                continue
+            # Skip Yardi's own reversal lines — they wouldn't carry our
+            # reference tag in the first place, but guard against a
+            # coincidental match on the description text anyway.
+            combined = f"{getattr(t, 'description', '') or ''} {getattr(t, 'remarks', '') or ''}".lower()
+            if _REVERSAL_TEXT_RE.search(combined):
+                continue
+
+            _per = str(getattr(t, 'period', '') or '').strip()
+            try:
+                _pm = datetime.strptime(_per, '%b-%Y')
+            except ValueError:
+                _pm = None
+            if _latest_period is not None and _pm == _latest_period:
+                continue   # this period's own accrual — hasn't had a chance to reverse yet
+
+            if f'reversal of {control.lower()}' in _all_text:
+                continue   # matching reversal found — properly cleared
+
+            results.append(UnreversedAccrual(
+                account_code=code,
+                account_name=name,
+                je_number=control,
+                reference=ref,
+                period=_per,
+                amount=round(debit, 2),
+                description=str(getattr(t, 'remarks', '') or getattr(t, 'description', '') or '').strip(),
+            ))
+
+    results.sort(key=lambda u: (u.account_code, u.period))
+    return results

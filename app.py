@@ -1290,10 +1290,12 @@ FILE_CONFIG = {
     ),
     # ── Bank ──────────────────────────────────────────────────
     "bank_rec": (
-        "Yardi Bank Rec PDF — Operating (.pdf)", "pdf", False, "bank",
+        "Yardi Bank Rec — Operating (.pdf or .xlsx)", ["pdf", "xlsx"], False, "bank",
         "PREFERRED bank source. Reads Yardi's pre-computed reconciliation: bank balance, "
-        "outstanding checks, reconciled balance, and $0 difference. Enables Operating bank "
-        "rec tab in the BS workpaper (Operating bank statement vs GL 111100). Without it: no bank rec tab.",
+        "outstanding checks, reconciled balance, and $0 difference. Accepts either the "
+        "combined PDF or Yardi's standalone Bank Reconciliation Report Excel export — same "
+        "data either way. Enables Operating bank rec tab in the BS workpaper (Operating bank "
+        "statement vs GL 111100). Without it: no bank rec tab.",
     ),
     "receivable_summary": (
         "Yardi Receivable Summary (.xlsx)", "xlsx", False, "bank",
@@ -6739,14 +6741,20 @@ with tab2:
         if result.debt_service_check and result.debt_service_check.get("loans"):
             st.markdown("### Debt Service Summary")
             debt_data = [{
-                "Loan":               loan.get("name", "Unknown"),
-                "Principal Balance":  loan.get("principal_balance", 0),
-                "Interest Paid YTD":  loan.get("interest_paid_ytd", 0),
+                "Loan":                loan.get("name", "Unknown"),
+                "Principal Balance":   loan.get("principal_balance", 0),
+                "Interest Paid PTD":   loan.get("interest_paid_ptd", 0),
+                "Interest Paid YTD":   loan.get("interest_paid_ytd", 0),
             } for loan in result.debt_service_check["loans"]]
+            st.caption(
+                "PTD = this period's interest (used for the GL reconciliation below); "
+                "YTD = cumulative interest paid this fiscal year, straight from the Berkadia statement."
+            )
             st.dataframe(debt_data, use_container_width=True, hide_index=True,
                          column_config={
                              "Loan":              st.column_config.TextColumn(),
                              "Principal Balance": st.column_config.NumberColumn(format="$%,.2f"),
+                             "Interest Paid PTD": st.column_config.NumberColumn(format="$%,.2f"),
                              "Interest Paid YTD": st.column_config.NumberColumn(format="$%,.2f"),
                          })
             st.divider()
@@ -8045,8 +8053,9 @@ with tab4:
     st.caption(
         "Upload a full year of GL export to see which expense accounts/vendors "
         "bill on a recurring-but-not-monthly cadence (quarterly, semi-annual, "
-        "annual), and — for accounts with no automated Layer 3 fallback — "
-        "whether real activity is running materially short of budget. "
+        "annual); for accounts with no automated Layer 3 fallback, whether real "
+        "activity is running materially short of budget; and whether any "
+        "pipeline-generated accrual never found its expected reversal. "
         "**Informational only** — nothing here auto-fills any config or accrual "
         "table; the One-Off Accruals table always starts blank, on purpose. "
         "Not saved anywhere — re-upload anytime you want a fresh look, this "
@@ -8171,6 +8180,34 @@ with tab4:
                                 "sub-line accrual (see NAMED_SUBLINE_ACCRUALS in "
                                 "accrual_entry_generator.py) rather than typing it in by hand each month."
                             )
+
+            # ── Unreversed accruals — stuck/orphaned balance check ─────────────
+            from gl_history_analyzer import find_unreversed_accruals as _find_unreversed
+            _unreversed = _find_unreversed(_gl_hist_result)
+            st.markdown("#### Unreversed Accruals")
+            st.caption(
+                "Pipeline-generated accruals that should have auto-reversed by now (based on "
+                "their reference tag) but never found a matching reversal anywhere in this file. "
+                "Excludes the file's own most recent period — those haven't had time to reverse "
+                "yet, which is normal. Anything older than that has run out of timing excuses: "
+                "either the auto-reverse didn't take, the JE was edited in Yardi, or it's a "
+                "genuinely forgotten balance still sitting on the books."
+            )
+            if not _unreversed:
+                st.success("No unreversed accruals found.")
+            else:
+                st.dataframe(
+                    pd.DataFrame([{
+                        'Account': f"{u.account_code} {u.account_name}",
+                        'JE #': u.je_number,
+                        'Type': u.reference,
+                        'Period': u.period,
+                        'Amount': u.amount,
+                        'Description': u.description,
+                    } for u in _unreversed]),
+                    use_container_width=True,
+                    column_config={'Amount': st.column_config.NumberColumn(format="$%,.2f")},
+                )
         except Exception as _gh_exc:
             st.warning(f"Could not analyze this GL export: {_gh_exc}")
 
