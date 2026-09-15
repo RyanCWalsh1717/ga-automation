@@ -1,7 +1,7 @@
 """
 QC Engine — GRP Monthly Close Quality Control
 ==============================================
-Automates the 8 QC checks currently performed manually in the LexLabs QC workbook.
+Automates the 9 QC checks currently performed manually in the LexLabs QC workbook.
 Runs against the parsed data from the pipeline and produces:
   1. A QCReport dataclass consumed by the Streamlit dashboard
   2. An Excel workbook matching the LexLabs QC structure (via generate_qc_workbook)
@@ -16,6 +16,7 @@ Checks:
   6  Accruals vs Budget (missing accrual detection)
   7  Miscellaneous (mgmt fee, interest expense, insurance/prepaid)
   8  Unknown Account Codes (GL accounts not on the Chart of Accounts on file)
+  9  Building Allocation Coding (consolidated multi-building properties only)
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ class QCFinding:
 
 @dataclass
 class QCResult:
-    check_id: str           # "CHECK_1" … "CHECK_8"
+    check_id: str           # "CHECK_1" … "CHECK_9"
     check_name: str
     status: str             # "PASS" | "FLAG" | "FAIL"
     summary: str
@@ -1092,6 +1093,114 @@ def check_8_unknown_accounts(gl_parsed=None, coa_codes: Dict[str, str] = None) -
 
 
 # ══════════════════════════════════════════════════════════════
+# CHECK 9 — Building Allocation Coding (consolidated properties only)
+# ══════════════════════════════════════════════════════════════
+
+def _expected_entities_by_account(kardin_records: List[dict], building_codes: set) -> Dict[str, set]:
+    """
+    For each account code, collect the set of building yardi_codes the Kardin
+    annual budget's AllocationName column says that account should be coded
+    to. A row named after one specific building (e.g. '25hart') expects only
+    that building. Any other non-blank AllocationName (e.g. 'Campus Split
+    (% per GRP)', 'Split (50/50)') is a shared/blended label rather than a
+    single building's name, so it expects activity on ALL consolidated
+    buildings — this avoids hardcoding the specific split-schedule wording,
+    which can vary per property.
+    """
+    expected: Dict[str, set] = {}
+    for row in kardin_records:
+        code = str(row.get('account_code', '') or '').strip()
+        alloc = str(row.get('allocation_name', '') or '').strip()
+        if not code or not alloc:
+            continue
+        match = next((b for b in building_codes if b.lower() == alloc.lower()), None)
+        entities = {match} if match else set(building_codes)
+        expected.setdefault(code, set()).update(entities)
+    return expected
+
+
+def check_9_building_allocation_coding(gl_parsed=None, kardin_records: List[dict] = None,
+                                        property_config=None) -> QCResult:
+    """
+    For consolidated multi-building properties (e.g. 25 & 40 Hartwell), cross-
+    reference the Kardin annual budget's AllocationName column (which building,
+    or blended split, each budget line belongs to) against the real GL
+    transactions' entity coding for that account this period. Flags a
+    transaction coded to a building that Kardin's allocation for that account
+    doesn't expect — a payable that may have been coded to the wrong building.
+
+    Skipped (not a FLAG) for non-consolidated properties, or when the GL
+    export isn't a combined multi-entity file, or no Kardin budget is on file.
+    """
+    findings: List[QCFinding] = []
+
+    buildings = list(getattr(property_config, 'consolidated_buildings', None) or [])
+    if len(buildings) < 2:
+        return QCResult('CHECK_9', 'Building Allocation Coding', 'PASS',
+                        'Not a consolidated multi-building property — check not applicable.', findings)
+
+    building_codes = {str(b.yardi_code).strip() for b in buildings if getattr(b, 'yardi_code', '')}
+    transactions = getattr(gl_parsed, 'all_transactions', None) or []
+    entities_on_gl = {t.entity for t in transactions if getattr(t, 'entity', '')}
+    if not building_codes or len(entities_on_gl & building_codes) < 2:
+        return QCResult('CHECK_9', 'Building Allocation Coding', 'PASS',
+                        'GL is not a combined multi-entity export for this property\'s buildings — '
+                        'check not applicable.', findings)
+
+    if not kardin_records:
+        return QCResult('CHECK_9', 'Building Allocation Coding', 'PASS',
+                        'No Kardin budget on file — allocation coding check not performed.', findings)
+
+    expected_by_account = _expected_entities_by_account(kardin_records, building_codes)
+
+    by_account: Dict[str, Dict[str, float]] = {}
+    for t in transactions:
+        code = str(getattr(t, 'account_code', '') or '').strip()
+        entity = str(getattr(t, 'entity', '') or '').strip()
+        if not code or entity not in building_codes:
+            continue
+        by_account.setdefault(code, {}).setdefault(entity, 0.0)
+        by_account[code][entity] += t.net_amount
+
+    for code, entity_amounts in by_account.items():
+        expected = expected_by_account.get(code)
+        if not expected:
+            continue
+        name = ''
+        for acct in (getattr(gl_parsed, 'accounts', None) or []):
+            if str(getattr(acct, 'account_code', '')).strip() == code:
+                name = getattr(acct, 'account_name', '')
+                break
+        for entity, amount in entity_amounts.items():
+            if entity in expected or abs(amount) < 1.0:
+                continue
+            expected_label = ' / '.join(sorted(expected))
+            findings.append(QCFinding(
+                account_code=code,
+                account_name=name or '(unnamed)',
+                value_a=amount,
+                value_b=0.0,
+                difference=amount,
+                flag='FLAG',
+                note=(
+                    f'${amount:,.2f} net posted to {entity} this period, but the Kardin budget\'s '
+                    f'allocation for account {code} expects {expected_label}. Possible miscoded '
+                    f'payable — review and recode to the correct building if needed.'
+                ),
+            ))
+
+    if not findings:
+        status = 'PASS'
+        summary = f'All GL activity across {len(by_account)} account(s) matches the Kardin budget\'s building allocation.'
+    else:
+        status = 'FLAG'
+        items = ', '.join(f.account_code for f in findings[:5])
+        summary = f'{len(findings)} transaction(s) flagged as possibly coded to the wrong building: {items}.'
+
+    return QCResult('CHECK_9', 'Building Allocation Coding', status, summary, findings)
+
+
+# ══════════════════════════════════════════════════════════════
 # MAIN RUNNER
 # ══════════════════════════════════════════════════════════════
 
@@ -1111,7 +1220,7 @@ def run_qc(
     coa_codes: Dict[str, str] = None,
 ) -> QCReport:
     """
-    Run all 8 QC checks and return a QCReport.
+    Run all 9 QC checks and return a QCReport.
 
     Args:
         budget_rows:     Parsed budget comparison rows.
@@ -1169,6 +1278,7 @@ def run_qc(
                      loan_data=loan_data, period_month=period_month,
                      property_config=property_config),
         check_8_unknown_accounts(gl_parsed, coa_codes=coa_codes),
+        check_9_building_allocation_coding(gl_parsed, kardin_records, property_config=property_config),
     ]
 
     return QCReport(

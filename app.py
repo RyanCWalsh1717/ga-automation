@@ -63,7 +63,7 @@ _SIGNOFF_ITEMS = [
     "Management Fee Invoice",
     "GL vs TB Workpaper Tie-out",
     "Variance Commentary",
-    "QC Checklist (7-point)",
+    "QC Checklist (9-point)",
     "Equity Tabs (311100 / 331100 / 381100)",
     "Exception Report",
 ]
@@ -7526,7 +7526,7 @@ After clicking **Generate Reports**, download the full package or individual fil
 | File | Contents | Audience |
 |------|----------|----------|
 | **{_pfx_int}_Workpapers.xlsx** | GL ↔ TB tie-out for all balance sheet accounts, bank rec detail, debt service schedule. Grows month-over-month when the prior month file is uploaded. | Property Controller / Property Manager |
-| **{_pfx_int}_QC_Workbook.xlsx** | 7-point QC checklist — see Step 8 below | Property Controller |
+| **{_pfx_int}_QC_Workbook.xlsx** | 9-point QC checklist — see Step 8 below | Property Controller |
 | **{_pfx_int}_Exceptions_Report.xlsx** | All flagged issues with severity (Error / Warning / Info), source, and recommended action | Property Controller |
 | **{_pfx_int}_Budget_Comparison.xlsx** | Budget Comparison with variance commentary in columns L/M | Property Controller / Property Manager |
 | **{_pfx_int}_Audit_Trail.xlsx** | Every JE's math, the exact Yardi ETL import rows, management fee calculation detail, and QC results in one file — the record an auditor would review | Property Manager / Auditor |

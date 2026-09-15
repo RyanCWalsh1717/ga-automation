@@ -23,7 +23,7 @@ PASS 1 — Pre-Close (replacing JLL India team)
 
 PASS 2 — Post-Close (GRP review)
   Inputs:  Final Yardi GL (post-JE) + re-exported TB, BC, Bank Rec, Loan Statements
-  Actions: GL↔TB tie-out, bank rec, variance comments, QC 7-point checklist
+  Actions: GL↔TB tie-out, bank rec, variance comments, QC 9-point checklist
   Outputs: Workpaper (GL vs TB tie-out, historical carry-forward), QC workbook,
            annotated BC, exception report
   Note:    Singerman 8-tab monthly report is downloaded directly from Yardi —
@@ -66,7 +66,7 @@ pipeline/
                                   Budget gap detection (detect_budget_gaps) retained in codebase
                                   but no longer called — removed per May 2026 review.
 
-  qc_engine.py                  ← 7-point QC checklist run in Pass 2:
+  qc_engine.py                  ← 9-point QC checklist run in Pass 2:
                                   CHECK_1: TB → BC tie-out
                                   CHECK_2: Budget variances (Tier 1/2 flags)
                                   CHECK_3: Trial Balance self-balance (GL-to-TB account
@@ -75,6 +75,11 @@ pipeline/
                                   CHECK_5: BS workpaper tie-out
                                   CHECK_6: Accruals vs budget coverage
                                   CHECK_7: Miscellaneous (insurance, mgmt fee, etc.)
+                                  CHECK_8: Unknown account codes (COA coverage)
+                                  CHECK_9: Building allocation coding (consolidated
+                                           multi-building properties only — cross-checks
+                                           Kardin's AllocationName against real GL entity
+                                           coding; PASS-skips for single-building properties)
 
   prepaid_ledger.py             ← Prepaid amortization schedule. Tracks insurance and
                                   other prepaid items; generates monthly amortization JEs
@@ -192,7 +197,7 @@ Then: **Generate Reports** button
    If prior month's workpaper is uploaded, prior sheets are prefixed with the prior
    period label and current-period sheets are appended (historical carry-forward).
    First month (January 2026): leave prior workpaper blank — file starts fresh.
-6. QC engine runs 7 checks across final GL, TB, BC
+6. QC engine runs 9 checks across final GL, TB, BC
 7. Variance comments generated against final GL actuals (API or data-driven)
 8. Annotated BC exported with comments in cols L/M
 9. Exception report generated
@@ -495,7 +500,7 @@ upload is just a faster path for onboarding a brand-new property.)
 | File | Contents |
 |------|----------|
 | `GA_Workpapers.xlsx` | Monthly close workpaper (GL vs TB tie-out, all BS accounts, bank recs, prepaid schedule). Grows month-over-month when prior month file is uploaded. |
-| `GA_QC_Workbook.xlsx` | 7-point QC checklist with pass/flag/fail status |
+| `GA_QC_Workbook.xlsx` | 9-point QC checklist with pass/flag/fail status |
 | `GA_Exceptions_Report.xlsx` | Exception/validation report |
 | `GA_Budget_Comparison_Internal.xlsx` | Annotated BC with variance commentary (GRP internal) |
 
