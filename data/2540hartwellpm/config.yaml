@@ -32,14 +32,12 @@ building_splits:
   yardi_code: 40hart
 - schedule: By-SF
   name: 25 Hartwell
-  share_pct: 0.523055
+  share_pct: 0.67
   yardi_code: 25hart
-  notes: 33,339 SF
 - schedule: By-SF
   name: 40 Hartwell
-  share_pct: 0.476945
+  share_pct: 0.33
   yardi_code: 40hart
-  notes: 30,400 SF
 management_fees:
 - name: GRP
   rate: 0.0175
@@ -80,3 +78,6 @@ re_tax_payment_months:
 kardin_budget_file: GA_Kardin_Budget_FY2026.xlsx
 fiscal_year_start_month: 1
 file_prefix_internal: GA
+payroll_accounts:
+- '615110'
+- '637110'
