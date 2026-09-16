@@ -8292,6 +8292,11 @@ with tab4:
         key=_uploader_key('prop_kardin_alloc_upload'),
     )
     if _kardin_alloc_upload is not None:
+        # Identity of THIS uploaded file, stable across reruns as long as the
+        # same file sits in the widget -- lets auto-load run exactly once per
+        # upload instead of re-appending splits_* rows on every rerun of the
+        # form (e.g. Ryan typing into an unrelated field elsewhere on the page).
+        _ka_upload_id = f"{_kardin_alloc_upload.name}:{_kardin_alloc_upload.size}"
         try:
             import tempfile as _ka_tempfile
             with _ka_tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as _ka_tmp:
@@ -8311,74 +8316,75 @@ with tab4:
                         f"but found no multi-building allocation schedules (only "
                         f"single-cost-center entries)."
                     )
-                else:
+                elif st.session_state.get('_kardin_alloc_autoloaded_id') == _ka_upload_id:
+                    # Already auto-populated step 4 from this exact file on a
+                    # prior run of this same upload -- don't re-append rows.
+                    for _s in _ka_splits:
+                        _rows_preview = ', '.join(f"{r.cost_center_id} {r.pct:.2f}%" for r in _s.rows)
+                        _bal_icon = '✅' if _s.is_balanced else '⚠️'
+                        st.caption(f"{_bal_icon} **{_s.name}** — {_rows_preview}")
                     st.success(
-                        f"✅ Found {len(_ka_splits)} multi-building allocation "
-                        f"schedule(s) in **{_ka_result.property_display_name or 'this report'}**.",
+                        f"✅ {len(_ka_splits)} schedule(s) from "
+                        f"**{_ka_result.property_display_name or 'this report'}** already loaded "
+                        f"into Building/Allocation Splits (step 4) below.",
                         icon="📐",
                     )
-                    st.session_state['_kardin_alloc_schedules'] = _ka_splits
+                else:
+                    # Written here, BEFORE the form (and its splits_* widgets)
+                    # is instantiated below in this same script run -- same
+                    # rule as every other seed/reseed write in this app: a
+                    # widget's own session_state key can't be set after that
+                    # widget has already drawn in the same run, but writing
+                    # before it draws is safe and takes effect immediately.
+                    _ka_start = int(st.session_state.get('splits_nrows', 0) or 0)
+                    _ka_next = _ka_start
+                    for _s in _ka_splits:
+                        for _r in _s.rows:
+                            st.session_state[f'splits_sched_{_ka_next}']  = _s.name
+                            st.session_state[f'splits_name_{_ka_next}']   = _r.cost_center_id
+                            st.session_state[f'splits_code_{_ka_next}']   = _r.cost_center_id
+                            st.session_state[f'splits_pct_{_ka_next}']    = _r.pct
+                            st.session_state[f'splits_notes_{_ka_next}']  = ''
+                            _ka_next += 1
+                    st.session_state['splits_nrows'] = _ka_next
+                    # Pre-set the Building Splits section's own reseed guard
+                    # (mirrors its exact signature computation) so its "does
+                    # the saved config still match what's seeded?" check below
+                    # sees a match and doesn't immediately overwrite what was
+                    # just loaded here with the on-disk config or the
+                    # auto-computed Equal/By-SF fallback.
+                    st.session_state['_splits_seeded_for'] = (_edit_code, tuple(
+                        (bs.schedule, bs.name, bs.yardi_code, round(bs.share_pct, 6), bs.notes)
+                        for bs in (_edit_cfg.building_splits if _edit_cfg else [])
+                    ))
+                    st.session_state['_kardin_alloc_autoloaded_id'] = _ka_upload_id
+                    for _s in _ka_splits:
+                        _rows_preview = ', '.join(f"{r.cost_center_id} {r.pct:.2f}%" for r in _s.rows)
+                        _bal_icon = '✅' if _s.is_balanced else '⚠️'
+                        st.caption(f"{_bal_icon} **{_s.name}** — {_rows_preview}")
+                    st.success(
+                        f"✅ Auto-loaded {len(_ka_splits)} multi-building allocation schedule(s) "
+                        f"({_ka_next - _ka_start} row(s)) from "
+                        f"**{_ka_result.property_display_name or 'this report'}** into "
+                        f"Building/Allocation Splits (step 4) below.",
+                        icon="📐",
+                    )
+                    # No st.rerun() here -- the Building Splits widgets (step 4,
+                    # below) haven't been drawn yet on THIS run, so writing their
+                    # session_state now and letting the script continue naturally
+                    # is enough; they'll pick up both the pre-existing rows and
+                    # these new ones when their own turn comes later in this same
+                    # run. Calling st.rerun() here would end this run BEFORE ever
+                    # reaching those widgets -- Streamlit's own orphaned-widget
+                    # cleanup (which runs between reruns) then treats every
+                    # ALREADY-EXISTING splits_* widget as abandoned, since none of
+                    # them were re-drawn on this run, and clears their state before
+                    # the next run even starts. Confirmed as the actual cause of a
+                    # bug where rows 0-3 (pre-existing) went blank while the newly
+                    # appended rows (never previously real widgets, so nothing to
+                    # "clean up") survived untouched.
         except Exception as _ka_exc:
             st.warning(f"Could not read this report: {_ka_exc}")
-
-    _ka_schedules = st.session_state.get('_kardin_alloc_schedules') or []
-    if _ka_schedules:
-        _ka_selected_names = st.multiselect(
-            "Schedules to load into Building/Allocation Splits (step 4 below)",
-            options=[s.name for s in _ka_schedules],
-            default=[s.name for s in _ka_schedules],
-            key='_kardin_alloc_selected',
-        )
-        for _s in _ka_schedules:
-            if _s.name in _ka_selected_names:
-                _rows_preview = ', '.join(f"{r.cost_center_id} {r.pct:.2f}%" for r in _s.rows)
-                _bal_icon = '✅' if _s.is_balanced else '⚠️'
-                st.caption(f"{_bal_icon} **{_s.name}** — {_rows_preview}")
-        if st.button("⬇️ Load selected schedules into Building/Allocation Splits", key="load_kardin_alloc"):
-            # Written here, BEFORE the form (and its splits_* widgets) is
-            # instantiated below in this same script run -- same rule as
-            # every other seed/reseed write in this app: a widget's own
-            # session_state key can't be set after that widget has already
-            # drawn in the same run, but writing before it draws is safe and
-            # takes effect immediately on this render.
-            _ka_start = int(st.session_state.get('splits_nrows', 0) or 0)
-            _ka_next = _ka_start
-            for _s in _ka_schedules:
-                if _s.name not in _ka_selected_names:
-                    continue
-                for _r in _s.rows:
-                    st.session_state[f'splits_sched_{_ka_next}']  = _s.name
-                    st.session_state[f'splits_name_{_ka_next}']   = _r.cost_center_id
-                    st.session_state[f'splits_code_{_ka_next}']   = _r.cost_center_id
-                    st.session_state[f'splits_pct_{_ka_next}']    = _r.pct
-                    st.session_state[f'splits_notes_{_ka_next}']  = ''
-                    _ka_next += 1
-            st.session_state['splits_nrows'] = _ka_next
-            # Pre-set the Building Splits section's own reseed guard (mirrors
-            # its exact signature computation) so its "does the saved config
-            # still match what's seeded?" check below sees a match and
-            # doesn't immediately overwrite what was just loaded here with
-            # the on-disk config or the auto-computed Equal/By-SF fallback.
-            st.session_state['_splits_seeded_for'] = (_edit_code, tuple(
-                (bs.schedule, bs.name, bs.yardi_code, round(bs.share_pct, 6), bs.notes)
-                for bs in (_edit_cfg.building_splits if _edit_cfg else [])
-            ))
-            st.session_state['_kardin_alloc_schedules'] = []
-            st.success(f"Loaded {_ka_next - _ka_start} row(s) into Building/Allocation Splits below.")
-            # No st.rerun() here -- the Building Splits widgets (step 4,
-            # below) haven't been drawn yet on THIS run, so writing their
-            # session_state now and letting the script continue naturally
-            # is enough; they'll pick up both the pre-existing rows and
-            # these new ones when their own turn comes later in this same
-            # run. Calling st.rerun() here would end this run BEFORE ever
-            # reaching those widgets -- Streamlit's own orphaned-widget
-            # cleanup (which runs between reruns) then treats every
-            # ALREADY-EXISTING splits_* widget as abandoned, since none of
-            # them were re-drawn on this run, and clears their state before
-            # the next run even starts. Confirmed as the actual cause of a
-            # bug where rows 0-3 (pre-existing) went blank while the newly
-            # appended rows (never previously real widgets, so nothing to
-            # "clean up") survived untouched.
 
     st.markdown("---")
 
