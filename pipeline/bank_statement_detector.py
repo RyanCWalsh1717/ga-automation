@@ -61,8 +61,14 @@ def detect_and_extract(filepath: str) -> BankStatementDetectResult:
         bank_type, bank_label, slug = 'pnc', 'PNC', 'pnc_operating'
         parser_module = 'pnc_bank_statement'
     elif 'eastern bank' in text_lower or 'intrafi' in text_lower:
-        bank_type, bank_label, slug = 'eastern', 'Eastern Bank', 'eastern_operating'
-        parser_module = 'eastern_bank'
+        bank_type, bank_label, parser_module = 'eastern', 'Eastern Bank', 'eastern_bank'
+        # Eastern Bank has two distinct statement layouts (see eastern_bank.py):
+        # the primary "Customer Statement" (checking) and a standalone "IntraFi
+        # Cash Service (ICS)" sweep-account statement. Distinguish them the same
+        # way eastern_bank.parse() itself does, so the sweep statement suggests
+        # 'eastern_sweep' instead of colliding with the checking account's
+        # 'eastern_operating' slug.
+        slug = 'eastern_operating' if 'customer statement' in text_lower else 'eastern_sweep'
     else:
         return BankStatementDetectResult(
             recognized=False,
