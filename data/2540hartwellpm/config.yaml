@@ -26,18 +26,6 @@ building_splits:
   name: 25 Hartwell
   share_pct: 0.5
   yardi_code: 25hart
-- schedule: Equal
-  name: 40 Hartwell
-  share_pct: 0.5
-  yardi_code: 40hart
-- schedule: By-SF
-  name: 25 Hartwell
-  share_pct: 0.67
-  yardi_code: 25hart
-- schedule: By-SF
-  name: 40 Hartwell
-  share_pct: 0.33
-  yardi_code: 40hart
 management_fees:
 - name: GRP
   rate: 0.0175
