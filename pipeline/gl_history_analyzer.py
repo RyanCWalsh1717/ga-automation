@@ -49,7 +49,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -510,3 +510,82 @@ def find_unreversed_accruals(gl_result) -> List[UnreversedAccrual]:
 
     results.sort(key=lambda u: (u.account_code, u.period))
     return results
+
+
+# ══════════════════════════════════════════════════════════════
+# Historical building-split detection (consolidated properties)
+# ══════════════════════════════════════════════════════════════
+
+def compute_historical_building_splits(
+    gl_result,
+    buildings: List[Dict[str, str]],
+    min_total_activity: float = 1.0,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    For a consolidated multi-building property, derive each account's REAL
+    building split from its own transaction history — not a single
+    property-wide default. Added 2026-09-22 at Ryan's request: "if the GL
+    has the remark between 40 hart and 25 hart then the split should be
+    recognized" — confirmed against the real Aug 2026 Hartwell GL that
+    per-account splits genuinely vary (213200 Accrued Interest: 63/37,
+    matching Kardin's own 'Campus Split (% per GRP)' percentage; shared
+    accounts like AP Control: ~50/50) rather than one blanket ratio fitting
+    every account.
+
+    gl_result should come from the property's STORED 12-Month GL History
+    file (Property Setup's persisted upload), not a single month's GL —
+    confirmed with Ryan: a single month is noisy for low-activity accounts
+    (one account showed 100% to one building purely because its only
+    transaction that month happened to land there). Multiple months'
+    transactions are summed per building before computing each account's
+    ratio, so one-off timing doesn't dominate.
+
+    Returns {account_code: [{'name', 'yardi_code', 'share_pct'}, ...]},
+    only for accounts where every building on file has at least some real
+    tagged activity (min_total_activity combined $ across all buildings) —
+    an account with no real historical split data is simply absent from the
+    result, and callers should fall back to the property's own
+    default_split_schedule for it (confirmed with Ryan) rather than guess.
+    """
+    codes = {str(b.get('yardi_code', '') or '').strip() for b in buildings if b.get('yardi_code')}
+    if len(codes) < 2:
+        return {}
+
+    by_account: Dict[str, Dict[str, float]] = {}
+    for t in (getattr(gl_result, 'all_transactions', None) or []):
+        entity = str(getattr(t, 'entity', '') or '').strip()
+        if entity not in codes:
+            continue
+        code = str(getattr(t, 'account_code', '') or '').strip()
+        if not code:
+            continue
+        by_account.setdefault(code, {}).setdefault(entity, 0.0)
+        by_account[code][entity] += t.net_amount
+
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for code, amounts in by_account.items():
+        # Only trust a split when every building has SOME real tagged
+        # activity across the history — an account where only one building
+        # ever shows up isn't a real "split" case, it's a single-building
+        # account with the other building's zero correctly reflecting reality
+        # instead of history just not covering it yet. Distinguishing those
+        # two would need account-level knowledge this function doesn't have,
+        # so it stays conservative and only emits a split when it has real
+        # signal for every building.
+        if not codes.issubset(set(amounts.keys())):
+            continue
+        total = sum(abs(v) for v in amounts.values())
+        if total < min_total_activity:
+            continue
+        rows = []
+        allocated_pct = 0.0
+        bldg_list = list(buildings)
+        for i, b in enumerate(bldg_list):
+            code_b = str(b.get('yardi_code', '') or '').strip()
+            is_last = (i == len(bldg_list) - 1)
+            pct = round(1.0 - allocated_pct, 6) if is_last else round(abs(amounts.get(code_b, 0.0)) / total, 6)
+            allocated_pct += pct if not is_last else 0.0
+            rows.append({'name': b.get('name', ''), 'yardi_code': code_b, 'share_pct': pct})
+        result[code] = rows
+
+    return result

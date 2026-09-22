@@ -45,6 +45,7 @@ def apply_building_splits(
     je_lines: List[Dict],
     property_config,
     default_property_code: str = '',
+    historical_splits: Optional[Dict[str, List[Dict]]] = None,
 ) -> List[Dict]:
     """
     Expand JE lines for multi-building properties.
@@ -56,6 +57,18 @@ def apply_building_splits(
         default_property_code: Fallback PROPERTY code when a building's
                                yardi_code is blank. Defaults to
                                property_config.property_code.
+        historical_splits:     Optional {account_code: [{'name','yardi_code',
+                               'share_pct'}, ...]} from
+                               gl_history_analyzer.compute_historical_building_splits().
+                               When a line's account_code has an entry here,
+                               it's used INSTEAD of the named-schedule lookup
+                               below — real observed history for that specific
+                               account beats a property-wide default schedule.
+                               Confirmed with Ryan 2026-09-22: "if the GL has
+                               the remark between 40 hart and 25 hart then the
+                               split should be recognized." Falls back to the
+                               normal schedule lookup for any account not in
+                               this dict (e.g. no real history yet).
 
     Returns:
         Expanded list of JE line dicts.  For single-building properties this
@@ -68,9 +81,21 @@ def apply_building_splits(
     parent_code = default_property_code or property_config.property_code
     schedules   = property_config.allocation_schedules   # {name: [BuildingSplitConfig]}
     default_sch = (property_config.default_split_schedule or '').strip()
+    historical_splits = historical_splits or {}
 
     result: List[Dict] = []
     for line in je_lines:
+        acct_code = str(line.get('account_code', '') or '').strip()
+        hist_rows = historical_splits.get(acct_code)
+        if hist_rows:
+            from property_config import BuildingSplitConfig
+            splits = [BuildingSplitConfig(schedule='Historical', name=r.get('name', ''),
+                                           yardi_code=r.get('yardi_code', ''),
+                                           share_pct=float(r.get('share_pct', 0) or 0))
+                      for r in hist_rows]
+            result.extend(_expand_line(line, splits, parent_code))
+            continue
+
         sch_name = (line.get('_split_schedule') or '').strip() or default_sch
 
         # "No Split" or no schedule configured → pass through unchanged
