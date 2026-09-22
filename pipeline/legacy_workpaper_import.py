@@ -157,6 +157,29 @@ def _coerce_gl_code(v) -> str:
     return str(v).strip()
 
 
+_AS_OF_RE = re.compile(r'as of\s+(\d{1,2})/(\d{1,2})/(\d{2})', re.IGNORECASE)
+
+
+def _find_as_of_date(rows: List[list]) -> Optional[date]:
+    """
+    Every itemized schedule tab ends with a footer row like 'Ending Balance
+    per GL as of  07/31/26' -- pull that date out as this sheet's own as-of
+    date, used to filter out items whose service period already ended
+    before it (see extract_prepaid_items).
+    """
+    for row in rows:
+        for cell in row:
+            if isinstance(cell, str) and 'as of' in cell.lower():
+                m = _AS_OF_RE.search(cell)
+                if m:
+                    mm, dd, yy = (int(x) for x in m.groups())
+                    try:
+                        return date(2000 + yy, mm, dd)
+                    except ValueError:
+                        return None
+    return None
+
+
 def extract_prepaid_items(filepath: str, coa_codes: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """
     Scan every tab in a legacy workpaper for the itemized prepaid-schedule
@@ -191,6 +214,8 @@ def extract_prepaid_items(filepath: str, coa_codes: Optional[Dict[str, str]] = N
         if idx_desc is None or idx_acct is None or idx_date is None or idx_amount is None:
             continue
 
+        as_of_date = _find_as_of_date(rows)
+
         for row in rows[header_idx + 1:]:
             if all(c is None for c in row):
                 continue
@@ -224,6 +249,17 @@ def extract_prepaid_items(filepath: str, coa_codes: Optional[Dict[str, str]] = N
             months_elapsed = row[idx_elapsed] if (idx_elapsed is not None and idx_elapsed < len(row)) else 0
 
             s_start, s_end = _parse_period_range(period_text)
+
+            # Past due: this item's service period already ended before this
+            # workpaper's own "as of" date -- a lingering stale balance from
+            # a closed-out period, not something still being earned out
+            # going forward, even though the workpaper still shows a
+            # non-zero Prepaid Balance for it. Confirmed with Ryan
+            # 2026-09-22 against a real seed file: these were the same rows
+            # already flagged for a stale non-GRP account code (5122-100,
+            # 9311-120) -- years-old dead entries, not real open prepaids.
+            if as_of_date and s_end and s_end < as_of_date:
+                continue
 
             try:
                 monthly_amount = float(exp_per_month or 0)
