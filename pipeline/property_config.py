@@ -161,6 +161,9 @@ class PropertyConfig:
     # Empty list = single building (no splits needed).
     # When populated, each entry holds the pro-rata % for one building.
     building_splits: List['BuildingSplitConfig'] = field(default_factory=list)
+    # Extra account codes exempt from percentage allocation for this property
+    # (see is_allocation_exempt) — on top of the standard asset-specific set.
+    allocation_exempt_accounts: List[str] = field(default_factory=list)
 
     # Name of the schedule applied automatically to all auto-detected accruals
     # (Nexus, historical, management fee, etc.).  Per-line overrides in the
@@ -440,6 +443,9 @@ class PropertyConfig:
             management_company    = str(d.get('management_company', '') or 'Greatland Realty Partners'),
             invoice_prefix        = str(d.get('invoice_prefix', '')),
             building_splits       = splits,
+            allocation_exempt_accounts = [
+                str(c).strip() for c in (d.get('allocation_exempt_accounts') or []) if str(c).strip()
+            ],
             consolidated_buildings = consolidated_buildings,
             yardi_subset_code     = str(d.get('yardi_subset_code', '')),
             management_fees       = fees,
@@ -778,3 +784,59 @@ def is_balance_sheet_account(account_code: str, cfg: Optional[PropertyConfig] = 
 
 def is_income_statement_account(account_code: str, cfg: Optional[PropertyConfig] = None) -> bool:
     return (cfg or _DEFAULT_CONFIG).is_income_statement(account_code)
+
+
+# ── Building-allocation exemptions (consolidated properties) ─────────────────
+#
+# Accounts whose split between buildings is determined by something REAL and
+# asset-specific, not by a percentage allocation schedule. Confirmed with Ryan
+# 2026-09-22: "there are going to be some that are asset specific, rent is
+# based on a lease, real estate tax is based on a parcel, management fee is
+# based on a calculation."
+#
+# These are exempt in both directions: a percentage allocation is never
+# applied to them, and QC CHECK_9 never flags their real split as "drift"
+# from an approved allocation — on real Aug 2026 Hartwell data, RE tax really
+# ran 43.8/56.2 (the two parcels' actual bills) and rent 54.8/45.2 (the actual
+# leases), neither of which is an error to correct.
+#
+# NOT exempt, per Ryan: insurance and debt/interest — those do follow an
+# allocation schedule, so drift on them is worth flagging.
+
+_ALLOC_EXEMPT_PREFIXES = (
+    '4',        # all property revenue — rent, recoveries, antenna: lease-driven
+)
+
+_ALLOC_EXEMPT_CODES = frozenset({
+    # Parcel-driven — each building has its own parcel and its own tax bill
+    '641110',   # Real Estate Taxes
+    '135120',   # Prepaid RE Tax
+    '115200',   # RE Tax Escrow
+    # Calculated per building from cash received, not allocated
+    '637130',   # Admin-Management Fees
+    # Cash — the split is just a consequence of which real payments went out
+    '111100', '111250', '111210', '115100',
+    # Tenant/lease-driven balances — each belongs to whichever building the
+    # tenant is in
+    '131100',   # Accounts Receivable - Control
+    '132100',   # Allowance for Doubtful Accounts
+    '133100',   # Accounts Receivable - Other
+    '133110',   # AR - Tenant Billback
+    '221100',   # Prepaid Rent - Tenant
+    '217100', '217200',   # Security Deposits
+})
+
+
+def is_allocation_exempt(account_code: str, cfg: Optional[PropertyConfig] = None) -> bool:
+    """
+    True when this account's building split comes from a lease, a parcel, or a
+    calculation rather than an allocation schedule. A property can extend the
+    list via `allocation_exempt_accounts` in its config.yaml.
+    """
+    code = str(account_code or '').strip()
+    if not code:
+        return False
+    extra = {str(c).strip() for c in (getattr(cfg, 'allocation_exempt_accounts', None) or [])}
+    if code in extra or code in _ALLOC_EXEMPT_CODES:
+        return True
+    return code.startswith(_ALLOC_EXEMPT_PREFIXES)

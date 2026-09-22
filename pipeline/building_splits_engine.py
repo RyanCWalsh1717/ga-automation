@@ -89,11 +89,24 @@ def apply_building_splits(
     default_sch = (property_config.default_split_schedule or '').strip()
     account_schedules = account_schedules or {}
 
+    from property_config import is_allocation_exempt
+
     result: List[Dict] = []
     for line in je_lines:
+        _acct = str(line.get('account_code', '') or '').strip()
+
+        # Asset-specific accounts are never split by a percentage — rent
+        # follows the lease, RE tax follows the parcel, the management fee is
+        # calculated, cash just follows whatever really moved (confirmed with
+        # Ryan 2026-09-22). Their building assignment comes from the source
+        # data, so applying a schedule here would invent a wrong number.
+        # An explicit per-line override still wins: that's a human decision.
+        if is_allocation_exempt(_acct, property_config) and not (line.get('_split_schedule') or '').strip():
+            result.append(_strip_meta(line))
+            continue
+
         # Priority: an explicit per-line override (a human decision) > the
         # account's own approved Kardin allocation > the property default.
-        _acct = str(line.get('account_code', '') or '').strip()
         sch_name = (
             (line.get('_split_schedule') or '').strip()
             or (account_schedules.get(_acct) or '').strip()

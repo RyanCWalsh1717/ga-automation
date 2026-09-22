@@ -1252,8 +1252,17 @@ def _check_allocation_drift(gl_parsed, property_config, buildings) -> List[QCFin
     if not approved:
         return findings
 
+    from property_config import is_allocation_exempt
+
     _first_code = _bldg[0]['yardi_code']
     for acct_code, by_desc in learned.items():
+        # Asset-specific accounts have no approved allocation to drift FROM —
+        # their real split is whatever the lease, parcel or calculation
+        # produced, so comparing it to a percentage schedule is a false
+        # positive (confirmed with Ryan 2026-09-22 against real data: RE tax
+        # at 43.8/56.2 is the two parcels' actual bills, not a coding error).
+        if is_allocation_exempt(acct_code, property_config):
+            continue
         for desc, rows in by_desc.items():
             real_pct = next((r['share_pct'] * 100.0 for r in rows
                              if r['yardi_code'] == _first_code), None)
