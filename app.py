@@ -8267,6 +8267,54 @@ with tab4:
                     use_container_width=True,
                     column_config={'Amount': st.column_config.NumberColumn(format="$%,.2f")},
                 )
+
+            # ── Allocation drift — decide at onboarding, not at first close ────
+            # Same comparison QC CHECK_9 runs in Pass 2, surfaced here so the
+            # human decision happens while the property is being set up rather
+            # than arriving as a flag after the first real close (Ryan's ask,
+            # 2026-09-22). Informational only, like everything else in this
+            # section — it never changes an allocation on its own.
+            if getattr(_edit_cfg, 'is_multi_building', False) and _edit_cfg.allocation_schedules:
+                from qc_engine import check_allocation_drift as _check_drift
+                _drift = _check_drift(_gl_hist_result, _edit_cfg, _edit_cfg.consolidated_buildings)
+                st.markdown("#### Allocation Splits Not Matching an Approved Allocation")
+                st.caption(
+                    "How each recurring charge type is REALLY split between buildings in this "
+                    "history, versus the approved allocations on file (from the uploaded Kardin "
+                    "Allocations report). Accounts whose split comes from something asset-specific "
+                    "— rent from a lease, RE tax from a parcel, the management fee from a "
+                    "calculation, cash, tenant balances — are excluded, since there's no allocation "
+                    "for them to drift from. Anything listed is either coded to the wrong building, "
+                    "or a real allocation basis that isn't in the Kardin report yet. **The pipeline "
+                    "keeps using the approved allocation either way** — nothing here is applied "
+                    "automatically, so deciding now just means it doesn't surface as a QC flag "
+                    "after the first close."
+                )
+                if not _drift:
+                    st.success("Every charge type matches an approved allocation.")
+                else:
+                    st.dataframe(
+                        pd.DataFrame([{
+                            'Account':      d.account_code,
+                            'Charge Type':  d.account_name,
+                            'Real Split %': d.value_a,
+                            'Approved %':   d.value_b,
+                            'Off By (pts)': d.difference,
+                        } for d in _drift]),
+                        use_container_width=True,
+                        height=min(360, 40 + 35 * len(_drift)),
+                        column_config={
+                            'Real Split %': st.column_config.NumberColumn(format="%.1f"),
+                            'Approved %':   st.column_config.NumberColumn(format="%.1f"),
+                            'Off By (pts)': st.column_config.NumberColumn(format="%.1f"),
+                        },
+                    )
+                    st.caption(
+                        f"Percentages are {_edit_cfg.consolidated_buildings[0].name}'s share. "
+                        "To adopt one of these as policy, add it as a named schedule in "
+                        "Building / Allocation Splits (step 4) — that's a deliberate decision, "
+                        "and it should also go back into Kardin so the two agree."
+                    )
         except Exception as _gh_exc:
             st.warning(f"Could not analyze this GL export: {_gh_exc}")
 

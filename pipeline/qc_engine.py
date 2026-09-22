@@ -1196,7 +1196,7 @@ def check_9_building_allocation_coding(gl_parsed=None, kardin_records: List[dict
     # _ALLOC_DRIFT_TOLERANCE_PCT off every approved allocation either got
     # miscoded, or genuinely needs its own allocation — a human decision,
     # surfaced here rather than silently learned and applied.
-    findings.extend(_check_allocation_drift(gl_parsed, property_config, buildings))
+    findings.extend(check_allocation_drift(gl_parsed, property_config, buildings))
 
     _flags = [f for f in findings if f.flag == 'FLAG']
     if not _flags:
@@ -1221,7 +1221,7 @@ def check_9_building_allocation_coding(gl_parsed=None, kardin_records: List[dict
 _ALLOC_DRIFT_TOLERANCE_PCT = 2.0   # confirmed with Ryan 2026-09-22
 
 
-def _check_allocation_drift(gl_parsed, property_config, buildings) -> List[QCFinding]:
+def check_allocation_drift(gl_parsed, property_config, buildings) -> List[QCFinding]:
     """
     Compare each recurring charge type's REAL split (learned from this GL's
     own matched cross-building descriptions) against the approved allocation
