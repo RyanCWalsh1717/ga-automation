@@ -527,6 +527,20 @@ _SPLIT_BLDGTAG_RE = re.compile(r'\b\d{1,3}\s*hart\w*\b', re.IGNORECASE)
 _SPLIT_NOISE_RE   = re.compile(r'[^a-z ]')
 
 
+# Words that describe the MECHANICS of an entry rather than what was bought.
+# A key made up of nothing but these is too generic to identify a charge type:
+# "Reversal of J-22801" normalizes to just "reversal of", which would lump
+# together reversals of completely unrelated charges and learn a meaningless
+# ratio from them (confirmed on the real Aug 2026 Hartwell GL, where bare
+# "reversal of" and "amort" keys produced splits matching no real item).
+# Keys keeping at least one word outside this set are fine — "amort retax"
+# and "amort insurance exp" are real, distinguishable charge types.
+_SPLIT_GENERIC_WORDS = frozenset({
+    'reversal', 'reverse', 'reversing', 'of', 'amort', 'amortization',
+    'accrual', 'accr', 'reclass', 'to', 'adj', 'adjustment', 'entry', 'je',
+})
+
+
 def _normalize_split_key(text: str) -> str:
     """
     Normalize a transaction's description into a key identifying the TYPE of
@@ -597,6 +611,8 @@ def compute_historical_building_splits(
         )
         if not key_text:
             continue
+        if not (set(key_text.split()) - _SPLIT_GENERIC_WORDS):
+            continue   # nothing but mechanics words — can't identify a charge type
         g = groups.setdefault((code, key_text), {})
         g[entity] = g.get(entity, 0.0) + t.net_amount
 

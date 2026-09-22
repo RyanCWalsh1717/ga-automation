@@ -45,7 +45,7 @@ def apply_building_splits(
     je_lines: List[Dict],
     property_config,
     default_property_code: str = '',
-    historical_splits: Optional[Dict[str, List[Dict]]] = None,
+    account_schedules: Optional[Dict[str, str]] = None,
 ) -> List[Dict]:
     """
     Expand JE lines for multi-building properties.
@@ -57,21 +57,24 @@ def apply_building_splits(
         default_property_code: Fallback PROPERTY code when a building's
                                yardi_code is blank. Defaults to
                                property_config.property_code.
-        historical_splits:     Optional {account_code: {normalized_description:
-                               [{'name','yardi_code','share_pct'}, ...]}} from
-                               gl_history_analyzer.compute_historical_building_splits().
-                               A line is matched against the charge TYPES seen
-                               historically on its account (same account + same
-                               description, posted to both buildings), and that
-                               type's own real ratio is used instead of the
-                               named-schedule lookup below. Confirmed with Ryan
-                               2026-09-22: this is per recurring charge type,
-                               NOT an average across the account — a $67/$33
-                               pair under one description means that kind of
-                               invoice splits 67/33, regardless of what else
-                               sits in the same account. Lines whose
-                               description matches nothing fall through to the
-                               normal schedule lookup.
+        account_schedules:     Optional {account_code: allocation schedule name}
+                               — the APPROVED allocation each account is
+                               supposed to use, read from the Kardin budget's
+                               AllocationName column. The named schedule's own
+                               percentages come from the uploaded Kardin
+                               Allocations report (rptAllocations), which
+                               populates property_config.building_splits.
+
+                               Confirmed with Ryan 2026-09-22: the uploaded
+                               allocations are the ONLY ones applied unless a
+                               human deliberately specifies otherwise, which
+                               should be rare. Splits observed in GL history
+                               are deliberately NOT applied here — they'd
+                               silently bake a historical miscoding into new
+                               JEs. Their role is detection instead: QC
+                               CHECK_9 flags where real coding has drifted
+                               from the approved allocation, so a human
+                               decides.
 
     Returns:
         Expanded list of JE line dicts.  For single-building properties this
@@ -84,27 +87,37 @@ def apply_building_splits(
     parent_code = default_property_code or property_config.property_code
     schedules   = property_config.allocation_schedules   # {name: [BuildingSplitConfig]}
     default_sch = (property_config.default_split_schedule or '').strip()
-    historical_splits = historical_splits or {}
+    account_schedules = account_schedules or {}
 
     result: List[Dict] = []
     for line in je_lines:
-        if historical_splits:
-            from gl_history_analyzer import match_building_split
-            hist_rows = match_building_split(
-                line.get('account_code', ''),
-                line.get('description', '') or line.get('remark', ''),
-                historical_splits,
-            )
-            if hist_rows:
-                from property_config import BuildingSplitConfig
-                splits = [BuildingSplitConfig(schedule='Historical', name=r.get('name', ''),
-                                               yardi_code=r.get('yardi_code', ''),
-                                               share_pct=float(r.get('share_pct', 0) or 0))
-                          for r in hist_rows]
-                result.extend(_expand_line(line, splits, parent_code))
-                continue
+        # Priority: an explicit per-line override (a human decision) > the
+        # account's own approved Kardin allocation > the property default.
+        _acct = str(line.get('account_code', '') or '').strip()
+        sch_name = (
+            (line.get('_split_schedule') or '').strip()
+            or (account_schedules.get(_acct) or '').strip()
+            or default_sch
+        )
 
-        sch_name = (line.get('_split_schedule') or '').strip() or default_sch
+        # An allocation naming ONE building (Kardin's AllocationName is the
+        # building's own code, e.g. '40hart') means this cost belongs 100% to
+        # that building — code the line to it rather than leaving it on the
+        # parent property. These never appear in `schedules`: the Kardin
+        # Allocations report's single-cost-center entries aren't splits, so
+        # get_multi_way_splits() correctly leaves them out of building_splits.
+        if sch_name and sch_name != _NO_SPLIT and sch_name not in schedules:
+            _single = _match_single_building(sch_name, property_config)
+            if _single:
+                _line = _strip_meta(line)
+                _line['property'] = _single.yardi_code or parent_code
+                _tag = f' [{_single.name}]' if _single.name else f' [{_single.yardi_code}]'
+                for _field in ('remark', 'description', 'desc'):
+                    if _line.get(_field):
+                        _line[_field] = str(_line[_field]) + _tag
+                        break
+                result.append(_line)
+                continue
 
         # "No Split" or no schedule configured → pass through unchanged
         if sch_name == _NO_SPLIT or not sch_name or sch_name not in schedules:
@@ -119,6 +132,22 @@ def apply_building_splits(
         result.extend(_expand_line(line, splits, parent_code))
 
     return result
+
+
+def _match_single_building(name: str, property_config):
+    """
+    Resolve an allocation name that refers to ONE building to that building
+    (matched on its Yardi code or its name, case-insensitively). Returns None
+    when the name isn't a building on this property.
+    """
+    _key = str(name or '').strip().lower()
+    if not _key:
+        return None
+    for b in (getattr(property_config, 'consolidated_buildings', None) or []):
+        if _key in (str(b.yardi_code or '').strip().lower(),
+                    str(b.name or '').strip().lower()):
+            return b
+    return None
 
 
 def _expand_line(

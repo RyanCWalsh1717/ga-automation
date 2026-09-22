@@ -1189,15 +1189,108 @@ def check_9_building_allocation_coding(gl_parsed=None, kardin_records: List[dict
                 ),
             ))
 
-    if not findings:
+    # ── Approved-allocation drift ────────────────────────────────────────────
+    # The uploaded Kardin allocations are the only percentages ever APPLIED
+    # (confirmed with Ryan 2026-09-22). This compares what the GL really did
+    # against them: a charge type whose real split sits more than
+    # _ALLOC_DRIFT_TOLERANCE_PCT off every approved allocation either got
+    # miscoded, or genuinely needs its own allocation — a human decision,
+    # surfaced here rather than silently learned and applied.
+    findings.extend(_check_allocation_drift(gl_parsed, property_config, buildings))
+
+    _flags = [f for f in findings if f.flag == 'FLAG']
+    if not _flags:
         status = 'PASS'
-        summary = f'All GL activity across {len(by_account)} account(s) matches the Kardin budget\'s building allocation.'
+        summary = (f'All GL activity across {len(by_account)} account(s) matches the Kardin budget\'s '
+                   f'building allocation.')
     else:
         status = 'FLAG'
-        items = ', '.join(f.account_code for f in findings[:5])
-        summary = f'{len(findings)} transaction(s) flagged as possibly coded to the wrong building: {items}.'
+        items = ', '.join(f.account_code for f in _flags[:5])
+        _miscoded = sum(1 for f in _flags if f.note.startswith('$'))
+        _drift    = len(_flags) - _miscoded
+        _parts = []
+        if _miscoded:
+            _parts.append(f'{_miscoded} transaction(s) possibly coded to the wrong building')
+        if _drift:
+            _parts.append(f'{_drift} charge type(s) split differently than their approved allocation')
+        summary = f'{"; ".join(_parts)}: {items}.'
 
     return QCResult('CHECK_9', 'Building Allocation Coding', status, summary, findings)
+
+
+_ALLOC_DRIFT_TOLERANCE_PCT = 2.0   # confirmed with Ryan 2026-09-22
+
+
+def _check_allocation_drift(gl_parsed, property_config, buildings) -> List[QCFinding]:
+    """
+    Compare each recurring charge type's REAL split (learned from this GL's
+    own matched cross-building descriptions) against the approved allocation
+    schedules on file, flagging anything more than
+    _ALLOC_DRIFT_TOLERANCE_PCT off every one of them.
+    """
+    findings: List[QCFinding] = []
+    schedules = getattr(property_config, 'allocation_schedules', None) or {}
+    if not schedules:
+        return findings
+
+    try:
+        from gl_history_analyzer import compute_historical_building_splits
+    except Exception:
+        return findings
+
+    _bldg = [{'name': b.name, 'yardi_code': b.yardi_code} for b in buildings]
+    learned = compute_historical_building_splits(gl_parsed, _bldg)
+    if not learned:
+        return findings
+
+    # Approved allocations, as {name: {yardi_code: pct 0-100}}
+    approved = {}
+    for _name, _rows in schedules.items():
+        if len(_rows) < 2:
+            continue   # a single-building schedule isn't a split
+        approved[_name] = {r.yardi_code: r.share_pct * 100.0 for r in _rows}
+    if not approved:
+        return findings
+
+    _first_code = _bldg[0]['yardi_code']
+    for acct_code, by_desc in learned.items():
+        for desc, rows in by_desc.items():
+            real_pct = next((r['share_pct'] * 100.0 for r in rows
+                             if r['yardi_code'] == _first_code), None)
+            if real_pct is None:
+                continue
+            best_name, best_diff = None, None
+            for _name, _pcts in approved.items():
+                diff = abs(_pcts.get(_first_code, 0.0) - real_pct)
+                if best_diff is None or diff < best_diff:
+                    best_name, best_diff = _name, diff
+            if best_diff is None or best_diff <= _ALLOC_DRIFT_TOLERANCE_PCT:
+                continue
+            _real_label = ' / '.join(
+                f"{r['yardi_code']} {r['share_pct'] * 100:.1f}%" for r in rows
+            )
+            _appr_label = ' / '.join(
+                f'{k} {v:.1f}%' for k, v in approved[best_name].items()
+            )
+            findings.append(QCFinding(
+                account_code=acct_code,
+                account_name=desc,
+                value_a=round(real_pct, 2),
+                value_b=round(approved[best_name].get(_first_code, 0.0), 2),
+                difference=round(best_diff, 2),
+                flag='FLAG',
+                note=(
+                    f'Charge type "{desc}" on account {acct_code} really splits {_real_label}, '
+                    f'{best_diff:.1f} points off its closest approved allocation '
+                    f'"{best_name}" ({_appr_label}). Either these were coded to the wrong '
+                    f'building, or this cost needs its own approved allocation — the pipeline '
+                    f'only ever applies the uploaded Kardin allocations, so it will keep using '
+                    f'"{best_name}" until someone decides otherwise.'
+                ),
+            ))
+
+    findings.sort(key=lambda f: -f.difference)
+    return findings
 
 
 # ══════════════════════════════════════════════════════════════
