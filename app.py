@@ -8058,30 +8058,70 @@ with tab4:
         "pipeline-generated accrual never found its expected reversal. "
         "**Informational only** — nothing here auto-fills any config or accrual "
         "table; the One-Off Accruals table always starts blank, on purpose. "
-        "Not saved anywhere — re-upload anytime you want a fresh look, this "
-        "isn't limited to onboarding."
+        "Saved under its own filename — enter that exact filename in 'GL History "
+        "Filename' further down (step 8) once saved, and it's re-analyzed "
+        "automatically every time you open this property, no re-upload needed."
     )
     st.caption(
         "⚠️ Cadence classification is a best guess pending a real 12-month "
         "sample to verify against — treat it as a starting point for review, "
         "not a final answer."
     )
-    _gl_hist_upload = st.file_uploader(
-        "12-Month GL Export (Excel)",
-        type=['xlsx'],
-        key='prop_gl_history_upload',
+    _glh_col1, _glh_col2 = st.columns([2, 1])
+    with _glh_col1:
+        _gl_hist_upload = st.file_uploader(
+            "12-Month GL Export (Excel)",
+            type=['xlsx'],
+            key=_uploader_key('prop_gl_history_upload'),
+            help="Saved to GitHub as data/{property_code}/<filename you uploaded>",
+        )
+        if _gl_hist_upload is not None:
+            _glh_target = _photo_target_code
+            if not _glh_target:
+                st.warning(
+                    "Enter the GA Property ID and save the config first, "
+                    "then re-upload the GL history."
+                )
+            else:
+                from property_writer import save_image_to_github as _save_glh_gh, save_image_local as _save_glh_loc
+                _glh_bytes = _gl_hist_upload.read()
+                _glh_fname = _gl_hist_upload.name
+                _ghloc_ok, _ghloc_msg = _save_glh_loc(_glh_target, _glh_bytes, _glh_fname, str(_DATA_DIR))
+                if github_configured():
+                    _ghgh_ok, _ghgh_msg = _save_glh_gh(_glh_target, _glh_bytes, _glh_fname)
+                    if _ghgh_ok:
+                        st.success(f"✅ GL history saved to GitHub as `{_glh_fname}`.")
+                    else:
+                        st.warning(f"GitHub save failed: {_ghgh_msg}. Saved locally.")
+                else:
+                    st.info(f"GL history saved locally as `{_glh_fname}`.")
+                st.caption(
+                    f"⬇️ Enter **{_glh_fname}** in 'GL History Filename' (step 8) "
+                    f"below so it's picked up automatically from now on."
+                )
+                _bump_uploader('prop_gl_history_upload')
+                st.rerun()
+    with _glh_col2:
+        if not _is_new and _photo_target_code:
+            _cur_glh_fname = _ef('gl_history_file', '')
+            if _cur_glh_fname and (_DATA_DIR / _photo_target_code / _cur_glh_fname).exists():
+                st.success(f"✅ On file: `{_cur_glh_fname}`", icon="📜")
+            elif _cur_glh_fname:
+                st.caption(f"No file named `{_cur_glh_fname}` on disk yet")
+            else:
+                st.caption("No GL History Filename set (step 8)")
+
+    _glh_fname_saved = _ef('gl_history_file', '')
+    _glh_saved_path = (
+        _committed_path(_photo_target_code, _glh_fname_saved)
+        if (_photo_target_code and _glh_fname_saved) else None
     )
-    if _gl_hist_upload is not None:
+    if _glh_saved_path:
         try:
-            import tempfile as _gh_tempfile
-            with _gh_tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as _gh_tmp:
-                _gh_tmp.write(_gl_hist_upload.read())
-                _gh_tmp_path = _gh_tmp.name
             from parsers.yardi_gl import parse_gl as _parse_gl_hist
             from gl_history_analyzer import analyze_recurring_vendors as _analyze_vendors
-            _gl_hist_result = _parse_gl_hist(_gh_tmp_path)
+            _gl_hist_result = _parse_gl_hist(_glh_saved_path)
             _vendor_patterns = _analyze_vendors(_gl_hist_result)
-            os.remove(_gh_tmp_path)
 
             if not _vendor_patterns:
                 st.info("No expense-account activity found to analyze in this file.")
@@ -8385,6 +8425,129 @@ with tab4:
                     # "clean up") survived untouched.
         except Exception as _ka_exc:
             st.warning(f"Could not read this report: {_ka_exc}")
+
+    # ── Import from Prior Workpaper — onboarding extract (outside form) ───────
+    if _uses_grp_coa:
+        st.markdown("### 📋 Import from Prior Workpaper (GRP Assets)")
+        st.caption(
+            "For an existing GRP asset being onboarded, upload the most recent "
+            "real workpaper (the manually-built Excel file this property already "
+            "has, not one this app generated) to pull in real history instead of "
+            "typing it in by hand: every Balance Sheet account — cross-checked "
+            "against the Chart of Accounts on file, to catch a stale account code "
+            "left over from another property's template — and any still-open "
+            "prepaid items as a ready-to-download Prepaid Ledger seed file. "
+            "GRP-managed assets only — this reads GRP's own workpaper conventions "
+            "(a 'Trial Balance' tab, and per-account prepaid schedules), which a "
+            "non-GRP-managed asset's workpaper likely won't follow."
+        )
+        _wpi_upload = st.file_uploader(
+            "Prior Workpaper (Excel)",
+            type=['xlsx'],
+            key=_uploader_key('prop_wp_import_upload'),
+        )
+        if _wpi_upload is not None:
+            _wpi_tmp_path = None
+            try:
+                import tempfile as _wpi_tempfile
+                with _wpi_tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as _wpi_tmp:
+                    _wpi_tmp.write(_wpi_upload.read())
+                    _wpi_tmp_path = _wpi_tmp.name
+
+                from legacy_workpaper_import import (
+                    extract_trial_balance, extract_prepaid_items, check_against_coa,
+                )
+                from property_config import is_balance_sheet_account
+
+                _wpi_coa_path = _committed_path('_shared', 'GRP_Chart_of_Accounts.xlsx')
+                _wpi_coa = None
+                if _wpi_coa_path:
+                    try:
+                        from parsers.yardi_chart_of_accounts import parse as _parse_coa
+                        _wpi_coa = _parse_coa(_wpi_coa_path).accounts or None
+                    except Exception:
+                        _wpi_coa = None
+
+                _wpi_tb, _wpi_sheet = extract_trial_balance(_wpi_tmp_path)
+                if _wpi_tb is None:
+                    st.warning(
+                        "Could not find a recognizable Trial Balance tab in this file "
+                        "(looked for 'Trial Balance', 'TB', or similar). This tool expects "
+                        "GRP's own workpaper template."
+                    )
+                else:
+                    st.success(f"✅ Found {len(_wpi_tb.accounts)} accounts on the '{_wpi_sheet.strip()}' tab "
+                               f"(period: {_wpi_tb.metadata.period}).")
+                    if _wpi_coa is None:
+                        st.caption("No Chart of Accounts on file yet to cross-check against.")
+                    else:
+                        _wpi_mismatches = check_against_coa(_wpi_tb.accounts, _wpi_coa)
+                        if not _wpi_mismatches:
+                            st.success("✅ Every account on this workpaper is on GRP's Chart of Accounts.")
+                        else:
+                            st.warning(
+                                f"⚠️ {len(_wpi_mismatches)} account(s) on this workpaper aren't on GRP's "
+                                f"Chart of Accounts — possible hangover from another property's template:"
+                            )
+                            for _m in _wpi_mismatches:
+                                st.caption(f"　• {_m.account_code} — {_m.account_name or '(unnamed)'}")
+
+                    _wpi_bs_rows = [
+                        {'Account Code': a.account_code, 'Account Name': a.account_name,
+                         'Ending Balance': a.ending_balance}
+                        for a in _wpi_tb.accounts if is_balance_sheet_account(a.account_code)
+                    ]
+                    st.caption(f"{len(_wpi_bs_rows)} Balance Sheet account(s):")
+                    st.dataframe(
+                        pd.DataFrame(_wpi_bs_rows), use_container_width=True,
+                        height=min(400, 40 + 35 * len(_wpi_bs_rows)),
+                        column_config={'Ending Balance': st.column_config.NumberColumn(format="$%,.2f")},
+                    )
+
+                _wpi_items = extract_prepaid_items(_wpi_tmp_path, coa_codes=_wpi_coa)
+                if not _wpi_items:
+                    st.info("No open prepaid items found in an itemized-schedule format on this workpaper.")
+                else:
+                    st.markdown(f"**{len(_wpi_items)} open prepaid item(s) found:**")
+                    st.dataframe(
+                        pd.DataFrame([{
+                            'Sheet': it['_source_sheet'], 'GL Account': it['gl_account_number'],
+                            'On COA?': ('✅' if it['gl_account_number'] in _wpi_coa else '⚠️ No')
+                                       if _wpi_coa is not None else '—',
+                            'Description': it['description'],
+                            'Total Amount': it['total_amount'], 'Monthly Amount': it['monthly_amount'],
+                            'Service Start': it['service_start'], 'Service End': it['service_end'],
+                            'Months Amortized': it['months_amortized'],
+                        } for it in _wpi_items]),
+                        use_container_width=True,
+                        column_config={
+                            'Total Amount':   st.column_config.NumberColumn(format="$%,.2f"),
+                            'Monthly Amount': st.column_config.NumberColumn(format="$%,.2f"),
+                        },
+                    )
+                    from prepaid_ledger import generate_seed as _gen_seed
+                    _wpi_period = _wpi_tb.metadata.period if _wpi_tb else ''
+                    _wpi_seed_bytes = _gen_seed(_wpi_items, as_of_period=_wpi_period)
+                    st.download_button(
+                        label="⬇️ Download Prepaid Ledger Seed",
+                        data=_wpi_seed_bytes,
+                        file_name=f"GA_Prepaid_Ledger_Seed_{_wpi_period.replace(' ', '')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        help="Upload this as the prior-month ledger on this property's first real close.",
+                    )
+                    st.caption(
+                        "⚠️ Review before using — recode any item flagged 'No' above to a real GRP "
+                        "account first. This reads real history but doesn't know what's already been "
+                        "handled manually, so treat it as a starting point, not a final answer."
+                    )
+            except Exception as _wpi_exc:
+                st.warning(f"Could not read this workpaper: {_wpi_exc}")
+            finally:
+                if _wpi_tmp_path:
+                    try:
+                        os.remove(_wpi_tmp_path)
+                    except OSError:
+                        pass
 
     st.markdown("---")
 
@@ -8843,6 +9006,14 @@ with tab4:
                                           value=_ef('file_prefix_deliverable'),
                                           placeholder="e.g. LexLabs  → LexLabs_Jan2026_Workpapers.xlsx",
                                           help="Leave blank to auto-derive from display name.")
+        _c11b, _c12b = st.columns(2)
+        _gl_hist_file = _c11b.text_input(
+            "GL History Filename",
+            value=_ef('gl_history_file', ''),
+            placeholder="e.g. GA_GL_History_12Month.xlsx",
+            help="Filename saved by the 12-Month GL History Review uploader above — "
+                 "leave blank if no GL history has been uploaded for this property yet.",
+        )
         # Internal File Prefix is always "GA" (GRP's own internal-file branding,
         # not property-specific) — no longer asked here, matching Management
         # Company. Kept as a real config field/param since output filenames
@@ -8991,6 +9162,7 @@ with tab4:
                 re_tax_payment_months  = _retax_months,
                 parcel_ids             = _parcels,
                 kardin_budget_file     = _kardin_file,
+                gl_history_file        = _gl_hist_file,
                 fiscal_year_start_month = 1,
                 file_prefix_internal   = _file_pfx_int or _pfx_int,
                 file_prefix_deliverable = _file_pfx_del,

@@ -239,6 +239,7 @@ class PropertyConfig:
 
     # ── Reference files ───────────────────────────────────────────────────────
     kardin_budget_file:    str = ''   # set in config.yaml; build_config_dict auto-derives from fiscal year
+    gl_history_file:       str = ''   # saved 12-month GL export for the GL History Review tool (Property Setup)
     fiscal_year_start_month: int = 1
 
     # ── Chart of Accounts classification (override for non-standard COA) ──────
@@ -453,6 +454,7 @@ class PropertyConfig:
             file_prefix_internal    = str(d.get('file_prefix_internal', 'GA')),
             file_prefix_deliverable = str(d.get('file_prefix_deliverable', '')),
             kardin_budget_file      = str(d.get('kardin_budget_file', '')),
+            gl_history_file         = str(d.get('gl_history_file', '')),
             fiscal_year_start_month = int(d.get('fiscal_year_start_month', 1)),
             team_members            = list(d.get('team_members') or []),
             active                  = bool(d.get('active', True)),

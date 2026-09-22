@@ -67,6 +67,7 @@ def build_config_dict(
     consolidated_buildings: list[dict] = None,   # [{'name','yardi_code','size_sf'}]
     investor_legal_name:    str = '',
     yardi_subset_code:      str = '',
+    gl_history_file:        str = '',
 ) -> dict:
     """Build the ordered dict that becomes the YAML config file."""
     banks = {}
@@ -190,6 +191,7 @@ def build_config_dict(
     _cur_fy   = _today.year if _today.month >= _fy_start else _today.year - 1
     _default_budget = f'{file_prefix_internal or "GA"}_Kardin_Budget_FY{_cur_fy}.xlsx'
     cfg['kardin_budget_file']      = kardin_budget_file or _default_budget
+    if gl_history_file: cfg['gl_history_file'] = gl_history_file
     cfg['fiscal_year_start_month'] = fiscal_year_start_month or 1
     cfg['file_prefix_internal']    = (file_prefix_internal or '').strip() or 'GA'
     if file_prefix_deliverable:
