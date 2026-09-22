@@ -8513,6 +8513,15 @@ with tab4:
             type=['xlsx'],
             key=_uploader_key('prop_wp_import_upload'),
         )
+        # Stamped onto every tab's header row, same as a monthly workpaper's
+        # own "Prepared by" line, so whoever picks the file up later knows who
+        # built the roll-forward and who to ask about it.
+        _wpi_prepared_by = st.text_input(
+            "Prepared by",
+            value=(getattr(_edit_cfg, 'team_members', None) or ['GRP'])[0] if _edit_cfg else 'GRP',
+            help="Shown in the header of every tab and on the Summary Page.",
+            key='prop_wp_import_prepared_by',
+        )
         if _wpi_upload is not None:
             _wpi_tmp_path = None
             try:
@@ -8627,6 +8636,8 @@ with tab4:
                         as_of_period=_wpi_wp_period,
                         buildings=_wpi_buildings,
                         account_detail=_wpi_detail,
+                        prepared_by=_wpi_prepared_by,
+                        schedules=(_edit_cfg.allocation_schedules if _edit_cfg else {}),
                     )
                     if _wpi_detail:
                         st.caption(

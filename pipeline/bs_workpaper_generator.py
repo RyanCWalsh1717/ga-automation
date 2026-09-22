@@ -3410,6 +3410,185 @@ SEED_HEADER_GREEN = '2D6F50'  # matches the real template's account-header fill
 _SEED_HDR_ROW  = 5
 _SEED_DATA_ROW = 6
 
+# Accounts whose tab is a raw Yardi report pasted in whole, not a GRP-built
+# roll-forward — confirmed with Ryan 2026-09-22 ("these are going to be per
+# Yardi Reports from the bank Rec excel ... so those don't need the headers")
+# and visible in the real template, where these tabs carry the Yardi report's
+# own header rows and no GRP header block at all. The seed writes a named
+# placeholder so the tab exists for the monthly generator to overwrite (it
+# matches tabs by name), but deliberately no Date/Description/building
+# columns, since none of that survives the first real close anyway.
+_SEED_RAW_REPORT_ACCOUNTS = frozenset({
+    '111100', '111210', '111250', '115100',   # cash / bank rec reports
+    '131100', '133100',                       # AR aging
+    '211100',                                 # AP aging
+    '221100',                                 # prepaid rent (tenant) — AR aging
+    '217100', '217200',                       # security deposits — per Ryan, uploaded to Yardi
+})
+
+# Loan accounts live together on one 'Loan Analysis' tab rather than getting
+# their own — matching the real template, which has no 231100/213200/801110
+# tabs at all. Ryan 2026-09-22: "Mortgage Payable should be reflected in the
+# Loan analysis".
+_SEED_LOAN_ACCOUNTS = ('231100', '213200', '801110')
+_SEED_LOAN_LABELS = {
+    '231100': 'Mortgage Payable',
+    '213200': 'Accrued Interest',
+    '801110': 'Interest Expense',
+}
+
+
+def _seed_header_block(ws, lines, last_col):
+    """Rows 1-3 header block in the template's green, merged across the tab."""
+    for row_num, val, fnt in lines:
+        c = ws.cell(row=row_num, column=_B, value=val)
+        _apply(c, font=fnt, fill=_fill(SEED_HEADER_GREEN),
+               align=Alignment(horizontal='left', vertical='center'))
+        ws.merge_cells(start_row=row_num, start_column=_B, end_row=row_num, end_column=last_col)
+
+
+def _write_seed_summary_page(wb: 'Workbook', property_name: str, period: str,
+                              entities: str, buildings: list, schedules: dict,
+                              prepared_by: str) -> None:
+    """
+    Summary Page mirroring the real template's (Manager / Entities / Date),
+    plus a default-split reference block Ryan asked for so the allocation in
+    force is visible in the file itself for audit.
+    """
+    ws = wb.create_sheet('Summary Page')
+    ws.sheet_properties.tabColor = SEED_TAB_BLUE
+    ws.column_dimensions['A'].width = 3
+    ws.column_dimensions['B'].width = 26
+    ws.column_dimensions['C'].width = 46
+    ws.column_dimensions['D'].width = 18
+
+    rows = [
+        ('Manager',     'Greatland Realty Partners'),
+        ('Entities',    entities),
+        ('Date',        period),
+        ('Prepared by', prepared_by or 'GRP'),
+        ('Created',     f'Historical seed from prior workpaper — {datetime.now().strftime("%m/%d/%Y")}'),
+    ]
+    for i, (label, val) in enumerate(rows):
+        r = 2 + i
+        c = ws.cell(row=r, column=2, value=label)
+        c.font = _font(bold=True, size=11)
+        ws.cell(row=r, column=3, value=val).font = _font(size=11)
+
+    # ── Allocation reference (audit) ──────────────────────────────────────
+    r = 2 + len(rows) + 1
+    c = ws.cell(row=r, column=2, value='Building Allocation Reference (for audit)')
+    _apply(c, font=_font(bold=True, size=12, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
+    ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+
+    r += 1
+    for ci, h in enumerate(['Schedule', 'Building', 'Share %'], start=2):
+        c = ws.cell(row=r, column=ci, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(SEED_HEADER_GREEN), border=THIN,
+               align=Alignment(horizontal='center'))
+
+    r += 1
+    if schedules:
+        for sch_name, sch_rows in schedules.items():
+            for sr in sch_rows:
+                ws.cell(row=r, column=2, value=sch_name).border = THIN
+                ws.cell(row=r, column=3,
+                        value=getattr(sr, 'name', '') or getattr(sr, 'yardi_code', '')).border = THIN
+                c = ws.cell(row=r, column=4, value=float(getattr(sr, 'share_pct', 0) or 0))
+                c.border = THIN
+                c.number_format = '0.00%'
+                c.alignment = Alignment(horizontal='right')
+                r += 1
+    else:
+        for b in buildings:
+            ws.cell(row=r, column=2, value='(none on file)').border = THIN
+            ws.cell(row=r, column=3, value=b.get('name', '')).border = THIN
+            ws.cell(row=r, column=4, value='').border = THIN
+            r += 1
+
+    ws.cell(row=r + 1, column=2,
+            value='Percentages above are the approved allocations on file at the time this '
+                  'seed was created.').font = _font(italic=True, size=9, color=_C_GRAY_SEED)
+
+
+_C_GRAY_SEED = '7F7F7F'
+
+
+def _write_seed_raw_placeholder_tab(wb: 'Workbook', account_code: str, account_name: str,
+                                     property_name: str, period: str, prepared_by: str) -> None:
+    """
+    A named, deliberately empty tab for an account whose real content is a raw
+    Yardi report pasted in at close time. No Date/Description/building columns:
+    the monthly generator replaces this tab wholesale from whatever Yardi
+    report is uploaded, so anything written here is discarded.
+    """
+    ws = wb.create_sheet(_safe_sheet_name(f'{account_code} {account_name}'))
+    ws.sheet_properties.tabColor = SEED_TAB_BLUE
+    ws.column_dimensions['B'].width = 100
+    _seed_header_block(ws, [
+        (1, str(account_code), _font(bold=True, size=14, color='FFFFFF')),
+        (2, account_name,      _font(bold=True, size=14, color='FFFFFF')),
+        (3, f'{property_name}  |  Period: {period}  |  Prepared by: {prepared_by or "GRP"}',
+            _font(bold=True, size=10, color='FFFFFF')),
+    ], last_col=_B)
+    ws.cell(row=5, column=_B,
+            value='This tab is populated from the Yardi report uploaded at close '
+                  '(bank rec / aging / security deposit), and is replaced in full each '
+                  'period — nothing is seeded here.').font = _font(italic=True, size=10,
+                                                                   color=_C_GRAY_SEED)
+
+
+def _write_seed_loan_analysis(wb: 'Workbook', balances: dict, property_name: str,
+                               period: str, prepared_by: str) -> None:
+    """
+    'Loan Analysis' tab covering the loan accounts together, matching the real
+    template's layout (Date | Loan # | Description | 231100 | 213200 | 801110)
+    rather than giving each its own tab.
+    """
+    ws = wb.create_sheet('Loan Analysis')
+    ws.sheet_properties.tabColor = SEED_TAB_BLUE
+    for col, w in (('B', 12), ('C', 14), ('D', 46), ('E', 18), ('F', 18), ('G', 18)):
+        ws.column_dimensions[col].width = w
+
+    _seed_header_block(ws, [
+        (1, 'Loan Analysis',   _font(bold=True, size=14, color='FFFFFF')),
+        (2, property_name,     _font(bold=True, size=14, color='FFFFFF')),
+        (3, f'Period: {period}  |  Prepared by: {prepared_by or "GRP"}  |  '
+            f'Historical seed — opening balances per Trial Balance',
+            _font(bold=True, size=10, color='FFFFFF')),
+    ], last_col=7)
+
+    for ci, h in enumerate(['Date', 'Loan #', 'Description'] + list(_SEED_LOAN_ACCOUNTS)):
+        c = ws.cell(row=_SEED_HDR_ROW, column=_B + ci, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(SEED_HEADER_GREEN), border=THIN,
+               align=Alignment(horizontal='center', wrap_text=True))
+    for ci, code in enumerate(_SEED_LOAN_ACCOUNTS):
+        c = ws.cell(row=_SEED_HDR_ROW + 1, column=5 + ci, value=_SEED_LOAN_LABELS.get(code, ''))
+        _apply(c, font=_font(bold=True, size=9, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN),
+               border=THIN, align=Alignment(horizontal='center', wrap_text=True))
+
+    _NUM = '#,##0.00;(#,##0.00);"-"'
+    r = _SEED_HDR_ROW + 2
+    ws.cell(row=r, column=_D, value=f'Opening balance per Trial Balance — {period}').border = THIN
+    ws.cell(row=r, column=_B).border = THIN
+    ws.cell(row=r, column=_C).border = THIN
+    for ci, code in enumerate(_SEED_LOAN_ACCOUNTS):
+        c = ws.cell(row=r, column=5 + ci, value=float(balances.get(code, 0.0) or 0.0))
+        c.border = THIN
+        c.number_format = _NUM
+        c.alignment = Alignment(horizontal='right')
+
+    foot = r + 2
+    c = ws.cell(row=foot, column=_B, value='Ending Balance per GL')
+    _apply(c, font=_font(bold=True, size=11, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
+    ws.merge_cells(start_row=foot, start_column=_B, end_row=foot, end_column=_D)
+    for ci, code in enumerate(_SEED_LOAN_ACCOUNTS):
+        L = get_column_letter(5 + ci)
+        c = ws.cell(row=foot, column=5 + ci, value=f'=SUM({L}{r}:{L}{foot - 1})')
+        _apply(c, font=_font(bold=True, size=11, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
+        c.number_format = _NUM
+    ws.freeze_panes = f'B{_SEED_HDR_ROW + 2}'
+
 
 def _write_seed_trial_balance(wb: 'Workbook', tb_rows: list, property_name: str, period: str) -> None:
     """
@@ -3452,7 +3631,7 @@ def _write_seed_trial_balance(wb: 'Workbook', tb_rows: list, property_name: str,
 
 def _write_seed_account_tab(wb: 'Workbook', account_code: str, account_name: str,
                              detail_rows: list, property_name: str, period: str,
-                             buildings: list) -> None:
+                             buildings: list, prepared_by: str = '') -> None:
     """
     Write one account tab in the REAL workpaper format — the same shape every
     monthly close produces, so this file can be uploaded as the prior-month
@@ -3476,17 +3655,17 @@ def _write_seed_account_tab(wb: 'Workbook', account_code: str, account_name: str
     for i in range(n_bldg + 1):
         ws.column_dimensions[get_column_letter(4 + i)].width = 18
 
-    # Rows 1-3 — header block. B1 is the bare code: the VLOOKUP key.
-    for row_num, val, fnt in (
+    # Rows 1-3 — header block. B1 is the bare code: the VLOOKUP key. Row 3
+    # carries who produced the file, same as every monthly workpaper's own
+    # "Prepared by" line, so anyone with a question knows who to ask.
+    _seed_header_block(ws, [
         (1, str(account_code), _font(bold=True, size=14, color='FFFFFF')),
         (2, account_name,      _font(bold=True, size=14, color='FFFFFF')),
-        (3, f'{property_name}  |  Period: {period}  |  Historical seed — imported prior balances',
-                               _font(bold=True, size=10, color='FFFFFF')),
-    ):
-        c = ws.cell(row=row_num, column=_B, value=val)
-        _apply(c, font=fnt, fill=_fill(SEED_HEADER_GREEN),
-               align=Alignment(horizontal='left', vertical='center'))
-        ws.merge_cells(start_row=row_num, start_column=_B, end_row=row_num, end_column=col_total)
+        (3, f'{property_name}  |  Period: {period}  |  '
+            f'Prepared by: {prepared_by or "GRP"}  |  {datetime.now().strftime("%m/%d/%Y")}  |  '
+            f'Historical seed — imported prior balances',
+            _font(bold=True, size=10, color='FFFFFF')),
+    ], last_col=col_total)
 
     headers = ['Date', 'Description'] + [b.get('name') or b.get('yardi_code', '') for b in buildings] + ['Total']
     for ci, h in enumerate(headers):
@@ -3547,10 +3726,15 @@ def _write_seed_account_tab(wb: 'Workbook', account_code: str, account_name: str
         c = ws.cell(row=row_num, column=_B, value=label)
         _apply(c, font=_font(bold=True, size=11, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
         ws.merge_cells(start_row=row_num, start_column=_B, end_row=row_num, end_column=_C)
-        for ci, f in formulas:
-            c = ws.cell(row=row_num, column=ci, value=f)
+        _by_col = dict(formulas)
+        # Every column across the footer gets the green fill, and any building
+        # column without its own figure gets 0 rather than being left blank —
+        # a blank cell in a banded footer reads as unfinished (Ryan 2026-09-22).
+        for ci in range(4, col_total + 1):
+            c = ws.cell(row=row_num, column=ci, value=_by_col.get(ci, 0))
             _apply(c, font=_font(bold=True, size=11, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
             c.number_format = _NUM
+            c.alignment = Alignment(horizontal='right')
 
     _gl_formulas = []
     for bi in range(n_bldg):
@@ -3572,6 +3756,8 @@ def generate_workpaper_seed(
     as_of_period: str = '',
     buildings: list = None,
     account_detail: dict = None,
+    prepared_by: str = '',
+    schedules: dict = None,
 ) -> bytes:
     """
     Build a starter GA_Workpapers.xlsx for onboarding an existing GRP property,
@@ -3631,10 +3817,20 @@ def generate_workpaper_seed(
 
     wb = _WB()
     wb.remove(wb.active)
-    _write_summary_page(wb, period)
+    _entities = ', '.join(b.get('yardi_code') or b.get('name', '') for b in buildings)
+    _write_seed_summary_page(wb, property_name, period, _entities, buildings,
+                              schedules or {}, prepared_by)
+
+    _loan_balances = {c: seen[c]['ending_balance'] for c in _SEED_LOAN_ACCOUNTS if c in seen}
 
     for code in sorted(seen):
         rec = seen[code]
+        if code in _SEED_LOAN_ACCOUNTS:
+            continue   # covered by the Loan Analysis tab below
+        if code in _SEED_RAW_REPORT_ACCOUNTS:
+            _write_seed_raw_placeholder_tab(wb, code, rec['account_name'],
+                                             property_name, period, prepared_by)
+            continue
         rows = account_detail.get(code)
         if not rows:
             # No real detail on the legacy workpaper for this account — seed a
@@ -3646,7 +3842,10 @@ def generate_workpaper_seed(
                      'amounts': _amounts,
                      'total': rec['ending_balance']}]
         _write_seed_account_tab(wb, code, rec['account_name'], rows,
-                                 property_name, period, buildings)
+                                 property_name, period, buildings, prepared_by)
+
+    if _loan_balances:
+        _write_seed_loan_analysis(wb, _loan_balances, property_name, period, prepared_by)
 
     _write_seed_trial_balance(wb, list(seen.values()), property_name, period)
 
