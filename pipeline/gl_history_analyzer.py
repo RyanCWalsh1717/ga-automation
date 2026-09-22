@@ -516,42 +516,75 @@ def find_unreversed_accruals(gl_result) -> List[UnreversedAccrual]:
 # Historical building-split detection (consolidated properties)
 # ══════════════════════════════════════════════════════════════
 
+# Tokens that vary between occurrences of the SAME recurring charge and would
+# otherwise fragment it into unrelated-looking groups: the period it covers
+# ("08/26"), full dates, invoice/account numbers, and the building tag itself
+# ("25 Hart", "40hart") — the whole point is to match the same charge ACROSS
+# buildings, so the building name can't be part of the key.
+_SPLIT_PERIOD_RE  = re.compile(r'\b\d{1,2}[/.\-]\d{1,4}([/.\-]\d{2,4})?\b')
+_SPLIT_LONGNUM_RE = re.compile(r'\b\d{3,}\b')
+_SPLIT_BLDGTAG_RE = re.compile(r'\b\d{1,3}\s*hart\w*\b', re.IGNORECASE)
+_SPLIT_NOISE_RE   = re.compile(r'[^a-z ]')
+
+
+def _normalize_split_key(text: str) -> str:
+    """
+    Normalize a transaction's description into a key identifying the TYPE of
+    charge, so the same recurring item posted to two different buildings
+    groups together. 'Rec 08/26 Remote Dep Capture Monthly Fee' and
+    'Rec 09/26 Remote Dep Capture Monthly Fee' both become
+    'rec remote dep capture monthly fee'.
+    """
+    t = _REVERSAL_SUFFIX_RE.sub('', _VENDOR_CODE_RE.sub('', str(text or '').strip()))
+    t = t.lower()
+    t = _SPLIT_BLDGTAG_RE.sub(' ', t)
+    t = _SPLIT_PERIOD_RE.sub(' ', t)
+    t = _SPLIT_LONGNUM_RE.sub(' ', t)
+    t = _SPLIT_NOISE_RE.sub(' ', t)
+    # Drop 1-character leftovers (e.g. the dangling 'v' from a stripped
+    # vendor code) so they don't count as real matching tokens.
+    return ' '.join(w for w in t.split() if len(w) > 1)
+
+
 def compute_historical_building_splits(
     gl_result,
     buildings: List[Dict[str, str]],
     min_total_activity: float = 1.0,
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
-    For a consolidated multi-building property, derive each account's REAL
-    building split from its own transaction history — not a single
-    property-wide default. Added 2026-09-22 at Ryan's request: "if the GL
-    has the remark between 40 hart and 25 hart then the split should be
-    recognized" — confirmed against the real Aug 2026 Hartwell GL that
-    per-account splits genuinely vary (213200 Accrued Interest: 63/37,
-    matching Kardin's own 'Campus Split (% per GRP)' percentage; shared
-    accounts like AP Control: ~50/50) rather than one blanket ratio fitting
-    every account.
+    For a consolidated multi-building property, learn how each RECURRING TYPE
+    of charge is really split between buildings, by matching transactions that
+    share the same account AND the same (normalized) description but were
+    posted to different buildings.
 
-    gl_result should come from the property's STORED 12-Month GL History
-    file (Property Setup's persisted upload), not a single month's GL —
-    confirmed with Ryan: a single month is noisy for low-activity accounts
-    (one account showed 100% to one building purely because its only
-    transaction that month happened to land there). Multiple months'
-    transactions are summed per building before computing each account's
-    ratio, so one-off timing doesn't dominate.
+    This is deliberately NOT an average across a GL account. Confirmed with
+    Ryan 2026-09-22: "it is not an average across that GL account, it is meant
+    to look at a remark or description that is the same and do the back of the
+    envelope math" — his example: a $67 charge in 25 Hart and a $33 charge in
+    40 Hart under the same account and description means THAT type of invoice
+    splits 67/33. A whole-account average smears unrelated items together and
+    produces a ratio that matches none of them: confirmed on the real Aug 2026
+    Hartwell GL, where account 111100 alone carries items really split
+    50.6/49.4, 58.9/41.1, 63.0/37.0 and 52.3/47.7 (the last being the By-SF
+    ratio exactly) — one blended number for that account would be wrong for
+    every one of them.
 
-    Returns {account_code: [{'name', 'yardi_code', 'share_pct'}, ...]},
-    only for accounts where every building on file has at least some real
-    tagged activity (min_total_activity combined $ across all buildings) —
-    an account with no real historical split data is simply absent from the
-    result, and callers should fall back to the property's own
-    default_split_schedule for it (confirmed with Ryan) rather than guess.
+    gl_result should come from the property's STORED 12-Month GL History file,
+    not a single month — confirmed with Ryan: one month is noisy for
+    low-activity items. Occurrences of the same charge type across all months
+    are summed per building before the ratio is computed.
+
+    Returns {account_code: {normalized_description: [{'name', 'yardi_code',
+    'share_pct'}, ...]}}. Only charge types that actually appear in 2+
+    buildings are included — a one-building item isn't a split, and an item
+    with no cross-building history should fall back to the property's
+    default_split_schedule (confirmed with Ryan) rather than be guessed at.
     """
     codes = {str(b.get('yardi_code', '') or '').strip() for b in buildings if b.get('yardi_code')}
     if len(codes) < 2:
         return {}
 
-    by_account: Dict[str, Dict[str, float]] = {}
+    groups: Dict[tuple, Dict[str, float]] = {}
     for t in (getattr(gl_result, 'all_transactions', None) or []):
         entity = str(getattr(t, 'entity', '') or '').strip()
         if entity not in codes:
@@ -559,33 +592,75 @@ def compute_historical_building_splits(
         code = str(getattr(t, 'account_code', '') or '').strip()
         if not code:
             continue
-        by_account.setdefault(code, {}).setdefault(entity, 0.0)
-        by_account[code][entity] += t.net_amount
+        key_text = _normalize_split_key(
+            getattr(t, 'description', '') or getattr(t, 'remarks', '') or ''
+        )
+        if not key_text:
+            continue
+        g = groups.setdefault((code, key_text), {})
+        g[entity] = g.get(entity, 0.0) + t.net_amount
 
-    result: Dict[str, List[Dict[str, Any]]] = {}
-    for code, amounts in by_account.items():
-        # Only trust a split when every building has SOME real tagged
-        # activity across the history — an account where only one building
-        # ever shows up isn't a real "split" case, it's a single-building
-        # account with the other building's zero correctly reflecting reality
-        # instead of history just not covering it yet. Distinguishing those
-        # two would need account-level knowledge this function doesn't have,
-        # so it stays conservative and only emits a split when it has real
-        # signal for every building.
-        if not codes.issubset(set(amounts.keys())):
+    result: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    for (code, key_text), amounts in groups.items():
+        # Needs real activity in at least 2 buildings to be a split at all.
+        present = {e for e, v in amounts.items() if abs(v) > 0.005}
+        if len(present) < 2:
             continue
         total = sum(abs(v) for v in amounts.values())
         if total < min_total_activity:
             continue
         rows = []
-        allocated_pct = 0.0
-        bldg_list = list(buildings)
-        for i, b in enumerate(bldg_list):
+        allocated = 0.0
+        for i, b in enumerate(buildings):
             code_b = str(b.get('yardi_code', '') or '').strip()
-            is_last = (i == len(bldg_list) - 1)
-            pct = round(1.0 - allocated_pct, 6) if is_last else round(abs(amounts.get(code_b, 0.0)) / total, 6)
-            allocated_pct += pct if not is_last else 0.0
+            is_last = (i == len(buildings) - 1)
+            pct = round(1.0 - allocated, 6) if is_last else round(abs(amounts.get(code_b, 0.0)) / total, 6)
+            if not is_last:
+                allocated += pct
             rows.append({'name': b.get('name', ''), 'yardi_code': code_b, 'share_pct': pct})
-        result[code] = rows
+        result.setdefault(code, {})[key_text] = rows
 
     return result
+
+
+def match_building_split(
+    account_code: str,
+    description: str,
+    splits_map: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    min_overlap: float = 0.6,
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Find the learned split for a NEW accrual line, by matching its own
+    description against the charge types seen historically on that account.
+
+    Exact normalized match wins. Otherwise the best token-overlap match above
+    min_overlap is used — a generated accrual's wording won't be byte-identical
+    to the GL's ('Accr: Remote Dep Capture Monthly Fee' vs 'Rec 08/26 Remote
+    Dep Capture Monthly Fee'), but the significant words are the same.
+
+    Returns None when nothing matches, so the caller falls back to the
+    property's default_split_schedule instead of inventing a ratio.
+    """
+    by_desc = (splits_map or {}).get(str(account_code or '').strip())
+    if not by_desc:
+        return None
+
+    key = _normalize_split_key(description)
+    if not key:
+        return None
+    if key in by_desc:
+        return by_desc[key]
+
+    key_tokens = set(key.split())
+    if not key_tokens:
+        return None
+
+    best, best_score = None, 0.0
+    for cand_key, rows in by_desc.items():
+        cand_tokens = set(cand_key.split())
+        if not cand_tokens:
+            continue
+        overlap = len(key_tokens & cand_tokens) / min(len(key_tokens), len(cand_tokens))
+        if overlap > best_score:
+            best, best_score = rows, overlap
+    return best if best_score >= min_overlap else None
