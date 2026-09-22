@@ -9036,6 +9036,32 @@ with tab4:
         else:
             _default_split_schedule = ''
 
+        # Per-property allocation exemptions — accounts whose building split
+        # comes from something asset-specific rather than a percentage.
+        # Exposed here so a property-specific case doesn't require a YAML edit
+        # in the repo (Ryan 2026-09-22: these are unique per property and
+        # shouldn't need a global code fix).
+        _alloc_exempt_str = ''
+        if _avail_schedules:
+            from property_config import _ALLOC_EXEMPT_CODES, _ALLOC_EXEMPT_PREFIXES
+            _alloc_exempt_str = st.text_input(
+                "Allocation-Exempt Accounts (comma-separated, optional)",
+                value=', '.join(_ef('allocation_exempt_accounts', []) or []),
+                placeholder="e.g. 639110, 801110",
+                help=(
+                    "Accounts whose split between buildings is set by something real — a lease, "
+                    "a parcel, a calculation — rather than an allocation percentage. These are "
+                    "never split by a schedule, and never flagged as drifting from one. Already "
+                    "covered as standard for every property: all "
+                    + '/'.join(f'{p}xxxxx' for p in _ALLOC_EXEMPT_PREFIXES)
+                    + " revenue (rent, recoveries), RE tax and its escrow/prepaid, the management "
+                      "fee, cash, and tenant AR / prepaid rent / security deposits — only add "
+                      "accounts beyond those."
+                ),
+            )
+            _std_exempt = ', '.join(sorted(_ALLOC_EXEMPT_CODES))
+            st.caption(f"Standard exemptions already applied: 4xxxxx revenue, plus {_std_exempt}.")
+
         st.markdown("### 5 · Management Fee Lines")
         st.caption("One row per PM agreement line. Leave Name blank to skip a row.")
         _default_fees = [
@@ -9298,6 +9324,11 @@ with tab4:
                 parcel_ids             = _parcels,
                 kardin_budget_file     = _kardin_file,
                 gl_history_file        = _gl_hist_file,
+                allocation_exempt_accounts = [
+                    _c.strip()
+                    for _c in ((_alloc_exempt_str if '_alloc_exempt_str' in dir() else '') or '').split(',')
+                    if _c.strip()
+                ],
                 fiscal_year_start_month = 1,
                 file_prefix_internal   = _file_pfx_int or _pfx_int,
                 file_prefix_deliverable = _file_pfx_del,

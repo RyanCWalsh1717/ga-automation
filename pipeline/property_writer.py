@@ -68,6 +68,7 @@ def build_config_dict(
     investor_legal_name:    str = '',
     yardi_subset_code:      str = '',
     gl_history_file:        str = '',
+    allocation_exempt_accounts: list[str] = None,
 ) -> dict:
     """Build the ordered dict that becomes the YAML config file."""
     banks = {}
@@ -174,6 +175,9 @@ def build_config_dict(
         cfg['building_splits'] = _splits
     if (default_split_schedule or '').strip():
         cfg['default_split_schedule'] = default_split_schedule.strip()
+    _alloc_exempt = [str(c).strip() for c in (allocation_exempt_accounts or []) if str(c).strip()]
+    if _alloc_exempt:
+        cfg['allocation_exempt_accounts'] = _alloc_exempt
 
     if fees:    cfg['management_fees'] = fees
     if gl_accounts: cfg['gl_accounts'] = {k: str(v) for k, v in gl_accounts.items() if v}
