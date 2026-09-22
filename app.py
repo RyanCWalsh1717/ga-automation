@@ -8504,6 +8504,26 @@ with tab4:
                         column_config={'Ending Balance': st.column_config.NumberColumn(format="$%,.2f")},
                     )
 
+                    from bs_workpaper_generator import generate_workpaper_seed as _gen_wp_seed
+                    _wpi_wp_period = _wpi_tb.metadata.period.replace(' ', '-')
+                    _wpi_wp_bytes = _gen_wp_seed(
+                        entries=[{
+                            'account_code': r['Account Code'], 'account_name': r['Account Name'],
+                            'period': _wpi_wp_period, 'gl_ending': r['Ending Balance'],
+                        } for r in _wpi_bs_rows],
+                        property_name=_wpi_tb.metadata.entity_name,
+                        as_of_period=_wpi_wp_period,
+                    )
+                    st.download_button(
+                        label="⬇️ Download Workpaper Seed",
+                        data=_wpi_wp_bytes,
+                        file_name=f"GA_Workpapers_Seed_{_wpi_wp_period}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        help="Upload this as the prior-month workpaper on this property's first real "
+                             "close (Pass 2), so the GL/TB tie-out history starts from real balances "
+                             "instead of blank.",
+                    )
+
                 _wpi_items = extract_prepaid_items(_wpi_tmp_path, coa_codes=_wpi_coa)
                 if not _wpi_items:
                     st.info("No open prepaid items found in an itemized-schedule format on this workpaper.")
