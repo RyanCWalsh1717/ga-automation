@@ -22,10 +22,25 @@ team_members:
 - Ryan Walsh
 - Natasha Parker
 building_splits:
-- schedule: Equal
+- schedule: Campus Split (% per GRP)
+  name: 25 Hartwell
+  share_pct: 0.63
+  yardi_code: 25hart
+  notes: Per Kardin Allocations report (rptAllocations, 2027 Budget rev 21)
+- schedule: Campus Split (% per GRP)
+  name: 40 Hartwell
+  share_pct: 0.37
+  yardi_code: 40hart
+  notes: Per Kardin Allocations report (rptAllocations, 2027 Budget rev 21)
+- schedule: Split (50/50)
   name: 25 Hartwell
   share_pct: 0.5
   yardi_code: 25hart
+- schedule: Split (50/50)
+  name: 40 Hartwell
+  share_pct: 0.5
+  yardi_code: 40hart
+default_split_schedule: Campus Split (% per GRP)
 management_fees:
 - name: GRP
   rate: 0.0175
