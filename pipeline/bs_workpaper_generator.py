@@ -3399,121 +3399,171 @@ def _seed_period_sort(period_str: str):
     return (0, 0)
 
 
-SEED_TAB_BLUE    = '0070C0'   # matches the real GA_Workpaper_Template.xlsx tab color
+SEED_TAB_BLUE     = '0070C0'   # matches the real GA_Workpaper_Template.xlsx tab color
 SEED_HEADER_GREEN = '2D6F50'  # matches the real template's account-header fill
+
+# Column layout, matching the real template exactly (confirmed against
+# data/revlabspm/GA_Workpaper_Template.xlsx 2026-09-22):
+#   B1 account code (the VLOOKUP key)  B2 account name  B3 property | Period
+#   row 5 headers: B Date | C Description | D.. one column per building | Total
+#   row 6+ detail, then Ending Balance per GL / per TB / Variance.
+_SEED_HDR_ROW  = 5
+_SEED_DATA_ROW = 6
+
+
+def _write_seed_trial_balance(wb: 'Workbook', tb_rows: list, property_name: str, period: str) -> None:
+    """
+    Write the 'Trial Balance' tab. Required for two reasons: app.py refuses an
+    uploaded prior-month workpaper that lacks it (the {'Summary Page','Trial
+    Balance'} gate), and every account tab's "Ending Balance per TB" formula is
+    a VLOOKUP into columns A:F here taking column 6 as the balance — so the
+    column order below is load-bearing, not cosmetic.
+    """
+    ws = wb.create_sheet('Trial Balance')
+    ws.sheet_properties.tabColor = SEED_TAB_BLUE
+    for col, width in (('A', 12), ('B', 42), ('C', 16), ('D', 14), ('E', 14), ('F', 16)):
+        ws.column_dimensions[col].width = width
+
+    c = ws.cell(row=1, column=1, value=f'{property_name}  |  Trial Balance  |  Period: {period}')
+    _apply(c, font=_font(bold=True, size=12, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+
+    for ci, h in enumerate(['Account', 'Account Name', 'Forward Balance',
+                            'Debit', 'Credit', 'Ending Balance'], start=1):
+        c = ws.cell(row=2, column=ci, value=h)
+        _apply(c, font=_hdr_font(), fill=_fill(SEED_HEADER_GREEN), border=THIN,
+               align=Alignment(horizontal='center', wrap_text=True))
+
+    _NUM = '#,##0.00;(#,##0.00);"-"'
+    for i, r in enumerate(tb_rows):
+        row_num = 3 + i
+        # Code written as TEXT so the account tabs' VLOOKUP key (also text)
+        # matches — Excel won't match a text key against a numeric cell.
+        vals = [str(r.get('account_code', '')), r.get('account_name', ''),
+                0.0, 0.0, 0.0, float(r.get('ending_balance', 0) or 0)]
+        for ci, v in enumerate(vals, start=1):
+            c = ws.cell(row=row_num, column=ci, value=v)
+            c.border = THIN
+            if isinstance(v, float):
+                c.number_format = _NUM
+                c.alignment = Alignment(horizontal='right')
+    ws.freeze_panes = 'A3'
 
 
 def _write_seed_account_tab(wb: 'Workbook', account_code: str, account_name: str,
-                             history_rows: list, property_name: str,
-                             buildings: list = None) -> None:
+                             detail_rows: list, property_name: str, period: str,
+                             buildings: list) -> None:
     """
-    Write one account tab in the rolling-table format expected by
-    _extract_new_format_history().  Tab name: '{account_code} {account_name}'.
+    Write one account tab in the REAL workpaper format — the same shape every
+    monthly close produces, so this file can be uploaded as the prior-month
+    workpaper and rolled forward normally.
 
-    Colors match the real GA_Workpaper_Template.xlsx (confirmed against a real
-    RevLabs monthly workpaper 2026-09-22): blue tab color, green header fill.
-
-    Columns B–G are ALWAYS Period | Beg Balance | Net Activity | GL Ending |
-    TB Ending | Variance, in that exact position — _extract_new_format_history()
-    (the real carry-forward reader every subsequent monthly close uses) reads
-    those columns by fixed position, so this layout can never change without
-    silently corrupting next month's real close for every account. GL Ending/
-    TB Ending here are always the TRUE COMBINED balance.
-
-    When `buildings` has 2+ entries (a consolidated multi-building property),
-    extra REFERENCE-ONLY columns are appended after G — one per building,
-    each showing the combined balance prorated by that building's
-    building_splits share_pct. This is an ESTIMATE, not real per-building GL
-    data (a legacy workpaper's own Trial Balance tab only has one combined
-    balance per account) — labeled as such in the tab, and never read back
-    by the carry-forward loader.
+    detail_rows: [{'date', 'description', 'amounts': {yardi_code: float}}] —
+    real per-building posted rows pulled off the legacy workpaper where it had
+    them. An account with no such detail gets a single "Balance Forward" row
+    from the Trial Balance instead, which is honest about being a starting
+    balance rather than dressing a net number up as history.
     """
     tab_name = _safe_sheet_name(f'{account_code} {account_name}')
     ws = wb.create_sheet(tab_name)
     ws.sheet_properties.tabColor = SEED_TAB_BLUE
-    ws.column_dimensions['A'].width = 2
 
-    multi = bool(buildings) and len(buildings) >= 2
-    n_bldg = len(buildings) if multi else 0
-    last_col = _G + n_bldg
+    n_bldg = len(buildings)
+    # B=2 Date, C=3 Desc, D..(3+n) buildings, then Total immediately after.
+    col_total = 4 + n_bldg
+    ws.column_dimensions['B'].width = 14
+    ws.column_dimensions['C'].width = 46
+    for i in range(n_bldg + 1):
+        ws.column_dimensions[get_column_letter(4 + i)].width = 18
 
-    col_widths = {'B': 14, 'C': 16, 'D': 16, 'E': 16, 'F': 16, 'G': 14}
-    for i in range(n_bldg):
-        col_widths[chr(ord('G') + 1 + i)] = 16
-    for col_letter, width in col_widths.items():
-        ws.column_dimensions[col_letter].width = width
+    # Rows 1-3 — header block. B1 is the bare code: the VLOOKUP key.
+    for row_num, val, fnt in (
+        (1, str(account_code), _font(bold=True, size=14, color='FFFFFF')),
+        (2, account_name,      _font(bold=True, size=14, color='FFFFFF')),
+        (3, f'{property_name}  |  Period: {period}  |  Historical seed — imported prior balances',
+                               _font(bold=True, size=10, color='FFFFFF')),
+    ):
+        c = ws.cell(row=row_num, column=_B, value=val)
+        _apply(c, font=fnt, fill=_fill(SEED_HEADER_GREEN),
+               align=Alignment(horizontal='left', vertical='center'))
+        ws.merge_cells(start_row=row_num, start_column=_B, end_row=row_num, end_column=col_total)
 
-    # Row 1 — account header
-    hdr_val = f'{account_code}  {account_name}'
-    c = ws.cell(row=1, column=_B, value=hdr_val)
-    _apply(c, font=_font(bold=True, size=13, color='FFFFFF'),
-           fill=_fill(SEED_HEADER_GREEN),
-           align=Alignment(horizontal='left', vertical='center'))
-    ws.merge_cells(start_row=1, start_column=_B, end_row=1, end_column=last_col)
-    ws.row_dimensions[1].height = 22
-
-    # Row 2 — property + seed note
-    _note = 'Historical seed — imported prior balances'
-    if multi:
-        _note += ' (building columns are an estimated split, for reference only)'
-    sub = ws.cell(row=2, column=_B, value=f'{property_name}  |  {_note}')
-    _apply(sub, font=_font(italic=True, size=9, color='FFFFFF'),
-           fill=_fill(SEED_HEADER_GREEN),
-           align=Alignment(horizontal='left'))
-    ws.merge_cells(start_row=2, start_column=_B, end_row=2, end_column=last_col)
-
-    # Row 3 — blank spacer
-    ws.row_dimensions[3].height = 6
-
-    # Row 4 — column headers  (col B must contain "Period" exactly — read by extractor)
-    hist_hdrs = ['Period', 'Beg Balance', 'Net Activity', 'GL Ending', 'TB Ending', 'Variance']
-    if multi:
-        hist_hdrs += [f"{b.get('name') or b.get('yardi_code', '')} (est.)" for b in buildings]
-    for ci, h in enumerate(hist_hdrs):
-        c = ws.cell(row=4, column=_B + ci, value=h)
+    headers = ['Date', 'Description'] + [b.get('name') or b.get('yardi_code', '') for b in buildings] + ['Total']
+    for ci, h in enumerate(headers):
+        c = ws.cell(row=_SEED_HDR_ROW, column=_B + ci, value=h)
         _apply(c, font=_hdr_font(), fill=_fill(SEED_HEADER_GREEN), border=THIN,
                align=Alignment(horizontal='center', wrap_text=True))
-    ws.row_dimensions[4].height = 28
+    ws.row_dimensions[_SEED_HDR_ROW].height = 24
 
-    # Rows 5+ — data
-    _NUM_FMT = '#,##0.00;(#,##0.00);"-"'
-    for i, hist in enumerate(history_rows):
-        row_num = 5 + i
-        gl_end = hist.get('gl_end', 0.0) or 0.0
-        _var = round(gl_end - (hist.get('tb_end', 0.0) or 0.0), 2)
-        vals = [
-            hist.get('period', ''),
-            hist.get('beg_bal', 0.0),
-            hist.get('net_change', 0.0),
-            gl_end,
-            hist.get('tb_end', gl_end),
-            _var,
-        ]
-        if multi:
-            allocated = 0.0
-            for bi, b in enumerate(buildings):
-                is_last = (bi == len(buildings) - 1)
-                amt = round(gl_end - allocated, 2) if is_last else round(gl_end * float(b.get('share_pct', 0) or 0), 2)
-                allocated += amt
-                vals.append(amt)
+    _NUM = '#,##0.00;(#,##0.00);"-"'
+    first_bldg_letter = get_column_letter(4)
+    last_bldg_letter  = get_column_letter(3 + n_bldg)
+    total_letter      = get_column_letter(col_total)
+
+    r = _SEED_DATA_ROW
+    for i, d in enumerate(detail_rows):
         alt = _fill(LIGHT_GRAY) if i % 2 == 1 else None
-        for ci, val in enumerate(vals):
-            c = ws.cell(row=row_num, column=_B + ci, value=val)
+        _dt = d.get('date')
+        c = ws.cell(row=r, column=_B, value=_dt)
+        c.border = THIN
+        if _dt is not None:
+            c.number_format = 'mm/dd/yyyy'
+        c.alignment = Alignment(horizontal='center')
+        if alt:
+            c.fill = alt
+        c = ws.cell(row=r, column=_C, value=d.get('description', ''))
+        c.border = THIN
+        if alt:
+            c.fill = alt
+        _amounts = d.get('amounts') or {}
+        for bi, b in enumerate(buildings):
+            # Blank (not 0.00) when the per-building split genuinely isn't
+            # known — a zero would read as "this building had none", which is
+            # a different and wrong claim.
+            _code_b = b.get('yardi_code', '')
+            amt = float(_amounts.get(_code_b, 0.0) or 0.0) if _code_b in _amounts else None
+            c = ws.cell(row=r, column=4 + bi, value=amt)
             c.border = THIN
+            c.number_format = _NUM
+            c.alignment = Alignment(horizontal='right')
             if alt:
                 c.fill = alt
-            if isinstance(val, float):
-                c.number_format = _NUM_FMT
-                c.alignment = Alignment(horizontal='right')
-            elif ci == 0:  # period
-                c.alignment = Alignment(horizontal='center')
-        # Variance cell colour
-        vc = ws.cell(row=row_num, column=_B + 5)
-        _vz = abs(_var) < 0.02
-        vc.fill  = _fill(GREEN_FILL if _vz else RED_FILL)
-        vc.font  = _font(size=10, color='006100' if _vz else '9C0006')
+        # Total is a live SUM when the building columns carry the detail; a
+        # static combined figure when only the total is known, so the tab
+        # still ties to the Trial Balance instead of summing to zero.
+        c = ws.cell(row=r, column=col_total,
+                    value=(f'=SUM({first_bldg_letter}{r}:{last_bldg_letter}{r})'
+                           if _amounts else float(d.get('total', 0.0) or 0.0)))
+        c.border = THIN
+        c.number_format = _NUM
+        if alt:
+            c.fill = alt
+        r += 1
 
-    ws.freeze_panes = 'B5'
+    last_data_row = r - 1
+    foot = r + 1
+
+    def _foot_row(row_num, label, formulas):
+        c = ws.cell(row=row_num, column=_B, value=label)
+        _apply(c, font=_font(bold=True, size=11, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
+        ws.merge_cells(start_row=row_num, start_column=_B, end_row=row_num, end_column=_C)
+        for ci, f in formulas:
+            c = ws.cell(row=row_num, column=ci, value=f)
+            _apply(c, font=_font(bold=True, size=11, color='FFFFFF'), fill=_fill(SEED_HEADER_GREEN))
+            c.number_format = _NUM
+
+    _gl_formulas = []
+    for bi in range(n_bldg):
+        L = get_column_letter(4 + bi)
+        _gl_formulas.append((4 + bi, f'=SUM({L}{_SEED_DATA_ROW}:{L}{last_data_row})'))
+    _gl_formulas.append((col_total, f'=SUM({total_letter}{_SEED_DATA_ROW}:{total_letter}{last_data_row})'))
+    _foot_row(foot, 'Ending Balance per GL', _gl_formulas)
+    _foot_row(foot + 1, 'Ending Balance per TB',
+              [(col_total, "=VLOOKUP($B$1,'Trial Balance'!$A:$F,6,0)")])
+    _foot_row(foot + 2, 'Variance',
+              [(col_total, f'={total_letter}{foot}-{total_letter}{foot + 1}')])
+
+    ws.freeze_panes = f'B{_SEED_DATA_ROW}'
 
 
 def generate_workpaper_seed(
@@ -3521,101 +3571,85 @@ def generate_workpaper_seed(
     property_name: str = '',
     as_of_period: str = '',
     buildings: list = None,
+    account_detail: dict = None,
 ) -> bytes:
     """
-    Build a starter GA_Workpapers.xlsx from manually-entered prior-period account balances.
-
-    Intended for onboarding existing GRP properties to the pipeline.  Ryan enters
-    prior-period GL ending balances for specific BS accounts (e.g. the last 3–6
-    months of history), downloads the seed, and uploads it as the "prior month
-    workpaper" on the first pipeline close.  Every subsequent close carries
-    forward normally.
+    Build a starter GA_Workpapers.xlsx for onboarding an existing GRP property,
+    in the SAME format a normal monthly close produces — so it can be uploaded
+    as the "prior month workpaper" on the first real close and rolled forward
+    like any other month.
 
     Each entry dict:
         account_code    (str)   — 6-digit GL code, e.g. '111100'
-        account_name    (str)   — display name, e.g. 'PNC Operating Cash'
-        period          (str)   — 'Jan-2026', 'Feb-2026', …
-        gl_ending       (float) — GL ending balance for this period
-        tb_ending       (float) — TB ending balance (if omitted, same as gl_ending)
+        account_name    (str)   — display name
+        period          (str)   — 'Jul-2026'
+        gl_ending       (float) — ending balance for that period
 
-    buildings (optional): [{'name', 'yardi_code', 'share_pct'}, ...] — when 2+
-    are supplied (a consolidated multi-building property), every account tab
-    gets one column per building instead of a single balance, matching the
-    real GA_Workpaper_Template.xlsx pattern (e.g. RevLabs' own 'Revlabs' /
-    'Revlabspm' columns). Each building's amount is the account's combined
-    balance prorated by share_pct — an estimate, since a legacy workpaper's
-    Trial Balance tab only ever has one combined balance per account, not
-    real per-building activity. Labeled as an estimate on the tab itself.
+    buildings:       [{'name','yardi_code'}, ...] — one column per building on
+                     every account tab, matching the real template's own
+                     per-entity columns (RevLabs' 'Revlabs' / 'Revlabspm').
+    account_detail:  {account_code: [{'date','description','amounts':
+                     {yardi_code: float}}]} from
+                     legacy_workpaper_import.extract_account_detail() — REAL
+                     posted per-building rows off the legacy workpaper. Any
+                     account present here keeps its actual history; anything
+                     absent falls back to a single "Balance Forward" row.
+                     Added 2026-09-22 after Ryan flagged that for legacy
+                     accounts "that data is not pulling through it is just
+                     taking the net activity".
 
-    The function computes:
-        beg_bal    = prior period gl_ending (0 for the earliest period per account)
-        net_change = gl_ending − beg_bal
-        variance   = gl_ending − tb_ending
-
-    The output is readable by _extract_account_history() in bs_workpaper_generator.py,
-    meaning the pipeline's first close will carry this history forward automatically.
+    Note: this writes the transaction-detail format, NOT the older
+    "Period | Beg Balance | Net Activity" rolling table that
+    _extract_new_format_history() reads. That is deliberate — app.py's real
+    close path is generate_bs_workpaper_from_template(), which COPIES the
+    prior workpaper and appends to it, and it rejects outright any file
+    missing the 'Trial Balance' tab this now writes.
 
     Returns the workbook as raw bytes.
     """
     import io
-    from collections import defaultdict
     from openpyxl import Workbook as _WB
 
-    # ── Group entries by account ────────────────────────────────
-    by_account: dict = defaultdict(list)
-    for entry in entries:
-        code = str(entry.get('account_code', '') or '').strip()
+    buildings = list(buildings or [])
+    if not buildings:
+        buildings = [{'name': property_name or 'Property', 'yardi_code': ''}]
+    account_detail = account_detail or {}
+
+    seen = {}
+    for e in entries:
+        code = str(e.get('account_code', '') or '').strip()
         if not code:
             continue
-        name = str(entry.get('account_name', '') or '').strip()
-        period = str(entry.get('period', '') or '').strip()
-        if not period:
-            continue
-        gl_end = float(entry.get('gl_ending', 0) or 0)
-        tb_end = float(entry.get('tb_ending', 0) or 0) or gl_end
-        by_account[(code, name)].append({
-            'period': period,
-            'gl_end': gl_end,
-            'tb_end': tb_end,
-        })
+        seen[code] = {
+            'account_code':   code,
+            'account_name':   str(e.get('account_name', '') or '').strip(),
+            'ending_balance': float(e.get('gl_ending', 0) or 0),
+            'period':         str(e.get('period', '') or '').strip() or as_of_period,
+        }
 
-    # ── Sort each account's rows chronologically; compute beg/net ──
-    account_history: dict = {}
-    for (code, name), rows in by_account.items():
-        sorted_rows = sorted(rows, key=lambda r: _seed_period_sort(r['period']))
-        history = []
-        prev_gl = 0.0
-        for row in sorted_rows:
-            gl_end     = row['gl_end']
-            tb_end     = row['tb_end']
-            beg_bal    = prev_gl
-            net_change = round(gl_end - beg_bal, 2)
-            history.append({
-                'period':     row['period'],
-                'beg_bal':    beg_bal,
-                'net_change': net_change,
-                'gl_end':     gl_end,
-                'tb_end':     tb_end,
-                'variance':   round(gl_end - tb_end, 2),
-            })
-            prev_gl = gl_end
-        account_history[(code, name)] = history
+    period = as_of_period or next((v['period'] for v in seen.values()), '')
 
-    # ── Build workbook ──────────────────────────────────────────
     wb = _WB()
-    wb.remove(wb.active)   # remove default empty sheet
+    wb.remove(wb.active)
+    _write_summary_page(wb, period)
 
-    # Summary Page first (provides period-end anchor for 135150 DATEDIF formulas)
-    _write_summary_page(wb, as_of_period or next(
-        (r['period'] for rows in account_history.values() for r in rows[-1:]),
-        '',
-    ))
+    for code in sorted(seen):
+        rec = seen[code]
+        rows = account_detail.get(code)
+        if not rows:
+            # No real detail on the legacy workpaper for this account — seed a
+            # single opening row rather than implying transaction history.
+            _amounts = ({buildings[0].get('yardi_code', ''): rec['ending_balance']}
+                        if len(buildings) == 1 else {})
+            rows = [{'date': None,
+                     'description': 'Balance Forward (per Trial Balance)',
+                     'amounts': _amounts,
+                     'total': rec['ending_balance']}]
+        _write_seed_account_tab(wb, code, rec['account_name'], rows,
+                                 property_name, period, buildings)
 
-    # Account tabs — sorted by code for a tidy workbook
-    for (code, name), history in sorted(account_history.items(), key=lambda x: x[0][0]):
-        _write_seed_account_tab(wb, code, name, history, property_name, buildings=buildings)
+    _write_seed_trial_balance(wb, list(seen.values()), property_name, period)
 
-    # Return as bytes
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

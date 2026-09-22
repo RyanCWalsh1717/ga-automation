@@ -359,3 +359,120 @@ def _parse_period_range(text: str) -> Tuple[Optional[date], Optional[date]]:
         except ValueError:
             return None, None
     return None, None
+
+
+# ── Per-account transaction detail (full-detail accounts) ───────────────────
+
+_DETAIL_STOP_RE = re.compile(r'^\s*(ending balance|tb balance|difference|variance|note)', re.IGNORECASE)
+
+
+def _building_column_map(header_cells: List[str], buildings: List[Dict[str, str]]) -> Dict[int, str]:
+    """
+    Map column index -> yardi_code for a detail tab's building columns. Headers
+    in the wild are loose ('25 Hart', '40 Hart%', '25hart'), so match on
+    alphanumerics only, both directions.
+    """
+    out: Dict[int, str] = {}
+    for i, cell in enumerate(header_cells):
+        flat = re.sub(r'[^a-z0-9]', '', str(cell or '').lower())
+        if not flat:
+            continue
+        for b in buildings:
+            code = re.sub(r'[^a-z0-9]', '', str(b.get('yardi_code', '') or '').lower())
+            name = re.sub(r'[^a-z0-9]', '', str(b.get('name', '') or '').lower())
+            if not code:
+                continue
+            if flat == code or flat.startswith(code) or code.startswith(flat) or (name and flat == name):
+                out[i] = b['yardi_code']
+                break
+    return out
+
+
+def extract_account_detail(filepath: str,
+                            buildings: List[Dict[str, str]]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Pull real per-building transaction rows off the legacy workpaper's
+    per-account tabs — the ones named '152100  Land', '311100
+    Contributions-Partner A', etc.
+
+    Confirmed on the real 25 & 40 Hartwell workpaper 2026-09-22: these tabs
+    already carry each row's amount split by building ('25 Hart' / '40 Hart'
+    columns), so this is REAL posted detail, not a prorated estimate. Carrying
+    it forward is the difference between a seeded workpaper that shows an
+    account's actual history and one that shows a single net number — the
+    latter being what Ryan flagged: "some of the GL accounts are legacy
+    accounts ... that data is not pulling through it is just taking the net
+    activity."
+
+    Returns {account_code: [{'date', 'description', 'amounts': {yardi_code: float}}]}.
+    Tabs without a recognizable Description/Date + building-column header are
+    skipped, and the caller falls back to a single Trial-Balance-derived row.
+    """
+    import openpyxl
+
+    detail: Dict[str, List[Dict[str, Any]]] = {}
+    if not buildings:
+        return detail
+    try:
+        wb = openpyxl.load_workbook(filepath, data_only=True)
+    except Exception:
+        return detail
+
+    for sheet_name in wb.sheetnames:
+        m = re.match(r'^\s*(\d{6})', sheet_name)
+        if not m:
+            continue
+        acct_code = m.group(1)
+        ws = wb[sheet_name]
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+
+        hdr_idx = None
+        for i, row in enumerate(rows[:12]):
+            cells = [str(c).strip().lower() if c is not None else '' for c in row]
+            if 'description' in cells and 'date' in cells:
+                hdr_idx = i
+                break
+        if hdr_idx is None:
+            continue
+
+        hdr = [str(c).strip() if c is not None else '' for c in rows[hdr_idx]]
+        lower = [h.lower() for h in hdr]
+        idx_desc = lower.index('description')
+        idx_date = lower.index('date')
+        bldg_cols = _building_column_map(hdr, buildings)
+        if not bldg_cols:
+            continue
+
+        out_rows: List[Dict[str, Any]] = []
+        for row in rows[hdr_idx + 1:]:
+            if all(c is None for c in row):
+                continue
+            desc = row[idx_desc] if idx_desc < len(row) else None
+            desc_s = str(desc).strip() if desc is not None else ''
+            if not desc_s:
+                continue
+            if _DETAIL_STOP_RE.match(desc_s):
+                break
+            amounts: Dict[str, float] = {}
+            for ci, code_b in bldg_cols.items():
+                if ci >= len(row):
+                    continue
+                try:
+                    val = float(row[ci] or 0)
+                except (TypeError, ValueError):
+                    val = 0.0
+                if val:
+                    amounts[code_b] = val
+            if not amounts:
+                continue
+            _d = row[idx_date] if idx_date < len(row) else None
+            out_rows.append({
+                'date': _d if isinstance(_d, (date, datetime)) else None,
+                'description': desc_s,
+                'amounts': amounts,
+            })
+
+        if out_rows:
+            detail[acct_code] = out_rows
+
+    return detail

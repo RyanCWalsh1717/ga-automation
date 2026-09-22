@@ -8609,6 +8609,15 @@ with tab4:
                                 f"that's set."
                             )
 
+                    # Real per-building posted rows off the legacy workpaper's
+                    # own per-account tabs, so accounts with genuine history
+                    # carry it instead of collapsing to one net number.
+                    from legacy_workpaper_import import extract_account_detail as _extract_detail
+                    _wpi_detail = _extract_detail(
+                        _wpi_tmp_path,
+                        [{'name': b.name, 'yardi_code': b.yardi_code} for b in _wpi_cbuild],
+                    ) if _wpi_cbuild else {}
+
                     _wpi_wp_bytes = _gen_wp_seed(
                         entries=[{
                             'account_code': r['Account Code'], 'account_name': r['Account Name'],
@@ -8617,7 +8626,14 @@ with tab4:
                         property_name=_wpi_tb.metadata.entity_name,
                         as_of_period=_wpi_wp_period,
                         buildings=_wpi_buildings,
+                        account_detail=_wpi_detail,
                     )
+                    if _wpi_detail:
+                        st.caption(
+                            f"✅ Carried real per-building transaction detail for "
+                            f"{len(_wpi_detail)} account(s) off the legacy workpaper's own tabs; "
+                            f"the rest start from a single Trial Balance opening row."
+                        )
                     st.download_button(
                         label="⬇️ Download Workpaper Seed",
                         data=_wpi_wp_bytes,
