@@ -180,12 +180,41 @@ def _find_as_of_date(rows: List[list]) -> Optional[date]:
     return None
 
 
-def extract_prepaid_items(filepath: str, coa_codes: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+def detect_building(text: str, buildings: List[Dict[str, str]]) -> str:
+    """
+    Find which consolidated building a free-text item description belongs to,
+    e.g. 'CSP Fees ... 11/2025 - 10/2026- 25 Hart' -> '25 Hartwell'. Every
+    real prepaid item on the 25 & 40 Hartwell workpaper already names its
+    building this way (confirmed 2026-09-22) -- matched by yardi_code with
+    spaces/dashes stripped, case-insensitive, so '25hart', '25 hart', and
+    '25-hart' all match the same building. Returns '' if no building name or
+    code is found in the text (a shared/campus-wide item, or a non-GRP
+    workpaper this doesn't apply to).
+    """
+    if not text or not buildings:
+        return ''
+    flat = re.sub(r'[\s\-]', '', text).lower()
+    for b in buildings:
+        code = re.sub(r'[\s\-]', '', str(b.get('yardi_code', '') or '')).lower()
+        if code and code in flat:
+            return b.get('name', '') or b.get('yardi_code', '')
+    return ''
+
+
+def extract_prepaid_items(filepath: str, coa_codes: Optional[Dict[str, str]] = None,
+                           buildings: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, Any]]:
     """
     Scan every tab in a legacy workpaper for the itemized prepaid-schedule
     layout and return items in the shape prepaid_ledger.generate_seed()
     expects. gl_account (the name) is filled from coa_codes when the code
     is recognized, since the schedule tabs themselves don't carry a name.
+
+    When `buildings` (a consolidated property's [{'name','yardi_code'}, ...])
+    is supplied, each item also gets a '_building' key — the REAL building it
+    belongs to, read directly from its own description text (not an estimate,
+    unlike the workpaper's balance-sheet split — every real prepaid item is
+    genuinely tied to one specific building, and the legacy workpaper already
+    names it per item).
     """
     import openpyxl
 
@@ -286,6 +315,7 @@ def extract_prepaid_items(filepath: str, coa_codes: Optional[Dict[str, str]] = N
                 'months_amortized':  months_amortized,
                 'invoice_date':      payment_date if isinstance(payment_date, (date, datetime)) else None,
                 '_source_sheet':     sheet_name,
+                '_building':         detect_building(str(desc), buildings or []),
             })
 
     return items

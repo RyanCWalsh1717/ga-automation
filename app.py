@@ -8506,6 +8506,42 @@ with tab4:
 
                     from bs_workpaper_generator import generate_workpaper_seed as _gen_wp_seed
                     _wpi_wp_period = _wpi_tb.metadata.period.replace(' ', '-')
+
+                    # Per-building reference columns for a consolidated property.
+                    # Prefer the real percentages from default_split_schedule when
+                    # that schedule actually covers every building on file and
+                    # sums close to 100% -- otherwise fall back to an equal split
+                    # rather than build on top of a schedule that's missing rows
+                    # or doesn't add up (a real config state seen on Hartwell:
+                    # building_splits had only one of its two 'Equal' rows).
+                    _wpi_buildings = None
+                    _wpi_cbuild = list(getattr(_edit_cfg, 'consolidated_buildings', None) or [])
+                    if len(_wpi_cbuild) >= 2:
+                        _wpi_sched_name = (getattr(_edit_cfg, 'default_split_schedule', '') or '').strip()
+                        _wpi_sched_rows = _edit_cfg.get_schedule(_wpi_sched_name) if _wpi_sched_name else []
+                        _wpi_sched_by_code = {r.yardi_code: r.share_pct for r in _wpi_sched_rows}
+                        _wpi_covers_all = all(b.yardi_code in _wpi_sched_by_code for b in _wpi_cbuild)
+                        _wpi_sums_to_1 = abs(sum(_wpi_sched_by_code.values()) - 1.0) < 0.01
+                        if _wpi_sched_rows and _wpi_covers_all and _wpi_sums_to_1:
+                            _wpi_buildings = [
+                                {'name': b.name, 'yardi_code': b.yardi_code,
+                                 'share_pct': _wpi_sched_by_code[b.yardi_code]}
+                                for b in _wpi_cbuild
+                            ]
+                        else:
+                            _eq_share = 1.0 / len(_wpi_cbuild)
+                            _wpi_buildings = [
+                                {'name': b.name, 'yardi_code': b.yardi_code, 'share_pct': _eq_share}
+                                for b in _wpi_cbuild
+                            ]
+                            st.caption(
+                                f"ℹ️ No complete, valid split schedule on file for this property yet "
+                                f"(`default_split_schedule` and/or `building_splits` incomplete) — the "
+                                f"workpaper's per-building reference columns use an equal "
+                                f"{100/len(_wpi_cbuild):.1f}%/{100/len(_wpi_cbuild):.1f}% split until "
+                                f"that's set."
+                            )
+
                     _wpi_wp_bytes = _gen_wp_seed(
                         entries=[{
                             'account_code': r['Account Code'], 'account_name': r['Account Name'],
@@ -8513,6 +8549,7 @@ with tab4:
                         } for r in _wpi_bs_rows],
                         property_name=_wpi_tb.metadata.entity_name,
                         as_of_period=_wpi_wp_period,
+                        buildings=_wpi_buildings,
                     )
                     st.download_button(
                         label="⬇️ Download Workpaper Seed",
@@ -8524,21 +8561,32 @@ with tab4:
                              "instead of blank.",
                     )
 
-                _wpi_items = extract_prepaid_items(_wpi_tmp_path, coa_codes=_wpi_coa)
+                # Real per-item building (25hart/40hart) read from each item's own
+                # description text -- not an estimate, unlike the workpaper's
+                # balance-sheet split above.
+                _wpi_bldg_list = [
+                    {'name': b.name, 'yardi_code': b.yardi_code}
+                    for b in (getattr(_edit_cfg, 'consolidated_buildings', None) or [])
+                ]
+                _wpi_items = extract_prepaid_items(_wpi_tmp_path, coa_codes=_wpi_coa, buildings=_wpi_bldg_list)
                 if not _wpi_items:
                     st.info("No open prepaid items found in an itemized-schedule format on this workpaper.")
                 else:
                     st.markdown(f"**{len(_wpi_items)} open prepaid item(s) found:**")
+                    _wpi_preview_rows = [{
+                        'Sheet': it['_source_sheet'], 'GL Account': it['gl_account_number'],
+                        'On COA?': ('✅' if it['gl_account_number'] in _wpi_coa else '⚠️ No')
+                                   if _wpi_coa is not None else '—',
+                        'Description': it['description'],
+                        'Total Amount': it['total_amount'], 'Monthly Amount': it['monthly_amount'],
+                        'Service Start': it['service_start'], 'Service End': it['service_end'],
+                        'Months Amortized': it['months_amortized'],
+                    } for it in _wpi_items]
+                    if _wpi_bldg_list:
+                        for row, it in zip(_wpi_preview_rows, _wpi_items):
+                            row['Building'] = it.get('_building', '') or '(shared/unclear)'
                     st.dataframe(
-                        pd.DataFrame([{
-                            'Sheet': it['_source_sheet'], 'GL Account': it['gl_account_number'],
-                            'On COA?': ('✅' if it['gl_account_number'] in _wpi_coa else '⚠️ No')
-                                       if _wpi_coa is not None else '—',
-                            'Description': it['description'],
-                            'Total Amount': it['total_amount'], 'Monthly Amount': it['monthly_amount'],
-                            'Service Start': it['service_start'], 'Service End': it['service_end'],
-                            'Months Amortized': it['months_amortized'],
-                        } for it in _wpi_items]),
+                        pd.DataFrame(_wpi_preview_rows),
                         use_container_width=True,
                         column_config={
                             'Total Amount':   st.column_config.NumberColumn(format="$%,.2f"),
